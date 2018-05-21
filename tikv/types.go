@@ -56,11 +56,10 @@ func (v *mvccValue) UnmarshalBinary(data []byte) ([]byte, error) {
 		return nil, errors.Trace(err)
 	}
 	v.startTS = uVal
-	data, uVal, err = codec.DecodeUint(data)
+	data, v.commitTS, err = codec.DecodeUint(data)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	v.commitTS = uVal
 	data, bVal, err := codec.DecodeCompactBytes(data)
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -193,14 +192,14 @@ func (mixed *mixedValue) MarshalBinary() []byte {
 	return buf
 }
 
-func decodeMixed(item *badger.Item) (mixedValue, error) {
+func decodeMixed(item *badger.Item) (*mixedValue, error) {
 	data, err := item.Value()
 	if err != nil {
-		return mixedValue{}, errors.Trace(err)
+		return nil, errors.Trace(err)
 	}
 	var mixed mixedValue
 	err = mixed.UnmarshalBinary(data)
-	return mixed, errors.Trace(err)
+	return &mixed, errors.Trace(err)
 }
 
 func encodeMVKey(key []byte) []byte {

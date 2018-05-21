@@ -6,8 +6,8 @@ import (
 	"math"
 	"sync/atomic"
 
-	"github.com/cznic/mathutil"
 	"github.com/coocood/badger"
+	"github.com/cznic/mathutil"
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -160,7 +160,7 @@ func (store *MVCCStore) prewriteMutation(txn *badger.Txn, mutation *kvrpcpb.Muta
 	if err != nil && err != badger.ErrKeyNotFound {
 		return errors.Trace(err)
 	}
-	var mixed mixedValue
+	var mixed *mixedValue
 	if item != nil {
 		mixed, err = decodeMixed(item)
 		if err != nil {
@@ -234,7 +234,7 @@ func (store *MVCCStore) commitKey(txn *badger.Txn, key []byte, startTS, commitTS
 	return store.commitLock(txn, mvKey, mixed, startTS, commitTS, diff)
 }
 
-func (store *MVCCStore) commitLock(txn *badger.Txn, mvKey []byte, mixed mixedValue, startTS, commitTS uint64, diff *int64) error {
+func (store *MVCCStore) commitLock(txn *badger.Txn, mvKey []byte, mixed *mixedValue, startTS, commitTS uint64, diff *int64) error {
 	lock := mixed.lock
 	if lock.op == kvrpcpb.Op_Lock {
 		return store.commitMixed(txn, mvKey, mixed, nil)
@@ -264,7 +264,7 @@ func (store *MVCCStore) commitLock(txn *badger.Txn, mvKey []byte, mixed mixedVal
 	return store.commitMixed(txn, mvKey, mixed, diff)
 }
 
-func (store *MVCCStore) commitMixed(txn *badger.Txn, mvKey []byte, mixed mixedValue, diff *int64) error {
+func (store *MVCCStore) commitMixed(txn *badger.Txn, mvKey []byte, mixed *mixedValue, diff *int64) error {
 	rollbackTS := mixed.lock.rollbackTS
 	if rollbackTS != 0 {
 		// The rollback info is appended to the lock, we should reserve a rollback lock.
