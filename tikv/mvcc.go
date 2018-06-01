@@ -124,7 +124,7 @@ func checkLock(regCtx *regionCtx, lock mvccLock, key []byte, startTS uint64) err
 	isPrimaryGet := lock.startTS == lockVer && bytes.Equal(lock.primary, key)
 	if lockVisible && isWriteLock && !isPrimaryGet {
 		if extractPhysical(lock.startTS)+lock.ttl < extractPhysical(startTS) {
-			regCtx.addTxnKey(startTS, key)
+			regCtx.addTxnKey(lock.startTS, key)
 		}
 		return &ErrLocked{
 			Key:     key,
@@ -645,6 +645,7 @@ func (store *MVCCStore) ScanLock(regCtx *regionCtx, maxTS uint64) ([]*kvrpcpb.Lo
 func (store *MVCCStore) ResolveLock(regCtx *regionCtx, startTS, commitTS uint64, diff *int64) error {
 	lockKeys := regCtx.getTxnKeys(startTS)
 	if len(lockKeys) == 0 {
+		log.Debugf("no lock keys found for startTS:%d, commitTS:%d", startTS, commitTS)
 		return nil
 	}
 	hashVals := keysToHashVals(lockKeys)
@@ -689,6 +690,9 @@ func (store *MVCCStore) ResolveLock(regCtx *regionCtx, startTS, commitTS uint64,
 	if err != nil {
 		log.Errorf("resolve lock failed with %d locks, %v", len(lockKeys), err)
 		return errors.Trace(err)
+	}
+	if len(wb.entries) == 0 {
+		return nil
 	}
 	atomic.AddInt64(diff, tmpDiff)
 	regCtx.removeTxnKeys(startTS)
