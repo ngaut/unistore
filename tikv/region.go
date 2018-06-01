@@ -613,7 +613,7 @@ func (rm *RegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey []byte, o
 	oldRegion := oldRegionCtx.meta
 	rightMeta := &metapb.Region{
 		Id:       oldRegion.Id,
-		StartKey: codec.EncodeBytes(splitKey, nil),
+		StartKey: codec.EncodeBytes(nil, splitKey),
 		EndKey:   oldRegion.EndKey,
 		RegionEpoch: &metapb.RegionEpoch{
 			ConfVer: oldRegion.RegionEpoch.ConfVer,
@@ -630,7 +630,7 @@ func (rm *RegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey []byte, o
 	leftMeta := &metapb.Region{
 		Id:       id,
 		StartKey: oldRegion.StartKey,
-		EndKey:   codec.EncodeBytes(splitKey, nil),
+		EndKey:   codec.EncodeBytes(nil, splitKey),
 		RegionEpoch: &metapb.RegionEpoch{
 			ConfVer: 1,
 			Version: 1,
