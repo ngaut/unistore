@@ -124,8 +124,13 @@ func (ls *LockStore) findGreater(key []byte, allowEqual bool) (entry, bool) {
 	prev.node = ls.head
 	level := ls.getHeight() - 1
 	for {
-		next := ls.getNext(prev.node, level)
-		if next.node != nil {
+		var next entry
+		addr := prev.getNextAddr(level)
+		if addr != nullArenaAddr {
+			arena := ls.getArena()
+			data := arena.get(addr, nodeHeadrSize)
+			next.node = (*node)(unsafe.Pointer(&data[0]))
+			next.key = next.node.getKey(arena)
 			cmp := bytes.Compare(next.key, key)
 			if cmp < 0 {
 				// next key is still smaller, keep moving.
@@ -137,8 +142,9 @@ func (ls *LockStore) findGreater(key []byte, allowEqual bool) (entry, bool) {
 				if allowEqual {
 					return next, true
 				}
-				next = ls.getNext(next.node, 0)
-				return next, false
+				level = 0
+				prev = next
+				continue
 			}
 		}
 		// next is greater than key or next is nil. go to the lower level.
