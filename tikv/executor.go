@@ -44,14 +44,15 @@ type tableScanExec struct {
 	startTS        uint64
 	isolationLevel kvrpcpb.IsolationLevel
 	mvccStore      *MVCCStore
-	regCtx         *regionCtx
+	reqCtx         *requestCtx
 	rangeCursor    int
 
-	rowCursor int
-	rows      [][][]byte
-	seekKey   []byte
-	start     int
-	counts    []int64
+	rowCursor  int
+	rows       [][][]byte
+	seekKey    []byte
+	start      int
+	counts     []int64
+	ignoreLock bool
 
 	src executor
 }
@@ -150,7 +151,10 @@ func (e *tableScanExec) fillRows() error {
 }
 
 func (e *tableScanExec) fillRowsFromPoint(ran kv.KeyRange) error {
-	val, err := e.mvccStore.Get(e.regCtx, ran.StartKey, e.startTS)
+	if e.reqCtx.getter == nil {
+		e.reqCtx.getter = e.mvccStore.newStoreGetter(e.reqCtx)
+	}
+	val, err := e.reqCtx.getter.get(ran.StartKey, e.startTS)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -181,9 +185,9 @@ func (e *tableScanExec) fillRowsFromRange(ran kv.KeyRange) error {
 	}
 	var pairs []Pair
 	if e.Desc {
-		pairs = e.mvccStore.ReverseScan(e.regCtx, ran.StartKey, e.seekKey, scanLimit, e.startTS)
+		pairs = e.mvccStore.ReverseScan(e.reqCtx, ran.StartKey, e.seekKey, scanLimit, e.startTS, e.ignoreLock)
 	} else {
-		pairs = e.mvccStore.Scan(e.regCtx, e.seekKey, ran.EndKey, scanLimit, e.startTS)
+		pairs = e.mvccStore.Scan(e.reqCtx, e.seekKey, ran.EndKey, scanLimit, e.startTS, e.ignoreLock)
 	}
 	if len(pairs) == 0 {
 		return nil
@@ -224,12 +228,14 @@ type indexScanExec struct {
 	startTS        uint64
 	isolationLevel kvrpcpb.IsolationLevel
 	mvccStore      *MVCCStore
-	regCtx         *regionCtx
+	reqCtx         *requestCtx
+	getter         *storeGetter
 	ranCursor      int
 	seekKey        []byte
 	pkStatus       int
 	start          int
 	counts         []int64
+	ignoreLock     bool
 
 	rowCursor int
 	rows      [][][]byte
@@ -332,7 +338,10 @@ func (e *indexScanExec) fillRows() error {
 
 // fillRowsFromPoint is only used for unique key.
 func (e *indexScanExec) fillRowsFromPoint(ran kv.KeyRange) error {
-	val, err := e.mvccStore.Get(e.regCtx, ran.StartKey, e.startTS)
+	if e.getter == nil {
+		e.getter = e.mvccStore.newStoreGetter(e.reqCtx)
+	}
+	val, err := e.getter.get(ran.StartKey, e.startTS)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -386,9 +395,9 @@ func (e *indexScanExec) fillRowsFromRange(ran kv.KeyRange) error {
 	}
 	var pairs []Pair
 	if e.Desc {
-		pairs = e.mvccStore.ReverseScan(e.regCtx, ran.StartKey, e.seekKey, scanLimit, e.startTS)
+		pairs = e.mvccStore.ReverseScan(e.reqCtx, ran.StartKey, e.seekKey, scanLimit, e.startTS, e.ignoreLock)
 	} else {
-		pairs = e.mvccStore.Scan(e.regCtx, e.seekKey, ran.EndKey, scanLimit, e.startTS)
+		pairs = e.mvccStore.Scan(e.reqCtx, e.seekKey, ran.EndKey, scanLimit, e.startTS, e.ignoreLock)
 	}
 	if len(pairs) == 0 {
 		return nil
