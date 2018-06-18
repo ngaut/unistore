@@ -60,7 +60,7 @@ type requestCtx struct {
 	regCtx    *regionCtx
 	regErr    *errorpb.Error
 	buf       []byte
-	reader    *storeReader
+	reader    *DBReader
 	method    string
 	startTime time.Time
 	traces    []traceItem
@@ -121,6 +121,14 @@ func (req *requestCtx) traceAt(event string, t time.Time) {
 	})
 }
 
+// For read-only requests that doesn't acquire latches, this function must be called after all locks has been checked.
+func (req *requestCtx) getDBReader() *DBReader {
+	if req.reader == nil {
+		req.reader = req.svr.mvccStore.NewDBReader(req)
+	}
+	return req.reader
+}
+
 var LogTraceMS uint = 300
 
 func (req *requestCtx) finish() {
@@ -147,7 +155,12 @@ func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.GetResponse{RegionError: reqCtx.regErr}, nil
 	}
-	val, err := svr.mvccStore.Get(reqCtx, req.Key, req.GetVersion())
+	err = svr.mvccStore.CheckKeysLock(req.GetVersion(), req.Key)
+	if err != nil {
+		return &kvrpcpb.GetResponse{Error: convertToKeyError(err)}, nil
+	}
+	reader := reqCtx.getDBReader()
+	val, err := reader.Get(req.Key, req.GetVersion())
 	if err != nil {
 		return &kvrpcpb.GetResponse{
 			Error: convertToKeyError(err),
@@ -170,7 +183,14 @@ func (svr *Server) KvScan(ctx context.Context, req *kvrpcpb.ScanRequest) (*kvrpc
 	if !isMvccRegion(reqCtx.regCtx) {
 		return &kvrpcpb.ScanResponse{}, nil
 	}
-	pairs := svr.mvccStore.Scan(reqCtx, req.GetStartKey(), reqCtx.regCtx.rawEndKey(), int(req.GetLimit()), req.GetVersion(), false)
+	startKey := req.GetStartKey()
+	endKey := reqCtx.regCtx.rawEndKey()
+	err = svr.mvccStore.CheckRangeLock(req.GetVersion(), startKey, endKey)
+	if err != nil {
+		return &kvrpcpb.ScanResponse{Pairs: convertToPbPairs([]Pair{{Err: err}})}, nil
+	}
+	reader := reqCtx.getDBReader()
+	pairs := reader.Scan(startKey, endKey, int(req.GetLimit()), req.GetVersion())
 	return &kvrpcpb.ScanResponse{
 		Pairs: convertToPbPairs(pairs),
 	}, nil
@@ -240,7 +260,11 @@ func (svr *Server) KvBatchGet(ctx context.Context, req *kvrpcpb.BatchGetRequest)
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.BatchGetResponse{RegionError: reqCtx.regErr}, nil
 	}
-	pairs := svr.mvccStore.BatchGet(reqCtx, req.Keys, req.GetVersion())
+	err = svr.mvccStore.CheckKeysLock(req.GetVersion(), req.Keys...)
+	if err != nil {
+		return &kvrpcpb.BatchGetResponse{Pairs: convertToPbPairs([]Pair{{Err: err}})}, nil
+	}
+	pairs := reqCtx.getDBReader().BatchGet(req.Keys, req.GetVersion())
 	return &kvrpcpb.BatchGetResponse{
 		Pairs: convertToPbPairs(pairs),
 	}, nil

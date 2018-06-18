@@ -87,114 +87,6 @@ func (store *MVCCStore) updateLatestTS(ts uint64) {
 	}
 }
 
-func (store *MVCCStore) Get(reqCtx *requestCtx, key []byte, startTS uint64) ([]byte, error) {
-	store.updateLatestTS(startTS)
-	g := store.newStoreReader(reqCtx)
-	defer func() {
-		reqCtx.trace(eventReadDB)
-		g.Close()
-	}()
-	return g.get(key, startTS)
-}
-
-func (store *MVCCStore) newStoreReader(reqCtx *requestCtx) *storeReader {
-	g := &storeReader{store: store, reqCtx: reqCtx}
-	g.txn = store.db.NewTransaction(false)
-	return g
-}
-
-func newIterator(txn *badger.Txn) *badger.Iterator {
-	var itOpts = badger.DefaultIteratorOptions
-	itOpts.PrefetchValues = false
-	return txn.NewIterator(itOpts)
-}
-
-type storeReader struct {
-	store  *MVCCStore
-	txn    *badger.Txn
-	reqCtx *requestCtx
-	iter   *badger.Iterator
-}
-
-func (g *storeReader) get(key []byte, startTS uint64) ([]byte, error) {
-	g.reqCtx.buf = g.store.lockStore.Get(key, g.reqCtx.buf)
-	if len(g.reqCtx.buf) > 0 {
-		lock := decodeLock(g.reqCtx.buf)
-		err := checkLock(lock, key, startTS)
-		if err != nil {
-			return nil, err
-		}
-	}
-	item, err := g.txn.Get(key)
-	if err != nil && err != badger.ErrKeyNotFound {
-		return nil, errors.Trace(err)
-	}
-	if err == badger.ErrKeyNotFound {
-		return nil, nil
-	}
-	mvVal, err := decodeValue(item)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	if mvVal.commitTS <= startTS {
-		return mvVal.value, nil
-	}
-	oldKey := encodeOldKey(key, startTS)
-	if g.iter == nil {
-		g.iter = newIterator(g.txn)
-	}
-	g.iter.Seek(oldKey)
-	if !g.iter.ValidForPrefix(oldKey[:len(oldKey)-8]) {
-		return nil, nil
-	}
-	item = g.iter.Item()
-	mvVal, err = decodeValue(item)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	return mvVal.value, nil
-}
-
-func (g *storeReader) Close() {
-	if g.iter != nil {
-		g.iter.Close()
-	}
-	g.txn.Discard()
-}
-
-func checkLock(lock mvccLock, key []byte, startTS uint64) error {
-	lockVisible := lock.startTS < startTS
-	isWriteLock := lock.op == uint16(kvrpcpb.Op_Put) || lock.op == uint16(kvrpcpb.Op_Del)
-	isPrimaryGet := lock.startTS == lockVer && bytes.Equal(lock.primary, key)
-	if lockVisible && isWriteLock && !isPrimaryGet {
-		return &ErrLocked{
-			Key:     key,
-			StartTS: lock.startTS,
-			Primary: lock.primary,
-			TTL:     uint64(lock.ttl),
-		}
-	}
-	return nil
-}
-
-func (store *MVCCStore) BatchGet(reqCtx *requestCtx, keys [][]byte, startTS uint64) []Pair {
-	store.updateLatestTS(startTS)
-	g := store.newStoreReader(reqCtx)
-	defer func() {
-		reqCtx.trace(eventReadDB)
-		g.Close()
-	}()
-	pairs := make([]Pair, 0, len(keys))
-	for _, key := range keys {
-		val, err := g.get(key, startTS)
-		if len(val) == 0 {
-			continue
-		}
-		pairs = append(pairs, Pair{Key: key, Value: val, Err: err})
-	}
-	return pairs
-}
-
 func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, primary []byte, startTS uint64, ttl uint64) []error {
 	store.updateLatestTS(startTS)
 	regCtx := reqCtx.regCtx
@@ -217,24 +109,18 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 		return errs
 	}
 	// Check the DB.
-	err := store.db.View(func(txn *badger.Txn) error {
-		for i, m := range mutations {
-			err := store.checkPrewriteInDB(reqCtx, txn, m, startTS)
-			if err != nil {
-				anyError = true
-			}
-			errs[i] = err
+	txn := reqCtx.getDBReader().txn
+	for i, m := range mutations {
+		err := store.checkPrewriteInDB(reqCtx, txn, m, startTS)
+		if err != nil {
+			anyError = true
 		}
-		return nil
-	})
+		errs[i] = err
+	}
 	reqCtx.trace(eventReadDB)
 	if anyError {
 		return errs
 	}
-	if err != nil {
-		return []error{err}
-	}
-
 	lockBatch := newWriteBatch(reqCtx)
 	for _, m := range mutations {
 		lock := mvccLock{
@@ -249,7 +135,7 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 		}
 		lockBatch.setWithMeta(m.Key, lock.MarshalBinary(), 0)
 	}
-	err = store.writeLock(lockBatch)
+	err := store.writeLock(lockBatch)
 	reqCtx.trace(eventEndWriteLock)
 	if err != nil {
 		return []error{err}
@@ -315,7 +201,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 		if len(buf) == 0 {
 			// We never commit partial keys in Commit request, so if one lock is not found,
 			// the others keys must not be found too.
-			return store.handleLockNotFound(key, startTS, commitTS)
+			return store.handleLockNotFound(req, key, startTS, commitTS)
 		}
 		lock := decodeLock(buf)
 		if lock.startTS != startTS {
@@ -331,36 +217,31 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 	}
 	req.trace(eventReadLock)
 	// Move current latest to old.
-	err := store.db.View(func(txn *badger.Txn) error {
-		for _, key := range keys {
-			item, err := txn.Get(key)
-			if err != nil && err != badger.ErrKeyNotFound {
-				return errors.Trace(err)
-			}
-			if item == nil {
-				continue
-			}
-			mvVal, err := decodeValue(item)
-			if err != nil {
-				return errors.Trace(err)
-			}
-			oldKey := encodeOldKey(key, mvVal.commitTS)
-			var userMeta byte
-			if len(mvVal.value) == 0 {
-				userMeta = userMetaDelete
-			} else {
-				userMeta = 0
-			}
-			dbBatch.setWithMeta(oldKey, mvVal.MarshalBinary(), userMeta)
+	txn := req.getDBReader().txn
+	for _, key := range keys {
+		item, err := txn.Get(key)
+		if err != nil && err != badger.ErrKeyNotFound {
+			return errors.Trace(err)
 		}
-		return nil
-	})
-	req.trace(eventReadDB)
-	if err != nil {
-		return errors.Trace(err)
+		if item == nil {
+			continue
+		}
+		mvVal, err := decodeValue(item)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		oldKey := encodeOldKey(key, mvVal.commitTS)
+		var userMeta byte
+		if len(mvVal.value) == 0 {
+			userMeta = userMetaDelete
+		} else {
+			userMeta = 0
+		}
+		dbBatch.setWithMeta(oldKey, mvVal.MarshalBinary(), userMeta)
 	}
+	req.trace(eventReadDB)
 	atomic.AddInt64(&regCtx.diff, int64(tmpDiff))
-	err = store.write(dbBatch)
+	err := store.write(dbBatch)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -374,31 +255,29 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 	return errors.Trace(err)
 }
 
-func (store *MVCCStore) handleLockNotFound(key []byte, startTS, commitTS uint64) error {
-	err := store.db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(key)
-		if err != nil {
-			return errors.Trace(err)
-		}
-		mvVal, err := decodeValue(item)
-		if err != nil {
-			return errors.Trace(err)
-		}
-		if mvVal.startTS == startTS {
-			// Already committed.
+func (store *MVCCStore) handleLockNotFound(reqCtx *requestCtx, key []byte, startTS, commitTS uint64) error {
+	txn := reqCtx.getDBReader().txn
+	item, err := txn.Get(key)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	mvVal, err := decodeValue(item)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	if mvVal.startTS == startTS {
+		// Already committed.
+		return nil
+	} else {
+		// The transaction may be committed and moved to old data, we need to look for that.
+		oldKey := encodeOldKey(key, commitTS)
+		_, err = txn.Get(oldKey)
+		if err == nil {
+			// Found committed key.
 			return nil
-		} else {
-			// The transaction may be committed and moved to old data, we need to look for that.
-			oldKey := encodeOldKey(key, commitTS)
-			_, err = txn.Get(oldKey)
-			if err == nil {
-				// Found committed key.
-				return nil
-			}
 		}
-		return errors.New("lock not found")
-	})
-	return errors.Trace(err)
+	}
+	return errors.New("lock not found")
 }
 
 func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint64) error {
@@ -408,25 +287,20 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 	reqCtx.trace(eventAcquireLatches)
 	defer reqCtx.regCtx.releaseLatches(hashVals)
 	lockBatch := newWriteBatch(reqCtx)
-	err := store.db.View(func(txn *badger.Txn) error {
-		for _, key := range keys {
-			err := store.rollbackKey(lockBatch, txn, key, startTS)
-			if err != nil {
-				return err
-			}
+	var err error
+	for _, key := range keys {
+		err = store.rollbackKey(reqCtx, lockBatch, key, startTS)
+		if err != nil {
+			return errors.Trace(err)
 		}
-		return nil
-	})
-	reqCtx.trace(eventReadDB)
-	if err != nil {
-		return errors.Trace(err)
 	}
+	reqCtx.trace(eventReadDB)
 	err = store.writeLock(lockBatch)
 	reqCtx.trace(eventEndWriteLock)
 	return errors.Trace(err)
 }
 
-func (store *MVCCStore) rollbackKey(batch *writeBatch, txn *badger.Txn, key []byte, startTS uint64) error {
+func (store *MVCCStore) rollbackKey(req *requestCtx, batch *writeBatch, key []byte, startTS uint64) error {
 	batch.buf = encodeRollbackKey(batch.buf, key, startTS)
 	rollbackKey := safeCopy(batch.buf)
 	batch.buf = store.rollbackStore.Get(rollbackKey, batch.buf)
@@ -453,8 +327,9 @@ func (store *MVCCStore) rollbackKey(batch *writeBatch, txn *badger.Txn, key []by
 		}
 		// lock.startTS > startTS, go to DB to check if the key is committed.
 	}
-	item, err := txn.Get(key)
-	if err != nil && err != badger.ErrKeyNotFound {
+	reader := req.getDBReader()
+	item, err := reader.txn.Get(key)
+	if err != nil {
 		return errors.Trace(err)
 	}
 	hasVal := item != nil
@@ -481,8 +356,7 @@ func (store *MVCCStore) rollbackKey(batch *writeBatch, txn *badger.Txn, key []by
 		return nil
 	}
 	// val.startTS > startTS, look for the key in the old version to check if the key is committed.
-	iter := newIterator(txn)
-	defer iter.Close()
+	iter := reader.getOldIter()
 	oldKey := encodeOldKey(key, val.commitTS)
 	// find greater commit version.
 	for iter.Seek(oldKey); iter.ValidForPrefix(oldKey[:len(oldKey)-8]); iter.Next() {
@@ -503,7 +377,45 @@ func (store *MVCCStore) rollbackKey(batch *writeBatch, txn *badger.Txn, key []by
 	return nil
 }
 
-func (store *MVCCStore) checkRangeLock(regCtx *regionCtx, startKey, endKey []byte, startTS uint64) error {
+func isVisibleKey(key []byte, startTS uint64) bool {
+	ts := ^(binary.BigEndian.Uint64(key[len(key)-8:]))
+	return startTS >= ts
+}
+
+func checkLock(lock mvccLock, key []byte, startTS uint64) error {
+	lockVisible := lock.startTS < startTS
+	isWriteLock := lock.op == uint16(kvrpcpb.Op_Put) || lock.op == uint16(kvrpcpb.Op_Del)
+	isPrimaryGet := lock.startTS == lockVer && bytes.Equal(lock.primary, key)
+	if lockVisible && isWriteLock && !isPrimaryGet {
+		return &ErrLocked{
+			Key:     key,
+			StartTS: lock.startTS,
+			Primary: lock.primary,
+			TTL:     uint64(lock.ttl),
+		}
+	}
+	return nil
+}
+
+func (store *MVCCStore) CheckKeysLock(startTS uint64, keys ...[]byte) error {
+	store.updateLatestTS(startTS)
+	var buf []byte
+	for _, key := range keys {
+		buf = store.lockStore.Get(key, buf)
+		if len(buf) == 0 {
+			continue
+		}
+		lock := decodeLock(buf)
+		err := checkLock(lock, key, startTS)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (store *MVCCStore) CheckRangeLock(startTS uint64, startKey, endKey []byte) error {
+	store.updateLatestTS(startTS)
 	lockIter := store.lockStore.NewIterator()
 	for lockIter.Seek(startKey); lockIter.Valid(); lockIter.Next() {
 		if exceedEndKey(lockIter.Key(), endKey) {
@@ -518,119 +430,6 @@ func (store *MVCCStore) checkRangeLock(regCtx *regionCtx, startKey, endKey []byt
 	return nil
 }
 
-func (store *MVCCStore) Scan(reqCtx *requestCtx, startKey, endKey []byte, limit int, startTS uint64, ignoreLock bool) []Pair {
-	store.updateLatestTS(startTS)
-	if !ignoreLock {
-		err := store.checkRangeLock(reqCtx.regCtx, startKey, endKey, startTS)
-		if err != nil {
-			return []Pair{{Err: err}}
-		}
-	}
-	var pairs []Pair
-	err := store.db.View(func(txn *badger.Txn) error {
-		iter := newIterator(txn)
-		defer iter.Close()
-		var oldIter *badger.Iterator
-		for iter.Seek(startKey); iter.Valid(); iter.Next() {
-			item := iter.Item()
-			if exceedEndKey(item.Key(), endKey) {
-				return nil
-			}
-			key := item.KeyCopy(nil)
-			mvVal, err := decodeValue(item)
-			if err != nil {
-				return errors.Trace(err)
-			}
-			if mvVal.commitTS > startTS {
-				if oldIter == nil {
-					oldIter = newIterator(txn)
-				}
-				mvVal, err = store.getOldValue(oldIter, encodeOldKey(item.Key(), startTS))
-				if err == badger.ErrKeyNotFound {
-					continue
-				}
-			}
-			if len(mvVal.value) == 0 {
-				continue
-			}
-			pairs = append(pairs, Pair{Key: key, Value: mvVal.value})
-			if len(pairs) >= limit {
-				return nil
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return []Pair{{Err: err}}
-	}
-	return pairs
-}
-
-func (store *MVCCStore) getOldValue(oldIter *badger.Iterator, oldKey []byte) (mvccValue, error) {
-	oldIter.Seek(oldKey)
-	if !oldIter.ValidForPrefix(oldKey[:len(oldKey)-8]) {
-		return mvccValue{}, badger.ErrKeyNotFound
-	}
-	return decodeValue(oldIter.Item())
-}
-
-func isVisibleKey(key []byte, startTS uint64) bool {
-	ts := ^(binary.BigEndian.Uint64(key[len(key)-8:]))
-	return startTS >= ts
-}
-
-// ReverseScan implements the MVCCStore interface. The search range is [startKey, endKey).
-func (store *MVCCStore) ReverseScan(reqCtx *requestCtx, startKey, endKey []byte, limit int, startTS uint64, ignoreLock bool) []Pair {
-	store.updateLatestTS(startTS)
-	if !ignoreLock {
-		err := store.checkRangeLock(reqCtx.regCtx, startKey, endKey, startTS)
-		if err != nil {
-			return []Pair{{Err: err}}
-		}
-	}
-	var pairs []Pair
-	err := store.db.View(func(txn *badger.Txn) error {
-		var opts badger.IteratorOptions
-		opts.Reverse = true
-		opts.PrefetchValues = false
-		iter := txn.NewIterator(opts)
-		defer iter.Close()
-		var oldIter *badger.Iterator
-		for iter.Seek(endKey); iter.Valid(); iter.Next() {
-			item := iter.Item()
-			if bytes.Compare(item.Key(), startKey) < 0 {
-				return nil
-			}
-			key := item.KeyCopy(nil)
-			mvVal, err := decodeValue(item)
-			if err != nil {
-				return errors.Trace(err)
-			}
-			if mvVal.commitTS > startTS {
-				if oldIter == nil {
-					oldIter = newIterator(txn)
-				}
-				mvVal, err = store.getOldValue(oldIter, encodeOldKey(item.Key(), startTS))
-				if err == badger.ErrKeyNotFound {
-					continue
-				}
-			}
-			if len(mvVal.value) == 0 {
-				continue
-			}
-			pairs = append(pairs, Pair{Key: key, Value: mvVal.value})
-			if len(pairs) >= limit {
-				return nil
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return []Pair{{Err: err}}
-	}
-	return pairs
-}
-
 func (store *MVCCStore) Cleanup(reqCtx *requestCtx, key []byte, startTS uint64) error {
 	store.updateLatestTS(startTS)
 	hashVals := keysToHashVals([][]byte{key})
@@ -638,9 +437,7 @@ func (store *MVCCStore) Cleanup(reqCtx *requestCtx, key []byte, startTS uint64) 
 	reqCtx.trace(eventAcquireLatches)
 	defer reqCtx.regCtx.releaseLatches(hashVals)
 	wb := newWriteBatch(reqCtx)
-	err := store.db.View(func(txn *badger.Txn) error {
-		return store.rollbackKey(wb, txn, key, startTS)
-	})
+	err := store.rollbackKey(reqCtx, wb, key, startTS)
 	reqCtx.trace(eventReadDB)
 	if err != nil {
 		return err
@@ -734,20 +531,11 @@ func (store *MVCCStore) DeleteRange(reqCtx *requestCtx, startKey, endKey []byte)
 	keys := make([][]byte, 0, delRangeBatchSize)
 	oldStartKey := encodeOldKey(startKey, lockVer)
 	oldEndKey := encodeOldKey(endKey, lockVer)
-
-	err := store.db.View(func(txn *badger.Txn) error {
-		iter := newIterator(txn)
-		defer iter.Close()
-		keys = store.collectRangeKeys(iter, startKey, endKey, keys)
-		keys = store.collectRangeKeys(iter, oldStartKey, oldEndKey, keys)
-		return nil
-	})
+	reader := reqCtx.getDBReader()
+	keys = store.collectRangeKeys(reader.getIter(), startKey, endKey, keys)
+	keys = store.collectRangeKeys(reader.getIter(), oldStartKey, oldEndKey, keys)
 	reqCtx.trace(eventReadDB)
-	if err != nil {
-		log.Error(err)
-		return errors.Trace(err)
-	}
-	err = store.deleteKeysInBatch(reqCtx, keys, delRangeBatchSize)
+	err := store.deleteKeysInBatch(reqCtx, keys, delRangeBatchSize)
 	if err != nil {
 		log.Error(err)
 	}
@@ -775,24 +563,13 @@ func (store *MVCCStore) deleteKeysInBatch(reqCtx *requestCtx, keys [][]byte, bat
 		batchSize := mathutil.Min(len(keys), batchSize)
 		batchKeys := keys[:batchSize]
 		keys = keys[batchSize:]
-
 		hashVals := keysToHashVals(batchKeys)
 		store.acquireLatches(regCtx, hashVals)
-		reqCtx.trace(eventAcquireLatches)
 		wb := newWriteBatch(reqCtx)
-		err := store.db.View(func(txn *badger.Txn) error {
-			for _, key := range batchKeys {
-				wb.delete(key)
-			}
-			return nil
-		})
-		reqCtx.trace(eventReadDB)
-		if err != nil {
-			log.Error(err)
-			regCtx.releaseLatches(hashVals)
-			return errors.Trace(err)
+		for _, key := range batchKeys {
+			wb.delete(key)
 		}
-		err = store.write(wb)
+		err := store.write(wb)
 		regCtx.releaseLatches(hashVals)
 		if err != nil {
 			return errors.Trace(err)
