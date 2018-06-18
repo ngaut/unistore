@@ -31,6 +31,7 @@ var (
 	numMemTables     = flag.Int("num-mem-tables", 3, "Maximum number of tables to keep in memory, before stalling.")
 	numL0Table       = flag.Int("num-level-zero-tables", 3, "Maximum number of Level 0 tables before we start compacting.")
 	syncWrites       = flag.Bool("sync-write", true, "Sync all writes to disk. Setting this to true would slow down data loading significantly.")
+	logTrace         = flag.Uint("log-trace", 300, "Prints trace log if the request duration is greater than this value in milliseconds.")
 )
 
 var (
@@ -42,6 +43,7 @@ func main() {
 	log.Info("gitHash:", gitHash)
 	log.SetLevelByString(*logLevel)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
+	tikv.LogTraceMS = *logTrace
 	go http.ListenAndServe(*httpAddr, nil)
 
 	opts := badger.DefaultOptions

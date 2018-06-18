@@ -17,6 +17,11 @@ type writeBatch struct {
 	buf     []byte
 	err     error
 	wg      sync.WaitGroup
+	reqCtx  *requestCtx
+}
+
+func newWriteBatch(reqCtx *requestCtx) *writeBatch {
+	return &writeBatch{reqCtx: reqCtx}
 }
 
 func (batch *writeBatch) setWithMeta(key, val []byte, meta byte) {
@@ -138,6 +143,8 @@ func (w *writeDBWorker) splitBatches(batches []*writeBatch) [][]*writeBatch {
 }
 
 func (w *writeDBWorker) updateBatchGroup(batchGroup []*writeBatch) {
+	begin := time.Now()
+	var in time.Time
 	err := w.store.db.Update(func(txn *badger.Txn) error {
 		for _, batch := range batchGroup {
 			for _, entry := range batch.entries {
@@ -152,9 +159,14 @@ func (w *writeDBWorker) updateBatchGroup(batchGroup []*writeBatch) {
 				}
 			}
 		}
+		in = time.Now()
 		return nil
 	})
+	end := time.Now()
 	for _, batch := range batchGroup {
+		batch.reqCtx.traceAt(eventBeginWriteDB, begin)
+		batch.reqCtx.traceAt(eventInWriteDB, in)
+		batch.reqCtx.traceAt(eventEndWriteDB, end)
 		batch.err = err
 		batch.wg.Done()
 	}
@@ -185,6 +197,10 @@ func (w *writeLockWorker) run() {
 		w.mu.Lock()
 		batches, w.mu.batches = w.mu.batches, batches
 		w.mu.Unlock()
+		begin := time.Now()
+		for _, batch := range batches {
+			batch.reqCtx.traceAt(eventBeginWriteLock, begin)
+		}
 		var delCnt, insertCnt int
 		for _, batch := range batches {
 			for _, entry := range batch.entries {
@@ -225,7 +241,7 @@ func (w *rollbackGCWorker) run() {
 			return
 		case <-ticker:
 		}
-		wb := new(writeBatch)
+		wb := newWriteBatch(new(requestCtx))
 		it := store.rollbackStore.NewIterator()
 		latestTS := store.getLatestTS()
 		for it.SeekToFirst(); it.Valid(); it.Next() {

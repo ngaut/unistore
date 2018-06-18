@@ -56,22 +56,48 @@ func (svr *Server) Stop() {
 }
 
 type requestCtx struct {
-	svr     *Server
-	isWrite bool
-	regCtx  *regionCtx
-	regErr  *errorpb.Error
-	buf     []byte
-	getter  *storeGetter
+	svr       *Server
+	regCtx    *regionCtx
+	regErr    *errorpb.Error
+	buf       []byte
+	reader    *storeReader
+	method    string
+	startTime time.Time
+	traces    []traceItem
 }
 
-func newRequestCtx(svr *Server, ctx *kvrpcpb.Context) (*requestCtx, error) {
+type traceItem struct {
+	event      string
+	sinceStart time.Duration
+}
+
+const (
+	eventReadLock       = ">RLock"
+	eventReadDB         = ">RDB"
+	eventBeginWriteLock = "<WLock"
+	eventEndWriteLock   = ">WLock"
+	eventBeginWriteDB   = "<WDB"
+	eventInWriteDB      = "=WDB"
+	eventEndWriteDB     = ">WDB"
+	eventAcquireLatches = ">Latch"
+	eventFinish         = ">Fin"
+)
+
+func (ti traceItem) String() string {
+	return ti.event + ":" + ti.sinceStart.String()
+}
+
+func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCtx, error) {
 	atomic.AddInt32(&svr.refCount, 1)
 	if atomic.LoadInt32(&svr.stopped) > 0 {
 		atomic.AddInt32(&svr.refCount, -1)
 		return nil, ErrRetryable("server is closed")
 	}
 	req := &requestCtx{
-		svr: svr,
+		svr:       svr,
+		method:    method,
+		startTime: time.Now(),
+		traces:    make([]traceItem, 0, 16),
 	}
 	req.regCtx, req.regErr = svr.regionManager.getRegionFromCtx(ctx)
 	if req.regErr != nil {
@@ -81,18 +107,39 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context) (*requestCtx, error) {
 	return req, nil
 }
 
+func (req *requestCtx) trace(event string) {
+	req.traces = append(req.traces, traceItem{
+		event:      event,
+		sinceStart: time.Since(req.startTime),
+	})
+}
+
+func (req *requestCtx) traceAt(event string, t time.Time) {
+	req.traces = append(req.traces, traceItem{
+		event:      event,
+		sinceStart: t.Sub(req.startTime),
+	})
+}
+
+var LogTraceMS uint = 300
+
 func (req *requestCtx) finish() {
 	atomic.AddInt32(&req.svr.refCount, -1)
-	if req.getter != nil {
-		req.getter.Close()
+	if req.reader != nil {
+		req.reader.Close()
 	}
 	if req.regCtx != nil {
 		req.regCtx.refCount.Done()
 	}
+	req.trace(eventFinish)
+	last := req.traces[len(req.traces)-1]
+	if last.sinceStart > time.Millisecond*time.Duration(LogTraceMS) {
+		log.Warnf("SLOW %s %#s", req.method, req.traces)
+	}
 }
 
 func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb.GetResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context)
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvGet")
 	if err != nil {
 		return &kvrpcpb.GetResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -112,7 +159,7 @@ func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb
 }
 
 func (svr *Server) KvScan(ctx context.Context, req *kvrpcpb.ScanRequest) (*kvrpcpb.ScanResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context)
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvScan")
 	if err != nil {
 		return &kvrpcpb.ScanResponse{Pairs: convertToPbPairs([]Pair{{Err: err}})}, nil
 	}
@@ -130,7 +177,7 @@ func (svr *Server) KvScan(ctx context.Context, req *kvrpcpb.ScanRequest) (*kvrpc
 }
 
 func (svr *Server) KvPrewrite(ctx context.Context, req *kvrpcpb.PrewriteRequest) (*kvrpcpb.PrewriteResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context)
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvPrewrite")
 	if err != nil {
 		return &kvrpcpb.PrewriteResponse{Errors: convertToKeyErrors([]error{err})}, nil
 	}
@@ -145,7 +192,7 @@ func (svr *Server) KvPrewrite(ctx context.Context, req *kvrpcpb.PrewriteRequest)
 }
 
 func (svr *Server) KvCommit(ctx context.Context, req *kvrpcpb.CommitRequest) (*kvrpcpb.CommitResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context)
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvCommit")
 	if err != nil {
 		return &kvrpcpb.CommitResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -165,7 +212,7 @@ func (svr *Server) KvImport(context.Context, *kvrpcpb.ImportRequest) (*kvrpcpb.I
 }
 
 func (svr *Server) KvCleanup(ctx context.Context, req *kvrpcpb.CleanupRequest) (*kvrpcpb.CleanupResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context)
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvCleanup")
 	if err != nil {
 		return &kvrpcpb.CleanupResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -185,7 +232,7 @@ func (svr *Server) KvCleanup(ctx context.Context, req *kvrpcpb.CleanupRequest) (
 }
 
 func (svr *Server) KvBatchGet(ctx context.Context, req *kvrpcpb.BatchGetRequest) (*kvrpcpb.BatchGetResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context)
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvBatchGet")
 	if err != nil {
 		return &kvrpcpb.BatchGetResponse{Pairs: convertToPbPairs([]Pair{{Err: err}})}, nil
 	}
@@ -200,7 +247,7 @@ func (svr *Server) KvBatchGet(ctx context.Context, req *kvrpcpb.BatchGetRequest)
 }
 
 func (svr *Server) KvBatchRollback(ctx context.Context, req *kvrpcpb.BatchRollbackRequest) (*kvrpcpb.BatchRollbackResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context)
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvBatchRollback")
 	if err != nil {
 		return &kvrpcpb.BatchRollbackResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -216,7 +263,7 @@ func (svr *Server) KvBatchRollback(ctx context.Context, req *kvrpcpb.BatchRollba
 }
 
 func (svr *Server) KvScanLock(ctx context.Context, req *kvrpcpb.ScanLockRequest) (*kvrpcpb.ScanLockResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context)
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvScanLock")
 	if err != nil {
 		return &kvrpcpb.ScanLockResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -233,7 +280,7 @@ func (svr *Server) KvScanLock(ctx context.Context, req *kvrpcpb.ScanLockRequest)
 }
 
 func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRequest) (*kvrpcpb.ResolveLockResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context)
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvResolveLock")
 	if err != nil {
 		return &kvrpcpb.ResolveLockResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -265,7 +312,7 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 }
 
 func (svr *Server) KvGC(ctx context.Context, req *kvrpcpb.GCRequest) (*kvrpcpb.GCResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context)
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvGC")
 	if err != nil {
 		return &kvrpcpb.GCResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -282,7 +329,7 @@ func (svr *Server) KvGC(ctx context.Context, req *kvrpcpb.GCRequest) (*kvrpcpb.G
 }
 
 func (svr *Server) KvDeleteRange(ctx context.Context, req *kvrpcpb.DeleteRangeRequest) (*kvrpcpb.DeleteRangeResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context)
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvDeleteRange")
 	if err != nil {
 		return &kvrpcpb.DeleteRangeResponse{Error: convertToKeyError(err).String()}, nil
 	}
@@ -339,7 +386,7 @@ func (svr *Server) RawDeleteRange(context.Context, *kvrpcpb.RawDeleteRangeReques
 
 // SQL push down commands.
 func (svr *Server) Coprocessor(ctx context.Context, req *coprocessor.Request) (*coprocessor.Response, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context)
+	reqCtx, err := newRequestCtx(svr, req.Context, "Coprocessor")
 	if err != nil {
 		return &coprocessor.Response{OtherError: convertToKeyError(err).String()}, nil
 	}

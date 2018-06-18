@@ -151,10 +151,10 @@ func (e *tableScanExec) fillRows() error {
 }
 
 func (e *tableScanExec) fillRowsFromPoint(ran kv.KeyRange) error {
-	if e.reqCtx.getter == nil {
-		e.reqCtx.getter = e.mvccStore.newStoreGetter(e.reqCtx)
+	if e.reqCtx.reader == nil {
+		e.reqCtx.reader = e.mvccStore.newStoreReader(e.reqCtx)
 	}
-	val, err := e.reqCtx.getter.get(ran.StartKey, e.startTS)
+	val, err := e.reqCtx.reader.get(ran.StartKey, e.startTS)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -229,7 +229,7 @@ type indexScanExec struct {
 	isolationLevel kvrpcpb.IsolationLevel
 	mvccStore      *MVCCStore
 	reqCtx         *requestCtx
-	getter         *storeGetter
+	reader         *storeReader
 	ranCursor      int
 	seekKey        []byte
 	pkStatus       int
@@ -338,10 +338,10 @@ func (e *indexScanExec) fillRows() error {
 
 // fillRowsFromPoint is only used for unique key.
 func (e *indexScanExec) fillRowsFromPoint(ran kv.KeyRange) error {
-	if e.getter == nil {
-		e.getter = e.mvccStore.newStoreGetter(e.reqCtx)
+	if e.reader == nil {
+		e.reader = e.mvccStore.newStoreReader(e.reqCtx)
 	}
-	val, err := e.getter.get(ran.StartKey, e.startTS)
+	val, err := e.reader.get(ran.StartKey, e.startTS)
 	if err != nil {
 		return errors.Trace(err)
 	}

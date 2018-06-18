@@ -89,13 +89,16 @@ func (store *MVCCStore) updateLatestTS(ts uint64) {
 
 func (store *MVCCStore) Get(reqCtx *requestCtx, key []byte, startTS uint64) ([]byte, error) {
 	store.updateLatestTS(startTS)
-	g := store.newStoreGetter(reqCtx)
-	defer g.Close()
+	g := store.newStoreReader(reqCtx)
+	defer func() {
+		reqCtx.trace(eventReadDB)
+		g.Close()
+	}()
 	return g.get(key, startTS)
 }
 
-func (store *MVCCStore) newStoreGetter(reqCtx *requestCtx) *storeGetter {
-	g := &storeGetter{ls: store.lockStore, reqCtx: reqCtx}
+func (store *MVCCStore) newStoreReader(reqCtx *requestCtx) *storeReader {
+	g := &storeReader{store: store, reqCtx: reqCtx}
 	g.txn = store.db.NewTransaction(false)
 	return g
 }
@@ -106,15 +109,15 @@ func newIterator(txn *badger.Txn) *badger.Iterator {
 	return txn.NewIterator(itOpts)
 }
 
-type storeGetter struct {
-	ls     *lockstore.LockStore
+type storeReader struct {
+	store  *MVCCStore
 	txn    *badger.Txn
 	reqCtx *requestCtx
 	iter   *badger.Iterator
 }
 
-func (g *storeGetter) get(key []byte, startTS uint64) ([]byte, error) {
-	g.reqCtx.buf = g.ls.Get(key, g.reqCtx.buf)
+func (g *storeReader) get(key []byte, startTS uint64) ([]byte, error) {
+	g.reqCtx.buf = g.store.lockStore.Get(key, g.reqCtx.buf)
 	if len(g.reqCtx.buf) > 0 {
 		lock := decodeLock(g.reqCtx.buf)
 		err := checkLock(lock, key, startTS)
@@ -152,7 +155,7 @@ func (g *storeGetter) get(key []byte, startTS uint64) ([]byte, error) {
 	return mvVal.value, nil
 }
 
-func (g *storeGetter) Close() {
+func (g *storeReader) Close() {
 	if g.iter != nil {
 		g.iter.Close()
 	}
@@ -176,8 +179,11 @@ func checkLock(lock mvccLock, key []byte, startTS uint64) error {
 
 func (store *MVCCStore) BatchGet(reqCtx *requestCtx, keys [][]byte, startTS uint64) []Pair {
 	store.updateLatestTS(startTS)
-	g := store.newStoreGetter(reqCtx)
-	defer g.Close()
+	g := store.newStoreReader(reqCtx)
+	defer func() {
+		reqCtx.trace(eventReadDB)
+		g.Close()
+	}()
 	pairs := make([]Pair, 0, len(keys))
 	for _, key := range keys {
 		val, err := g.get(key, startTS)
@@ -196,6 +202,7 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 	errs := make([]error, 0, len(mutations))
 	var anyError bool
 	store.acquireLatches(regCtx, hashVals)
+	reqCtx.trace(eventAcquireLatches)
 	defer regCtx.releaseLatches(hashVals)
 	// Must check the LockStore first.
 	for _, m := range mutations {
@@ -205,6 +212,7 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 		}
 		errs = append(errs, err)
 	}
+	reqCtx.trace(eventReadLock)
 	if anyError {
 		return errs
 	}
@@ -219,6 +227,7 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 		}
 		return nil
 	})
+	reqCtx.trace(eventReadDB)
 	if anyError {
 		return errs
 	}
@@ -226,7 +235,7 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 		return []error{err}
 	}
 
-	batch := new(writeBatch)
+	lockBatch := newWriteBatch(reqCtx)
 	for _, m := range mutations {
 		lock := mvccLock{
 			mvccLockHdr: mvccLockHdr{
@@ -238,9 +247,10 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 			primary: primary,
 			value:   m.Value,
 		}
-		batch.setWithMeta(m.Key, lock.MarshalBinary(), 0)
+		lockBatch.setWithMeta(m.Key, lock.MarshalBinary(), 0)
 	}
-	err = store.writeLock(batch)
+	err = store.writeLock(lockBatch)
+	reqCtx.trace(eventEndWriteLock)
 	if err != nil {
 		return []error{err}
 	}
@@ -295,8 +305,9 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 	regCtx := req.regCtx
 	hashVals := keysToHashVals(keys)
 	store.acquireLatches(regCtx, hashVals)
+	req.trace(eventAcquireLatches)
 	defer regCtx.releaseLatches(hashVals)
-	commitBatch := new(writeBatch)
+	dbBatch := newWriteBatch(req)
 	var buf []byte
 	var tmpDiff int
 	for _, key := range keys {
@@ -316,8 +327,9 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 		mvVal, userMeta := mvLockToMvVal(lock, commitTS)
 		commitVal := mvVal.MarshalBinary()
 		tmpDiff += len(key) + len(commitVal)
-		commitBatch.setWithMeta(key, commitVal, userMeta)
+		dbBatch.setWithMeta(key, commitVal, userMeta)
 	}
+	req.trace(eventReadLock)
 	// Move current latest to old.
 	err := store.db.View(func(txn *badger.Txn) error {
 		for _, key := range keys {
@@ -339,24 +351,26 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 			} else {
 				userMeta = 0
 			}
-			commitBatch.setWithMeta(oldKey, mvVal.MarshalBinary(), userMeta)
+			dbBatch.setWithMeta(oldKey, mvVal.MarshalBinary(), userMeta)
 		}
 		return nil
 	})
+	req.trace(eventReadDB)
 	if err != nil {
 		return errors.Trace(err)
 	}
 	atomic.AddInt64(&regCtx.diff, int64(tmpDiff))
-	err = store.write(commitBatch)
+	err = store.write(dbBatch)
 	if err != nil {
 		return errors.Trace(err)
 	}
 	// We must delete lock after commit succeed, or there will be inconsistency.
-	delLockBatch := new(writeBatch)
+	lockBatch := newWriteBatch(req)
 	for _, key := range keys {
-		delLockBatch.delete(key)
+		lockBatch.delete(key)
 	}
-	err = store.writeLock(delLockBatch)
+	err = store.writeLock(lockBatch)
+	req.trace(eventEndWriteLock)
 	return errors.Trace(err)
 }
 
@@ -391,22 +405,25 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 	store.updateLatestTS(startTS)
 	hashVals := keysToHashVals(keys)
 	store.acquireLatches(reqCtx.regCtx, hashVals)
+	reqCtx.trace(eventAcquireLatches)
 	defer reqCtx.regCtx.releaseLatches(hashVals)
-	wb := new(writeBatch)
-	err1 := store.db.View(func(txn *badger.Txn) error {
+	lockBatch := newWriteBatch(reqCtx)
+	err := store.db.View(func(txn *badger.Txn) error {
 		for _, key := range keys {
-			err := store.rollbackKey(wb, txn, key, startTS)
+			err := store.rollbackKey(lockBatch, txn, key, startTS)
 			if err != nil {
 				return err
 			}
 		}
 		return nil
 	})
-	if err1 != nil {
-		log.Error(err1)
-		return err1
+	reqCtx.trace(eventReadDB)
+	if err != nil {
+		return errors.Trace(err)
 	}
-	return store.writeLock(wb)
+	err = store.writeLock(lockBatch)
+	reqCtx.trace(eventEndWriteLock)
+	return errors.Trace(err)
 }
 
 func (store *MVCCStore) rollbackKey(batch *writeBatch, txn *badger.Txn, key []byte, startTS uint64) error {
@@ -618,15 +635,17 @@ func (store *MVCCStore) Cleanup(reqCtx *requestCtx, key []byte, startTS uint64) 
 	store.updateLatestTS(startTS)
 	hashVals := keysToHashVals([][]byte{key})
 	store.acquireLatches(reqCtx.regCtx, hashVals)
+	reqCtx.trace(eventAcquireLatches)
 	defer reqCtx.regCtx.releaseLatches(hashVals)
-	wb := new(writeBatch)
+	wb := newWriteBatch(reqCtx)
 	err := store.db.View(func(txn *badger.Txn) error {
 		return store.rollbackKey(wb, txn, key, startTS)
 	})
+	reqCtx.trace(eventReadDB)
 	if err != nil {
 		return err
 	}
-	store.write(wb)
+	err = store.write(wb)
 	return err
 }
 
@@ -647,6 +666,7 @@ func (store *MVCCStore) ScanLock(reqCtx *requestCtx, maxTS uint64) ([]*kvrpcpb.L
 			})
 		}
 	}
+	reqCtx.trace(eventReadLock)
 	return locks, nil
 }
 
@@ -666,17 +686,19 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 		lockKeys = append(lockKeys, safeCopy(it.Key()))
 		lockVals = append(lockVals, safeCopy(it.Value()))
 	}
+	reqCtx.trace(eventReadLock)
 	if len(lockKeys) == 0 {
 		return nil
 	}
 	hashVals := keysToHashVals(lockKeys)
 	store.acquireLatches(regCtx, hashVals)
+	reqCtx.trace(eventAcquireLatches)
 	defer regCtx.releaseLatches(hashVals)
-	lockBatch := new(writeBatch)
+	lockBatch := newWriteBatch(reqCtx)
 	var buf []byte
 	var commitBatch *writeBatch
 	if commitTS > 0 {
-		commitBatch = new(writeBatch)
+		commitBatch = newWriteBatch(reqCtx)
 	}
 	for i, lockKey := range lockKeys {
 		buf = store.lockStore.Get(lockKey, buf)
@@ -690,6 +712,7 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 			lockBatch.delete(lockKey)
 		}
 	}
+	reqCtx.trace(eventReadLock)
 	if len(lockBatch.entries) == 0 {
 		return nil
 	}
@@ -700,7 +723,9 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 			return errors.Trace(err)
 		}
 	}
-	return store.writeLock(lockBatch)
+	err := store.writeLock(lockBatch)
+	reqCtx.trace(eventEndWriteLock)
+	return errors.Trace(err)
 }
 
 const delRangeBatchSize = 4096
@@ -717,11 +742,12 @@ func (store *MVCCStore) DeleteRange(reqCtx *requestCtx, startKey, endKey []byte)
 		keys = store.collectRangeKeys(iter, oldStartKey, oldEndKey, keys)
 		return nil
 	})
+	reqCtx.trace(eventReadDB)
 	if err != nil {
 		log.Error(err)
 		return errors.Trace(err)
 	}
-	err = store.deleteKeysInBatch(reqCtx.regCtx, keys, delRangeBatchSize)
+	err = store.deleteKeysInBatch(reqCtx, keys, delRangeBatchSize)
 	if err != nil {
 		log.Error(err)
 	}
@@ -743,7 +769,8 @@ func (store *MVCCStore) collectRangeKeys(iter *badger.Iterator, startKey, endKey
 	return keys
 }
 
-func (store *MVCCStore) deleteKeysInBatch(regCtx *regionCtx, keys [][]byte, batchSize int) error {
+func (store *MVCCStore) deleteKeysInBatch(reqCtx *requestCtx, keys [][]byte, batchSize int) error {
+	regCtx := reqCtx.regCtx
 	for len(keys) > 0 {
 		batchSize := mathutil.Min(len(keys), batchSize)
 		batchKeys := keys[:batchSize]
@@ -751,13 +778,15 @@ func (store *MVCCStore) deleteKeysInBatch(regCtx *regionCtx, keys [][]byte, batc
 
 		hashVals := keysToHashVals(batchKeys)
 		store.acquireLatches(regCtx, hashVals)
-		wb := new(writeBatch)
+		reqCtx.trace(eventAcquireLatches)
+		wb := newWriteBatch(reqCtx)
 		err := store.db.View(func(txn *badger.Txn) error {
 			for _, key := range batchKeys {
 				wb.delete(key)
 			}
 			return nil
 		})
+		reqCtx.trace(eventReadDB)
 		if err != nil {
 			log.Error(err)
 			regCtx.releaseLatches(hashVals)
