@@ -253,7 +253,7 @@ func (w *rollbackGCWorker) run() {
 		if len(wb.entries) == 0 {
 			continue
 		}
-		store.writeLock(wb)
+		store.writeLocks(wb)
 	}
 }
 
