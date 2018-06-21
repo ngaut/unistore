@@ -199,7 +199,7 @@ func (store *MVCCStore) checkPrewriteInDB(
 	return true, nil
 }
 
-const lockVer uint64 = math.MaxUint64
+const maxTS uint64 = math.MaxUint64
 
 // Commit implements the MVCCStore interface.
 func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS uint64) error {
@@ -412,7 +412,7 @@ func isVisibleKey(key []byte, startTS uint64) bool {
 func checkLock(lock mvccLock, key []byte, startTS uint64) error {
 	lockVisible := lock.startTS < startTS
 	isWriteLock := lock.op == uint8(kvrpcpb.Op_Put) || lock.op == uint8(kvrpcpb.Op_Del)
-	isPrimaryGet := lock.startTS == lockVer && bytes.Equal(lock.primary, key)
+	isPrimaryGet := startTS == maxTS && bytes.Equal(lock.primary, key)
 	if lockVisible && isWriteLock && !isPrimaryGet {
 		return &ErrLocked{
 			Key:     key,
@@ -559,8 +559,8 @@ const delRangeBatchSize = 4096
 
 func (store *MVCCStore) DeleteRange(reqCtx *requestCtx, startKey, endKey []byte) error {
 	keys := make([][]byte, 0, delRangeBatchSize)
-	oldStartKey := encodeOldKey(startKey, lockVer)
-	oldEndKey := encodeOldKey(endKey, lockVer)
+	oldStartKey := encodeOldKey(startKey, maxTS)
+	oldEndKey := encodeOldKey(endKey, maxTS)
 	reader := reqCtx.getDBReader()
 	keys = store.collectRangeKeys(reader.getIter(), startKey, endKey, keys)
 	keys = store.collectRangeKeys(reader.getIter(), oldStartKey, oldEndKey, keys)
