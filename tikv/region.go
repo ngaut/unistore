@@ -369,6 +369,9 @@ func (rm *RegionManager) getRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *er
 	}
 	rm.mu.RLock()
 	ri := rm.regions[ctx.RegionId]
+	if ri != nil {
+		ri.refCount.Add(1)
+	}
 	rm.mu.RUnlock()
 	if ri == nil {
 		return nil, &errorpb.Error{
