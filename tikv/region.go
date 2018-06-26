@@ -383,6 +383,7 @@ func (rm *RegionManager) getRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *er
 	}
 	// Region epoch does not match.
 	if *ri.meta.GetRegionEpoch() != *ctx.GetRegionEpoch() {
+		ri.refCount.Done()
 		return nil, &errorpb.Error{
 			Message: "stale epoch",
 			StaleEpoch: &errorpb.StaleEpoch{
