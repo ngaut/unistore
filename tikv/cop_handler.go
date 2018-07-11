@@ -40,6 +40,7 @@ type dagContext struct {
 func (svr *Server) handleCopDAGRequest(reqCtx *requestCtx, req *coprocessor.Request) *coprocessor.Response {
 	startTime := time.Now()
 	resp := &coprocessor.Response{}
+	// TODO: handle warning
 	dagCtx, e, dagReq, err := svr.buildDAGExecutor(reqCtx, req)
 	if err != nil {
 		resp.OtherError = err.Error()
@@ -518,7 +519,7 @@ func (mock *mockCopStreamClient) readBlockFromExecutor() (tipb.Chunk, bool, *cop
 	return chunk, finish, &ran, mock.exec.Counts(), nil
 }
 
-func buildResp(chunks []tipb.Chunk, counts []int64, err error, warnings []error, dur time.Duration) *coprocessor.Response {
+func buildResp(chunks []tipb.Chunk, counts []int64, err error, warnings []stmtctx.SQLWarn, dur time.Duration) *coprocessor.Response {
 	resp := &coprocessor.Response{}
 	selResp := &tipb.SelectResponse{
 		Error:        toPBError(err),
@@ -528,7 +529,7 @@ func buildResp(chunks []tipb.Chunk, counts []int64, err error, warnings []error,
 	if len(warnings) > 0 {
 		selResp.Warnings = make([]*tipb.Error, 0, len(warnings))
 		for i := range warnings {
-			selResp.Warnings = append(selResp.Warnings, toPBError(warnings[i]))
+			selResp.Warnings = append(selResp.Warnings, toPBError(warnings[i].Err))
 		}
 	}
 	if err != nil {
