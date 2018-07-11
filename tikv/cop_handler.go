@@ -40,7 +40,6 @@ type dagContext struct {
 func (svr *Server) handleCopDAGRequest(reqCtx *requestCtx, req *coprocessor.Request) *coprocessor.Response {
 	startTime := time.Now()
 	resp := &coprocessor.Response{}
-	// TODO: handle warning
 	dagCtx, e, dagReq, err := svr.buildDAGExecutor(reqCtx, req)
 	if err != nil {
 		resp.OtherError = err.Error()
