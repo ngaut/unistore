@@ -179,6 +179,7 @@ func (e *tableScanExec) nextChunk(ctx context.Context, chk *chunk.Chunk) error {
 				return errors.Trace(err)
 			}
 			e.rangeCursor++
+			e.seekKey = nil
 			if chk.NumRows() == chunkMaxRows {
 				return nil
 			}
@@ -194,6 +195,7 @@ func (e *tableScanExec) nextChunk(ctx context.Context, chk *chunk.Chunk) error {
 			}
 			// If chunk is not full, the range is finished.
 			e.rangeCursor++
+			e.seekKey = nil
 		}
 	}
 	return nil
