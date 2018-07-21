@@ -261,32 +261,29 @@ func (e *tableScanExec) fillChunkFromRange(chk *chunk.Chunk, ran kv.KeyRange) (e
 		}
 	}
 	limit := chunkMaxRows - chk.NumRows()
-	var pairs []Pair
+	var lastKey []byte
+	var scanFunc ScanFunc = func(key, val []byte) error {
+		lastKey = key
+		handle, err1 := tablecodec.DecodeRowKey(key)
+		if err != nil {
+			return errors.Trace(err1)
+		}
+		err1 = e.decodeChunkRow(handle, val, chk)
+		return errors.Trace(err1)
+	}
 	reader := e.reqCtx.getDBReader()
 	if e.Desc {
-		pairs = reader.ReverseScan(ran.StartKey, e.seekKey, limit, e.startTS)
+		err = reader.ReverseScanWithFunc(ran.StartKey, e.seekKey, limit, e.startTS, scanFunc)
 	} else {
-		pairs = reader.Scan(e.seekKey, ran.EndKey, limit, e.startTS)
+		err = reader.ScanWithFunc(e.seekKey, ran.EndKey, limit, e.startTS, scanFunc)
 	}
-	if len(pairs) == 0 {
-		return
+	if err != nil {
+		return errors.Trace(err)
 	}
-	lastPair := pairs[len(pairs)-1]
 	if e.Desc {
-		e.seekKey = prefixPrev(lastPair.Key)
+		e.seekKey = prefixPrev(lastKey)
 	} else {
-		e.seekKey = []byte(kv.Key(lastPair.Key).PrefixNext())
-	}
-	for _, pair := range pairs {
-		var handle int64
-		handle, err = tablecodec.DecodeRowKey(pair.Key)
-		if err != nil {
-			return errors.Trace(err)
-		}
-		err = e.decodeChunkRow(handle, pair.Value, chk)
-		if err != nil {
-			return errors.Trace(err)
-		}
+		e.seekKey = []byte(kv.Key(lastKey).PrefixNext())
 	}
 	return
 }
