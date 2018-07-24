@@ -575,9 +575,9 @@ func (mock *mockCopStreamClient) Recv() (*coprocessor.Response, error) {
 		return &resp, nil
 	}
 	streamResponse := tipb.StreamResponse{
-		Error:      toPBError(err),
-		EncodeType: tipb.EncodeType_TypeDefault,
-		Data:       data,
+		Error: toPBError(err),
+		//EncodeType: tipb.EncodeType_TypeDefault,
+		Data: data,
 	}
 	// The counts was the output count of each executor, but now it is the scan count of each range,
 	// so we need a flag to tell them apart.
