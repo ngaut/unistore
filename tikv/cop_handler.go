@@ -216,6 +216,11 @@ func (svr *Server) buildTableScan(ctx *dagContext, executor *tipb.Executor) (*ta
 		buf:       make([][]byte, len(columns)),
 		loc:       ctx.evalCtx.sc.TimeZone,
 	}
+	if len(columns) == 1 {
+		if columns[0].PkHandle || columns[0].ColumnId == model.ExtraHandleID {
+			e.handleOnly = true
+		}
+	}
 	if ctx.dagReq.CollectRangeCounts != nil && *ctx.dagReq.CollectRangeCounts {
 		e.counts = make([]int64, len(ranges))
 	}
