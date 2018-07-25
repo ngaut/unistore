@@ -217,7 +217,7 @@ func (svr *Server) buildTableScan(ctx *dagContext, executor *tipb.Executor) (*ta
 		loc:       ctx.evalCtx.sc.TimeZone,
 	}
 	if len(columns) == 1 {
-		if columns[0].PkHandle || columns[0].ColumnId == model.ExtraHandleID {
+		if columns[0].PkHandle {
 			e.handleOnly = true
 		}
 	}
