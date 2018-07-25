@@ -268,15 +268,15 @@ func (e *tableScanExec) fillChunkFromRange(chk *chunk.Chunk, ran kv.KeyRange) (e
 	var lastKey []byte
 	scanFunc := func(key, val []byte) error {
 		lastKey = key
-		handle, ok := e.decodeRowKeyHandle(key)
-		if !ok {
-			return errors.Errorf("invalid record key %q", key)
+		handle, err := tablecodec.DecodeRowKey(key)
+		if err != nil {
+			return errors.Trace(err)
 		}
 		if e.handleOnly {
 			chk.AppendInt64(0, handle)
 			return nil
 		}
-		err := e.decodeChunkRow(handle, val, chk)
+		err = e.decodeChunkRow(handle, val, chk)
 		// errors.Trace can't be inlined by compiler, let's check error explicitly
 		if err != nil {
 			return errors.Trace(err)
@@ -301,40 +301,6 @@ func (e *tableScanExec) fillChunkFromRange(chk *chunk.Chunk, ran kv.KeyRange) (e
 		e.seekKey = []byte(kv.Key(lastKey).PrefixNext())
 	}
 	return
-}
-
-const (
-	tablePrefixLength     = 1
-	idLen                 = 8
-	recordPrefixSepLength = 2
-
-	prefixLen          = 1 + idLen /*tableID*/ + 2
-	recordRowKeyLen    = prefixLen + idLen /*handle*/
-	tablePrefix        = 't'
-	recordPrefixFirst  = '_'
-	recordPrefixSecond = 'r'
-)
-
-func (e *tableScanExec) decodeRowKeyHandle(key []byte) (int64, bool) {
-	if len(key) != recordRowKeyLen {
-		return 0, false
-	}
-	if !hasTablePrefix(key) {
-		return 0, false
-	}
-	if !hasRecordPrefixSep(key[prefixLen-2], key[prefixLen-1]) {
-		return 0, false
-	}
-	u := binary.BigEndian.Uint64(key[prefixLen:])
-	return codec.DecodeCmpUintToInt(u), true
-}
-
-func hasTablePrefix(key kv.Key) bool {
-	return key[0] == tablePrefix
-}
-
-func hasRecordPrefixSep(first, second byte) bool {
-	return first == recordPrefixFirst && second == recordPrefixSecond
 }
 
 func (e *tableScanExec) fillRows() error {
