@@ -105,7 +105,7 @@ type ScanFunc = func(key, value []byte) error
 
 func (r *DBReader) Scan(startKey, endKey []byte, limit int, startTS uint64, f ScanFunc) error {
 	if len(endKey) == 0 {
-		return nil
+		panic("invalid end key")
 	}
 
 	iter := r.getIter()
