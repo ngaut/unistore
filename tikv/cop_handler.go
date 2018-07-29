@@ -7,6 +7,7 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/juju/errors"
+	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -52,8 +53,12 @@ func (svr *Server) handleCopDAGRequest(reqCtx *requestCtx, req *coprocessor.Requ
 		chunks []tipb.Chunk
 		rowCnt int
 	)
-	if cloureExec := svr.tryBuildClosureExecutor(dagCtx, dagReq); cloureExec != nil {
-		chunks, err = cloureExec.execute()
+	closureExec, err := svr.tryBuildClosureExecutor(dagCtx, dagReq)
+	if err != nil {
+		return buildResp(chunks, nil, err, dagCtx.evalCtx.sc.GetWarnings(), time.Since(startTime))
+	}
+	if closureExec != nil {
+		chunks, err = closureExec.execute()
 		return buildResp(chunks, nil, err, dagCtx.evalCtx.sc.GetWarnings(), time.Since(startTime))
 	}
 	e, err := svr.buildDAGExecutor(dagCtx, dagReq.Executors)
@@ -109,6 +114,8 @@ func (svr *Server) handleCopDAGRequestInChunk(dagCtx *dagContext, e executor, da
 				d := chk.GetRow(i).GetDatum(int(outputOff), tps[outputOff])
 				oldRow = append(oldRow, d)
 			}
+			rowStr, err := types.DatumsToString(oldRow, true)
+			log.Info(rowStr, err)
 			var rowData []byte
 			rowData, err = codec.EncodeValue(dagCtx.evalCtx.sc, nil, oldRow...)
 			if err != nil {
@@ -142,6 +149,12 @@ func (svr *Server) buildDAG(reqCtx *requestCtx, req *coprocessor.Request) (*dagC
 		dagReq:    dagReq,
 		keyRanges: req.Ranges,
 		evalCtx:   &evalContext{sc: sc},
+	}
+	scanExec := dagReq.Executors[0]
+	if scanExec.Tp == tipb.ExecType_TypeTableScan {
+		ctx.evalCtx.setColumnInfo(scanExec.TblScan.Columns)
+	} else {
+		ctx.evalCtx.setColumnInfo(scanExec.IdxScan.Columns)
 	}
 	return ctx, dagReq, err
 }
@@ -202,8 +215,7 @@ func (svr *Server) buildDAGExecutor(ctx *dagContext, executors []*tipb.Executor)
 }
 
 func (svr *Server) buildTableScan(ctx *dagContext, executor *tipb.Executor) (*tableScanExec, error) {
-	columns := executor.TblScan.Columns
-	ctx.evalCtx.setColumnInfo(columns)
+	columns := ctx.evalCtx.columnInfos
 	ranges, err := svr.extractKVRanges(ctx.reqCtx.regCtx, ctx.keyRanges, executor.TblScan.Desc)
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -231,8 +243,7 @@ func (svr *Server) buildTableScan(ctx *dagContext, executor *tipb.Executor) (*ta
 
 func (svr *Server) buildIndexScan(ctx *dagContext, executor *tipb.Executor) (*indexScanExec, error) {
 	var err error
-	columns := executor.IdxScan.Columns
-	ctx.evalCtx.setColumnInfo(columns)
+	columns := ctx.evalCtx.columnInfos
 	length := len(columns)
 	pkStatus := pkColNotExists
 	// The PKHandle column info has been collected in ctx.

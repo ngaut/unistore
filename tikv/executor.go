@@ -227,9 +227,6 @@ func (e *tableScanExec) fillChunkFromPoint(chk *chunk.Chunk, key kv.Key) error {
 }
 
 func (e *tableScanExec) decodeChunkRow(handle int64, rowData []byte, chk *chunk.Chunk) error {
-	for i := range e.cols {
-		e.cols[i] = nil
-	}
 	err := cutRowToBuf(rowData, e.colIDs, e.cols)
 	if err != nil {
 		return errors.Trace(err)
@@ -1153,7 +1150,10 @@ func decodeHandle(data []byte) (int64, error) {
 
 // cutRowToBuf cuts encoded row into byte slices.
 // Row layout: colID1, value1, colID2, value2, .....
-func cutRowToBuf(data []byte, colIDs map[int64]int, buf [][]byte) error {
+func cutRowToBuf(data []byte, colIDs map[int64]int, colsBuf [][]byte) error {
+	for i := range colsBuf {
+		colsBuf[i] = nil
+	}
 	if data == nil {
 		return nil
 	}
@@ -1174,7 +1174,7 @@ func cutRowToBuf(data []byte, colIDs map[int64]int, buf [][]byte) error {
 		}
 		offset, ok := colIDs[int64(cid)]
 		if ok {
-			buf[offset] = b
+			colsBuf[offset] = b
 			cnt++
 		}
 	}
