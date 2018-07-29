@@ -100,7 +100,7 @@ func (e *closureExecutor) execute() ([]tipb.Chunk, error) {
 	}
 	dbReader := e.dagCtx.reqCtx.getDBReader()
 	for _, ran := range e.kvRanges {
-		if e.canUsePointGet(ran) {
+		if bytes.Equal(ran.StartKey, ran.EndKey.PrefixNext()) {
 			val, err := dbReader.Get(ran.StartKey, e.startTS)
 			if err != nil {
 				return nil, errors.Trace(err)
@@ -118,17 +118,6 @@ func (e *closureExecutor) execute() ([]tipb.Chunk, error) {
 	}
 	err = e.finishFunc()
 	return e.oldChunks, err
-}
-
-func (e *closureExecutor) canUsePointGet(ran kv.KeyRange) bool {
-	if !e.unique || len(ran.StartKey) != len(ran.EndKey) {
-		return false
-	}
-	lastIdx := len(ran.StartKey) - 1
-	if int(ran.StartKey[lastIdx]) + 1 != int(ran.EndKey[lastIdx]) {
-		return false
-	}
-	return bytes.Equal(ran.StartKey[:lastIdx], ran.EndKey[:lastIdx])
 }
 
 func (e *closureExecutor) checkRangeLock() error {
