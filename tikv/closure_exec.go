@@ -1,7 +1,7 @@
 package tikv
 
 import (
-	"bytes"
+	"fmt"
 	"math"
 
 	"github.com/pingcap/tidb/kv"
@@ -29,6 +29,8 @@ func (svr *Server) tryBuildClosureExecutor(dagCtx *dagContext, dagReq *tipb.DAGR
 		idxScan := executors[0].IdxScan
 		cols = idxScan.Columns
 		unique = idxScan.GetUnique()
+	default:
+		panic(fmt.Sprintf("unknown first executor type %s", executors[0].Tp))
 	}
 	if len(cols) != 1 {
 		return nil
@@ -100,7 +102,7 @@ func (e *closureExecutor) execute() ([]tipb.Chunk, error) {
 	}
 	dbReader := e.dagCtx.reqCtx.getDBReader()
 	for _, ran := range e.kvRanges {
-		if bytes.Equal(ran.StartKey, ran.EndKey.PrefixNext()) {
+		if ran.IsPoint() {
 			val, err := dbReader.Get(ran.StartKey, e.startTS)
 			if err != nil {
 				return nil, errors.Trace(err)
