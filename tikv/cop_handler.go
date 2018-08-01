@@ -7,13 +7,10 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/juju/errors"
-	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
-	"github.com/pingcap/tidb/ast"
-	"github.com/pingcap/tidb/executor/aggfuncs"
 	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/expression/aggregation"
 	"github.com/pingcap/tidb/kv"
@@ -23,7 +20,6 @@ import (
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/terror"
 	"github.com/pingcap/tidb/types"
-	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/codec"
 	mockpkg "github.com/pingcap/tidb/util/mock"
 	tipb "github.com/pingcap/tipb/go-tipb"
@@ -62,15 +58,6 @@ func (svr *Server) handleCopDAGRequest(reqCtx *requestCtx, req *coprocessor.Requ
 		return buildResp(chunks, nil, err, dagCtx.evalCtx.sc.GetWarnings(), time.Since(startTime))
 	}
 	e, err := svr.buildDAGExecutor(dagCtx, dagReq.Executors)
-	switch x := e.(type) {
-	case *tableScanExec, *indexScanExec, *limitExec, *selectionExec:
-		return svr.handleCopDAGRequestInChunk(dagCtx, e, dagReq, startTime)
-	case *streamAggExec:
-		// TODO: remove the check when SUM is supported.
-		if x.newAggFuncs != nil {
-			return svr.handleCopDAGRequestInChunk(dagCtx, e, dagReq, startTime)
-		}
-	}
 	ctx := context.TODO()
 	for {
 		var row [][]byte
@@ -90,43 +77,6 @@ func (svr *Server) handleCopDAGRequest(reqCtx *requestCtx, req *coprocessor.Requ
 	}
 	warnings := dagCtx.evalCtx.sc.GetWarnings()
 	return buildResp(chunks, e.Counts(), err, warnings, time.Since(startTime))
-}
-
-func (svr *Server) handleCopDAGRequestInChunk(dagCtx *dagContext, e executor, dagReq *tipb.DAGRequest, startTime time.Time) *coprocessor.Response {
-	ctx := context.TODO()
-	var oldChunks []tipb.Chunk
-	var rowCnt int
-	var err error
-	tps := e.fieldTypes()
-	chk := chunk.NewChunkWithCapacity(tps, 8)
-	for {
-		err = e.nextChunk(ctx, chk)
-		if err != nil {
-			break
-		}
-		if chk.NumRows() == 0 {
-			break
-		}
-		var oldRow []types.Datum
-		for i := 0; i < chk.NumRows(); i++ {
-			oldRow = oldRow[:0]
-			for _, outputOff := range dagReq.OutputOffsets {
-				d := chk.GetRow(i).GetDatum(int(outputOff), tps[outputOff])
-				oldRow = append(oldRow, d)
-			}
-			rowStr, err := types.DatumsToString(oldRow, true)
-			log.Info(rowStr, err)
-			var rowData []byte
-			rowData, err = codec.EncodeValue(dagCtx.evalCtx.sc, nil, oldRow...)
-			if err != nil {
-				break
-			}
-			oldChunks = appendRow(oldChunks, rowData, rowCnt)
-			rowCnt++
-		}
-	}
-	warnings := dagCtx.evalCtx.sc.GetWarnings()
-	return buildResp(oldChunks, e.Counts(), err, warnings, time.Since(startTime))
 }
 
 func (svr *Server) buildDAG(reqCtx *requestCtx, req *coprocessor.Request) (*dagContext, *tipb.DAGRequest, error) {
@@ -215,7 +165,6 @@ func (svr *Server) buildDAGExecutor(ctx *dagContext, executors []*tipb.Executor)
 }
 
 func (svr *Server) buildTableScan(ctx *dagContext, executor *tipb.Executor) (*tableScanExec, error) {
-	columns := ctx.evalCtx.columnInfos
 	ranges, err := svr.extractKVRanges(ctx.reqCtx.regCtx, ctx.keyRanges, executor.TblScan.Desc)
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -228,12 +177,6 @@ func (svr *Server) buildTableScan(ctx *dagContext, executor *tipb.Executor) (*ta
 		startTS:   ctx.dagReq.GetStartTs(),
 		mvccStore: svr.mvccStore,
 		reqCtx:    ctx.reqCtx,
-		tps:       ctx.evalCtx.fieldTps,
-		cols:      make([][]byte, len(columns)),
-		loc:       ctx.evalCtx.sc.TimeZone,
-	}
-	if len(columns) == 1 && columns[0].PkHandle {
-		e.handleOnly = true
 	}
 	if ctx.dagReq.CollectRangeCounts != nil && *ctx.dagReq.CollectRangeCounts {
 		e.counts = make([]int64, len(ranges))
@@ -342,10 +285,6 @@ func (svr *Server) buildHashAgg(ctx *dagContext, executor *tipb.Executor) (*hash
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	tps := make([]*types.FieldType, len(aggs))
-	for i := 0; i < len(aggs); i++ {
-		tps[i] = fieldTypeFromPBFieldType(pbAgg.AggFunc[i].FieldType)
-	}
 
 	return &hashAggExec{
 		evalCtx:           ctx.evalCtx,
@@ -355,7 +294,6 @@ func (svr *Server) buildHashAgg(ctx *dagContext, executor *tipb.Executor) (*hash
 		groupKeys:         make([][]byte, 0),
 		relatedColOffsets: relatedColOffsets,
 		row:               make([]types.Datum, len(ctx.evalCtx.columnInfos)),
-		tps:               tps,
 	}, nil
 }
 
@@ -369,13 +307,6 @@ func (svr *Server) buildStreamAgg(ctx *dagContext, executor *tipb.Executor) (*st
 	for i, agg := range aggs {
 		aggCtxs[i] = agg.CreateContext(ctx.evalCtx.sc)
 	}
-	tps := make([]*types.FieldType, 0, len(groupBys)+len(aggs))
-	for i := 0; i < len(groupBys); i++ {
-		tps = append(tps, groupBys[i].GetType())
-	}
-	for i := 0; i < len(aggs); i++ {
-		tps = append(tps, fieldTypeFromPBFieldType(pbAgg.AggFunc[i].FieldType))
-	}
 	seCtx := mockpkg.NewContext()
 	seCtx.GetSessionVars().StmtCtx = ctx.evalCtx.sc
 	e := &streamAggExec{
@@ -386,43 +317,8 @@ func (svr *Server) buildStreamAgg(ctx *dagContext, executor *tipb.Executor) (*st
 		currGroupByValues: make([][]byte, 0),
 		relatedColOffsets: relatedColOffsets,
 		row:               make([]types.Datum, len(ctx.evalCtx.columnInfos)),
-		seCtx:             seCtx,
-		tps:               tps,
-	}
-	groupKeyLen := len(e.groupByExprs)
-	// Try to use the new agg frame work.
-	aggFuncs := make([]aggfuncs.AggFunc, len(pbAgg.AggFunc))
-	for i, expr := range pbAgg.AggFunc {
-		args := make([]expression.Expression, 0, len(expr.Children))
-		for _, child := range expr.Children {
-			arg, err := expression.PBToExpr(child, ctx.evalCtx.fieldTps, ctx.evalCtx.sc)
-			if err != nil {
-				return nil, errors.Trace(err)
-			}
-			args = append(args, arg)
-		}
-		name, err := aggTypeToName(expr.Tp)
-		if err != nil {
-			// If not supported, execute in the old way.
-			return e, nil
-		}
-		desc := aggregation.NewAggFuncDesc(seCtx, name, args, false)
-		aggFuncs[i] = aggfuncs.Build(seCtx, desc, groupKeyLen+i)
-	}
-	e.newAggFuncs = aggFuncs
-	e.partialResults = make([]aggfuncs.PartialResult, 0, len(e.newAggFuncs))
-	for _, newAggFunc := range e.newAggFuncs {
-		e.partialResults = append(e.partialResults, newAggFunc.AllocPartialResult())
 	}
 	return e, nil
-}
-
-func aggTypeToName(tp tipb.ExprType) (string, error) {
-	switch tp {
-	case tipb.ExprType_Count:
-		return ast.AggFuncCount, nil
-	}
-	return "", errors.New("unknown aggregation type")
 }
 
 func (svr *Server) buildTopN(ctx *dagContext, executor *tipb.Executor) (*topNExec, error) {
