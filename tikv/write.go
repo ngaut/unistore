@@ -149,6 +149,8 @@ func (w *writeDBWorker) run() {
 				w.updateBatchGroup(batchGroup)
 			}
 		}
+		// Now the transaction is non blocking, we need to sleep a while waiting for batches.
+		time.Sleep(time.Microsecond * 300)
 	}
 }
 
@@ -163,35 +165,36 @@ func (w *writeDBWorker) splitBatches(batches []*writeDBBatch) [][]*writeDBBatch 
 		}
 	}
 
-	batchGroups := make([][]*writeDBBatch, len(splitOffsets))
-	for i := 1; i < len(splitOffsets); i++ {
-		batchGroups[i] = batches[splitOffsets[i-1]:splitOffsets[i]]
+	batchGroups := make([][]*writeDBBatch, len(splitOffsets)-1)
+	for i := 0; i+1 < len(splitOffsets); i++ {
+		batchGroups[i] = batches[splitOffsets[i]:splitOffsets[i+1]]
 	}
 	return batchGroups
 }
 
 func (w *writeDBWorker) updateBatchGroup(batchGroup []*writeDBBatch) {
-	begin := time.Now()
-	var in time.Time
-	err := w.store.db.Update(func(txn *badger.Txn) error {
-		for _, batch := range batchGroup {
-			for _, entry := range batch.entries {
-				err := txn.SetEntry(entry)
-				if err != nil {
-					return errors.Trace(err)
-				}
+	batchGroupCopy := make([]*writeDBBatch, len(batchGroup))
+	copy(batchGroupCopy, batchGroup)
+	callback := func(e error) {
+		for _, batch := range batchGroupCopy {
+			batch.err = e
+			batch.wg.Done()
+		}
+	}
+	txn := w.store.db.NewTransaction(true)
+	defer txn.Discard()
+	for _, batch := range batchGroupCopy {
+		for _, entry := range batch.entries {
+			err := txn.SetEntry(entry)
+			if err != nil {
+				callback(err)
+				return
 			}
 		}
-		in = time.Now()
-		return nil
-	})
-	end := time.Now()
-	for _, batch := range batchGroup {
-		batch.reqCtx.traceAt(eventBeginWriteDB, begin)
-		batch.reqCtx.traceAt(eventInWriteDB, in)
-		batch.reqCtx.traceAt(eventEndWriteDB, end)
-		batch.err = err
-		batch.wg.Done()
+	}
+	err := txn.Commit(callback)
+	if err != nil {
+		callback(err)
 	}
 }
 
