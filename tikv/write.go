@@ -132,14 +132,13 @@ type writeDBWorker struct {
 
 func (w *writeDBWorker) run() {
 	defer w.store.wg.Done()
-	var batches []*writeDBBatch
 	for {
 		select {
 		case <-w.store.closeCh:
 			return
 		case <-w.wakeUp:
 		}
-		batches = batches[:0]
+		batches := make([]*writeDBBatch, 0, 128)
 		w.mu.Lock()
 		batches, w.mu.batches = w.mu.batches, batches
 		w.mu.Unlock()
@@ -173,29 +172,23 @@ func (w *writeDBWorker) splitBatches(batches []*writeDBBatch) [][]*writeDBBatch 
 }
 
 func (w *writeDBWorker) updateBatchGroup(batchGroup []*writeDBBatch) {
-	batchGroupCopy := make([]*writeDBBatch, len(batchGroup))
-	copy(batchGroupCopy, batchGroup)
-	callback := func(e error) {
-		for _, batch := range batchGroupCopy {
+	go func() {
+		e := w.store.db.Update(func(txn *badger.Txn) error {
+			for _, batch := range batchGroup {
+				for _, entry := range batch.entries {
+					err := txn.SetEntry(entry)
+					if err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		})
+		for _, batch := range batchGroup {
 			batch.err = e
 			batch.wg.Done()
 		}
-	}
-	txn := w.store.db.NewTransaction(true)
-	defer txn.Discard()
-	for _, batch := range batchGroupCopy {
-		for _, entry := range batch.entries {
-			err := txn.SetEntry(entry)
-			if err != nil {
-				callback(err)
-				return
-			}
-		}
-	}
-	err := txn.Commit(callback)
-	if err != nil {
-		callback(err)
-	}
+	}()
 }
 
 type writeLockWorker struct {
