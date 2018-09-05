@@ -149,7 +149,7 @@ func (w *writeDBWorker) run() {
 			}
 		}
 		// Now the transaction is non blocking, we need to sleep a while waiting for batches.
-		time.Sleep(time.Microsecond * 300)
+		time.Sleep(time.Microsecond * 500)
 	}
 }
 
