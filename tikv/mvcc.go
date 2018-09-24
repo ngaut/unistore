@@ -20,8 +20,8 @@ import (
 // MVCCStore is a wrapper of badger.DB to provide MVCC functions.
 type MVCCStore struct {
 	dir             string
-	db              *badger.DB
-	writeDBWorker   *writeDBWorker
+	dbs             []*badger.DB
+	writeDBWorkers  []*writeDBWorker
 	lockStore       *lockstore.MemStore
 	rollbackStore   *lockstore.MemStore
 	writeLockWorker *writeLockWorker
@@ -33,17 +33,13 @@ type MVCCStore struct {
 }
 
 // NewMVCCStore creates a new MVCCStore
-func NewMVCCStore(db *badger.DB, dataDir string) *MVCCStore {
+func NewMVCCStore(dbs []*badger.DB, dataDir string) *MVCCStore {
 	ls := lockstore.NewMemStore(8 << 20)
 	rollbackStore := lockstore.NewMemStore(256 << 10)
 	closeCh := make(chan struct{})
 	store := &MVCCStore{
-		db:  db,
-		dir: dataDir,
-		writeDBWorker: &writeDBWorker{
-			wakeUp:  make(chan struct{}, 1),
-			closeCh: closeCh,
-		},
+		dbs:           dbs,
+		dir:           dataDir,
 		lockStore:     ls,
 		rollbackStore: rollbackStore,
 		writeLockWorker: &writeLockWorker{
@@ -52,7 +48,16 @@ func NewMVCCStore(db *badger.DB, dataDir string) *MVCCStore {
 		},
 		closeCh: closeCh,
 	}
-	store.writeDBWorker.store = store
+	workers := make([]*writeDBWorker, 4)
+	for i := 0; i < 4; i++ {
+		workers[i] = &writeDBWorker{
+			wakeUp:  make(chan struct{}, 1),
+			closeCh: closeCh,
+			store:   store,
+			idx:     i,
+		}
+	}
+	store.writeDBWorkers = workers
 	store.writeLockWorker.store = store
 	err := store.loadLocks()
 	if err != nil {
@@ -60,9 +65,11 @@ func NewMVCCStore(db *badger.DB, dataDir string) *MVCCStore {
 	}
 
 	// mark worker count
-	store.wg.Add(3)
+	store.wg.Add(len(store.writeDBWorkers) + 2)
 	// run all the workers
-	go store.writeDBWorker.run()
+	for _, worker := range store.writeDBWorkers {
+		go worker.run()
+	}
 	go store.writeLockWorker.run()
 	go func() {
 		rbGCWorker := rollbackGCWorker{store: store}
@@ -254,7 +261,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 	}
 	req.trace(eventReadLock)
 	atomic.AddInt64(&regCtx.diff, int64(tmpDiff))
-	err := store.writeDB(dbBatch)
+	err := store.writeDB(dbBatch, req.dbIdx)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -570,7 +577,7 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 	}
 	if dbBatch != nil {
 		atomic.AddInt64(&regCtx.diff, dbBatch.size())
-		err := store.writeDB(dbBatch)
+		err := store.writeDB(dbBatch, reqCtx.dbIdx)
 		if err != nil {
 			return errors.Trace(err)
 		}
@@ -628,7 +635,7 @@ func (store *MVCCStore) deleteKeysInBatch(reqCtx *requestCtx, keys [][]byte, bat
 		}
 
 		regCtx.acquireLatches(hashVals)
-		err := store.writeDB(dbBatch)
+		err := store.writeDB(dbBatch, reqCtx.dbIdx)
 		regCtx.releaseLatches(hashVals)
 		if err != nil {
 			return errors.Trace(err)

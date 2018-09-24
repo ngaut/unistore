@@ -65,6 +65,7 @@ type requestCtx struct {
 	method    string
 	startTime time.Time
 	traces    []traceItem
+	dbIdx     int
 }
 
 type traceItem struct {
@@ -103,6 +104,15 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCt
 	req.regCtx, req.regErr = svr.regionManager.getRegionFromCtx(ctx)
 	if req.regErr != nil {
 		return req, nil
+	}
+	startKey := req.regCtx.startKey
+	if len(startKey) > 2 && startKey[0] == 't' {
+		shardByte := startKey[2]
+		if startKey[1] == 'i' {
+			req.dbIdx = int(shardByte) % 2
+		} else {
+			req.dbIdx = 2 + int(shardByte) % 2
+		}
 	}
 	return req, nil
 }

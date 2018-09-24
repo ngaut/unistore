@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -48,35 +49,17 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 	tikv.LogTraceMS = *logTrace
 	go http.ListenAndServe(*httpAddr, nil)
-
-	opts := badger.DefaultOptions
-	opts.ValueThreshold = *valThreshold
-	opts.Dir = *dbPath
-	if *vlogPath != "" {
-		opts.ValueDir = *vlogPath
-	} else {
-		opts.ValueDir = opts.Dir
-	}
-	if *tableLoadingMode == "memory-map" {
-		opts.TableLoadingMode = options.MemoryMap
-	}
-	opts.ValueLogLoadingMode = options.FileIO
-	opts.MaxTableSize = *maxTableSize
-	opts.NumMemtables = *numMemTables
-	opts.NumLevelZeroTables = *numL0Table
-	opts.NumLevelZeroTablesStall = opts.NumLevelZeroTables + 5
-	opts.SyncWrites = *syncWrites
-	db, err := badger.Open(opts)
-	if err != nil {
-		log.Fatal(err)
+	dbs := make([]*badger.DB, 4)
+	for i := 0; i < 4; i++ {
+		dbs[i] = createDB(i)
 	}
 	regionOpts := tikv.RegionOptions{
 		StoreAddr:  *storeAddr,
 		PDAddr:     *pdAddr,
 		RegionSize: *regionSize,
 	}
-	rm := tikv.NewRegionManager(db, regionOpts)
-	store := tikv.NewMVCCStore(db, opts.Dir)
+	rm := tikv.NewRegionManager(dbs[0], regionOpts)
+	store := tikv.NewMVCCStore(dbs, *dbPath)
 	tikvServer := tikv.NewServer(rm, store)
 
 	grpcServer := grpc.NewServer()
@@ -104,12 +87,40 @@ func main() {
 	} else {
 		log.Info("RegionManager closed.")
 	}
-	err = db.Close()
-	if err != nil {
-		log.Error(err)
-	} else {
-		log.Info("DB closed.")
+	for i, db := range dbs {
+		err = db.Close()
+		if err != nil {
+			log.Error(err)
+		} else {
+			log.Infof("DB%d closed.", i)
+		}
 	}
+}
+
+func createDB(idx int) *badger.DB {
+	subPath := fmt.Sprintf("/%d", idx)
+	opts := badger.DefaultOptions
+	opts.ValueThreshold = *valThreshold
+	opts.Dir = *dbPath + subPath
+	if *vlogPath != "" {
+		opts.ValueDir = *vlogPath + subPath
+	} else {
+		opts.ValueDir = opts.Dir
+	}
+	if *tableLoadingMode == "memory-map" {
+		opts.TableLoadingMode = options.MemoryMap
+	}
+	opts.ValueLogLoadingMode = options.FileIO
+	opts.MaxTableSize = *maxTableSize
+	opts.NumMemtables = *numMemTables
+	opts.NumLevelZeroTables = *numL0Table
+	opts.NumLevelZeroTablesStall = opts.NumLevelZeroTables + 5
+	opts.SyncWrites = *syncWrites
+	db, err := badger.Open(opts)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return db
 }
 
 func handleSignal(grpcServer *grpc.Server) {

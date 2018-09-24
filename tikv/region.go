@@ -282,48 +282,37 @@ func (rm *RegionManager) initStore(storeAddr string) error {
 	return nil
 }
 
-// initSplit splits the cluster into 5 regions, [nil, 'm'), ['m', 'n'), ['n', 't'), ('t', 'u'), ['u', nil)
+// initSplit splits the cluster into multiple regions.
 func (rm *RegionManager) initialSplit(root *metapb.Region) {
-	// allocate retion id
-	ids, err := rm.allocIDs(8)
+	root.EndKey = codec.EncodeBytes(nil, []byte{'m'})
+	root.RegionEpoch.Version = 2
+	rm.regions[root.Id] = newRegionCtx(root, nil)
+	preSplitStartKeys := [][]byte{
+		{'m'},
+		{'n'},
+		{'t', 'i', 0},
+		{'t', 'i', 128},
+		{'t', 'r', 0},
+		{'t', 'r', 128},
+		{'u'},
+	}
+	ids, err := rm.allocIDs(len(preSplitStartKeys) * 2)
 	if err != nil {
 		log.Fatal(err)
 	}
-	root.EndKey = codec.EncodeBytes(nil, []byte{'m'})
-	root.RegionEpoch.Version = 2
-	newRegions := []*metapb.Region{
-		root,
-		{
-			Id:          ids[0],
+	for i, startKey := range preSplitStartKeys {
+		var endKey []byte
+		if i < len(preSplitStartKeys)-1 {
+			endKey = codec.EncodeBytes(nil, preSplitStartKeys[i+1])
+		}
+		newRegion := &metapb.Region{
+			Id:          ids[i*2],
 			RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
-			Peers:       []*metapb.Peer{&metapb.Peer{Id: ids[1], StoreId: rm.storeMeta.Id}},
-			StartKey:    codec.EncodeBytes(nil, []byte{'m'}),
-			EndKey:      codec.EncodeBytes(nil, []byte{'n'}),
-		},
-		{
-			Id:          ids[2],
-			RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
-			Peers:       []*metapb.Peer{&metapb.Peer{Id: ids[3], StoreId: rm.storeMeta.Id}},
-			StartKey:    codec.EncodeBytes(nil, []byte{'n'}),
-			EndKey:      codec.EncodeBytes(nil, []byte{'t'}),
-		},
-		{
-			Id:          ids[4],
-			RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
-			Peers:       []*metapb.Peer{&metapb.Peer{Id: ids[5], StoreId: rm.storeMeta.Id}},
-			StartKey:    codec.EncodeBytes(nil, []byte{'t'}),
-			EndKey:      codec.EncodeBytes(nil, []byte{'u'}),
-		},
-		{
-			Id:          ids[6],
-			RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
-			Peers:       []*metapb.Peer{&metapb.Peer{Id: ids[7], StoreId: rm.storeMeta.Id}},
-			StartKey:    codec.EncodeBytes(nil, []byte{'u'}),
-			EndKey:      []byte{},
-		},
-	}
-	for _, region := range newRegions {
-		rm.regions[region.Id] = newRegionCtx(region, nil)
+			Peers:       []*metapb.Peer{&metapb.Peer{Id: ids[i*2+1], StoreId: rm.storeMeta.Id}},
+			StartKey:    codec.EncodeBytes(nil, startKey),
+			EndKey:      endKey,
+		}
+		rm.regions[newRegion.Id] = newRegionCtx(newRegion, nil)
 	}
 }
 
