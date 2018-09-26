@@ -49,8 +49,8 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 	tikv.LogTraceMS = *logTrace
 	go http.ListenAndServe(*httpAddr, nil)
-	dbs := make([]*badger.DB, 4)
-	for i := 0; i < 4; i++ {
+	dbs := make([]*badger.DB, 8)
+	for i := 0; i < 8; i++ {
 		dbs[i] = createDB(i)
 	}
 	regionOpts := tikv.RegionOptions{

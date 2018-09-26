@@ -291,9 +291,13 @@ func (rm *RegionManager) initialSplit(root *metapb.Region) {
 		{'m'},
 		{'n'},
 		{'t', 'i', 0},
+		{'t', 'i', 64},
 		{'t', 'i', 128},
+		{'t', 'i', 192},
 		{'t', 'r', 0},
+		{'t', 'r', 64},
 		{'t', 'r', 128},
+		{'t', 'r', 192},
 		{'u'},
 	}
 	ids, err := rm.allocIDs(len(preSplitStartKeys) * 2)
