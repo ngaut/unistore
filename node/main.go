@@ -58,7 +58,7 @@ func main() {
 		PDAddr:     *pdAddr,
 		RegionSize: *regionSize,
 	}
-	rm := tikv.NewRegionManager(dbs[0], regionOpts)
+	rm := tikv.NewRegionManager(dbs, regionOpts)
 	store := tikv.NewMVCCStore(dbs, *dbPath)
 	tikvServer := tikv.NewServer(rm, store)
 

@@ -48,8 +48,8 @@ func NewMVCCStore(dbs []*badger.DB, dataDir string) *MVCCStore {
 		},
 		closeCh: closeCh,
 	}
-	workers := make([]*writeDBWorker, 4)
-	for i := 0; i < 4; i++ {
+	workers := make([]*writeDBWorker, 8)
+	for i := 0; i < 8; i++ {
 		workers[i] = &writeDBWorker{
 			wakeUp:  make(chan struct{}, 1),
 			closeCh: closeCh,

@@ -105,15 +105,7 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCt
 	if req.regErr != nil {
 		return req, nil
 	}
-	startKey := req.regCtx.startKey
-	if len(startKey) > 2 && startKey[0] == 't' {
-		shardByte := startKey[2]
-		if startKey[1] == 'i' {
-			req.dbIdx = int(shardByte) % 2
-		} else {
-			req.dbIdx = 2 + int(shardByte) % 2
-		}
-	}
+	req.dbIdx = req.regCtx.getDBIdx()
 	return req, nil
 }
 
