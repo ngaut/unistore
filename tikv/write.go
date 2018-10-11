@@ -144,52 +144,27 @@ func (w *writeDBWorker) run() {
 		batches, w.mu.batches = w.mu.batches, batches
 		w.mu.Unlock()
 		if len(batches) > 0 {
-			batchesGroups := w.splitBatches(batches)
-			for _, batchGroup := range batchesGroups {
-				w.updateBatchGroup(batchGroup)
-			}
-		}
-		// Now the transaction is non blocking, we need to sleep a while waiting for batches.
-		time.Sleep(time.Microsecond * 500)
-	}
-}
-
-func (w *writeDBWorker) splitBatches(batches []*writeDBBatch) [][]*writeDBBatch {
-	splitOffsets := []int{0}
-	var batchGroupEntries int
-	for i, batch := range batches {
-		batchGroupEntries += len(batch.entries)
-		if batchGroupEntries > 4<<10 || i == len(batches)-1 {
-			batchGroupEntries = 0
-			splitOffsets = append(splitOffsets, i+1)
+			w.updateBatchGroup(batches)
 		}
 	}
-
-	batchGroups := make([][]*writeDBBatch, len(splitOffsets)-1)
-	for i := 0; i+1 < len(splitOffsets); i++ {
-		batchGroups[i] = batches[splitOffsets[i]:splitOffsets[i+1]]
-	}
-	return batchGroups
 }
 
 func (w *writeDBWorker) updateBatchGroup(batchGroup []*writeDBBatch) {
-	go func() {
-		e := w.store.dbs[w.idx].Update(func(txn *badger.Txn) error {
-			for _, batch := range batchGroup {
-				for _, entry := range batch.entries {
-					err := txn.SetEntry(entry)
-					if err != nil {
-						return err
-					}
+	e := w.store.dbs[w.idx].Update(func(txn *badger.Txn) error {
+		for _, batch := range batchGroup {
+			for _, entry := range batch.entries {
+				err := txn.SetEntry(entry)
+				if err != nil {
+					return err
 				}
 			}
-			return nil
-		})
-		for _, batch := range batchGroup {
-			batch.err = e
-			batch.wg.Done()
 		}
-	}()
+		return nil
+	})
+	for _, batch := range batchGroup {
+		batch.err = e
+		batch.wg.Done()
+	}
 }
 
 type writeLockWorker struct {
@@ -217,10 +192,6 @@ func (w *writeLockWorker) run() {
 		w.mu.Lock()
 		batches, w.mu.batches = w.mu.batches, batches
 		w.mu.Unlock()
-		begin := time.Now()
-		for _, batch := range batches {
-			batch.reqCtx.traceAt(eventBeginWriteLock, begin)
-		}
 		var delCnt, insertCnt int
 		for _, batch := range batches {
 			for _, entry := range batch.entries {

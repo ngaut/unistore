@@ -10,9 +10,9 @@ import (
 	"github.com/coocood/badger"
 	"github.com/cznic/mathutil"
 	"github.com/juju/errors"
-	"github.com/ngaut/faketikv/lockstore"
-	"github.com/ngaut/faketikv/rowcodec"
 	"github.com/ngaut/log"
+	"github.com/ngaut/unistore/lockstore"
+	"github.com/ngaut/unistore/rowcodec"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/tidb/util/codec"
 )
@@ -108,7 +108,6 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 	anyError := false
 
 	regCtx.acquireLatches(hashVals)
-	reqCtx.trace(eventAcquireLatches)
 	defer regCtx.releaseLatches(hashVals)
 
 	// Must check the LockStore first.
@@ -122,7 +121,6 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 		}
 		errs = append(errs, err)
 	}
-	reqCtx.trace(eventReadLock)
 	if anyError {
 		return errs
 	}
@@ -164,12 +162,10 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 			lockBatch.set(m.Key, lock.MarshalBinary())
 		}
 	}
-	reqCtx.trace(eventReadDB)
 	if anyError {
 		return errs
 	}
 	err := store.writeLocks(lockBatch)
-	reqCtx.trace(eventEndWriteLock)
 	if err != nil {
 		return []error{err}
 	}
@@ -230,7 +226,6 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 	dbBatch := newWriteDBBatch(req)
 
 	regCtx.acquireLatches(hashVals)
-	req.trace(eventAcquireLatches)
 	defer regCtx.releaseLatches(hashVals)
 
 	var buf []byte
@@ -259,7 +254,6 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 			dbBatch.set(oldKey, lock.oldVal.MarshalBinary())
 		}
 	}
-	req.trace(eventReadLock)
 	atomic.AddInt64(&regCtx.diff, int64(tmpDiff))
 	err := store.writeDB(dbBatch, req.dbIdx)
 	if err != nil {
@@ -271,7 +265,6 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 		lockBatch.delete(key)
 	}
 	err = store.writeLocks(lockBatch)
-	req.trace(eventEndWriteLock)
 	return errors.Trace(err)
 }
 
@@ -316,14 +309,12 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 	lockBatch := newWriteLockBatch(reqCtx)
 
 	regCtx.acquireLatches(hashVals)
-	reqCtx.trace(eventAcquireLatches)
 	defer regCtx.releaseLatches(hashVals)
 
 	statuses := make([]int, len(keys))
 	for i, key := range keys {
 		statuses[i] = store.rollbackKeyReadLock(lockBatch, key, startTS)
 	}
-	reqCtx.trace(eventReadLock)
 	for i, key := range keys {
 		if statuses[i] == rollbackStatusDone {
 			continue
@@ -333,9 +324,7 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 			return err
 		}
 	}
-	reqCtx.trace(eventReadDB)
 	err := store.writeLocks(lockBatch)
-	reqCtx.trace(eventEndWriteLock)
 	return errors.Trace(err)
 }
 
@@ -485,13 +474,11 @@ func (store *MVCCStore) Cleanup(reqCtx *requestCtx, key []byte, startTS uint64) 
 	lockBatch := newWriteLockBatch(reqCtx)
 
 	regCtx.acquireLatches(hashVals)
-	reqCtx.trace(eventAcquireLatches)
 	defer regCtx.releaseLatches(hashVals)
 
 	status := store.rollbackKeyReadLock(lockBatch, key, startTS)
 	if status != rollbackStatusDone {
 		err := store.rollbackKeyReadDB(reqCtx, lockBatch, key, startTS, status == rollbackStatusNewLock)
-		reqCtx.trace(eventReadDB)
 		if err != nil {
 			return err
 		}
@@ -520,7 +507,6 @@ func (store *MVCCStore) ScanLock(reqCtx *requestCtx, maxSystemTS uint64) ([]*kvr
 			})
 		}
 	}
-	reqCtx.trace(eventReadLock)
 	return locks, nil
 }
 
@@ -543,7 +529,6 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 		lockKeys = append(lockKeys, safeCopy(it.Key()))
 		lockVals = append(lockVals, safeCopy(it.Value()))
 	}
-	reqCtx.trace(eventReadLock)
 	if len(lockKeys) == 0 {
 		return nil
 	}
@@ -555,7 +540,6 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 	}
 
 	regCtx.acquireLatches(hashVals)
-	reqCtx.trace(eventAcquireLatches)
 	defer regCtx.releaseLatches(hashVals)
 
 	var buf []byte
@@ -571,7 +555,6 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 			lockBatch.delete(lockKey)
 		}
 	}
-	reqCtx.trace(eventReadLock)
 	if len(lockBatch.entries) == 0 {
 		return nil
 	}
@@ -583,7 +566,6 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 		}
 	}
 	err := store.writeLocks(lockBatch)
-	reqCtx.trace(eventEndWriteLock)
 	return errors.Trace(err)
 }
 
@@ -596,7 +578,6 @@ func (store *MVCCStore) DeleteRange(reqCtx *requestCtx, startKey, endKey []byte)
 	reader := reqCtx.getDBReader()
 	keys = store.collectRangeKeys(reader.getIter(), startKey, endKey, keys)
 	keys = store.collectRangeKeys(reader.getIter(), oldStartKey, oldEndKey, keys)
-	reqCtx.trace(eventReadDB)
 	err := store.deleteKeysInBatch(reqCtx, keys, delRangeBatchSize)
 	if err != nil {
 		log.Error(err)

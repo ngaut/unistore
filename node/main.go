@@ -13,8 +13,8 @@ import (
 
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/options"
-	"github.com/ngaut/faketikv/tikv"
 	"github.com/ngaut/log"
+	"github.com/ngaut/unistore/tikv"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"google.golang.org/grpc"
 )
@@ -33,7 +33,6 @@ var (
 	numMemTables     = flag.Int("num-mem-tables", 3, "Maximum number of tables to keep in memory, before stalling.")
 	numL0Table       = flag.Int("num-level-zero-tables", 3, "Maximum number of Level 0 tables before we start compacting.")
 	syncWrites       = flag.Bool("sync-write", true, "Sync all writes to disk. Setting this to true would slow down data loading significantly.")
-	logTrace         = flag.Uint("log-trace", 300, "Prints trace log if the request duration is greater than this value in milliseconds.")
 	maxProcs         = flag.Int("max-procs", 0, "Max CPU cores to use, set 0 to use all CPU cores in the machine.")
 )
 
@@ -47,7 +46,6 @@ func main() {
 	log.Info("gitHash:", gitHash)
 	log.SetLevelByString(*logLevel)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
-	tikv.LogTraceMS = *logTrace
 	go http.ListenAndServe(*httpAddr, nil)
 	dbs := make([]*badger.DB, 8)
 	for i := 0; i < 8; i++ {
