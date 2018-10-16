@@ -64,12 +64,12 @@ func (db *ManagedDB) NewTransactionAt(readTs uint64, update bool) *Txn {
 //
 // This is only useful for databases built on top of Badger (like Dgraph), and
 // can be ignored by most users.
-func (txn *Txn) CommitAt(commitTs uint64, callback func(error)) error {
+func (txn *Txn) CommitAt(commitTs uint64) error {
 	if !txn.db.opt.managedTxns {
 		return ErrManagedTxn
 	}
 	txn.commitTs = commitTs
-	return txn.Commit(callback)
+	return txn.Commit()
 }
 
 // GetSequence is not supported on ManagedDB. Calling this would result

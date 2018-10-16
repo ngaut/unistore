@@ -399,15 +399,9 @@ func (txn *Txn) Discard() {
 //
 // 4. Batch up all writes, write them to value log and LSM tree.
 //
-// 5. If callback is provided, Badger will return immediately after checking
-// for conflicts. Writes to the database will happen in the background.  If
-// there is a conflict, an error will be returned and the callback will not
-// run. If there are no conflicts, the callback will be called in the
-// background upon successful completion of writes or any error during write.
-//
 // If error is nil, the transaction is successfully committed. In case of a non-nil error, the LSM
 // tree won't be updated, so there's no need for any rollback.
-func (txn *Txn) Commit(callback func(error)) error {
+func (txn *Txn) Commit() error {
 	if txn.commitTs == 0 && txn.db.opt.managedTxns {
 		return ErrManagedTxn
 	}
@@ -448,20 +442,9 @@ func (txn *Txn) Commit(callback func(error)) error {
 		return err
 	}
 
-	if callback == nil {
-		// If batchSet failed, LSM would not have been updated. So, no need to rollback anything.
+	req.Wait()
+	state.doneCommit(commitTs)
 
-		// TODO: What if some of the txns successfully make it to value log, but others fail.
-		// Nothing gets updated to LSM, until a restart happens.
-		defer state.doneCommit(commitTs)
-		return req.Wait()
-	}
-	go func() {
-		err := req.Wait()
-		// Write is complete. Let's call the callback function now.
-		state.doneCommit(commitTs)
-		callback(err)
-	}()
 	return nil
 }
 
@@ -531,5 +514,5 @@ func (db *DB) Update(fn func(txn *Txn) error) error {
 		return err
 	}
 
-	return txn.Commit(nil)
+	return txn.Commit()
 }

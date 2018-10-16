@@ -27,7 +27,7 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:8b4db9cce9b9174615744d857442000effcf77cb902c250fd61c4c7c9c97d31d"
+  digest = "1:f70e7f9d5cb7dc220a58ba455b2b75d78ca6888693eb6945c3bce3e53c4c2a89"
   name = "github.com/coocood/badger"
   packages = [
     ".",
@@ -38,7 +38,7 @@
     "y",
   ]
   pruneopts = "NUT"
-  revision = "ac38e56db2829d198e3cd26ff138accdf8e4a93c"
+  revision = "e7aa61729e3d5901ea828ed17a3cb8f9cf47f259"
 
 [[projects]]
   branch = "master"
@@ -255,7 +255,7 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:ef9f75a6c130d2eeb8418bedf06428cfb2748ddf6f677d224e87f33daf0af6a9"
+  digest = "1:d347f2e09fb019b7d2ef573b6ccf2bc4804b6391b9e856bc6415b1a8f56c1526"
   name = "github.com/pingcap/tidb"
   packages = [
     "ast",
@@ -309,7 +309,7 @@
     "util/stringutil",
     "util/timeutil",
   ]
-  pruneopts = "T"
+  pruneopts = "NUT"
   revision = "1730798019727fbed90617dd749349727ac8c79a"
 
 [[projects]]
