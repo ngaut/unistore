@@ -44,6 +44,14 @@ func (s *testSuite) TestRowCodec(c *C) {
 	}
 }
 
+func (s *testSuite) TestIsRowKey(c *C) {
+	rowKey := tablecodec.EncodeRowKeyWithHandle(1, 1)
+	c.Assert(IsRowKey(rowKey), IsTrue)
+
+	indexKey := tablecodec.EncodeIndexSeekKey(1, 2, []byte{1})
+	c.Assert(IsRowKey(indexKey), IsFalse)
+}
+
 func BenchmarkEncode(b *testing.B) {
 	b.ReportAllocs()
 	oldRow := types.MakeDatums(1, "abc", 1.1)
