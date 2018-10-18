@@ -299,11 +299,15 @@ var defaultStmtCtx = &stmtctx.StatementContext{
 }
 
 const (
-	rowKeyLen       = 19
-	recordPrefixIdx = 1
+	rowKeyLen             = 19
+	recordPrefixIdx       = 10
+	sharedRecordPrefixIdx = 1
 )
 
 func IsRowKey(key []byte) bool {
+	if EnableShardKeySupport {
+		return len(key) == rowKeyLen && key[0] == 't' && key[sharedRecordPrefixIdx] == 'r'
+	}
 	return len(key) == rowKeyLen && key[0] == 't' && key[recordPrefixIdx] == 'r'
 }
 
