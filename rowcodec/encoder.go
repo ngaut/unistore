@@ -300,17 +300,18 @@ var defaultStmtCtx = &stmtctx.StatementContext{
 
 const (
 	// Length of rowkey.
-	rowKeyLen             = 19
+	rowKeyLen = 19
 	// Index of record flag 'r' in rowkey used by master tidb-server.
-	recordPrefixIdx       = 10
+	recordPrefixIdx = 10
 	// Index of record flag 'r' in rowkey whit shard byte.
 	sharedRecordPrefixIdx = 1
 )
 
+func IsRowKeyWithShardByte(key []byte) bool {
+	return len(key) == rowKeyLen && key[0] == 't' && key[sharedRecordPrefixIdx] == 'r'
+}
+
 func IsRowKey(key []byte) bool {
-	if EnableShardKeySupport {
-		return len(key) == rowKeyLen && key[0] == 't' && key[sharedRecordPrefixIdx] == 'r'
-	}
 	return len(key) == rowKeyLen && key[0] == 't' && key[recordPrefixIdx] == 'r'
 }
 

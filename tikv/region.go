@@ -3,7 +3,6 @@ package tikv
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/ngaut/unistore/rowcodec"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -26,13 +25,6 @@ var (
 	InternalRegionMetaPrefix = append(InternalKeyPrefix, "region"...)
 	InternalStoreMetaKey     = append(InternalKeyPrefix, "store"...)
 )
-
-var enableShardKey = false
-
-func EnableShardKeySupport() {
-	enableShardKey = true
-	rowcodec.EnableShardKeySupport = true
-}
 
 func InternalRegionMetaKey(regionId uint64) []byte {
 	return []byte(string(InternalRegionMetaPrefix) + strconv.FormatUint(regionId, 10))

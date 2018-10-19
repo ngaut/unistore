@@ -16,6 +16,12 @@ import (
 	"golang.org/x/net/context"
 )
 
+var enableShardKey = false
+
+func EnableShardKeySupport() {
+	enableShardKey = true
+}
+
 var _ tikvpb.TikvServer = new(Server)
 
 type Server struct {
@@ -124,7 +130,7 @@ func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb
 			Error: convertToKeyError(err),
 		}, nil
 	}
-	if rowcodec.IsRowKey(req.Key) {
+	if isRowKey(req.Key) {
 		val, err = rowcodec.RowToOldRow(val, nil)
 	}
 	return &kvrpcpb.GetResponse{
@@ -153,7 +159,7 @@ func (svr *Server) KvScan(ctx context.Context, req *kvrpcpb.ScanRequest) (*kvrpc
 	var pairs []*kvrpcpb.KvPair
 	var buf []byte
 	var scanFunc ScanFunc = func(key, value []byte) error {
-		if rowcodec.IsRowKey(key) {
+		if isRowKey(key) {
 			buf, err = rowcodec.RowToOldRow(value, buf)
 			if err != nil {
 				return err
@@ -250,7 +256,7 @@ func (svr *Server) KvBatchGet(ctx context.Context, req *kvrpcpb.BatchGetRequest)
 	var buf []byte
 	batchGetFunc := func(key, value []byte, err error) {
 		if len(value) != 0 {
-			if rowcodec.IsRowKey(key) && err == nil {
+			if isRowKey(key) && err == nil {
 				buf, err = rowcodec.RowToOldRow(value, buf)
 				value = buf
 			}

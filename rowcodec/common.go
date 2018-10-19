@@ -13,7 +13,6 @@ import (
 // CodecVer is the constant number that represent the new row format.
 const CodecVer = 128
 
-var EnableShardKeySupport = false
 var invalidCodecVer = errors.New("invalid codec version")
 
 // First byte in the encoded value which specifies the encoding type.
