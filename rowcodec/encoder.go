@@ -299,8 +299,11 @@ var defaultStmtCtx = &stmtctx.StatementContext{
 }
 
 const (
+	// Length of rowkey.
 	rowKeyLen             = 19
+	// Index of record flag 'r' in rowkey used by master tidb-server.
 	recordPrefixIdx       = 10
+	// Index of record flag 'r' in rowkey whit shard byte.
 	sharedRecordPrefixIdx = 1
 )
 
