@@ -16,10 +16,14 @@ import (
 	"golang.org/x/net/context"
 )
 
-var enableShardKey = false
+var isShardingEnabled = false
 
-func EnableShardKeySupport() {
-	enableShardKey = true
+func IsShardingEnabled() bool {
+	return isShardingEnabled
+}
+
+func EnableSharding() {
+	isShardingEnabled = true
 }
 
 var _ tikvpb.TikvServer = new(Server)

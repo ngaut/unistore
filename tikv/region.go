@@ -157,7 +157,7 @@ func (ri *regionCtx) releaseLatches(hashVals []uint64) {
 }
 
 func (ri *regionCtx) getDBIdx() int {
-	if !enableShardKey {
+	if !IsShardingEnabled() {
 		return 0
 	}
 	startKey := ri.startKey
@@ -304,7 +304,7 @@ func (rm *RegionManager) initialSplit(root *metapb.Region) {
 	root.RegionEpoch.Version = 2
 	rm.regions[root.Id] = newRegionCtx(root, nil)
 	var preSplitStartKeys [][]byte
-	if enableShardKey {
+	if IsShardingEnabled() {
 		preSplitStartKeys = [][]byte{
 			{'m'},
 			{'n'},

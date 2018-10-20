@@ -302,13 +302,14 @@ const (
 	// Length of rowkey.
 	rowKeyLen = 19
 	// Index of record flag 'r' in rowkey used by master tidb-server.
+	// The rowkey format is t{8 bytes id}_r{8 bytes handle}
 	recordPrefixIdx = 10
 	// Index of record flag 'r' in rowkey whit shard byte.
-	sharedRecordPrefixIdx = 1
+	shardedRecordPrefixIdx = 1
 )
 
 func IsRowKeyWithShardByte(key []byte) bool {
-	return len(key) == rowKeyLen && key[0] == 't' && key[sharedRecordPrefixIdx] == 'r'
+	return len(key) == rowKeyLen && key[0] == 't' && key[shardedRecordPrefixIdx] == 'r'
 }
 
 func IsRowKey(key []byte) bool {

@@ -52,7 +52,7 @@ func main() {
 	numDB := 1
 	if *shardKey {
 		numDB = 8
-		tikv.EnableShardKeySupport()
+		tikv.EnableSharding()
 	}
 	dbs := make([]*badger.DB, numDB)
 	for i := 0; i < numDB; i++ {

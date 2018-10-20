@@ -45,7 +45,7 @@ func safeCopy(b []byte) []byte {
 }
 
 func isRowKey(key []byte) bool {
-	if enableShardKey {
+	if IsShardingEnabled() {
 		return rowcodec.IsRowKeyWithShardByte(key)
 	}
 	return rowcodec.IsRowKey(key)
