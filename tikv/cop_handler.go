@@ -322,15 +322,15 @@ func (svr *Server) buildStreamAgg(ctx *dagContext, executor *tipb.Executor) (*st
 	return e, nil
 }
 
-func (svr *Server) buildTopN(ctx *dagContext, executor *tipb.Executor) (*topNExec, error) {
-	topN := executor.TopN
-	var err error
-	var relatedColOffsets []int
-	pbConds := make([]*tipb.Expr, len(topN.OrderBy))
+func (svr *Server) buildBaseTopN(ctx *evalContext, topN *tipb.TopN) (exec baseTopNExec, err error) {
+	var (
+		relatedColOffsets []int
+		pbConds           = make([]*tipb.Expr, len(topN.OrderBy))
+	)
 	for i, item := range topN.OrderBy {
-		relatedColOffsets, err = extractOffsetsInExpr(item.Expr, ctx.evalCtx.columnInfos, relatedColOffsets)
+		relatedColOffsets, err = extractOffsetsInExpr(item.Expr, ctx.columnInfos, relatedColOffsets)
 		if err != nil {
-			return nil, errors.Trace(err)
+			return exec, errors.Trace(err)
 		}
 		pbConds[i] = item.Expr
 	}
@@ -338,21 +338,32 @@ func (svr *Server) buildTopN(ctx *dagContext, executor *tipb.Executor) (*topNExe
 		totalCount: int(topN.Limit),
 		topNSorter: topNSorter{
 			orderByItems: topN.OrderBy,
-			sc:           ctx.evalCtx.sc,
+			sc:           ctx.sc,
 		},
 	}
+	conds, err := convertToExprs(ctx.sc, ctx.fieldTps, pbConds)
+	if err != nil {
+		return exec, errors.Trace(err)
+	}
 
-	conds, err := convertToExprs(ctx.evalCtx.sc, ctx.evalCtx.fieldTps, pbConds)
+	return baseTopNExec{
+		heap:              heap,
+		relatedColOffsets: relatedColOffsets,
+		orderByExprs:      conds,
+		row:               make([]types.Datum, len(ctx.columnInfos)),
+	}, nil
+}
+
+func (svr *Server) buildTopN(ctx *dagContext, executor *tipb.Executor) (*topNExec, error) {
+	topN := executor.TopN
+	baseTopNExec, err := svr.buildBaseTopN(ctx.evalCtx, topN)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 
 	return &topNExec{
-		heap:              heap,
-		evalCtx:           ctx.evalCtx,
-		relatedColOffsets: relatedColOffsets,
-		orderByExprs:      conds,
-		row:               make([]types.Datum, len(ctx.evalCtx.columnInfos)),
+		baseTopNExec: baseTopNExec,
+		evalCtx:      ctx.evalCtx,
 	}, nil
 }
 
@@ -388,6 +399,26 @@ func (e *evalContext) newRowDecoder() (*rowcodec.Decoder, error) {
 		}
 	}
 	return rowcodec.NewDecoder(colIDs, handleColID, e.fieldTps, defaultVals, e.sc.TimeZone)
+}
+
+func (e *evalContext) newRowDecoderForOffsets(colOffsets []int) (*rowcodec.Decoder, error) {
+	var (
+		handleColID int64
+		colIDs      = make([]int64, len(colOffsets))
+		defaultVals = make([][]byte, len(colOffsets))
+		fieldsTps   = make([]*types.FieldType, len(colOffsets))
+	)
+	for i, off := range colOffsets {
+		info := e.columnInfos[off]
+		colIDs[i] = info.ColumnId
+		defaultVals[i] = info.DefaultVal
+		fieldsTps[i] = e.fieldTps[off]
+		if info.PkHandle {
+			handleColID = info.ColumnId
+		}
+	}
+
+	return rowcodec.NewDecoder(colIDs, handleColID, fieldsTps, defaultVals, e.sc.TimeZone)
 }
 
 // decodeRelatedColumnVals decodes data to Datum slice according to the row information.

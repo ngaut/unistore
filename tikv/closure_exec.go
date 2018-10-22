@@ -3,6 +3,7 @@ package tikv
 import (
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/juju/errors"
 	"github.com/ngaut/unistore/rowcodec"
@@ -57,6 +58,8 @@ func (svr *Server) tryBuildClosureExecutor(dagCtx *dagContext, dagReq *tipb.DAGR
 		}
 		ce.processFunc = ce.selectionProcess
 		return ce, nil
+	case tipb.ExecType_TypeTopN:
+		return svr.tryBuildTopNClosureExecutor(ce, executors)
 	default:
 		return nil, nil
 	}
@@ -157,6 +160,42 @@ func (svr *Server) tryBuildAggClosureExecutor(e *closureExecutor, executors []*t
 	return e, nil
 }
 
+func (svr *Server) tryBuildTopNClosureExecutor(e *closureExecutor, executors []*tipb.Executor) (*closureExecutor, error) {
+	if executors[0].Tp != tipb.ExecType_TypeTableScan {
+		return nil, nil
+	}
+
+	baseTopNExec, err := svr.buildBaseTopN(e.evalContext, executors[1].TopN)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	ctx := &topNCtx{
+		baseTopNExec: baseTopNExec,
+		chk:          e.scanCtx.chk,
+		sortRow:      e.newTopNSortRow(),
+	}
+	e.scanCtx.decoder, err = e.evalContext.newRowDecoderForOffsets(baseTopNExec.relatedColOffsets)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	fieldsTps := make([]*types.FieldType, len(baseTopNExec.relatedColOffsets))
+	for i, off := range baseTopNExec.relatedColOffsets {
+		fieldsTps[i] = e.evalContext.fieldTps[off]
+	}
+	e.scanCtx.chk = chunk.NewChunkWithCapacity(fieldsTps, 1)
+	for i, off := range baseTopNExec.relatedColOffsets {
+		ctx.chk.MakeRefOf(e.scanCtx.chk, i, off)
+	}
+
+	e.topNCtx = ctx
+	e.processFunc = e.topNProcess
+	e.finishFunc = e.topNFinish
+
+	return e, nil
+}
+
 // closureExecutor is an execution engine that flatten the DAGRequest.Executors to a single closure `processFunc` that
 // process key/value pairs. We can define many closures for different kinds of requests, try to use the specially
 // optimized one for some frequently used query.
@@ -174,6 +213,7 @@ type closureExecutor struct {
 	idxScanCtx   *idxScanCtx
 	selectionCtx selectionCtx
 	aggCtx       aggCtx
+	topNCtx      *topNCtx
 
 	rowCount int
 	unique   bool
@@ -204,6 +244,12 @@ type aggCtx struct {
 
 type selectionCtx struct {
 	conditions []expression.Expression
+}
+
+type topNCtx struct {
+	baseTopNExec
+	chk     *chunk.Chunk
+	sortRow *sortRow
 }
 
 func (e *closureExecutor) execute() ([]tipb.Chunk, error) {
@@ -422,4 +468,58 @@ func (e *closureExecutor) selectionProcess(key, value []byte) error {
 		}
 	}
 	return err
+}
+
+func (e *closureExecutor) topNFinish() error {
+	ctx := e.topNCtx
+	decoder, err := e.evalContext.newRowDecoder()
+	if err != nil {
+		return errors.Trace(err)
+	}
+	sort.Sort(&ctx.heap.topNSorter)
+
+	for _, row := range ctx.heap.rows {
+		h, err := tablecodec.DecodeRowKey(row.data[0])
+		if err != nil {
+			return errors.Trace(err)
+		}
+		decoder.Decode(row.data[1], h, ctx.chk)
+
+		if ctx.chk.NumRows() == chunkMaxRows {
+			if err := e.chunkToOldChunk(ctx.chk); err != nil {
+				return errors.Trace(err)
+			}
+		}
+	}
+	return e.chunkToOldChunk(ctx.chk)
+}
+
+func (e *closureExecutor) topNProcess(key, value []byte) (err error) {
+	if err = e.tableScanProcessCore(key, value); err != nil {
+		return err
+	}
+
+	ctx := e.topNCtx
+	row := ctx.chk.GetRow(0)
+	for i, expr := range ctx.orderByExprs {
+		ctx.sortRow.key[i], err = expr.Eval(row)
+		if err != nil {
+			return errors.Trace(err)
+		}
+	}
+	ctx.chk.Reset()
+
+	if ctx.heap.tryToAddRow(ctx.sortRow) {
+		ctx.sortRow.data[0] = append(ctx.sortRow.data[0], key...)
+		ctx.sortRow.data[1] = append(ctx.sortRow.data[1], value...)
+		ctx.sortRow = e.newTopNSortRow()
+	}
+	return errors.Trace(ctx.heap.err)
+}
+
+func (e *closureExecutor) newTopNSortRow() *sortRow {
+	return &sortRow{
+		key:  make([]types.Datum, len(e.evalContext.columnInfos)),
+		data: make([][]byte, 2),
+	}
 }

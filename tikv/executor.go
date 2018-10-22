@@ -575,12 +575,16 @@ func (e *selectionExec) Next(ctx context.Context) (value [][]byte, err error) {
 	}
 }
 
-type topNExec struct {
+type baseTopNExec struct {
 	heap              *topNHeap
-	evalCtx           *evalContext
 	relatedColOffsets []int
 	orderByExprs      []expression.Expression
 	row               []types.Datum
+}
+
+type topNExec struct {
+	baseTopNExec
+	evalCtx           *evalContext
 	chkRow            chkMutRow
 	cursor            int
 	executed          bool
@@ -636,12 +640,12 @@ func (e *topNExec) Next(ctx context.Context) (value [][]byte, err error) {
 				break
 			}
 		}
+		sort.Sort(&e.heap.topNSorter)
 		e.executed = true
 	}
 	if e.cursor >= len(e.heap.rows) {
 		return nil, nil
 	}
-	sort.Sort(&e.heap.topNSorter)
 	row := e.heap.rows[e.cursor]
 	e.cursor++
 
