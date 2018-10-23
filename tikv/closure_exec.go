@@ -161,32 +161,25 @@ func (svr *Server) tryBuildAggClosureExecutor(e *closureExecutor, executors []*t
 }
 
 func (svr *Server) tryBuildTopNClosureExecutor(e *closureExecutor, executors []*tipb.Executor) (*closureExecutor, error) {
-	if executors[0].Tp != tipb.ExecType_TypeTableScan {
+	if len(executors) > 2 || executors[0].Tp != tipb.ExecType_TypeTableScan {
 		return nil, nil
 	}
 
-	baseTopNExec, err := svr.buildBaseTopN(e.evalContext, executors[1].TopN)
+	heap, relatedColOffsets, conds, err := svr.getTopNInfo(e.evalContext, executors[1].TopN)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 
 	ctx := &topNCtx{
-		baseTopNExec: baseTopNExec,
+		heap:         heap,
+		orderByExprs: conds,
 		chk:          e.scanCtx.chk,
 		sortRow:      e.newTopNSortRow(),
 	}
-	e.scanCtx.decoder, err = e.evalContext.newRowDecoderForOffsets(baseTopNExec.relatedColOffsets)
+	e.scanCtx.chk = ctx.chk.ProjectColumns(relatedColOffsets)
+	e.scanCtx.decoder, err = e.evalContext.newRowDecoderForOffsets(relatedColOffsets)
 	if err != nil {
 		return nil, errors.Trace(err)
-	}
-
-	fieldsTps := make([]*types.FieldType, len(baseTopNExec.relatedColOffsets))
-	for i, off := range baseTopNExec.relatedColOffsets {
-		fieldsTps[i] = e.evalContext.fieldTps[off]
-	}
-	e.scanCtx.chk = chunk.NewChunkWithCapacity(fieldsTps, 1)
-	for i, off := range baseTopNExec.relatedColOffsets {
-		ctx.chk.MakeRefOf(e.scanCtx.chk, i, off)
 	}
 
 	e.topNCtx = ctx
@@ -247,9 +240,10 @@ type selectionCtx struct {
 }
 
 type topNCtx struct {
-	baseTopNExec
-	chk     *chunk.Chunk
-	sortRow *sortRow
+	heap         *topNHeap
+	orderByExprs []expression.Expression
+	chk          *chunk.Chunk
+	sortRow      *sortRow
 }
 
 func (e *closureExecutor) execute() ([]tipb.Chunk, error) {
@@ -507,11 +501,11 @@ func (e *closureExecutor) topNProcess(key, value []byte) (err error) {
 			return errors.Trace(err)
 		}
 	}
-	ctx.chk.Reset()
+	e.scanCtx.chk.Reset()
 
 	if ctx.heap.tryToAddRow(ctx.sortRow) {
-		ctx.sortRow.data[0] = append(ctx.sortRow.data[0], key...)
-		ctx.sortRow.data[1] = append(ctx.sortRow.data[1], value...)
+		ctx.sortRow.data[0] = safeCopy(key)
+		ctx.sortRow.data[1] = safeCopy(value)
 		ctx.sortRow = e.newTopNSortRow()
 	}
 	return errors.Trace(ctx.heap.err)

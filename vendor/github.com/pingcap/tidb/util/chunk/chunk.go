@@ -137,9 +137,17 @@ func (c *Chunk) MakeRef(srcColIdx, dstColIdx int) {
 	c.columns[dstColIdx] = c.columns[srcColIdx]
 }
 
-// FIXME: move this change to tidb repo.
-func (c *Chunk) MakeRefOf(otherChk *Chunk, srcColIdx, dstColIdx int) {
-	c.columns[dstColIdx] = otherChk.columns[srcColIdx]
+func (c *Chunk) ProjectColumns(offsets []int) *Chunk {
+	nc := &Chunk{
+		columns:        make([]*column, len(offsets)),
+		numVirtualRows: c.numVirtualRows,
+		capacity:       c.capacity,
+	}
+	for i, off := range offsets {
+		nc.columns[i] = c.columns[off]
+	}
+
+	return nc
 }
 
 // SwapColumn swaps column "c.columns[colIdx]" with column

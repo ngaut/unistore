@@ -575,16 +575,12 @@ func (e *selectionExec) Next(ctx context.Context) (value [][]byte, err error) {
 	}
 }
 
-type baseTopNExec struct {
+type topNExec struct {
 	heap              *topNHeap
+	evalCtx           *evalContext
 	relatedColOffsets []int
 	orderByExprs      []expression.Expression
 	row               []types.Datum
-}
-
-type topNExec struct {
-	baseTopNExec
-	evalCtx           *evalContext
 	chkRow            chkMutRow
 	cursor            int
 	executed          bool
@@ -593,7 +589,6 @@ type topNExec struct {
 	srcChks *chunk.List
 	rowPtrs []chunk.RowPtr
 }
-
 func (e *topNExec) SetSrcExec(src executor) {
 	e.src = src
 }

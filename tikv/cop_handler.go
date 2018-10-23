@@ -322,48 +322,42 @@ func (svr *Server) buildStreamAgg(ctx *dagContext, executor *tipb.Executor) (*st
 	return e, nil
 }
 
-func (svr *Server) buildBaseTopN(ctx *evalContext, topN *tipb.TopN) (exec baseTopNExec, err error) {
-	var (
-		relatedColOffsets []int
-		pbConds           = make([]*tipb.Expr, len(topN.OrderBy))
-	)
+func (svr *Server) getTopNInfo(ctx *evalContext, topN *tipb.TopN) (heap *topNHeap, relatedColOffsets []int, conds []expression.Expression, err error) {
+	pbConds := make([]*tipb.Expr, len(topN.OrderBy))
 	for i, item := range topN.OrderBy {
 		relatedColOffsets, err = extractOffsetsInExpr(item.Expr, ctx.columnInfos, relatedColOffsets)
 		if err != nil {
-			return exec, errors.Trace(err)
+			return nil, nil, nil, errors.Trace(err)
 		}
 		pbConds[i] = item.Expr
 	}
-	heap := &topNHeap{
+	heap = &topNHeap{
 		totalCount: int(topN.Limit),
 		topNSorter: topNSorter{
 			orderByItems: topN.OrderBy,
 			sc:           ctx.sc,
 		},
 	}
-	conds, err := convertToExprs(ctx.sc, ctx.fieldTps, pbConds)
-	if err != nil {
-		return exec, errors.Trace(err)
+	if conds, err = convertToExprs(ctx.sc, ctx.fieldTps, pbConds); err != nil {
+		return nil, nil, nil, errors.Trace(err)
 	}
 
-	return baseTopNExec{
-		heap:              heap,
-		relatedColOffsets: relatedColOffsets,
-		orderByExprs:      conds,
-		row:               make([]types.Datum, len(ctx.columnInfos)),
-	}, nil
+	return heap, relatedColOffsets, conds, nil
 }
 
 func (svr *Server) buildTopN(ctx *dagContext, executor *tipb.Executor) (*topNExec, error) {
 	topN := executor.TopN
-	baseTopNExec, err := svr.buildBaseTopN(ctx.evalCtx, topN)
+	heap, relatedColOffsets, conds, err := svr.getTopNInfo(ctx.evalCtx, topN)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 
 	return &topNExec{
-		baseTopNExec: baseTopNExec,
-		evalCtx:      ctx.evalCtx,
+		heap:              heap,
+		evalCtx:           ctx.evalCtx,
+		relatedColOffsets: relatedColOffsets,
+		orderByExprs:      conds,
+		row:               make([]types.Datum, len(ctx.evalCtx.columnInfos)),
 	}, nil
 }
 
