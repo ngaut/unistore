@@ -133,9 +133,13 @@ type writeDBWorker struct {
 
 func (w *writeDBWorker) run() {
 	defer w.store.wg.Done()
+	for i := 0; i < 5; i++ {
+		go w.updateBatchGroup()
+	}
 	for {
 		select {
 		case <-w.store.closeCh:
+			close(dataCh)
 			return
 		case <-w.wakeUp:
 		}
@@ -144,26 +148,31 @@ func (w *writeDBWorker) run() {
 		batches, w.mu.batches = w.mu.batches, batches
 		w.mu.Unlock()
 		if len(batches) > 0 {
-			w.updateBatchGroup(batches)
+			dataCh <- batches
 		}
 	}
 }
 
-func (w *writeDBWorker) updateBatchGroup(batchGroup []*writeDBBatch) {
-	e := w.store.dbs[w.idx].Update(func(txn *badger.Txn) error {
-		for _, batch := range batchGroup {
-			for _, entry := range batch.entries {
-				err := txn.SetEntry(entry)
-				if err != nil {
-					return err
+var dataCh = make(chan []*writeDBBatch)
+
+func (w *writeDBWorker) updateBatchGroup() {
+	for ba := range dataCh {
+		e := w.store.dbs[w.idx].Update(func(txn *badger.Txn) error {
+			for _, batch := range ba {
+				for _, entry := range batch.entries {
+					err := txn.SetEntry(entry)
+					if err != nil {
+						return err
+					}
 				}
 			}
+			return nil
+		})
+
+		for _, batch := range ba {
+			batch.err = e
+			batch.wg.Done()
 		}
-		return nil
-	})
-	for _, batch := range batchGroup {
-		batch.err = e
-		batch.wg.Done()
 	}
 }
 
