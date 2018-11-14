@@ -18,6 +18,7 @@ package badger
 
 import (
 	"expvar"
+	"golang.org/x/time/rate"
 	"math"
 	"os"
 	"path/filepath"
@@ -64,14 +65,18 @@ type DB struct {
 	manifest  *manifestFile
 	lc        *levelsController
 	vlog      valueLog
-	vptr      valuePointer // less than or equal to a pointer to the last vlog value put into mt
-	writeCh   chan *request
+	vptr      valuePointer   // less than or equal to a pointer to the last vlog value put into mt
 	flushChan chan flushTask // For flushing memtables.
+
+	writeCh        chan *request
+	managedWriteCh chan []*request
 
 	// mem table buffer to avoid expensive allocating big chunk of memory
 	memTableCh chan *skl.Skiplist
 
 	orc *oracle
+
+	limiter *rate.Limiter
 }
 
 const (
@@ -241,15 +246,21 @@ func Open(opt Options) (db *DB, err error) {
 	orc.readMark.Init()
 
 	db = &DB{
-		imm:           make([]*skl.Skiplist, 0, opt.NumMemtables),
-		flushChan:     make(chan flushTask, opt.NumMemtables),
-		writeCh:       make(chan *request, kvWriteChCapacity),
-		memTableCh:    make(chan *skl.Skiplist, 1),
-		opt:           opt,
-		manifest:      manifestFile,
-		dirLockGuard:  dirLockGuard,
-		valueDirGuard: valueDirLockGuard,
-		orc:           orc,
+		imm:            make([]*skl.Skiplist, 0, opt.NumMemtables),
+		flushChan:      make(chan flushTask, opt.NumMemtables),
+		writeCh:        make(chan *request, kvWriteChCapacity),
+		managedWriteCh: make(chan []*request),
+		memTableCh:     make(chan *skl.Skiplist, 1),
+		opt:            opt,
+		manifest:       manifestFile,
+		dirLockGuard:   dirLockGuard,
+		valueDirGuard:  valueDirLockGuard,
+		orc:            orc,
+	}
+
+	rateLimit := opt.TableBuilderOptions.BytesPerSecond
+	if rateLimit > 0 {
+		db.limiter = rate.NewLimiter(rate.Limit(rateLimit), rateLimit)
 	}
 
 	go func() {
@@ -265,7 +276,7 @@ func Open(opt Options) (db *DB, err error) {
 	db.mt = <-db.memTableCh
 
 	// newLevelsController potentially loads files in directory.
-	if db.lc, err = newLevelsController(db, &manifest); err != nil {
+	if db.lc, err = newLevelsController(db, &manifest, opt.TableBuilderOptions); err != nil {
 		return nil, err
 	}
 
@@ -311,6 +322,7 @@ func Open(opt Options) (db *DB, err error) {
 	db.orc.nextCommit = db.orc.curRead + 1
 
 	db.writeCh = make(chan *request, kvWriteChCapacity)
+	db.managedWriteCh = make(chan []*request)
 	db.closers.writes = startWriteWorker(db)
 
 	db.closers.valueGC = y.NewCloser(1)
@@ -387,7 +399,7 @@ func (db *DB) Close() (err error) {
 		nextLevel: db.lc.levels[1],
 	}
 	if db.lc.fillTablesL0(&cd) {
-		if err := db.lc.runCompactDef(0, cd); err != nil {
+		if err := db.lc.runCompactDef(0, cd, nil); err != nil {
 			log.Infof("\tLOG Compact FAILED with error: %+v: %+v", err, cd)
 		}
 	} else {
@@ -522,7 +534,7 @@ func (db *DB) shouldWriteValueToLSM(e *Entry) bool {
 	return len(e.Value) < db.opt.ValueThreshold
 }
 
-func (db *DB) sendToWriteCh(entries []*Entry) (*request, error) {
+func (db *DB) getRequestForEntries(entries []*Entry) (*request, error) {
 	var count, size int64
 	for _, e := range entries {
 		size += int64(e.estimateSize(db.opt.ValueThreshold))
@@ -536,8 +548,19 @@ func (db *DB) sendToWriteCh(entries []*Entry) (*request, error) {
 	// Txns should not interleave among other txns or rewrites.
 	req := requestPool.Get().(*request)
 	req.Entries = entries
+	req.IsManaged = false
+	req.Callback = nil
 	req.Wg = sync.WaitGroup{}
 	req.Wg.Add(1)
+
+	return req, nil
+}
+
+func (db *DB) sendToWriteCh(entries []*Entry) (*request, error) {
+	req, err := db.getRequestForEntries(entries)
+	if err != nil {
+		return nil, err
+	}
 	db.writeCh <- req // Handled in writeWorker.
 	y.NumPuts.Add(int64(len(entries)))
 
@@ -610,33 +633,17 @@ func arenaSize(opt Options) int64 {
 }
 
 // WriteLevel0Table flushes memtable. It drops deleteValues.
-func writeLevel0Table(s *skl.Skiplist, f *os.File) error {
+func (db *DB) writeLevel0Table(s *skl.Skiplist, f *os.File) error {
 	iter := s.NewIterator()
 	defer iter.Close()
-	b := table.NewTableBuilder(s.MemSize())
+	b := table.NewTableBuilder(f, db.limiter, db.opt.TableBuilderOptions)
 	defer b.Close()
 	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
 		if err := b.Add(iter.Key(), iter.Value()); err != nil {
 			return err
 		}
 	}
-	return writeToFile(f, b.Finish())
-}
-
-func writeToFile(f *os.File, buf []byte) error {
-	const step = 512 * 1024
-	up := step
-	for base := 0; base < len(buf); base += step {
-		up = base + step
-		if up >= len(buf) {
-			up = len(buf)
-		}
-		_, err := f.Write(buf[base:up])
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return b.Finish()
 }
 
 type flushTask struct {
@@ -667,7 +674,7 @@ func (db *DB) flushMemtable(lc *y.Closer) error {
 		}
 
 		fileID := db.lc.reserveFileID()
-		fd, err := y.CreateSyncedFile(table.NewFilename(fileID, db.opt.Dir), true)
+		fd, err := y.CreateSyncedFile(table.NewFilename(fileID, db.opt.Dir), false)
 		if err != nil {
 			return y.Wrap(err)
 		}
@@ -676,7 +683,7 @@ func (db *DB) flushMemtable(lc *y.Closer) error {
 		dirSyncCh := make(chan error)
 		go func() { dirSyncCh <- syncDir(db.opt.Dir) }()
 
-		err = writeLevel0Table(ft.mt, fd)
+		err = db.writeLevel0Table(ft.mt, fd)
 		dirSyncErr := <-dirSyncCh
 
 		if err != nil {

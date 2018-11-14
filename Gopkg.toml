@@ -1,6 +1,7 @@
 [[constraint]]
-  branch = "master"
+  branch = "managed-api"
   name = "github.com/coocood/badger"
+  source = "https://github.com/bobotu/badger.git"
 
 [[constraint]]
   branch = "master"

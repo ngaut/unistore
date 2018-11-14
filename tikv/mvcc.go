@@ -51,10 +51,12 @@ func NewMVCCStore(dbs []*badger.DB, dataDir string) *MVCCStore {
 	workers := make([]*writeDBWorker, 8)
 	for i := 0; i < 8; i++ {
 		workers[i] = &writeDBWorker{
-			wakeUp:  make(chan struct{}, 1),
-			closeCh: closeCh,
-			store:   store,
-			idx:     i,
+			writerIdleCh: make(chan struct{}),
+			batchesGrpCh: make(chan writeDBBatchGrp),
+			wakeUp:       make(chan struct{}, 1),
+			closeCh:      closeCh,
+			store:        store,
+			idx:          i,
 		}
 	}
 	store.writeDBWorkers = workers
@@ -68,7 +70,8 @@ func NewMVCCStore(dbs []*badger.DB, dataDir string) *MVCCStore {
 	store.wg.Add(len(store.writeDBWorkers) + 2)
 	// run all the workers
 	for _, worker := range store.writeDBWorkers {
-		go worker.run()
+		go worker.runCollector()
+		go worker.runDBWriter()
 	}
 	go store.writeLockWorker.run()
 	go func() {

@@ -34,7 +34,7 @@ func (batch *writeDBBatch) set(key, val []byte) {
 func (batch *writeDBBatch) delete(key []byte) {
 	batch.entries = append(batch.entries, &badger.Entry{
 		Key:      key,
-		UserMeta: userMetaDelete,
+		UserMeta: []byte{userMetaDelete},
 	})
 }
 
@@ -68,21 +68,21 @@ func (batch *writeLockBatch) set(key, val []byte) {
 func (batch *writeLockBatch) rollback(key []byte) {
 	batch.entries = append(batch.entries, &badger.Entry{
 		Key:      key,
-		UserMeta: userMetaRollback,
+		UserMeta: []byte{userMetaRollback},
 	})
 }
 
 func (batch *writeLockBatch) rollbackGC(key []byte) {
 	batch.entries = append(batch.entries, &badger.Entry{
 		Key:      key,
-		UserMeta: userMetaRollbackGC,
+		UserMeta: []byte{userMetaRollbackGC},
 	})
 }
 
 func (batch *writeLockBatch) delete(key []byte) {
 	batch.entries = append(batch.entries, &badger.Entry{
 		Key:      key,
-		UserMeta: userMetaDelete,
+		UserMeta: []byte{userMetaDelete},
 	})
 }
 
@@ -125,45 +125,104 @@ type writeDBWorker struct {
 		sync.Mutex
 		batches []*writeDBBatch
 	}
-	wakeUp  chan struct{}
-	closeCh <-chan struct{}
-	store   *MVCCStore
-	idx     int
+	wakeUp       chan struct{}
+	writerIdleCh chan struct{}
+	batchesGrpCh chan writeDBBatchGrp
+	closeCh      <-chan struct{}
+	store        *MVCCStore
+	idx          int
 }
 
-func (w *writeDBWorker) run() {
+func (w *writeDBWorker) runCollector() {
+	grp := w.newBatchGroup()
+	for {
+		select {
+		case <-w.store.closeCh:
+			return
+		case <-w.writerIdleCh:
+			if batches := w.getBatches(0); len(batches) > 0 {
+				grp.joinBatches(batches)
+			}
+			if grp.group.TxnCount() == 0 {
+				<-w.wakeUp
+				continue
+			}
+			w.batchesGrpCh <- grp
+			grp = w.newBatchGroup()
+		case <-w.wakeUp:
+			if batches := w.getBatches(500); len(batches) > 0 {
+				grp.joinBatches(batches)
+			}
+		}
+	}
+}
+
+func (w *writeDBWorker) runDBWriter() {
 	defer w.store.wg.Done()
 	for {
 		select {
 		case <-w.store.closeCh:
 			return
-		case <-w.wakeUp:
-		}
-		batches := make([]*writeDBBatch, 0, 128)
-		w.mu.Lock()
-		batches, w.mu.batches = w.mu.batches, batches
-		w.mu.Unlock()
-		if len(batches) > 0 {
-			w.updateBatchGroup(batches)
+		case grp := <-w.batchesGrpCh:
+			grp.group.Done(func(e error) {
+				go grp.done(e)
+			})
+		case w.writerIdleCh <- struct{}{}:
 		}
 	}
 }
 
-func (w *writeDBWorker) updateBatchGroup(batchGroup []*writeDBBatch) {
-	e := w.store.dbs[w.idx].Update(func(txn *badger.Txn) error {
-		for _, batch := range batchGroup {
-			for _, entry := range batch.entries {
-				err := txn.SetEntry(entry)
-				if err != nil {
-					return err
-				}
+func (w *writeDBWorker) getBatches(minSize int) []*writeDBBatch {
+	var batches []*writeDBBatch
+	w.mu.Lock()
+	if len(w.mu.batches) > minSize {
+		batches = make([]*writeDBBatch, 0, 128)
+		batches, w.mu.batches = w.mu.batches, batches
+	}
+	w.mu.Unlock()
+	return batches
+}
+
+type writeDBBatchGrp struct {
+	group   *badger.TxnGroup
+	batches []*writeDBBatch
+	db      *badger.DB
+}
+
+func (g *writeDBBatchGrp) joinBatches(batches []*writeDBBatch) {
+	g.batches = append(g.batches, batches...)
+	txn := g.db.NewTransaction(true)
+	var err error
+	for _, b := range batches {
+		for _, e := range b.entries {
+			if err = txn.SetEntry(e); err != nil {
+				break
 			}
 		}
-		return nil
-	})
-	for _, batch := range batchGroup {
-		batch.err = e
-		batch.wg.Done()
+	}
+	if err == nil {
+		err = g.group.JoinTxn(txn)
+	}
+	if err != nil {
+		g.done(err)
+		g.group = g.db.NewTxnGroup()
+		g.batches = nil
+		return
+	}
+}
+
+func (g *writeDBBatchGrp) done(err error) {
+	for _, b := range g.batches {
+		b.err = err
+		b.wg.Done()
+	}
+	g.group.Discard()
+}
+
+func (w *writeDBWorker) newBatchGroup() writeDBBatchGrp {
+	return writeDBBatchGrp{
+		group: w.store.dbs[w.idx].NewTxnGroup(),
+		db:    w.store.dbs[w.idx],
 	}
 }
 
@@ -195,7 +254,14 @@ func (w *writeLockWorker) run() {
 		var delCnt, insertCnt int
 		for _, batch := range batches {
 			for _, entry := range batch.entries {
-				switch entry.UserMeta {
+				if len(entry.UserMeta) == 0 {
+					insertCnt++
+					if !ls.Insert(entry.Key, entry.Value) {
+						panic("failed to insert key")
+					}
+					continue
+				}
+				switch entry.UserMeta[0] {
 				case userMetaRollback:
 					w.store.rollbackStore.Insert(entry.Key, []byte{0})
 				case userMetaDelete:

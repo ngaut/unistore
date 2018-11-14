@@ -20,6 +20,8 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/coocood/badger/skl"
+
 	"github.com/coocood/badger/y"
 	"github.com/ngaut/log"
 	"github.com/pkg/errors"
@@ -44,25 +46,31 @@ func startWriteWorker(db *DB) *y.Closer {
 func (w *writeWorker) runWriteVLog(lc *y.Closer) {
 	defer lc.Done()
 	for {
-		var r *request
 		select {
-		case r = <-w.writeCh:
+		case r := <-w.writeCh:
+			l := len(w.writeCh)
+			reqs := make([]*request, l+1)
+			reqs[0] = r
+			for i := 0; i < l; i++ {
+				reqs[i+1] = <-w.writeCh
+			}
+			if err := w.vlog.write(reqs); err != nil {
+				w.done(reqs, err)
+				return
+			}
+			w.writeLSMCh <- reqs
+		case reqs := <-w.managedWriteCh:
+			if err := w.vlog.write(reqs); err != nil {
+				w.done(reqs, err)
+				reqs[len(reqs)-1].Wg.Done()
+				return
+			}
+			w.writeLSMCh <- reqs
+			reqs[len(reqs)-1].Wg.Done()
 		case <-lc.HasBeenClosed():
 			w.closeWriteVLog()
 			return
 		}
-		l := len(w.writeCh)
-		reqs := make([]*request, l+1)
-		reqs[0] = r
-		for i := 0; i < l; i++ {
-			reqs[i+1] = <-w.writeCh
-		}
-		err := w.vlog.write(reqs)
-		if err != nil {
-			w.done(reqs, err)
-			return
-		}
-		w.writeLSMCh <- reqs
 	}
 }
 
@@ -80,9 +88,13 @@ func (w *writeWorker) runWriteLSM(lc *y.Closer) {
 
 func (w *writeWorker) closeWriteVLog() {
 	close(w.writeCh)
+	close(w.managedWriteCh)
 	var reqs []*request
 	for r := range w.writeCh { // Flush the channel.
 		reqs = append(reqs, r)
+	}
+	for rs := range w.managedWriteCh {
+		reqs = append(reqs, rs...)
 	}
 	err := w.vlog.write(reqs)
 	if err != nil {
@@ -133,6 +145,12 @@ func (w *writeWorker) writeLSM(reqs []*request) {
 
 func (w *writeWorker) done(reqs []*request, err error) {
 	for _, r := range reqs {
+		if r.IsManaged {
+			if r.Callback != nil {
+				r.Callback(err)
+			}
+			continue
+		}
 		r.Err = err
 		r.Wg.Done()
 	}
@@ -146,25 +164,29 @@ func (w *writeWorker) writeToLSM(b *request) error {
 		return errors.Errorf("Ptrs and Entries don't match: %+v", b)
 	}
 
+	var hint *skl.Hint
+	if b.IsManaged {
+		hint = new(skl.Hint)
+	}
 	for i, entry := range b.Entries {
 		if entry.meta&bitFinTxn != 0 {
 			continue
 		}
 		if w.shouldWriteValueToLSM(entry) { // Will include deletion / tombstone case.
-			w.mt.Put(entry.Key,
+			w.mt.PutWithHint(entry.Key,
 				y.ValueStruct{
 					Value:    entry.Value,
 					Meta:     entry.meta,
 					UserMeta: entry.UserMeta,
-				})
+				}, hint)
 		} else {
 			var offsetBuf [vptrSize]byte
-			w.mt.Put(entry.Key,
+			w.mt.PutWithHint(entry.Key,
 				y.ValueStruct{
 					Value:    b.Ptrs[i].Encode(offsetBuf[:]),
 					Meta:     entry.meta | bitValuePointer,
 					UserMeta: entry.UserMeta,
-				})
+				}, hint)
 		}
 	}
 	return nil

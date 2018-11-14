@@ -25,7 +25,7 @@ import (
 	"sync/atomic"
 
 	"github.com/coocood/badger/y"
-	farm "github.com/dgryski/go-farm"
+	"github.com/dgryski/go-farm"
 	"github.com/pkg/errors"
 )
 
@@ -235,6 +235,9 @@ func (txn *Txn) newPendingWritesIterator(reversed bool) *pendingWritesIterator {
 }
 
 func (txn *Txn) checkSize(e *Entry) error {
+	if len(e.UserMeta) > 255 {
+		return ErrUserMetaTooLarge
+	}
 	count := txn.count + 1
 	// Extra bytes for version in key.
 	size := txn.size + int64(e.estimateSize(txn.db.opt.ValueThreshold)) + 10
@@ -262,6 +265,11 @@ func (txn *Txn) Set(key, val []byte) error {
 // interpret the value or store other contextual bits corresponding to the
 // key-value pair.
 func (txn *Txn) SetWithMeta(key, val []byte, meta byte) error {
+	e := &Entry{Key: key, Value: val, UserMeta: []byte{meta}}
+	return txn.SetEntry(e)
+}
+
+func (txn *Txn) SetWithMetaSlice(key, val, meta []byte) error {
 	e := &Entry{Key: key, Value: val, UserMeta: meta}
 	return txn.SetEntry(e)
 }
@@ -391,23 +399,40 @@ func (txn *Txn) Discard() {
 // If error is nil, the transaction is successfully committed. In case of a non-nil error, the LSM
 // tree won't be updated, so there's no need for any rollback.
 func (txn *Txn) Commit() error {
-	if txn.commitTs == 0 && txn.db.opt.managedTxns {
-		return ErrManagedTxn
-	}
-	if txn.discarded {
-		return ErrDiscardedTxn
-	}
 	defer txn.Discard()
 	if len(txn.writes) == 0 {
 		return nil // Nothing to do.
 	}
-
 	state := txn.db.orc
 	state.writeLock.Lock()
+	entries, commitTs, err := txn.commit()
+	if err != nil {
+		state.writeLock.Unlock()
+		return err
+	}
+	req, err := txn.db.sendToWriteCh(entries)
+	state.writeLock.Unlock()
+	if err != nil {
+		return err
+	}
+
+	err = req.Wait()
+	state.doneCommit(commitTs)
+	return err
+}
+
+func (txn *Txn) commit() ([]*Entry, uint64, error) {
+	if txn.commitTs == 0 && txn.db.opt.managedTxns {
+		return nil, 0, ErrManagedTxn
+	}
+	if txn.discarded {
+		return nil, 0, ErrDiscardedTxn
+	}
+
+	state := txn.db.orc
 	commitTs := state.newCommitTs(txn)
 	if commitTs == 0 {
-		state.writeLock.Unlock()
-		return ErrConflict
+		return nil, 0, ErrConflict
 	}
 
 	entries := make([]*Entry, 0, len(txn.pendingWrites)+1)
@@ -424,17 +449,72 @@ func (txn *Txn) Commit() error {
 		meta:  bitFinTxn,
 	}
 	entries = append(entries, e)
+	return entries, commitTs, nil
+}
 
-	req, err := txn.db.sendToWriteCh(entries)
+// TxnGroup is a group of Txn.
+type TxnGroup struct {
+	commitTs uint64
+	requests []*request
+	db       *DB
+}
+
+// NewTxnGroup returns a new empty TxnGroup.
+func (db *DB) NewTxnGroup() *TxnGroup {
+	return &TxnGroup{db: db}
+}
+
+// TxnCount returns the number of txns in this group.
+func (g *TxnGroup) TxnCount() int {
+	return len(g.requests)
+}
+
+// JoinTxn join a new txn into this group. It will do the same check in `Txn.Commit`, but doesn't write entries to DB.
+// The write is delayed when you call `TxnGroup.Done`.
+func (g *TxnGroup) JoinTxn(txn *Txn) error {
+	defer txn.Discard()
+	state := txn.db.orc
+	state.writeLock.Lock()
+	entries, commitTs, err := txn.commit()
 	state.writeLock.Unlock()
+	sort.Slice(entries[:len(entries)-1], func(i, j int) bool {
+		return y.CompareKeys(entries[i].Key, entries[j].Key) < 0
+	})
 	if err != nil {
 		return err
 	}
-
-	req.Wait()
-	state.doneCommit(commitTs)
-
+	req, err := g.db.getRequestForEntries(entries)
+	if err != nil {
+		return err
+	}
+	req.IsManaged = true
+	g.requests = append(g.requests, req)
+	g.commitTs = commitTs
 	return nil
+}
+
+// Discard cleanup the resource of this group.
+func (g *TxnGroup) Discard() {
+	g.db.orc.doneCommit(g.commitTs)
+	for _, req := range g.requests {
+		req.Entries = nil
+		req.Callback = nil
+		requestPool.Put(req)
+	}
+}
+
+// Done will write all entries in this group to DB. Badger DB can do next vlog flush task when this call returned.
+// The callback will be invoked when:
+//    1. There are any occurred during write
+//    2. Entries have write to LSM successfully
+func (g *TxnGroup) Done(callback func(error)) {
+	if len(g.requests) == 0 {
+		return
+	}
+	last := g.requests[len(g.requests)-1]
+	last.Callback = callback
+	g.db.managedWriteCh <- g.requests
+	last.Wg.Wait()
 }
 
 // NewTransaction creates a new transaction. Badger supports concurrent execution of transactions,
