@@ -126,5 +126,5 @@ func (m dbUserMeta) CommitTS() uint64 {
 }
 
 func (m dbUserMeta) StartTS() uint64 {
-	return binary.LittleEndian.Uint64(m[8:])
+	return binary.LittleEndian.Uint64(m[:8])
 }
