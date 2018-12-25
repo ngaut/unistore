@@ -30,10 +30,13 @@ type MVCCStore struct {
 
 	// latestTS records the latest timestamp of requests, used to determine if it is safe to GC rollback key.
 	latestTS uint64
+
+	safePoint *SafePoint
+	gcLock    sync.Mutex
 }
 
 // NewMVCCStore creates a new MVCCStore
-func NewMVCCStore(dbs []*badger.DB, dataDir string) *MVCCStore {
+func NewMVCCStore(dbs []*badger.DB, dataDir string, safePoint *SafePoint) *MVCCStore {
 	ls := lockstore.NewMemStore(8 << 20)
 	rollbackStore := lockstore.NewMemStore(256 << 10)
 	closeCh := make(chan struct{})
@@ -46,7 +49,8 @@ func NewMVCCStore(dbs []*badger.DB, dataDir string) *MVCCStore {
 			wakeUp:  make(chan struct{}, 1),
 			closeCh: closeCh,
 		},
-		closeCh: closeCh,
+		closeCh:   closeCh,
+		safePoint: safePoint,
 	}
 	workers := make([]*writeDBWorker, 8)
 	for i := 0; i < 8; i++ {
@@ -60,6 +64,24 @@ func NewMVCCStore(dbs []*badger.DB, dataDir string) *MVCCStore {
 	store.writeDBWorkers = workers
 	store.writeLockWorker.store = store
 	err := store.loadLocks()
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Load safe point.
+	err = dbs[0].View(func(txn *badger.Txn) error {
+		item, err1 := txn.Get(InternalSafePointKey)
+		if err1 == badger.ErrKeyNotFound {
+			return nil
+		} else if err1 != nil {
+			return err1
+		}
+		val, err1 := item.Value()
+		if err1 != nil {
+			return err1
+		}
+		atomic.StoreUint64(&store.safePoint.value, binary.LittleEndian.Uint64(val))
+		return nil
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -249,7 +271,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 		dbBatch.set(key, lock.value, userMeta)
 		if lock.hasOldVer {
 			oldKey := encodeOldKey(key, lock.oldMeta.CommitTS())
-			dbBatch.set(oldKey, lock.oldVal, lock.oldMeta)
+			dbBatch.set(oldKey, lock.oldVal, lock.oldMeta.ToOldUserMeta(commitTS))
 		}
 	}
 	atomic.AddInt64(&regCtx.diff, int64(tmpDiff))
@@ -396,7 +418,7 @@ func (store *MVCCStore) rollbackKeyReadDB(req *requestCtx, batch *writeLockBatch
 		if err != nil {
 			return errors.Trace(err)
 		}
-		if dbUserMeta(item.UserMeta()).StartTS() == startTS {
+		if oldUserMeta(item.UserMeta()).StartTS() == startTS {
 			return ErrAlreadyCommitted(ts)
 		}
 	}
@@ -618,6 +640,64 @@ func (store *MVCCStore) deleteKeysInBatch(reqCtx *requestCtx, keys [][]byte, bat
 }
 
 func (store *MVCCStore) GC(reqCtx *requestCtx, safePoint uint64) error {
-	// TODO: implement GC in badger.
+	// We use the gcLock to make sure safePoint can only increase.
+	store.gcLock.Lock()
+	defer store.gcLock.Unlock()
+	oldSafePoint := atomic.LoadUint64(&store.safePoint.value)
+	if oldSafePoint < safePoint {
+		err := store.dbs[0].Update(func(txn *badger.Txn) error {
+			safePointValue := make([]byte, 8)
+			binary.LittleEndian.PutUint64(safePointValue, safePoint)
+			return txn.Set(InternalSafePointKey, safePointValue)
+		})
+		if err != nil {
+			return err
+		}
+		atomic.StoreUint64(&store.safePoint.value, safePoint)
+	}
 	return nil
+}
+
+type SafePoint struct {
+	value uint64
+}
+
+// CreateCompactionFilter implements badger.CompactionFilterFactory function.
+func (sp *SafePoint) CreateCompactionFilter() badger.CompactionFilter {
+	return &GCCompactionFilter{
+		safePoint: atomic.LoadUint64(&sp.value),
+	}
+}
+
+// GCCompactionFilter implements the badger.CompactionFilter interface.
+type GCCompactionFilter struct {
+	safePoint uint64
+}
+
+// Filter implements the badger.CompactionFilter interface.
+//
+// The keys is divided into two sections, latest key and old key, the latest keys don't have commitTS appended,
+// the old keys have commitTS appended and has a different key prefix.
+//
+// For old keys, if the nextCommitTS is before the safePoint, it means we already have one version before the safePoint,
+// we can safely drop this entry.
+//
+// For latest keys, only Delete entry should be GCed, if the commitTS of the Delete entry is older than safePoint,
+// we can remove the Delete entry. But we need to convert it to a tombstone instead of drop.
+// Because there maybe multiple badger level old entries under the same key, dropping it results in old
+// entries may appear again.
+func (f *GCCompactionFilter) Filter(key, value, userMeta []byte) badger.Decision {
+	switch key[0] {
+	case 'm', 't':
+		// For latest version, we can only remove `delete` key, which has value len 0.
+		if dbUserMeta(userMeta).CommitTS() < f.safePoint && len(value) == 0 {
+			return badger.DecisionDelete
+		}
+	case 'n', 'u':
+		// The key is old version key.
+		if oldUserMeta(userMeta).NextCommitTS() < f.safePoint {
+			return badger.DecisionDrop
+		}
+	}
+	return badger.DecisionKeep
 }
