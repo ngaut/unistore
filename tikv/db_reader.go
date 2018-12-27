@@ -14,7 +14,7 @@ func (store *MVCCStore) NewDBReader(reqCtx *requestCtx) *DBReader {
 	return &DBReader{
 		reqCtx:    reqCtx,
 		txn:       store.dbs[reqCtx.dbIdx].NewTransaction(false),
-		safePoint: atomic.LoadUint64(&store.safePoint.value),
+		safePoint: atomic.LoadUint64(&store.safePoint.timestamp),
 	}
 }
 

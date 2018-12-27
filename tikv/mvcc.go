@@ -67,24 +67,7 @@ func NewMVCCStore(dbs []*badger.DB, dataDir string, safePoint *SafePoint) *MVCCS
 	if err != nil {
 		log.Fatal(err)
 	}
-	// Load safe point.
-	err = dbs[0].View(func(txn *badger.Txn) error {
-		item, err1 := txn.Get(InternalSafePointKey)
-		if err1 == badger.ErrKeyNotFound {
-			return nil
-		} else if err1 != nil {
-			return err1
-		}
-		val, err1 := item.Value()
-		if err1 != nil {
-			return err1
-		}
-		atomic.StoreUint64(&store.safePoint.value, binary.LittleEndian.Uint64(val))
-		return nil
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
+	store.loadSafePoint()
 
 	// mark worker count
 	store.wg.Add(len(store.writeDBWorkers) + 2)
@@ -99,6 +82,26 @@ func NewMVCCStore(dbs []*badger.DB, dataDir string, safePoint *SafePoint) *MVCCS
 	}()
 
 	return store
+}
+
+func (store *MVCCStore) loadSafePoint() {
+	err := store.dbs[0].View(func(txn *badger.Txn) error {
+		item, err1 := txn.Get(InternalSafePointKey)
+		if err1 == badger.ErrKeyNotFound {
+			return nil
+		} else if err1 != nil {
+			return err1
+		}
+		val, err1 := item.Value()
+		if err1 != nil {
+			return err1
+		}
+		atomic.StoreUint64(&store.safePoint.timestamp, binary.LittleEndian.Uint64(val))
+		return nil
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func (store *MVCCStore) Close() error {
@@ -643,7 +646,7 @@ func (store *MVCCStore) GC(reqCtx *requestCtx, safePoint uint64) error {
 	// We use the gcLock to make sure safePoint can only increase.
 	store.gcLock.Lock()
 	defer store.gcLock.Unlock()
-	oldSafePoint := atomic.LoadUint64(&store.safePoint.value)
+	oldSafePoint := atomic.LoadUint64(&store.safePoint.timestamp)
 	if oldSafePoint < safePoint {
 		err := store.dbs[0].Update(func(txn *badger.Txn) error {
 			safePointValue := make([]byte, 8)
@@ -653,19 +656,19 @@ func (store *MVCCStore) GC(reqCtx *requestCtx, safePoint uint64) error {
 		if err != nil {
 			return err
 		}
-		atomic.StoreUint64(&store.safePoint.value, safePoint)
+		atomic.StoreUint64(&store.safePoint.timestamp, safePoint)
 	}
 	return nil
 }
 
 type SafePoint struct {
-	value uint64
+	timestamp uint64
 }
 
 // CreateCompactionFilter implements badger.CompactionFilterFactory function.
 func (sp *SafePoint) CreateCompactionFilter() badger.CompactionFilter {
 	return &GCCompactionFilter{
-		safePoint: atomic.LoadUint64(&sp.value),
+		safePoint: atomic.LoadUint64(&sp.timestamp),
 	}
 }
 
