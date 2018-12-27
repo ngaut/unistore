@@ -677,6 +677,13 @@ type GCCompactionFilter struct {
 	safePoint uint64
 }
 
+const (
+	metaPrefix     byte = 'm'
+	metaOldPrefix  byte = 'n'
+	tablePrefix    byte = 't'
+	tableOldPrefix byte = 'u'
+)
+
 // Filter implements the badger.CompactionFilter interface.
 //
 // The keys is divided into two sections, latest key and old key, the latest keys don't have commitTS appended,
@@ -691,12 +698,12 @@ type GCCompactionFilter struct {
 // entries may appear again.
 func (f *GCCompactionFilter) Filter(key, value, userMeta []byte) badger.Decision {
 	switch key[0] {
-	case 'm', 't':
+	case metaPrefix, tablePrefix:
 		// For latest version, we can only remove `delete` key, which has value len 0.
 		if dbUserMeta(userMeta).CommitTS() < f.safePoint && len(value) == 0 {
 			return badger.DecisionDelete
 		}
-	case 'n', 'u':
+	case metaOldPrefix, tableOldPrefix:
 		// The key is old version key.
 		if oldUserMeta(userMeta).NextCommitTS() < f.safePoint {
 			return badger.DecisionDrop
