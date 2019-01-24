@@ -60,21 +60,26 @@ func CompressBlock(raw []byte, tp CompressionType) ([]byte, bool) {
 	return compressed, true
 }
 
-func lz4Decompress(raw []byte) ([]byte, error) {
+func lz4Decompress(dst, raw []byte) ([]byte, error) {
 	size, n := decodeVarint32(raw)
 	if n <= 0 {
 		return raw, ErrDecompress
 	}
 
-	output := make([]byte, size)
-	_, err := lz4.UncompressBlock(raw[n:], output)
-	return output, err
+	if uint32(cap(dst)) < size {
+		dst = make([]byte, size)
+	} else {
+		dst = dst[:size]
+	}
+
+	_, err := lz4.UncompressBlock(raw[n:], dst)
+	return dst, err
 }
 
-func DecompressBlock(raw []byte, tp CompressionType) ([]byte, error) {
+func DecompressBlock(dst, raw []byte, tp CompressionType) ([]byte, error) {
 	switch tp {
 	case CompressionLz4:
-		return lz4Decompress(raw)
+		return lz4Decompress(dst, raw)
 	case CompressionNone:
 		return raw, nil
 	case CompressionSnappy:

@@ -16,6 +16,7 @@ type SstFileIterator struct {
 	f              *os.File
 	indexBlockIter *blockIterator
 	dataBlockIter  *blockIterator
+	readBuf        []byte
 	dataBuf        []byte
 	invalid        bool
 	err            error
@@ -85,11 +86,11 @@ func (it *SstFileIterator) loadNextDataBlk() error {
 	var handle blockHandle
 	handle.Decode(it.indexBlockIter.Value())
 
-	it.changeBufSize(handle.Size + blockTrailerSize)
-	if _, err = it.f.ReadAt(it.dataBuf, int64(handle.Offset)); err != nil {
+	it.checkReadBufSize(handle.Size + blockTrailerSize)
+	if _, err = it.f.ReadAt(it.readBuf, int64(handle.Offset)); err != nil {
 		return err
 	}
-	if it.dataBuf, err = it.decompressBlock(it.dataBuf); err != nil {
+	if it.dataBuf, err = it.decompressBlock(it.dataBuf, it.readBuf); err != nil {
 		return err
 	}
 	it.dataBlockIter.Reset(it.dataBuf)
@@ -97,26 +98,26 @@ func (it *SstFileIterator) loadNextDataBlk() error {
 	return nil
 }
 
-func (it *SstFileIterator) changeBufSize(sz uint64) {
-	if uint64(len(it.dataBuf)) < sz {
-		it.dataBuf = make([]byte, sz)
+func (it *SstFileIterator) checkReadBufSize(sz uint64) {
+	if uint64(cap(it.readBuf)) < sz {
+		it.readBuf = make([]byte, sz)
 		return
 	}
-	it.dataBuf = it.dataBuf[:sz]
+	it.readBuf = it.readBuf[:sz]
 }
 
-func (it *SstFileIterator) decompressBlock(data []byte) ([]byte, error) {
-	trailerPos := len(data) - blockTrailerSize
+func (it *SstFileIterator) decompressBlock(dst, raw []byte) ([]byte, error) {
+	trailerPos := len(raw) - blockTrailerSize
 
-	blkData := data[:trailerPos]
-	compressTp := CompressionType(data[trailerPos])
+	blkData := raw[:trailerPos]
+	compressTp := CompressionType(raw[trailerPos])
 
 	switch it.checksumType {
 	case ChecksumCRC32:
 		crc := newCrc32()
-		crc.Write(data[:trailerPos+1])
+		crc.Write(raw[:trailerPos+1])
 		sum := crc.Sum32()
-		expected := unmaskCrc32(rocksEndian.Uint32(data[trailerPos+1:]))
+		expected := unmaskCrc32(rocksEndian.Uint32(raw[trailerPos+1:]))
 		if expected != sum {
 			return nil, ErrChecksumMismatch
 		}
@@ -124,7 +125,7 @@ func (it *SstFileIterator) decompressBlock(data []byte) ([]byte, error) {
 		panic("unsupported")
 	}
 
-	return DecompressBlock(blkData, compressTp)
+	return DecompressBlock(dst, blkData, compressTp)
 }
 
 func (it *SstFileIterator) getIndexBlockHandle() (blockHandle, error) {
@@ -183,7 +184,7 @@ func (it *SstFileIterator) loadIndexBlock() error {
 	if _, err = it.f.ReadAt(indexBlkData, int64(handle.Offset)); err != nil {
 		return err
 	}
-	if indexBlkData, err = it.decompressBlock(indexBlkData); err != nil {
+	if indexBlkData, err = it.decompressBlock(nil, indexBlkData); err != nil {
 		return err
 	}
 	it.indexBlockIter = newBlockIterator(indexBlkData)
