@@ -31,6 +31,8 @@ type BlockBasedTableBuilder struct {
 	indexBlockBuilder *indexBlockBuilder
 	filterBuilder     *fullFilterBlockBuilder
 
+	compressBuf []byte
+
 	offset        uint64
 	pendingHandle blockHandle
 	lastKey       []byte
@@ -242,9 +244,11 @@ func (b *BlockBasedTableBuilder) writeBlock(blockContents []byte, handle *blockH
 	var compressed bool
 	tp := b.opts.CompressionType
 	if len(blockContents) < compressionSizeLimit {
-		blockContents, compressed = CompressBlock(blockContents, b.opts.CompressionType)
+		blockContents, compressed = CompressBlock(b.opts.CompressionType, blockContents, b.compressBuf)
 		if !compressed {
 			tp = CompressionNone
+		} else {
+			b.compressBuf = blockContents
 		}
 	}
 	return b.writeRawBlock(blockContents, tp, handle, isDataBlock)

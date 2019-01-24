@@ -18,7 +18,7 @@ import (
 
 var ErrDecompress = errors.New("Error during decompress")
 
-func lz4Compress(input []byte) []byte {
+func lz4Compress(input, dst []byte) []byte {
 	rawLen := len(input)
 	if rawLen > math.MaxUint32 {
 		return nil
@@ -27,14 +27,19 @@ func lz4Compress(input []byte) []byte {
 	var varintBuf [5]byte
 	decompressedSize := encodeVarint32(varintBuf[:], uint32(rawLen))
 	outputBound := lz4.CompressBlockBound(rawLen)
-	output := make([]byte, len(decompressedSize)+outputBound)
-	copy(output, decompressedSize)
+	size := len(decompressedSize) + outputBound
+	if cap(dst) < size {
+		dst = make([]byte, size)
+	} else {
+		dst = dst[:size]
+	}
+	copy(dst, decompressedSize)
 	var ht [1 << 16]int
-	n, err := lz4.CompressBlock(input, output[len(decompressedSize):], ht[:])
+	n, err := lz4.CompressBlock(input, dst[len(decompressedSize):], ht[:])
 	if err != nil || n == 0 {
 		return nil
 	}
-	return output[:len(decompressedSize)+n]
+	return dst[:len(decompressedSize)+n]
 }
 
 func isGoodCompressionRatio(compressed, raw []byte) bool {
@@ -42,11 +47,11 @@ func isGoodCompressionRatio(compressed, raw []byte) bool {
 	return cl < rl-(rl/8)
 }
 
-func CompressBlock(raw []byte, tp CompressionType) ([]byte, bool) {
+func CompressBlock(tp CompressionType, raw, dst []byte) ([]byte, bool) {
 	var compressed []byte
 	switch tp {
 	case CompressionLz4:
-		compressed = lz4Compress(raw)
+		compressed = lz4Compress(raw, dst)
 	case CompressionNone:
 		return raw, false
 	case CompressionSnappy:
@@ -60,7 +65,7 @@ func CompressBlock(raw []byte, tp CompressionType) ([]byte, bool) {
 	return compressed, true
 }
 
-func lz4Decompress(dst, raw []byte) ([]byte, error) {
+func lz4Decompress(raw, dst []byte) ([]byte, error) {
 	size, n := decodeVarint32(raw)
 	if n <= 0 {
 		return raw, ErrDecompress
@@ -76,10 +81,10 @@ func lz4Decompress(dst, raw []byte) ([]byte, error) {
 	return dst, err
 }
 
-func DecompressBlock(dst, raw []byte, tp CompressionType) ([]byte, error) {
+func DecompressBlock(tp CompressionType, raw, dst []byte) ([]byte, error) {
 	switch tp {
 	case CompressionLz4:
-		return lz4Decompress(dst, raw)
+		return lz4Decompress(raw, dst)
 	case CompressionNone:
 		return raw, nil
 	case CompressionSnappy:

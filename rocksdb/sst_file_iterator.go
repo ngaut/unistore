@@ -125,7 +125,7 @@ func (it *SstFileIterator) decompressBlock(dst, raw []byte) ([]byte, error) {
 		panic("unsupported")
 	}
 
-	return DecompressBlock(dst, blkData, compressTp)
+	return DecompressBlock(compressTp, blkData, dst)
 }
 
 func (it *SstFileIterator) getIndexBlockHandle() (blockHandle, error) {
