@@ -62,11 +62,14 @@ func NewBlockBasedTableBuilder(f *os.File, opts *BlockBasedTableOptions) *BlockB
 }
 
 func (b *BlockBasedTableBuilder) Add(key, value []byte) error {
-	var ikey internalKey
+	var ikey InternalKey
 	ikey.Decode(key)
 
 	// We don't support other record types.
 	y.Assert(ikey.ValueType.IsValue())
+	if len(b.lastKey) != 0 {
+		y.Assert(b.comparator.CompareInternalKey(b.lastKey, key) <= 0)
+	}
 
 	if b.shouldFlush(key, value) {
 		if err := b.flush(); err != nil {

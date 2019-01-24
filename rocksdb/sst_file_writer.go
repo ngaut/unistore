@@ -68,7 +68,7 @@ func (w *SstFileWriter) add(key, value []byte, tp ValueType) error {
 		}
 	}
 
-	ikey := internalKey{
+	ikey := InternalKey{
 		UserKey:        key,
 		SequenceNumber: 0,
 		ValueType:      tp,

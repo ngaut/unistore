@@ -15,7 +15,10 @@ import (
 	"github.com/DataDog/zstd"
 	"github.com/golang/snappy"
 	"github.com/pierrec/lz4"
+	"github.com/pkg/errors"
 )
+
+var ErrDecompress = errors.New("Error during decompress")
 
 func snappyCompress(input []byte) []byte {
 	outputBound := snappy.MaxEncodedLen(len(input))
@@ -77,8 +80,48 @@ func CompressBlock(raw []byte, tp CompressionType) ([]byte, bool) {
 	case CompressionNone:
 		return raw, false
 	}
-	if !isGoodCompressionRatio(compressed, raw) {
+	if compressed == nil || !isGoodCompressionRatio(compressed, raw) {
 		return raw, false
 	}
 	return compressed, true
+}
+
+func snappyDecompress(raw []byte) ([]byte, error) {
+	return snappy.Decode(nil, raw)
+}
+
+func lz4Decompress(raw []byte) ([]byte, error) {
+	size, n := decodeVarint32(raw)
+	if n <= 0 {
+		return raw, ErrDecompress
+	}
+
+	output := make([]byte, size)
+	_, err := lz4.UncompressBlock(raw[n:], output)
+	return output, err
+}
+
+func zstdDecompress(raw []byte) ([]byte, error) {
+	size, n := decodeVarint32(raw)
+	if n <= 0 {
+		return raw, ErrDecompress
+	}
+
+	output := make([]byte, size)
+	return zstd.Decompress(output, raw[n:])
+}
+
+func DecompressBlock(raw []byte, tp CompressionType) ([]byte, error) {
+	switch tp {
+	case CompressionLz4:
+		return lz4Decompress(raw)
+	case CompressionSnappy:
+		return snappyDecompress(raw)
+	case CompressionZstd:
+		return zstdDecompress(raw)
+	case CompressionNone:
+		return raw, nil
+	default:
+		panic("unreachable branch")
+	}
 }
