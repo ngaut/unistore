@@ -42,33 +42,33 @@ func lz4Compress(input, dst []byte) []byte {
 	return dst[:len(decompressedSize)+n]
 }
 
-func isGoodCompressionRatio(compressed, raw []byte) bool {
-	cl, rl := len(compressed), len(raw)
+func isGoodCompressionRatio(compressed, input []byte) bool {
+	cl, rl := len(compressed), len(input)
 	return cl < rl-(rl/8)
 }
 
-func CompressBlock(tp CompressionType, raw, dst []byte) ([]byte, bool) {
+func CompressBlock(tp CompressionType, input, dst []byte) ([]byte, bool) {
 	var compressed []byte
 	switch tp {
 	case CompressionLz4:
-		compressed = lz4Compress(raw, dst)
+		compressed = lz4Compress(input, dst)
 	case CompressionNone:
-		return raw, false
+		return input, false
 	case CompressionSnappy:
 		panic("unsupported")
 	case CompressionZstd:
 		panic("unsupported")
 	}
-	if compressed == nil || !isGoodCompressionRatio(compressed, raw) {
-		return raw, false
+	if compressed == nil || !isGoodCompressionRatio(compressed, input) {
+		return input, false
 	}
 	return compressed, true
 }
 
-func lz4Decompress(raw, dst []byte) ([]byte, error) {
-	size, n := decodeVarint32(raw)
+func lz4Decompress(input, dst []byte) ([]byte, error) {
+	size, n := decodeVarint32(input)
 	if n <= 0 {
-		return raw, ErrDecompress
+		return input, ErrDecompress
 	}
 
 	if uint32(cap(dst)) < size {
@@ -77,16 +77,16 @@ func lz4Decompress(raw, dst []byte) ([]byte, error) {
 		dst = dst[:size]
 	}
 
-	_, err := lz4.UncompressBlock(raw[n:], dst)
+	_, err := lz4.UncompressBlock(input[n:], dst)
 	return dst, err
 }
 
-func DecompressBlock(tp CompressionType, raw, dst []byte) ([]byte, error) {
+func DecompressBlock(tp CompressionType, input, dst []byte) ([]byte, error) {
 	switch tp {
 	case CompressionLz4:
-		return lz4Decompress(raw, dst)
+		return lz4Decompress(input, dst)
 	case CompressionNone:
-		return raw, nil
+		return input, nil
 	case CompressionSnappy:
 		panic("unsupported")
 	case CompressionZstd:
