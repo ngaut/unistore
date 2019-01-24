@@ -3,7 +3,7 @@ package rocksdb
 import (
 	"os"
 
-	"github.com/pkg/errors"
+	"github.com/pingcap/errors"
 )
 
 var (
@@ -22,18 +22,22 @@ type SstFileIterator struct {
 	checksumType   ChecksumType
 }
 
-func NewSstFileIterator(f *os.File) *SstFileIterator {
-	return &SstFileIterator{
+func NewSstFileIterator(f *os.File) (*SstFileIterator, error) {
+	it := &SstFileIterator{
 		f:             f,
 		dataBlockIter: new(blockIterator),
 	}
+
+	if err := it.loadIndexBlock(); err != nil {
+		return nil, err
+	}
+
+	return it, nil
 }
 
 func (it *SstFileIterator) SeekToFirst() {
-	if err := it.loadIndexBlock(); err != nil {
-		it.setErr(err)
-		return
-	}
+	it.indexBlockIter.Rewind()
+	it.invalid = false
 	if err := it.loadNextDataBlk(); err != nil {
 		it.setErr(err)
 		return
@@ -110,8 +114,7 @@ func (it *SstFileIterator) decompressBlock(data []byte) ([]byte, error) {
 	switch it.checksumType {
 	case ChecksumCRC32:
 		crc := newCrc32()
-		crc.Write(data[:trailerPos])
-		crc.Write([]byte{data[trailerPos]})
+		crc.Write(data[:trailerPos+1])
 		sum := crc.Sum32()
 		expected := unmaskCrc32(rocksEndian.Uint32(data[trailerPos+1:]))
 		if expected != sum {

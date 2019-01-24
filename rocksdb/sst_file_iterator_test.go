@@ -24,18 +24,6 @@ func TestNoCompression(t *testing.T) {
 	})
 }
 
-func TestSnappyCompression(t *testing.T) {
-	opts := NewDefaultBlockBasedTableOptions(bytes.Compare)
-	opts.CompressionType = CompressionSnappy
-
-	t.Run("small", func(t *testing.T) {
-		testSstReadWrite(t, smallTestSize, opts)
-	})
-	t.Run("large", func(t *testing.T) {
-		testSstReadWrite(t, largeTestSize, opts)
-	})
-}
-
 func TestLz4Compression(t *testing.T) {
 	opts := NewDefaultBlockBasedTableOptions(bytes.Compare)
 	opts.CompressionType = CompressionLz4
@@ -48,21 +36,9 @@ func TestLz4Compression(t *testing.T) {
 	})
 }
 
-func TestZstdCompression(t *testing.T) {
-	opts := NewDefaultBlockBasedTableOptions(bytes.Compare)
-	opts.CompressionType = CompressionZstd
-
-	t.Run("small", func(t *testing.T) {
-		testSstReadWrite(t, smallTestSize, opts)
-	})
-	t.Run("large", func(t *testing.T) {
-		testSstReadWrite(t, largeTestSize, opts)
-	})
-}
-
 func TestBlockAlign(t *testing.T) {
 	opts := NewDefaultBlockBasedTableOptions(bytes.Compare)
-	opts.CompressionType = CompressionSnappy
+	opts.CompressionType = CompressionLz4
 	opts.BlockAlign = true
 
 	t.Run("small", func(t *testing.T) {
@@ -101,16 +77,19 @@ func testSstReadWrite(t *testing.T, num int, opts *BlockBasedTableOptions) {
 	}
 	require.Nil(t, w.Finish())
 
-	var i int
-	it := NewSstFileIterator(f)
-	for it.SeekToFirst(); it.Valid(); it.Next() {
-		key := it.Key()
-		value := string(it.Value())
+	it, err := NewSstFileIterator(f)
+	require.Nil(t, err)
+	for n := 0; n < 2; n++ {
+		var i int
+		for it.SeekToFirst(); it.Valid(); it.Next() {
+			key := it.Key()
+			value := string(it.Value())
 
-		require.Equal(t, nums[i], string(key.UserKey))
-		require.Equal(t, nums[i], string(value))
-		i++
+			require.Equal(t, nums[i], string(key.UserKey))
+			require.Equal(t, nums[i], string(value))
+			i++
+		}
+		require.Equal(t, num, i)
+		require.Nil(t, it.Err())
 	}
-	require.Equal(t, num, i)
-	require.Nil(t, it.Err())
 }

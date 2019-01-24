@@ -16,8 +16,12 @@ func newBlockIterator(block []byte) *blockIterator {
 }
 
 func (it *blockIterator) SeekToFirst() {
-	it.cursor = 0
+	it.Rewind()
 	it.Next()
+}
+
+func (it *blockIterator) Rewind() {
+	it.cursor = 0
 }
 
 func (it *blockIterator) Next() {

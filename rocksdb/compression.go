@@ -12,19 +12,11 @@ package rocksdb
 import (
 	"math"
 
-	"github.com/DataDog/zstd"
-	"github.com/golang/snappy"
 	"github.com/pierrec/lz4"
-	"github.com/pkg/errors"
+	"github.com/pingcap/errors"
 )
 
 var ErrDecompress = errors.New("Error during decompress")
-
-func snappyCompress(input []byte) []byte {
-	outputBound := snappy.MaxEncodedLen(len(input))
-	output := make([]byte, outputBound)
-	return snappy.Encode(output, input)
-}
 
 func lz4Compress(input []byte) []byte {
 	rawLen := len(input)
@@ -45,24 +37,6 @@ func lz4Compress(input []byte) []byte {
 	return output[:len(decompressedSize)+n]
 }
 
-func zstdCompress(input []byte) []byte {
-	rawLen := len(input)
-	if rawLen > math.MaxUint32 {
-		return nil
-	}
-
-	var varintBuf [5]byte
-	decompressedSize := encodeVarint32(varintBuf[:], uint32(rawLen))
-	outputBound := zstd.CompressBound(rawLen)
-	output := make([]byte, len(decompressedSize)+outputBound)
-	copy(output, decompressedSize)
-	compressed, err := zstd.CompressLevel(output[len(decompressedSize):], input, 3)
-	if err != nil {
-		return nil
-	}
-	return output[:len(decompressedSize)+len(compressed)]
-}
-
 func isGoodCompressionRatio(compressed, raw []byte) bool {
 	cl, rl := len(compressed), len(raw)
 	return cl < rl-(rl/8)
@@ -73,21 +47,17 @@ func CompressBlock(raw []byte, tp CompressionType) ([]byte, bool) {
 	switch tp {
 	case CompressionLz4:
 		compressed = lz4Compress(raw)
-	case CompressionSnappy:
-		compressed = snappyCompress(raw)
-	case CompressionZstd:
-		compressed = zstdCompress(raw)
 	case CompressionNone:
 		return raw, false
+	case CompressionSnappy:
+		panic("unsupported")
+	case CompressionZstd:
+		panic("unsupported")
 	}
 	if compressed == nil || !isGoodCompressionRatio(compressed, raw) {
 		return raw, false
 	}
 	return compressed, true
-}
-
-func snappyDecompress(raw []byte) ([]byte, error) {
-	return snappy.Decode(nil, raw)
 }
 
 func lz4Decompress(raw []byte) ([]byte, error) {
@@ -101,26 +71,16 @@ func lz4Decompress(raw []byte) ([]byte, error) {
 	return output, err
 }
 
-func zstdDecompress(raw []byte) ([]byte, error) {
-	size, n := decodeVarint32(raw)
-	if n <= 0 {
-		return raw, ErrDecompress
-	}
-
-	output := make([]byte, size)
-	return zstd.Decompress(output, raw[n:])
-}
-
 func DecompressBlock(raw []byte, tp CompressionType) ([]byte, error) {
 	switch tp {
 	case CompressionLz4:
 		return lz4Decompress(raw)
-	case CompressionSnappy:
-		return snappyDecompress(raw)
-	case CompressionZstd:
-		return zstdDecompress(raw)
 	case CompressionNone:
 		return raw, nil
+	case CompressionSnappy:
+		panic("unsupported")
+	case CompressionZstd:
+		panic("unsupported")
 	default:
 		panic("unreachable branch")
 	}

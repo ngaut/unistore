@@ -10,9 +10,10 @@
 package rocksdb
 
 import (
-	"github.com/coocood/badger/y"
-	"github.com/pkg/errors"
 	"os"
+
+	"github.com/coocood/badger/y"
+	"github.com/pingcap/errors"
 )
 
 var (
