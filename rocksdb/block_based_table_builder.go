@@ -236,15 +236,7 @@ func (b *BlockBasedTableBuilder) setupProperties() {
 	p.PrefixExtractorName = b.opts.PrefixExtractorName
 }
 
-// Some compression libraries fail when the raw size is bigger than int. If
-// uncompressed size is bigger than kCompressionSizeLimit, don't compress it
-const compressionSizeLimit = math.MaxInt64
-
 func (b *BlockBasedTableBuilder) writeBlock(blockContents []byte, handle *blockHandle, isDataBlock bool) error {
-	if len(blockContents) >= compressionSizeLimit {
-		return b.writeRawBlock(blockContents, CompressionNone, handle, isDataBlock)
-	}
-
 	tp := b.opts.CompressionType
 	compressedBlock, compressed := CompressBlock(tp, blockContents, b.compressBuf)
 	if !compressed {
