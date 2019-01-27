@@ -1,4 +1,4 @@
-package mvcccodec
+package mvcc
 
 import (
 	"encoding/binary"

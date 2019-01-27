@@ -13,7 +13,7 @@ import (
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/rowcodec"
-	"github.com/ngaut/unistore/tikv/mvcccodec"
+	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/tidb/util/codec"
 )
@@ -171,8 +171,8 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 				}
 				m.Value = buf
 			}
-			lock := mvcccodec.MvccLock{
-				MvccLockHdr: mvcccodec.MvccLockHdr{
+			lock := mvcc.MvccLock{
+				MvccLockHdr: mvcc.MvccLockHdr{
 					StartTS:    startTS,
 					Op:         uint8(m.Op),
 					HasOldVer:  oldMeta != nil,
@@ -199,7 +199,7 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 
 func (store *MVCCStore) checkPrewriteInLockStore(
 	req *requestCtx, mutation *kvrpcpb.Mutation, startTS uint64) (duplicate bool, err error) {
-	req.buf = mvcccodec.EncodeRollbackKey(req.buf, mutation.Key, startTS)
+	req.buf = mvcc.EncodeRollbackKey(req.buf, mutation.Key, startTS)
 	if len(store.rollbackStore.Get(req.buf, nil)) > 0 {
 		return false, ErrAlreadyRollback
 	}
@@ -207,7 +207,7 @@ func (store *MVCCStore) checkPrewriteInLockStore(
 	if len(req.buf) == 0 {
 		return false, nil
 	}
-	lock := mvcccodec.DecodeLock(req.buf)
+	lock := mvcc.DecodeLock(req.buf)
 	if lock.StartTS == startTS {
 		// Same ts, no need to overwrite.
 		return true, nil
@@ -223,7 +223,7 @@ func (store *MVCCStore) checkPrewriteInLockStore(
 // checkPrewrietInDB checks that there is no committed version greater than startTS or return write conflict error.
 // And it returns the old version if there is one.
 func (store *MVCCStore) checkPrewriteInDB(
-	req *requestCtx, txn *badger.Txn, mutation *kvrpcpb.Mutation, startTS uint64) (userMeta mvcccodec.DBUserMeta, val []byte, err error) {
+	req *requestCtx, txn *badger.Txn, mutation *kvrpcpb.Mutation, startTS uint64) (userMeta mvcc.DBUserMeta, val []byte, err error) {
 	item, err := txn.Get(mutation.Key)
 	if err != nil && err != badger.ErrKeyNotFound {
 		return nil, nil, err
@@ -231,7 +231,7 @@ func (store *MVCCStore) checkPrewriteInDB(
 	if item == nil {
 		return nil, nil, nil
 	}
-	userMeta = mvcccodec.DBUserMeta(item.UserMeta())
+	userMeta = mvcc.DBUserMeta(item.UserMeta())
 	if userMeta.CommitTS() > startTS {
 		return nil, nil, ErrRetryable("write conflict")
 	}
@@ -250,7 +250,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 	regCtx := req.regCtx
 	hashVals := keysToHashVals(keys...)
 	dbBatch := newWriteDBBatch(req)
-	userMeta := mvcccodec.NewDBUserMeta(startTS, commitTS)
+	userMeta := mvcc.NewDBUserMeta(startTS, commitTS)
 
 	regCtx.acquireLatches(hashVals)
 	defer regCtx.releaseLatches(hashVals)
@@ -264,7 +264,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 			// the others keys must not be found too.
 			return store.handleLockNotFound(req, key, startTS, commitTS)
 		}
-		lock := mvcccodec.DecodeLock(buf)
+		lock := mvcc.DecodeLock(buf)
 		if lock.StartTS != startTS {
 			return ErrReplaced
 		}
@@ -274,7 +274,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 		tmpDiff += len(key) + len(lock.Value) + len(userMeta)
 		dbBatch.set(key, lock.Value, userMeta)
 		if lock.HasOldVer {
-			oldKey := mvcccodec.EncodeOldKey(key, lock.OldMeta.CommitTS())
+			oldKey := mvcc.EncodeOldKey(key, lock.OldMeta.CommitTS())
 			dbBatch.set(oldKey, lock.OldVal, lock.OldMeta.ToOldUserMeta(commitTS))
 		}
 	}
@@ -301,13 +301,13 @@ func (store *MVCCStore) handleLockNotFound(reqCtx *requestCtx, key []byte, start
 	if item == nil {
 		return ErrLockNotFound
 	}
-	useMeta := mvcccodec.DBUserMeta(item.UserMeta())
+	useMeta := mvcc.DBUserMeta(item.UserMeta())
 	if useMeta.StartTS() == startTS {
 		// Already committed.
 		return nil
 	} else {
 		// The transaction may be committed and moved to old data, we need to look for that.
-		oldKey := mvcccodec.EncodeOldKey(key, commitTS)
+		oldKey := mvcc.EncodeOldKey(key, commitTS)
 		_, err = txn.Get(oldKey)
 		if err == nil {
 			// Found committed key.
@@ -350,7 +350,7 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 }
 
 func (store *MVCCStore) rollbackKeyReadLock(batch *writeLockBatch, key []byte, startTS uint64) (status int) {
-	batch.buf = mvcccodec.EncodeRollbackKey(batch.buf, key, startTS)
+	batch.buf = mvcc.EncodeRollbackKey(batch.buf, key, startTS)
 	rollbackKey := safeCopy(batch.buf)
 	batch.buf = store.rollbackStore.Get(rollbackKey, batch.buf)
 	if len(batch.buf) != 0 {
@@ -360,7 +360,7 @@ func (store *MVCCStore) rollbackKeyReadLock(batch *writeLockBatch, key []byte, s
 	batch.buf = store.lockStore.Get(key, batch.buf)
 	hasLock := len(batch.buf) > 0
 	if hasLock {
-		lock := mvcccodec.DecodeLock(batch.buf)
+		lock := mvcc.DecodeLock(batch.buf)
 		if lock.StartTS < startTS {
 			// The lock is old, means this is written by an old transaction, and the current transaction may not arrive.
 			// We should write a rollback lock.
@@ -381,7 +381,7 @@ func (store *MVCCStore) rollbackKeyReadLock(batch *writeLockBatch, key []byte, s
 }
 
 func (store *MVCCStore) rollbackKeyReadDB(req *requestCtx, batch *writeLockBatch, key []byte, startTS uint64, hasLock bool) error {
-	batch.buf = mvcccodec.EncodeRollbackKey(batch.buf, key, startTS)
+	batch.buf = mvcc.EncodeRollbackKey(batch.buf, key, startTS)
 	rollbackKey := safeCopy(batch.buf)
 	reader := req.getDBReader()
 	item, err := reader.txn.Get(key)
@@ -399,7 +399,7 @@ func (store *MVCCStore) rollbackKeyReadDB(req *requestCtx, batch *writeLockBatch
 		// Not committed.
 		return nil
 	}
-	userMeta := mvcccodec.DBUserMeta(item.UserMeta())
+	userMeta := mvcc.DBUserMeta(item.UserMeta())
 	if userMeta.StartTS() == startTS {
 		return ErrAlreadyCommitted(userMeta.CommitTS())
 	}
@@ -410,7 +410,7 @@ func (store *MVCCStore) rollbackKeyReadDB(req *requestCtx, batch *writeLockBatch
 	}
 	// val.startTS > startTS, look for the key in the old version to check if the key is committed.
 	it := reader.getOldIter()
-	oldKey := mvcccodec.EncodeOldKey(key, userMeta.CommitTS())
+	oldKey := mvcc.EncodeOldKey(key, userMeta.CommitTS())
 	// find greater commit version.
 	for it.Seek(oldKey); it.ValidForPrefix(oldKey[:len(oldKey)-8]); it.Next() {
 		item := it.Item()
@@ -422,7 +422,7 @@ func (store *MVCCStore) rollbackKeyReadDB(req *requestCtx, batch *writeLockBatch
 		if err != nil {
 			return errors.Trace(err)
 		}
-		if mvcccodec.OldUserMeta(item.UserMeta()).StartTS() == startTS {
+		if mvcc.OldUserMeta(item.UserMeta()).StartTS() == startTS {
 			return ErrAlreadyCommitted(ts)
 		}
 	}
@@ -434,7 +434,7 @@ func isVisibleKey(key []byte, startTS uint64) bool {
 	return startTS >= ts
 }
 
-func checkLock(lock mvcccodec.MvccLock, key []byte, startTS uint64) error {
+func checkLock(lock mvcc.MvccLock, key []byte, startTS uint64) error {
 	lockVisible := lock.StartTS < startTS
 	isWriteLock := lock.Op == uint8(kvrpcpb.Op_Put) || lock.Op == uint8(kvrpcpb.Op_Del)
 	isPrimaryGet := startTS == maxSystemTS && bytes.Equal(lock.Primary, key)
@@ -456,7 +456,7 @@ func (store *MVCCStore) CheckKeysLock(startTS uint64, keys ...[]byte) error {
 		if len(buf) == 0 {
 			continue
 		}
-		lock := mvcccodec.DecodeLock(buf)
+		lock := mvcc.DecodeLock(buf)
 		err := checkLock(lock, key, startTS)
 		if err != nil {
 			return err
@@ -475,7 +475,7 @@ func (store *MVCCStore) CheckRangeLock(startTS uint64, startKey, endKey []byte) 
 		if exceedEndKey(it.Key(), endKey) {
 			break
 		}
-		lock := mvcccodec.DecodeLock(it.Value())
+		lock := mvcc.DecodeLock(it.Value())
 		err := checkLock(lock, it.Key(), startTS)
 		if err != nil {
 			return err
@@ -514,7 +514,7 @@ func (store *MVCCStore) ScanLock(reqCtx *requestCtx, maxSystemTS uint64) ([]*kvr
 		if exceedEndKey(it.Key(), reqCtx.regCtx.endKey) {
 			return locks, nil
 		}
-		lock := mvcccodec.DecodeLock(it.Value())
+		lock := mvcc.DecodeLock(it.Value())
 		if lock.StartTS < maxSystemTS {
 			locks = append(locks, &kvrpcpb.LockInfo{
 				PrimaryLock: lock.Primary,
@@ -539,7 +539,7 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 		if exceedEndKey(it.Key(), regCtx.endKey) {
 			break
 		}
-		lock := mvcccodec.DecodeLock(it.Value())
+		lock := mvcc.DecodeLock(it.Value())
 		if lock.StartTS != startTS {
 			continue
 		}
@@ -552,10 +552,10 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 	hashVals := keysToHashVals(lockKeys...)
 	lockBatch := newWriteLockBatch(reqCtx)
 	var dbBatch *writeDBBatch
-	var userMeta mvcccodec.DBUserMeta
+	var userMeta mvcc.DBUserMeta
 	if commitTS > 0 {
 		dbBatch = newWriteDBBatch(reqCtx)
-		userMeta = mvcccodec.NewDBUserMeta(startTS, commitTS)
+		userMeta = mvcc.NewDBUserMeta(startTS, commitTS)
 	}
 
 	regCtx.acquireLatches(hashVals)
@@ -567,7 +567,7 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 		// We need to check again make sure the lock is not changed.
 		if bytes.Equal(buf, lockVals[i]) {
 			if commitTS > 0 {
-				lock := mvcccodec.DecodeLock(lockVals[i])
+				lock := mvcc.DecodeLock(lockVals[i])
 				dbBatch.set(lockKey, lock.Value, userMeta)
 			}
 			lockBatch.delete(lockKey)
@@ -591,8 +591,8 @@ const delRangeBatchSize = 4096
 
 func (store *MVCCStore) DeleteRange(reqCtx *requestCtx, startKey, endKey []byte) error {
 	keys := make([][]byte, 0, delRangeBatchSize)
-	oldStartKey := mvcccodec.EncodeOldKey(startKey, maxSystemTS)
-	oldEndKey := mvcccodec.EncodeOldKey(endKey, maxSystemTS)
+	oldStartKey := mvcc.EncodeOldKey(startKey, maxSystemTS)
+	oldEndKey := mvcc.EncodeOldKey(endKey, maxSystemTS)
 	reader := reqCtx.getDBReader()
 	keys = store.collectRangeKeys(reader.getIter(), startKey, endKey, keys)
 	keys = store.collectRangeKeys(reader.getIter(), oldStartKey, oldEndKey, keys)
@@ -704,12 +704,12 @@ func (f *GCCompactionFilter) Filter(key, value, userMeta []byte) badger.Decision
 	switch key[0] {
 	case metaPrefix, tablePrefix:
 		// For latest version, we can only remove `delete` key, which has value len 0.
-		if mvcccodec.DBUserMeta(userMeta).CommitTS() < f.safePoint && len(value) == 0 {
+		if mvcc.DBUserMeta(userMeta).CommitTS() < f.safePoint && len(value) == 0 {
 			return badger.DecisionMarkTombstone
 		}
 	case metaOldPrefix, tableOldPrefix:
 		// The key is old version key.
-		if mvcccodec.OldUserMeta(userMeta).NextCommitTS() < f.safePoint {
+		if mvcc.OldUserMeta(userMeta).NextCommitTS() < f.safePoint {
 			return badger.DecisionDrop
 		}
 	}
