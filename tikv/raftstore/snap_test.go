@@ -6,10 +6,13 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/coocood/badger"
+	"github.com/coreos/etcd/pkg/fileutil"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/errors"
@@ -212,7 +215,6 @@ func doTestSnapFile(t *testing.T, dbHasData bool) {
 	snapData.Region = region
 	stat := new(SnapStatistics)
 	assert.Nil(t, s1.Build(dbSnap, region, snapData, stat, deleter))
-	require.NotNil(t, snapData.Meta)
 
 	// Ensure that this snapshot file does exist after being built.
 	assert.True(t, s1.Exists())
@@ -288,4 +290,231 @@ func doTestSnapFile(t *testing.T, dbHasData bool) {
 	if dbHasData {
 		assertEqDB(t, dbSnap, dstDBSnap)
 	}
+}
+
+func TestSnapValidation(t *testing.T) {
+	doTestSnapValidation(t, false)
+	doTestSnapValidation(t, true)
+}
+
+func doTestSnapValidation(t *testing.T, dbHasData bool) {
+	regionID := uint64(1)
+	region := genTestRegion(regionID, 1, 1)
+	dir, err := ioutil.TempDir("", "snapshot")
+	require.Nil(t, err)
+	defer os.RemoveAll(dir)
+	dbSnap := openDBSnapshot(t, dir)
+	if dbHasData {
+		fillDBSnapshotData(t, dbSnap)
+	}
+
+	snapDir, err := ioutil.TempDir("", "snapshot")
+	require.Nil(t, err)
+	defer os.RemoveAll(snapDir)
+	key := &SnapKey{RegionID: regionID, Term: 1, Index: 1}
+	sizeTrack := new(int64)
+	deleter := &dummyDeleter{}
+	s1, err := NewSnapForBuilding(snapDir, key, sizeTrack, deleter, nil)
+	require.Nil(t, err)
+	assert.False(t, s1.Exists())
+
+	snapData := new(rspb.RaftSnapshotData)
+	snapData.Region = region
+	stat := new(SnapStatistics)
+	assert.Nil(t, s1.Build(dbSnap, region, snapData, stat, deleter))
+	assert.True(t, s1.Exists())
+
+	s2, err := NewSnapForBuilding(snapDir, key, sizeTrack, deleter, nil)
+	require.Nil(t, err)
+	assert.True(t, s2.Exists())
+	assert.Nil(t, s2.Build(dbSnap, region, snapData, stat, deleter))
+	assert.True(t, s2.Exists())
+}
+
+func TestSnapshotCorruptionSizeOrChecksum(t *testing.T) {
+	regionID := uint64(1)
+	region := genTestRegion(regionID, 1, 1)
+	dir, err := ioutil.TempDir("", "snapshot")
+	require.Nil(t, err)
+	defer os.RemoveAll(dir)
+	dbSnap := openDBSnapshot(t, dir)
+	fillDBSnapshotData(t, dbSnap)
+
+	snapDir, err := ioutil.TempDir("", "snapshot")
+	require.Nil(t, err)
+	defer os.RemoveAll(snapDir)
+	key := &SnapKey{RegionID: regionID, Term: 1, Index: 1}
+	sizeTrack := new(int64)
+	deleter := &dummyDeleter{}
+	s1, err := NewSnapForBuilding(snapDir, key, sizeTrack, deleter, nil)
+	assert.False(t, s1.Exists())
+	snapData := new(rspb.RaftSnapshotData)
+	snapData.Region = region
+	stat := new(SnapStatistics)
+	assert.Nil(t, s1.Build(dbSnap, region, snapData, stat, deleter))
+
+	corruptSnapSizeIn(t, snapDir)
+	_, err = NewSnapForSending(snapDir, key, sizeTrack, deleter)
+	require.NotNil(t, err)
+
+	s2, err := NewSnapForBuilding(snapDir, key, sizeTrack, deleter, nil)
+	assert.False(t, s2.Exists())
+	assert.Nil(t, s2.Build(dbSnap, region, snapData, stat, deleter))
+	assert.True(t, s2.Exists())
+
+	dstDir, err := ioutil.TempDir("", "snapshot")
+	require.Nil(t, err)
+	defer os.RemoveAll(dstDir)
+
+	copySnapshotForTest(t, snapDir, dstDir, key, sizeTrack, snapData.Meta, deleter)
+
+	metas := corruptSnapshotChecksumIn(t, dstDir)
+	assert.Equal(t, 1, len(metas))
+
+	snapMeta := metas[0]
+	s5, err := NewSnapForApplying(dstDir, key, sizeTrack, deleter)
+	require.Nil(t, err)
+	require.True(t, s5.Exists())
+
+	dstDBDir, err := ioutil.TempDir("", "snapshot")
+	require.Nil(t, err)
+	defer os.RemoveAll(dstDBDir)
+
+	abort := new(uint64)
+	*abort = JobStatusRunning
+	dstDBSnap := openDBSnapshot(t, dstDBDir)
+	opts := ApplyOptions{
+		DBSnap:    dstDBSnap,
+		Region:    region,
+		Abort:     abort,
+		BatchSize: testWriteBatchSize,
+	}
+	require.NotNil(t, s5.Apply(opts))
+
+	corruptSnapSizeIn(t, dstDir)
+	_, err = NewSnapForReceiving(dstDir, key, snapMeta, sizeTrack, deleter, nil)
+	require.NotNil(t, err)
+	_, err = NewSnapForApplying(dstDir, key, sizeTrack, deleter)
+	require.NotNil(t, err)
+}
+
+func corruptSnapSizeIn(t *testing.T, dir string) {
+	filePaths, err := fileutil.ReadDir(dir)
+	require.Nil(t, err)
+	for _, filePath := range filePaths {
+		if !strings.HasSuffix(filePath, metaFileSuffix) {
+			file, err1 := os.OpenFile(filepath.Join(dir, filePath), os.O_APPEND|os.O_WRONLY, 0600)
+			require.Nil(t, err1)
+			_, err1 = file.Write([]byte("xxxxx"))
+			require.Nil(t, err1)
+		}
+	}
+}
+
+func copySnapshotForTest(t *testing.T, fromDir, toDir string, key *SnapKey, sizeTrack *int64,
+	snapMeta *rspb.SnapshotMeta, deleter SnapshotDeleter) {
+	fromSnap, err := NewSnapForSending(fromDir, key, sizeTrack, deleter)
+	require.Nil(t, err)
+	assert.True(t, fromSnap.Exists())
+	toSnap, err := NewSnapForReceiving(toDir, key, snapMeta, sizeTrack, deleter, nil)
+	assert.False(t, toSnap.Exists())
+	_, err = io.Copy(toSnap, fromSnap)
+	assert.Nil(t, err)
+	assert.Nil(t, toSnap.Save())
+	assert.True(t, toSnap.Exists())
+}
+
+func corruptSnapshotChecksumIn(t *testing.T, dir string) (result []*rspb.SnapshotMeta) {
+	filePaths, err1 := fileutil.ReadDir(dir)
+	require.Nil(t, err1)
+	for _, fileName := range filePaths {
+		if strings.HasSuffix(fileName, metaFileSuffix) {
+			fileFullPath := filepath.Join(dir, fileName)
+			snapMeta := new(rspb.SnapshotMeta)
+			data, err := ioutil.ReadFile(fileFullPath)
+			require.Nil(t, err)
+			require.Nil(t, snapMeta.Unmarshal(data))
+			for _, cf := range snapMeta.CfFiles {
+				cf.Checksum += 100
+			}
+			data, err = snapMeta.Marshal()
+			require.Nil(t, err)
+			file, err := os.OpenFile(fileFullPath, os.O_TRUNC|os.O_WRONLY, 0600)
+			require.Nil(t, err)
+			_, err = file.Write(data)
+			require.Nil(t, err)
+			file.Close()
+			result = append(result, snapMeta)
+		}
+	}
+	return
+}
+
+func corruptSnapshotMetaFile(t *testing.T, dir string) int {
+	total := 0
+	filePaths, err1 := fileutil.ReadDir(dir)
+	require.Nil(t, err1)
+	for _, fileName := range filePaths {
+		if strings.HasSuffix(fileName, metaFileSuffix) {
+			fileFullPath := filepath.Join(dir, fileName)
+			data, err := ioutil.ReadFile(fileFullPath)
+			require.Nil(t, err)
+			// Make the last byte of the meta file corrupted
+			// by turning over all bits of it
+			lastByte := &data[len(data)-1]
+			*lastByte = ^(*lastByte)
+			file, err := os.OpenFile(fileFullPath, os.O_TRUNC|os.O_WRONLY, 0600)
+			require.Nil(t, err)
+			_, err = file.Write(data)
+			require.Nil(t, err)
+			file.Close()
+			total++
+		}
+	}
+	return total
+}
+
+func TestSnapshotCorruptionOnMetaFile(t *testing.T) {
+	regionID := uint64(1)
+	region := genTestRegion(regionID, 1, 1)
+	dir, err := ioutil.TempDir("", "snapshot")
+	require.Nil(t, err)
+	defer os.RemoveAll(dir)
+	dbSnap := openDBSnapshot(t, dir)
+	fillDBSnapshotData(t, dbSnap)
+
+	snapDir, err := ioutil.TempDir("", "snapshot")
+	require.Nil(t, err)
+	defer os.RemoveAll(snapDir)
+	key := &SnapKey{RegionID: regionID, Term: 1, Index: 1}
+	sizeTrack := new(int64)
+	deleter := &dummyDeleter{}
+	s1, err := NewSnapForBuilding(snapDir, key, sizeTrack, deleter, nil)
+	assert.False(t, s1.Exists())
+	snapData := new(rspb.RaftSnapshotData)
+	snapData.Region = region
+	stat := new(SnapStatistics)
+	assert.Nil(t, s1.Build(dbSnap, region, snapData, stat, deleter))
+
+	assert.Equal(t, 1, corruptSnapshotMetaFile(t, snapDir))
+	_, err = NewSnapForSending(snapDir, key, sizeTrack, deleter)
+	require.NotNil(t, err)
+
+	s2, err := NewSnapForBuilding(snapDir, key, sizeTrack, deleter, nil)
+	assert.False(t, s2.Exists())
+	assert.Nil(t, s2.Build(dbSnap, region, snapData, stat, deleter))
+	assert.True(t, s2.Exists())
+
+	dstDir, err := ioutil.TempDir("", "snapshot")
+	require.Nil(t, err)
+	defer os.RemoveAll(dstDir)
+
+	copySnapshotForTest(t, snapDir, dstDir, key, sizeTrack, snapData.Meta, deleter)
+
+	assert.Equal(t, 1, corruptSnapshotMetaFile(t, dstDir))
+
+	_, err = NewSnapForApplying(dstDir, key, sizeTrack, deleter)
+	require.NotNil(t, err)
+	_, err = NewSnapForReceiving(dstDir, key, snapData.Meta, sizeTrack, deleter, nil)
+	require.NotNil(t, err)
 }

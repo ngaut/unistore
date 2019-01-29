@@ -120,7 +120,7 @@ func OriginKey(key []byte) []byte {
 
 func DataEndKey(key []byte) []byte {
 	if len(key) == 0 {
-		return DataMinKey
+		return DataMaxKey
 	}
 	return DataKey(key)
 }
