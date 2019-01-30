@@ -48,11 +48,11 @@ func main() {
 	log.SetLevelByString(*logLevel)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 	go func() {
+		log.Infof("listening on %v", *httpAddr)
 		err := http.ListenAndServe(*httpAddr, nil)
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Infof("listening on %v", *httpAddr)
 	}()
 
 	numDB := 2
