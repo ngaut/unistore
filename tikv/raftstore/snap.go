@@ -81,11 +81,7 @@ func SnapKeyFromSnap(snap *raftpb.Snapshot) (*SnapKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &SnapKey{
-		RegionID: data.Region.Id,
-		Term:     snap.Metadata.Term,
-		Index:    snap.Metadata.Index,
-	}, nil
+	return SnapKeyFromRegionSnap(data.Region.Id, snap), nil
 }
 
 type SnapStatistics struct {
@@ -94,7 +90,7 @@ type SnapStatistics struct {
 }
 
 type ApplyOptions struct {
-	DBSnap    *DBSnapshot
+	DBBundle  *DBBundle
 	Region    *metapb.Region
 	Abort     *uint64
 	BatchSize int
@@ -110,7 +106,7 @@ type ApplyOptions struct {
 type Snapshot interface {
 	io.Reader
 	io.Writer
-	Build(dbsnap *DBSnapshot, region *metapb.Region, snapData *rspb.RaftSnapshotData,
+	Build(dbBundle *DBBundle, region *metapb.Region, snapData *rspb.RaftSnapshotData,
 		stat *SnapStatistics, deleter SnapshotDeleter) error
 	Path() string
 	Exists() bool
@@ -126,7 +122,10 @@ type Snapshot interface {
 func copySnapshot(to, from Snapshot) error {
 	if !to.Exists() {
 		_, err := io.Copy(to, from)
-		return errors.WithStack(err)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		return to.Save()
 	}
 	return nil
 }
@@ -156,6 +155,7 @@ func genSnapshotMeta(cfFiles []*CFFile) (*rspb.SnapshotMeta, error) {
 		for _, snapCF := range snapshotCFs {
 			if snapCF == cfFile.CF {
 				found = true
+				break
 			}
 		}
 		if !found {
@@ -544,7 +544,7 @@ func (s *Snap) saveMetaFile() error {
 	return nil
 }
 
-func (s *Snap) Build(dbSnap *DBSnapshot, region *metapb.Region, snapData *rspb.RaftSnapshotData,
+func (s *Snap) Build(dbSnap *DBBundle, region *metapb.Region, snapData *rspb.RaftSnapshotData,
 	stat *SnapStatistics, deleter SnapshotDeleter) error {
 	if s.Exists() {
 		err := s.validate(dbSnap.db)
@@ -701,7 +701,7 @@ func (s *Snap) Save() error {
 }
 
 func (s *Snap) Apply(opts ApplyOptions) error {
-	err := s.validate(opts.DBSnap.db)
+	err := s.validate(opts.DBBundle.db)
 	if err != nil {
 		return err
 	}
@@ -727,19 +727,19 @@ func (s *Snap) Apply(opts ApplyOptions) error {
 		case applySnapTypePut:
 			batch.SetWithUserMeta(item.key, item.val, item.useMeta)
 			if batch.size >= opts.BatchSize {
-				err = batch.WriteToDB(opts.DBSnap.db)
+				err = batch.WriteToDB(opts.DBBundle.db)
 				if err != nil {
 					return err
 				}
 				batch = new(WriteBatch)
 			}
 		case applySnapTypeLock:
-			opts.DBSnap.lockStore.Insert(item.key, item.val)
+			opts.DBBundle.lockStore.Insert(item.key, item.val)
 		case applySnapTypeRollback:
-			opts.DBSnap.rollbackStore.Insert(item.key, item.val)
+			opts.DBBundle.rollbackStore.Insert(item.key, item.val)
 		}
 	}
-	return batch.WriteToDB(opts.DBSnap.db)
+	return batch.WriteToDB(opts.DBBundle.db)
 }
 
 func checkAbort(status *uint64) error {

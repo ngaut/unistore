@@ -7,9 +7,8 @@ import (
 	"github.com/pingcap/errors"
 )
 
-type DBSnapshot struct {
+type DBBundle struct {
 	db            *badger.DB
-	txn           *badger.Txn
 	lockStore     *lockstore.MemStore
 	rollbackStore *lockstore.MemStore
 }

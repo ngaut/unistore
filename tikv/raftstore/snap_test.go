@@ -44,7 +44,7 @@ func (d *dummyDeleter) DeleteSnapshot(key *SnapKey, snapshot Snapshot, checkEntr
 	return true
 }
 
-func getKVCount(t *testing.T, db *DBSnapshot) int {
+func getKVCount(t *testing.T, db *DBBundle) int {
 	count := 0
 	err := db.db.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
@@ -89,7 +89,7 @@ func genTestRegion(regionID, storeID, peerID uint64) *metapb.Region {
 	}
 }
 
-func assertEqDB(t *testing.T, expected, actual *DBSnapshot) {
+func assertEqDB(t *testing.T, expected, actual *DBBundle) {
 	expectedVal := getDBValue(t, expected.db, snapTestKey)
 	actualVal := getDBValue(t, actual.db, snapTestKey)
 	assert.Equal(t, expectedVal, actualVal)
@@ -112,7 +112,7 @@ func getDBValue(t *testing.T, db *badger.DB, key []byte) (val []byte) {
 	return
 }
 
-func openDBSnapshot(t *testing.T, dir string) *DBSnapshot {
+func openDBBundle(t *testing.T, dir string) *DBBundle {
 	opts := badger.DefaultOptions
 	opts.Dir = dir
 	opts.ValueDir = dir
@@ -120,17 +120,17 @@ func openDBSnapshot(t *testing.T, dir string) *DBSnapshot {
 	require.Nil(t, err)
 	lockStore := lockstore.NewMemStore(1024)
 	rollbackStore := lockstore.NewMemStore(1024)
-	return &DBSnapshot{
+	return &DBBundle{
 		db:            db,
 		lockStore:     lockStore,
 		rollbackStore: rollbackStore,
 	}
 }
 
-func fillDBSnapshotData(t *testing.T, dbSnap *DBSnapshot) {
+func fillDBBundleData(t *testing.T, dbBundle *DBBundle) {
 	// write some data.
 	// Put an new version key and an old version key.
-	err := dbSnap.db.Update(func(txn *badger.Txn) error {
+	err := dbBundle.db.Update(func(txn *badger.Txn) error {
 		value := make([]byte, 32)
 		require.Nil(t, txn.SetWithMetaSlice(snapTestKey, value, mvcc.NewDBUserMeta(150, 200)))
 		oldUseMeta := mvcc.NewDBUserMeta(50, 100).ToOldUserMeta(200)
@@ -151,7 +151,7 @@ func fillDBSnapshotData(t *testing.T, dbSnap *DBSnapshot) {
 		OldVal:  make([]byte, 32),
 		OldMeta: mvcc.NewDBUserMeta(150, 200),
 	}
-	dbSnap.lockStore.Insert(snapTestKey, lockVal.MarshalBinary())
+	dbBundle.lockStore.Insert(snapTestKey, lockVal.MarshalBinary())
 }
 
 func TestSnapGenMeta(t *testing.T) {
@@ -194,9 +194,9 @@ func doTestSnapFile(t *testing.T, dbHasData bool) {
 	dir, err := ioutil.TempDir("", "snapshot")
 	require.Nil(t, err)
 	defer os.RemoveAll(dir)
-	dbSnap := openDBSnapshot(t, dir)
+	dbBundle := openDBBundle(t, dir)
 	if dbHasData {
-		fillDBSnapshotData(t, dbSnap)
+		fillDBBundleData(t, dbBundle)
 	}
 
 	snapDir, err := ioutil.TempDir("", "snapshot")
@@ -214,7 +214,7 @@ func doTestSnapFile(t *testing.T, dbHasData bool) {
 	snapData := new(rspb.RaftSnapshotData)
 	snapData.Region = region
 	stat := new(SnapStatistics)
-	assert.Nil(t, s1.Build(dbSnap, region, snapData, stat, deleter))
+	assert.Nil(t, s1.Build(dbBundle, region, snapData, stat, deleter))
 
 	// Ensure that this snapshot file does exist after being built.
 	assert.True(t, s1.Exists())
@@ -224,7 +224,7 @@ func doTestSnapFile(t *testing.T, dbHasData bool) {
 	assert.Equal(t, int64(totalSize), size)
 	assert.Equal(t, int64(stat.Size), size)
 	if dbHasData {
-		assert.Equal(t, 3, getKVCount(t, dbSnap))
+		assert.Equal(t, 3, getKVCount(t, dbBundle))
 		// stat.KVCount is 5 because there are two extra default cf value.
 		assert.Equal(t, 5, stat.KVCount)
 	}
@@ -268,11 +268,11 @@ func doTestSnapFile(t *testing.T, dbHasData bool) {
 	require.Nil(t, err)
 	defer os.RemoveAll(dstDBDir)
 
-	dstDBSnap := openDBSnapshot(t, dstDBDir)
+	dstDBBundle := openDBBundle(t, dstDBDir)
 	abort := new(uint64)
 	*abort = JobStatusRunning
 	opts := ApplyOptions{
-		DBSnap:    dstDBSnap,
+		DBBundle:  dstDBBundle,
 		Region:    region,
 		Abort:     abort,
 		BatchSize: testWriteBatchSize,
@@ -288,7 +288,7 @@ func doTestSnapFile(t *testing.T, dbHasData bool) {
 
 	// Verify the data is correct after applying snapshot.
 	if dbHasData {
-		assertEqDB(t, dbSnap, dstDBSnap)
+		assertEqDB(t, dbBundle, dstDBBundle)
 	}
 }
 
@@ -303,9 +303,9 @@ func doTestSnapValidation(t *testing.T, dbHasData bool) {
 	dir, err := ioutil.TempDir("", "snapshot")
 	require.Nil(t, err)
 	defer os.RemoveAll(dir)
-	dbSnap := openDBSnapshot(t, dir)
+	dbBundle := openDBBundle(t, dir)
 	if dbHasData {
-		fillDBSnapshotData(t, dbSnap)
+		fillDBBundleData(t, dbBundle)
 	}
 
 	snapDir, err := ioutil.TempDir("", "snapshot")
@@ -321,13 +321,13 @@ func doTestSnapValidation(t *testing.T, dbHasData bool) {
 	snapData := new(rspb.RaftSnapshotData)
 	snapData.Region = region
 	stat := new(SnapStatistics)
-	assert.Nil(t, s1.Build(dbSnap, region, snapData, stat, deleter))
+	assert.Nil(t, s1.Build(dbBundle, region, snapData, stat, deleter))
 	assert.True(t, s1.Exists())
 
 	s2, err := NewSnapForBuilding(snapDir, key, sizeTrack, deleter, nil)
 	require.Nil(t, err)
 	assert.True(t, s2.Exists())
-	assert.Nil(t, s2.Build(dbSnap, region, snapData, stat, deleter))
+	assert.Nil(t, s2.Build(dbBundle, region, snapData, stat, deleter))
 	assert.True(t, s2.Exists())
 }
 
@@ -337,8 +337,8 @@ func TestSnapshotCorruptionSizeOrChecksum(t *testing.T) {
 	dir, err := ioutil.TempDir("", "snapshot")
 	require.Nil(t, err)
 	defer os.RemoveAll(dir)
-	dbSnap := openDBSnapshot(t, dir)
-	fillDBSnapshotData(t, dbSnap)
+	dbBundle := openDBBundle(t, dir)
+	fillDBBundleData(t, dbBundle)
 
 	snapDir, err := ioutil.TempDir("", "snapshot")
 	require.Nil(t, err)
@@ -351,7 +351,7 @@ func TestSnapshotCorruptionSizeOrChecksum(t *testing.T) {
 	snapData := new(rspb.RaftSnapshotData)
 	snapData.Region = region
 	stat := new(SnapStatistics)
-	assert.Nil(t, s1.Build(dbSnap, region, snapData, stat, deleter))
+	assert.Nil(t, s1.Build(dbBundle, region, snapData, stat, deleter))
 
 	corruptSnapSizeIn(t, snapDir)
 	_, err = NewSnapForSending(snapDir, key, sizeTrack, deleter)
@@ -359,7 +359,7 @@ func TestSnapshotCorruptionSizeOrChecksum(t *testing.T) {
 
 	s2, err := NewSnapForBuilding(snapDir, key, sizeTrack, deleter, nil)
 	assert.False(t, s2.Exists())
-	assert.Nil(t, s2.Build(dbSnap, region, snapData, stat, deleter))
+	assert.Nil(t, s2.Build(dbBundle, region, snapData, stat, deleter))
 	assert.True(t, s2.Exists())
 
 	dstDir, err := ioutil.TempDir("", "snapshot")
@@ -382,9 +382,9 @@ func TestSnapshotCorruptionSizeOrChecksum(t *testing.T) {
 
 	abort := new(uint64)
 	*abort = JobStatusRunning
-	dstDBSnap := openDBSnapshot(t, dstDBDir)
+	dstDBBundle := openDBBundle(t, dstDBDir)
 	opts := ApplyOptions{
-		DBSnap:    dstDBSnap,
+		DBBundle:  dstDBBundle,
 		Region:    region,
 		Abort:     abort,
 		BatchSize: testWriteBatchSize,
@@ -480,8 +480,8 @@ func TestSnapshotCorruptionOnMetaFile(t *testing.T) {
 	dir, err := ioutil.TempDir("", "snapshot")
 	require.Nil(t, err)
 	defer os.RemoveAll(dir)
-	dbSnap := openDBSnapshot(t, dir)
-	fillDBSnapshotData(t, dbSnap)
+	dbBundle := openDBBundle(t, dir)
+	fillDBBundleData(t, dbBundle)
 
 	snapDir, err := ioutil.TempDir("", "snapshot")
 	require.Nil(t, err)
@@ -494,7 +494,7 @@ func TestSnapshotCorruptionOnMetaFile(t *testing.T) {
 	snapData := new(rspb.RaftSnapshotData)
 	snapData.Region = region
 	stat := new(SnapStatistics)
-	assert.Nil(t, s1.Build(dbSnap, region, snapData, stat, deleter))
+	assert.Nil(t, s1.Build(dbBundle, region, snapData, stat, deleter))
 
 	assert.Equal(t, 1, corruptSnapshotMetaFile(t, snapDir))
 	_, err = NewSnapForSending(snapDir, key, sizeTrack, deleter)
@@ -502,7 +502,7 @@ func TestSnapshotCorruptionOnMetaFile(t *testing.T) {
 
 	s2, err := NewSnapForBuilding(snapDir, key, sizeTrack, deleter, nil)
 	assert.False(t, s2.Exists())
-	assert.Nil(t, s2.Build(dbSnap, region, snapData, stat, deleter))
+	assert.Nil(t, s2.Build(dbBundle, region, snapData, stat, deleter))
 	assert.True(t, s2.Exists())
 
 	dstDir, err := ioutil.TempDir("", "snapshot")
