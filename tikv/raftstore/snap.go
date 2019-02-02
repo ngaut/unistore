@@ -273,7 +273,7 @@ func NewSnap(dir string, key *SnapKey, sizeTrack *int64, isSending, toBuild bool
 	}
 	metaFileName := fmt.Sprintf("%s%s", prefix, metaFileSuffix)
 	metaFilePath := filepath.Join(dir, metaFileName)
-	metaTmpPath := metaFilePath + metaFileSuffix
+	metaTmpPath := metaFilePath + tmpFileSuffix
 	metaFile := &MetaFile{
 		Path:    metaFilePath,
 		TmpPath: metaTmpPath,
