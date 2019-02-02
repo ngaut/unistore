@@ -494,11 +494,16 @@ func (s *Snap) validate(db *badger.DB) error {
 
 func (s *Snap) saveCFFiles() error {
 	for _, cfFile := range s.CFFiles {
-		if !plainFileUsed(cfFile.CF) && cfFile.KVCount > 0 {
-			err := cfFile.SstWriter.Finish()
-			if err != nil {
-				return err
+		if plainFileUsed(cfFile.CF) {
+			cfFile.File.Close()
+		} else {
+			if cfFile.KVCount > 0 {
+				err := cfFile.SstWriter.Finish()
+				if err != nil {
+					return err
+				}
 			}
+			cfFile.SstWriter.Close()
 		}
 		size, err := util.GetFileSize(cfFile.TmpPath)
 		if err != nil {
