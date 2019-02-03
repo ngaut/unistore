@@ -39,7 +39,13 @@ func newSnapBuilder(cfFiles []*CFFile, db *badger.DB, lockStore *lockstore.MemSt
 		return nil, errors.New("lock CF file is nil")
 	}
 	b.lockCFWriter = cfFiles[lockCFIdx].File
+	if cfFiles[defaultCFIdx].SstWriter == nil {
+		return nil, errors.New("default CF SstWriter is nil")
+	}
 	b.defaultCFWriter = cfFiles[defaultCFIdx].SstWriter
+	if cfFiles[writeCFIdx].SstWriter == nil {
+		return nil, errors.New("write CF SstWriter is nil")
+	}
 	b.writeCFWriter = cfFiles[writeCFIdx].SstWriter
 	return b, nil
 }
