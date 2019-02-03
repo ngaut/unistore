@@ -14,6 +14,7 @@ const (
 var (
 	errBadLockFormat   = errors.New("bad format lock data")
 	errInvalidSnapshot = errors.New("invalid snapshot")
+	errBadKeyPrefix    = errors.New("bad key prefix")
 )
 
 type writeCFValue struct {
@@ -23,6 +24,9 @@ type writeCFValue struct {
 }
 
 func decodeRocksDBSSTKey(k []byte) (key []byte, ts uint64, err error) {
+	if k[0] != DataPrefix {
+		return nil, 0, errors.WithStack(errBadKeyPrefix)
+	}
 	encodedKey := k[1 : len(k)-8]
 	tsBytes := k[len(k)-8:]
 	_, ts, err = codec.DecodeUintDesc(tsBytes)
