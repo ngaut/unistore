@@ -15,7 +15,7 @@ import (
 type MsgType int
 
 const (
-	MsgTypeRaftMessage            MsgType = 1 //
+	MsgTypeRaftMessage            MsgType = 1
 	MsgTypeRaftCmd                MsgType = 2
 	MsgTypeSplitRegion            MsgType = 3
 	MsgTypeComputeResult          MsgType = 4
@@ -85,6 +85,7 @@ type Msg struct {
 	// Region Messages.
 	RegionID              uint64
 	RaftMsg               *raft_serverpb.RaftMessage
+	RaftCMD               *MsgRaftCmd
 	SplitRegion           *MsgSplitRegion
 	ComputeHashResult     *MsgComputeHashResult
 	RegionApproximateSize uint64
@@ -131,8 +132,8 @@ type MsgHalfSplitRegion struct {
 }
 
 type MsgMergeResult struct {
-	Peer  *metapb.Peer
-	Stale bool
+	TargetPeer *metapb.Peer
+	Stale      bool
 }
 
 type SnapKeyWithSending struct {
