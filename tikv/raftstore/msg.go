@@ -52,7 +52,8 @@ const (
 	PeerTickRaftLogGC        PeerTick = 2
 	PeerTickSplitRegionCheck PeerTick = 3
 	PeerTickPdHeartbeat      PeerTick = 4
-	PeerTickPeerStaleState   PeerTick = 5
+	PeerTickCheckMerge       PeerTick = 5
+	PeerTickPeerStaleState   PeerTick = 6
 )
 
 type StoreTick int
@@ -66,11 +67,17 @@ const (
 	StoreTickCleanupImportSSI StoreTick = 6
 )
 
-type SignificantMsg struct {
-	RegionID       uint64
+type MsgSignificantType int
+
+const (
+	MsgSignificantTypeStatus      MsgSignificantType = 1
+	MsgSignificantTypeUnreachable MsgSignificantType = 2
+)
+
+type MsgSignificant struct {
+	Type           MsgSignificantType
 	ToPeerID       uint64
 	SnapshotStatus raft.SnapshotStatus
-	Unreachable    bool
 }
 
 type Msg struct {
@@ -87,6 +94,8 @@ type Msg struct {
 	MergeResult           *MsgMergeResult
 	GCSnap                *MsgGCSnap
 	Tick                  PeerTick
+	Significant           *MsgSignificant
+	ApplyRes              interface{} // TODO: change to real apply result later
 
 	// Store Messages.
 	StoreRaftMsg                *raft_serverpb.RaftMessage
