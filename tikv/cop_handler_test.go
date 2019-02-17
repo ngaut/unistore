@@ -28,10 +28,11 @@ import (
 )
 
 const (
-	keyNumber = 3
-	TableId   = 0
-	START_TS  = 10
-	TTL       = 60000
+	keyNumber         = 3
+	TableId           = 0
+	StartTs           = 10
+	TTL               = 60000
+	DagRequestStartTs = 100
 )
 
 // parameter settings for unistore.
@@ -43,13 +44,13 @@ type settings struct {
 }
 
 type data struct {
-	encodedKVDatas []*encodedKVData
-	colInfos       []*tipb.ColumnInfo
-	rowValues      map[int64][]types.Datum
-	colTypes       map[int64]*types.FieldType
+	encodedTestKVDatas []*EncodedTestKVData
+	colInfos           []*tipb.ColumnInfo
+	rows               map[int64][]types.Datum    // handle -> row
+	colTypes           map[int64]*types.FieldType // colId -> fieldType
 }
 
-type encodedKVData struct {
+type EncodedTestKVData struct {
 	encodedRowKey   []byte
 	encodedRowValue []byte
 }
@@ -66,10 +67,18 @@ func NewTestStore() (testStore *TestStore, err error) {
 		dbPath:   "/tmp/dbpath",
 		vlogPath: "/tmp/vlogpath",
 	}
-	os.RemoveAll(settings.dbPath)
-	os.Mkdir(settings.dbPath, 0700)
-	os.RemoveAll(settings.vlogPath)
-	os.Mkdir(settings.vlogPath, 0700)
+	if err := os.RemoveAll(settings.dbPath); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(settings.dbPath, 0700); err != nil {
+		return nil, err
+	}
+	if err := os.RemoveAll(settings.vlogPath); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(settings.vlogPath, 0700); err != nil {
+		return nil, err
+	}
 	store, testStoreError := makeTestStore(settings)
 	if testStoreError != nil {
 		return nil, testStoreError
@@ -77,7 +86,7 @@ func NewTestStore() (testStore *TestStore, err error) {
 	return store, nil
 }
 
-func (store *TestStore) InitTestData(encodedKVDatas []*encodedKVData) []error {
+func (store *TestStore) InitTestData(encodedKVDatas []*EncodedTestKVData) []error {
 	reqCtx := requestCtx{
 		regCtx: &regionCtx{
 			latches: make(map[uint64]*sync.WaitGroup),
@@ -85,20 +94,19 @@ func (store *TestStore) InitTestData(encodedKVDatas []*encodedKVData) []error {
 		dbIdx: TableId,
 		svr:   store.svr,
 	}
-	var i = 0
+	i := 0
 	for _, kvData := range encodedKVDatas {
 		mutation := makeATestMutaion(kvrpcpb.Op_Put, kvData.encodedRowKey,
 			kvData.encodedRowValue)
 		errors := store.mvccStore.Prewrite(&reqCtx, []*kvrpcpb.Mutation{mutation,},
-			kvData.encodedRowKey, uint64(START_TS+i), TTL)
+			kvData.encodedRowKey, uint64(StartTs+i), TTL)
 		if errors != nil {
 			return errors
 		}
-		commitErrors := make([]error, 0)
 		commitError := store.mvccStore.Commit(&reqCtx, [][]byte{kvData.encodedRowKey},
-			uint64(START_TS+i), uint64(START_TS+i+1))
+			uint64(StartTs+i), uint64(StartTs+i+1))
 		if commitError != nil {
-			return append(commitErrors, commitError)
+			return []error{commitError}
 		}
 		i += 2
 	}
@@ -157,22 +165,22 @@ func PrepareTestTableData(t *testing.T, keyNumber int, tableId int64) *data {
 		}
 		colTypeMap[colIds[i]] = colTypes[i]
 	}
-	rowValues := map[int64][]types.Datum{}
-	encodedKVDatas := make([]*encodedKVData, keyNumber)
+	rows := map[int64][]types.Datum{}
+	encodedTestKVDatas := make([]*EncodedTestKVData, keyNumber)
 	for i := 0; i < keyNumber; i++ {
 		datum := types.MakeDatums(i, "abc", 10.0)
-		rowValues[int64(i)] = datum
+		rows[int64(i)] = datum
 		rowEncodedData, err := tablecodec.EncodeRow(stmtCtx, datum,
 			colIds, nil, nil)
 		require.Nil(t, err)
 		rowKeyEncodedData := tablecodec.EncodeRowKeyWithHandle(tableId, int64(i))
-		encodedKVDatas[i] = &encodedKVData{encodedRowKey: rowKeyEncodedData, encodedRowValue: rowEncodedData}
+		encodedTestKVDatas[i] = &EncodedTestKVData{encodedRowKey: rowKeyEncodedData, encodedRowValue: rowEncodedData}
 	}
 	return &data{
-		colInfos:       colInfos,
-		encodedKVDatas: encodedKVDatas,
-		rowValues:      rowValues,
-		colTypes:       colTypeMap,
+		colInfos:           colInfos,
+		encodedTestKVDatas: encodedTestKVDatas,
+		rows:               rows,
+		colTypes:           colTypeMap,
 	}
 }
 
@@ -191,11 +199,9 @@ func getTestPointRange(tableId int64, handle int64) kv.KeyRange {
 // see tikv/src/coprocessor/util.rs for more detail.
 func convertToPrefixNext(key []byte) []byte {
 	if key == nil || len(key) == 0 {
-		key = make([]byte, 1)
-		key[0] = 0
-		return key
+		return []byte{0}
 	}
-	for i := len(key) - 1; i >= 0; i -= 1 {
+	for i := len(key) - 1; i >= 0; i-- {
 		if key[i] == 255 {
 			key[i] = 0
 		} else {
@@ -227,11 +233,11 @@ func executeAPointGet(data *data, store *TestStore, handler int64) (chunks []tip
 	// we would prepare the dagRequest and try build a executor as follows,
 	// the reason that we don't make a tableScanExecutor directly here is
 	// it would be replaced by closureExecutor in the future, so, for compatibility,
-	// we just build a dagReq, and call buildDAGExecutor to build
-	// the corresponding executor.
+	// we just build a dagReq, and call tryBuildClosureExecutor then buildDAGExecutor
+	// to build the corresponding executor.
 	aRange := getTestPointRange(TableId, handler)
 	dagReq := &tipb.DAGRequest{
-		StartTs: uint64(time.Now().UnixNano()),
+		StartTs: uint64(DagRequestStartTs),
 		Executors: [] *tipb.Executor{
 			{
 				Tp: tipb.ExecType_TypeTableScan,
@@ -277,10 +283,7 @@ func executeAPointGet(data *data, store *TestStore, handler int64) (chunks []tip
 	var rowCnt int
 	if closureExec != nil {
 		chunks, error = closureExec.execute()
-		if error != nil {
-			return nil, error
-		}
-		return chunks, nil
+		return chunks, error
 	}
 	e, error := store.svr.buildDAGExecutor(dagCtx, dagReq.Executors)
 	if error != nil {
@@ -292,7 +295,7 @@ func executeAPointGet(data *data, store *TestStore, handler int64) (chunks []tip
 		e.Counts()
 		row, err = e.Next(ctx)
 		if err != nil {
-			break
+			return nil, err
 		}
 		if row == nil {
 			break
@@ -323,41 +326,33 @@ func TestIsPrefixNext(t *testing.T) {
 }
 
 func TestPointGet(t *testing.T) {
-	var (
-		data   *data
-		store  *TestStore
-		err    error
-		errors []error
-		chunks []tipb.Chunk
-		row    []types.Datum
-		l      int
-	)
 	// here would build mvccStore and server, and prepare
 	// three rows data, just like the test data of table_scan.rs.
 	// then init the store with the generated data.
-	data = PrepareTestTableData(t, keyNumber, TableId)
-	store, err = NewTestStore()
+	data := PrepareTestTableData(t, keyNumber, TableId)
+	store, err := NewTestStore()
 	require.Nil(t, err)
-	errors = store.InitTestData(data.encodedKVDatas)
+	errors := store.InitTestData(data.encodedTestKVDatas)
 	require.Nil(t, errors)
 	// point get should return nothing when handle is math.MinInt64
-	chunks, err = executeAPointGet(data, store, math.MinInt64)
+	chunks, err := executeAPointGet(data, store, math.MinInt64)
 	require.Nil(t, err)
 	require.Equal(t, len(chunks), 0)
-	// point get should return one row when handler = 0
-	var handle int64 = 0
+	// point get should return one row when handle = 0
+	handle := int64(0)
 	chunks, err = executeAPointGet(data, store, handle)
 	require.Nil(t, err)
 	require.Equal(t, 1, len(chunks))
-	row, err = codec.Decode(chunks[0].RowsData, 2)
+	returnedRow, err := codec.Decode(chunks[0].RowsData, 2)
 	require.Nil(t, err)
-	require.Equal(t, len(row), 2)
+	// returned row should has 2 cols
+	require.Equal(t, len(returnedRow), 2)
 
-	realDatum := data.rowValues[handle]
-	l, err = row[0].CompareDatum(nil, &realDatum[0])
+	expectedRow := data.rows[handle]
+	eq, err := returnedRow[0].CompareDatum(nil, &expectedRow[0])
 	require.Nil(t, err)
-	require.Equal(t, l, 0)
-	l, err = row[1].CompareDatum(nil, &realDatum[1])
+	require.Equal(t, eq, 0)
+	eq, err = returnedRow[1].CompareDatum(nil, &expectedRow[1])
 	require.Nil(t, err)
-	require.Equal(t, l, 0)
+	require.Equal(t, eq, 0)
 }
