@@ -12,8 +12,6 @@ import (
 	"github.com/pingcap/tidb/util/codec"
 	"golang.org/x/net/context"
 	"math"
-	"time"
-
 	// remember the tablecodec has two different versions,
 	// one is on the tibd/tablecodec/origin/tablecodec.go
 	// and another is on tidb/tablecodec/tablecodec.go,
@@ -43,6 +41,7 @@ type settings struct {
 	vlogPath string
 }
 
+// wrapper of test data, including encoded data, column types etc.
 type data struct {
 	encodedTestKVDatas []*EncodedTestKVData
 	colInfos           []*tipb.ColumnInfo
@@ -58,6 +57,13 @@ type EncodedTestKVData struct {
 type TestStore struct {
 	mvccStore *MVCCStore
 	svr       *Server
+}
+
+// dagBuilder is a wrapper of dagRequest and
+// dagContext
+type DagBuilder struct {
+	dagRequest *tipb.DAGRequest
+	dagCtx     *dagContext
 }
 
 func NewTestStore() (testStore *TestStore, err error) {
@@ -98,7 +104,7 @@ func (store *TestStore) InitTestData(encodedKVDatas []*EncodedTestKVData) []erro
 	for _, kvData := range encodedKVDatas {
 		mutation := makeATestMutaion(kvrpcpb.Op_Put, kvData.encodedRowKey,
 			kvData.encodedRowValue)
-		errors := store.mvccStore.Prewrite(&reqCtx, []*kvrpcpb.Mutation{mutation,},
+		errors := store.mvccStore.Prewrite(&reqCtx, []*kvrpcpb.Mutation{mutation},
 			kvData.encodedRowKey, uint64(StartTs+i), TTL)
 		if errors != nil {
 			return errors
@@ -121,7 +127,7 @@ func makeATestMutaion(op kvrpcpb.Op, key []byte, value []byte) *kvrpcpb.Mutation
 	}
 }
 
-func createTestDB(settings settings, idx int, safePoint *SafePoint) (db *badger.DB, err error) {
+func createTestDB(settings settings, idx int) (db *badger.DB, err error) {
 	subPath := fmt.Sprintf("/%d", idx)
 	opts := badger.DefaultOptions
 	opts.Dir = settings.dbPath + subPath
@@ -136,7 +142,7 @@ func makeTestStore(settings settings) (testStore *TestStore, err error) {
 	safePoint := &SafePoint{}
 	dbs := make([]*badger.DB, settings.numDb)
 	for i := 0; i < settings.numDb; i++ {
-		dbs[i], err = createTestDB(settings, i, safePoint)
+		dbs[i], err = createTestDB(settings, i)
 		if err != nil {
 			return nil, err
 		}
@@ -229,32 +235,25 @@ func isPrefixNext(key []byte, expected []byte) bool {
 	return true
 }
 
-func executeAPointGet(data *data, store *TestStore, handler int64) (chunks []tipb.Chunk, err error) {
-	// we would prepare the dagRequest and try build a executor as follows,
-	// the reason that we don't make a tableScanExecutor directly here is
-	// it would be replaced by closureExecutor in the future, so, for compatibility,
-	// we just build a dagReq, and call tryBuildClosureExecutor then buildDAGExecutor
-	// to build the corresponding executor.
-	aRange := getTestPointRange(TableId, handler)
-	dagReq := &tipb.DAGRequest{
+func makeTableScanDagRequest(colInfos []*tipb.ColumnInfo, tableId int64,
+	outputOffsets []uint32) *tipb.DAGRequest {
+	return &tipb.DAGRequest{
 		StartTs: uint64(DagRequestStartTs),
-		Executors: [] *tipb.Executor{
+		Executors: []*tipb.Executor{
 			{
 				Tp: tipb.ExecType_TypeTableScan,
 				TblScan: &tipb.TableScan{
-					Columns: data.colInfos,
-					TableId: TableId,
+					Columns: colInfos,
+					TableId: tableId,
 				},
 			},
 		},
-		// only want first two cols.
-		OutputOffsets: [] uint32{
-			uint32(0),
-			uint32(1),
-		},
+		OutputOffsets: outputOffsets,
 	}
+}
+
+func makeTableScanDagContext(store *TestStore, keyRanges []kv.KeyRange, dagReq *tipb.DAGRequest) *dagContext {
 	sc := flagsToStatementContext(dagReq.Flags)
-	sc.TimeZone = time.FixedZone("UTC", int(dagReq.TimeZoneOffset))
 	dagCtx := &dagContext{
 		reqCtx: &requestCtx{
 			svr:   store.svr,
@@ -266,26 +265,46 @@ func executeAPointGet(data *data, store *TestStore, handler int64) (chunks []tip
 				},
 			},
 		},
-		dagReq: dagReq,
-		keyRanges: []*coprocessor.KeyRange{
-			{
-				Start: aRange.StartKey,
-				End:   aRange.EndKey,
-			},
-		},
+		dagReq:  dagReq,
 		evalCtx: &evalContext{sc: sc},
 	}
 	dagCtx.evalCtx.setColumnInfo(dagReq.Executors[0].TblScan.Columns)
-	closureExec, error := store.svr.tryBuildClosureExecutor(dagCtx, dagReq)
+	dagCtx.keyRanges = make([]*coprocessor.KeyRange, len(keyRanges))
+	for i, keyRange := range keyRanges {
+		dagCtx.keyRanges[i] = &coprocessor.KeyRange{
+			Start: keyRange.StartKey,
+			End:   keyRange.EndKey,
+		}
+	}
+	return dagCtx
+}
+
+func makeTableScanDag(store *TestStore, colInfos []*tipb.ColumnInfo, keyRanges []kv.KeyRange, tableId int64,
+	outputOffsets []uint32) *DagBuilder {
+	dagRequest := makeTableScanDagRequest(colInfos, tableId, outputOffsets)
+	return &DagBuilder{
+		dagRequest: dagRequest,
+		dagCtx:     makeTableScanDagContext(store, keyRanges, dagRequest),
+	}
+}
+
+// build and execute the executors according to the dagRequest and dagContext of dagBuilder,
+func (dagBuilder *DagBuilder) BuildAndExecutor(store *TestStore) (chunks []tipb.Chunk, err error) {
+	closureExec, error := store.svr.tryBuildClosureExecutor(dagBuilder.dagCtx,
+		dagBuilder.dagRequest)
 	if error != nil {
 		return nil, error
 	}
 	var rowCnt int
 	if closureExec != nil {
 		chunks, error = closureExec.execute()
-		return chunks, error
+		if error != nil {
+			return nil, error
+		}
+		return chunks, nil
 	}
-	e, error := store.svr.buildDAGExecutor(dagCtx, dagReq.Executors)
+	e, error := store.svr.buildDAGExecutor(dagBuilder.dagCtx,
+		dagBuilder.dagRequest.Executors)
 	if error != nil {
 		return nil, error
 	}
@@ -295,13 +314,13 @@ func executeAPointGet(data *data, store *TestStore, handler int64) (chunks []tip
 		e.Counts()
 		row, err = e.Next(ctx)
 		if err != nil {
-			return nil, err
+			break
 		}
 		if row == nil {
 			break
 		}
 		data := dummySlice
-		for _, offset := range dagReq.OutputOffsets {
+		for _, offset := range dagBuilder.dagRequest.OutputOffsets {
 			data = append(data, row[offset]...)
 		}
 		chunks = appendRow(chunks, data, rowCnt)
@@ -334,13 +353,18 @@ func TestPointGet(t *testing.T) {
 	require.Nil(t, err)
 	errors := store.InitTestData(data.encodedTestKVDatas)
 	require.Nil(t, errors)
+	handle := int64(math.MinInt64)
 	// point get should return nothing when handle is math.MinInt64
-	chunks, err := executeAPointGet(data, store, math.MinInt64)
+	dagBuilder := makeTableScanDag(store, data.colInfos,
+		[]kv.KeyRange{getTestPointRange(TableId, handle)}, TableId, []uint32{0, 1})
+	chunks, err := dagBuilder.BuildAndExecutor(store)
 	require.Nil(t, err)
 	require.Equal(t, len(chunks), 0)
 	// point get should return one row when handle = 0
-	handle := int64(0)
-	chunks, err = executeAPointGet(data, store, handle)
+	handle = 0
+	dagBuilder = makeTableScanDag(store, data.colInfos,
+		[]kv.KeyRange{getTestPointRange(TableId, handle)}, TableId, []uint32{0, 1})
+	chunks, err = dagBuilder.BuildAndExecutor(store)
 	require.Nil(t, err)
 	require.Equal(t, 1, len(chunks))
 	returnedRow, err := codec.Decode(chunks[0].RowsData, 2)
