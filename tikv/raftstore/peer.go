@@ -14,6 +14,8 @@ import (
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/tidb-test/_vendor/src/github.com/coreos/etcd/pkg/testutil"
 	"encoding/binary"
+	"github.com/ngaut/log"
+	"./worker"
 )
 
 const (
@@ -22,7 +24,7 @@ const (
 
 // TODO
 type PollContext struct {
-
+	Cfg *Config
 }
 
 type StaleState int
@@ -69,6 +71,14 @@ type ReadIndexRequest struct {
 	id uint64
 	cmds []*ReqCbPair
 	renewLeaseTime *time.Time
+}
+
+func NewReadIndexRequest(id uint64, cmds []*ReqCbPair, renewLeaseTime *time.Time) *ReadIndexRequest {
+	return &ReadIndexRequest{
+		id: id,
+		cmds: cmds,
+		renewLeaseTime: renewLeaseTime,
+	}
 }
 
 func (r *ReadIndexRequest) bianryId() []byte {
@@ -232,6 +242,34 @@ func NewRegionProposal(id uint64, regionId uint64, props []*Proposal) *RegionPro
 	}
 }
 
+type RecentAddedPeer struct {
+	RejectDurationAsSecs uint64
+	Id uint64
+	AddedTime time.Time
+}
+
+func NewRecentAddedPeer(rejectDurationAsSecs uint64) *RecentAddedPeer {
+	return &RecentAddedPeer{
+		RejectDurationAsSecs: rejectDurationAsSecs,
+		Id: 0,
+		AddedTime: time.Now(),
+	}
+}
+
+func (r *RecentAddedPeer) Update(id uint64, now time.Time) {
+	r.Id = id
+	r.AddedTime = now
+}
+
+func (r *RecentAddedPeer) Contains(id uint64) bool {
+	if r.Id == id {
+		now := time.Now()
+		elapsedSecs := now.Sub(r.AddedTime).Seconds()
+		return elapsedSecs < r.RejectDurationAsSecs
+	}
+	return false
+}
+
 type Peer struct {
 	Cfg *Config
 	peerCache map[uint64]*metapb.Peer
@@ -249,6 +287,7 @@ type Peer struct {
 	/// Record the instants of peers being added into the configuration.
 	/// Remove them after they are not pending any more.
 	PeersStartPendingTime map[uint64]time.Time
+	RecentAddedPeer RecentAddedPeer
 
 	SizeDiffHint uint64
 	deleteKeysHint uint64
@@ -897,6 +936,168 @@ func (p *Peer) PostPropose(meta *ProposalMeta, isConfChange bool, cb Callback) {
 
 }
 
+func (p *Peer) countHealthyNode(progress map[uint64]raft.Progress) int {
+	healthy := 0
+	for _, pr := range progress {
+		if pr.Match >= p.Store().truncatedIndex() {
+			healthy += 1
+		}
+	}
+	return healthy
+}
+
+func (p *Peer) checkConfChange(ctx *PollContext, cmd *raft_cmdpb.RaftCmdRequest) error {
+	changePeer := worker.GetChangePeerCmd(cmd)
+	if changePeer == nil {
+		panic("Change Peer is nil")
+	}
+	changeType := changePeer.GetChangeType()
+	peer := changePeer.GetPeer()
+
+	// Check the request itself is valid or not.
+	if (changeType == eraftpb.ConfChangeType_AddNode && peer.IsLearner) ||
+		(changeType == eraftpb.ConfChangeType_AddLearnerNode && !peer.IsLearner) {
+		log.Warnf("%s conf change type: %v, but got peer %v", p.Tag, changeType, peer)
+		return fmt.Errorf("invalid conf change request")
+	}
+
+	if changeType == eraftpb.ConfChangeType_RemoveNode && !ctx.Cfg.AllowRemoveLeader && peer.Id == p.PeerId() {
+		log.Warnf("%s rejects remove leader request %v", p.Tag, changePeer)
+		return fmt.Errorf("ignore remove leader")
+	}
+
+	status := p.RaftGroup.Status()
+	total := len(status.Progress)
+	if total == 1 {
+		// It's always safe if there is only one node in the cluster.
+		return nil
+	}
+
+	switch changeType {
+	case eraftpb.ConfChangeType_AddNode:
+		if pr, ok := status.LearnerProgress[peer.Id]; ok {
+			pr.IsLearner = false
+			status.Progress[peer.Id] = pr
+			delete(status.LearnerProgress, peer.Id)
+		} else {
+			status.Progress[peer.Id] = raft.Progress{}
+		}
+	case eraftpb.ConfChangeType_RemoveNode:
+		if peer.GetIsLearner() {
+			return nil
+		}
+		if _, ok := status.Progress[peer.Id]; ok {
+			return nil
+		}
+	case eraftpb.ConfChangeType_AddLearnerNode:
+		return nil
+	}
+	healthy := p.countHealthyNode(status.Progress)
+	quorumAfterChange := Quorum(len(status.Progress))
+	if healthy >= quorumAfterChange {
+		return nil
+	}
+
+	return fmt.Errorf("unsafe to perform conf change %v, total %v, healthy %v, quorum after chagne %v",
+	changePeer, total, healthy, quorumAfterChange)
+}
+
+func Quorum(total int) int {
+	return total/2 + 1
+}
+
+func (p *Peer) transferLeader(peer *metapb.Peer) {
+	log.Infof("%v transfer leader to %v", p.Tag, peer)
+
+	p.RaftGroup.TransferLeader(peer.GetId())
+}
+
+func (p *Peer) readyToTransferLeader(ctx *PollContext, peer *metapb.Peer) bool {
+	peerId := peer.GetId()
+	status := p.RaftGroup.Status()
+
+	if _, ok := status.Progress[peerId]; !ok {
+		return false
+	}
+
+	for _, pr := range status.Progress {
+		if pr.State == raft.ProgressStateSnapshot {
+			return false
+		}
+	}
+	if p.RecentAddedPeer.Contains(peerId) {
+		log.Debugf("%v reject tranfer leader to %v due to the peer was added recently", p.Tag, peer)
+		return false
+	}
+
+	lastIndex, _ := p.Store().LastIndex()
+
+	return lastIndex <= status.Progress[peerId].Match + ctx.Cfg.LeaderTransferMaxLogLag
+}
+
+func (p *Peer) readLocal(ctx *PollContext, req *raft_cmdpb.RaftCmdRequest, cb Callback) {
+	cb.invokeWithResponse(p.HandleRead(ctx, req, false))
+}
+
+func (p *Peer) preReadIndex() error {
+	if p.isSplitting() {
+		return fmt.Errorf("can not read index due to split")
+	}
+	if p.isMerging() {
+		return fmt.Errorf("can not read index due to merge")
+	}
+	return nil
+}
+
+// Returns a boolean to indicate whether the `read` is proposed or not.
+// For these cases it won't be proposed:
+// 1. The region is in merging or splitting;
+// 2. The message is stale and dropped by the Raft group internally;
+// 3. There is already a read request proposed in the current lease;
+func (p *Peer) readIndex(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest, errResp *raft_cmdpb.RaftCmdResponse, cb Callback) bool {
+	err := p.preReadIndex()
+	if err != nil {
+		log.Debugf("%v prevents unsafe read index, err: %v", p.Tag, err)
+		BindError(errResp, e)
+		cb.invokeWithResponse(errResp)
+		return false
+	}
+
+	renewLeaseTime := MonotonicRawNow()
+	readsLen := len(p.pendingReads.reads)
+	if readsLen > 0 {
+		read := p.pendingReads.reads[readsLen-1]
+		if read.renewLeaseTime + pollCtx.Cfg.RaftStoreMaxLeaderLease > renewLeaseTime {
+			read.cmds.push(&ReqCbPair{Req:req, Cb:cb})
+			return false
+		}
+	}
+
+	lastPendingReadCount := p.RaftGroup.Raft.PendingReadCount
+	lastReadyReadCount := p.RaftGroup.Raft.ReadyReadCount
+
+	id := p.pendingReads.NextId()
+	b := make([]byte, 8)
+	ctx := binary.BigEndian.PutUint64(b, id)
+	p.RaftGroup.ReadIndex(b)
+
+	pendingReadCount := p.RaftGroup.Raft.PendingReadCount
+	readyReadCount := p.RaftGroup.Raft.ReadyReadCount
+
+	if pendingReadCount == lastPendingReadCount && readyReadCount == lastReadyReadCount {
+		NotifyStaleReq(p.Term(), cb)
+		return false
+	}
+
+	cmds := make([]ReqCbPair, 0, 1)
+	cmds = append(cmds, &ReqCbPair{req, cb})
+	p.pendingReads.reads = append(p.pendingReads.reads, NewReadIndexRequest(id, cmds, renewLeaseTime))
+
+	// TimeoutNow has been sent out, so we need to propose explicitly to
+	// update leader lease.
+
+}
+
 type Proposal struct {
 	IsConfChange bool
 	Index uint64
@@ -938,7 +1139,7 @@ func (p *Peer) findProposeTime(index, term uint64) *time.Time {
 }
 
 func (p *Peer) Term() uint64 {
-	return p.RaftGroup.raft.Term
+	return p.RaftGroup.Raft.Term
 }
 
 func (p *Peer) GerPeerFromCache(id uint64) *metapb.Peer
