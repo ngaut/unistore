@@ -328,6 +328,10 @@ func (ps *PeerStorage) isInitialized() bool {
 	return len(ps.region.Peers) > 0
 }
 
+func (ps *PeerStorage) Region() *metapb.Region {
+	return ps.region
+}
+
 func (ps *PeerStorage) Entries(low, high, maxSize uint64) ([]raftpb.Entry, error) {
 	err := ps.checkRange(low, high)
 	if err != nil {
@@ -407,6 +411,10 @@ func (ps *PeerStorage) truncatedTerm() uint64 {
 
 func (ps *PeerStorage) LastIndex() (uint64, error) {
 	return ps.raftState.LastIndex, nil
+}
+
+func (ps *PeerStorage) AppliedIndex() (uint64, error) {
+	return ps.applyState.AppliedIndex, nil
 }
 
 func (ps *PeerStorage) FirstIndex() (uint64, error) {
