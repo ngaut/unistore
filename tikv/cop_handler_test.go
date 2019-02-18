@@ -59,13 +59,6 @@ type TestStore struct {
 	svr       *Server
 }
 
-// dagBuilder is a wrapper of dagRequest and
-// dagContext
-type DagBuilder struct {
-	dagRequest *tipb.DAGRequest
-	dagCtx     *dagContext
-}
-
 func NewTestStore() (testStore *TestStore, err error) {
 	settings := settings{
 		shardKey: false,
@@ -235,24 +228,8 @@ func isPrefixNext(key []byte, expected []byte) bool {
 	return true
 }
 
-func makeTableScanDagRequest(colInfos []*tipb.ColumnInfo, tableId int64,
-	outputOffsets []uint32) *tipb.DAGRequest {
-	return &tipb.DAGRequest{
-		StartTs: uint64(DagRequestStartTs),
-		Executors: []*tipb.Executor{
-			{
-				Tp: tipb.ExecType_TypeTableScan,
-				TblScan: &tipb.TableScan{
-					Columns: colInfos,
-					TableId: tableId,
-				},
-			},
-		},
-		OutputOffsets: outputOffsets,
-	}
-}
-
-func makeTableScanDagContext(store *TestStore, keyRanges []kv.KeyRange, dagReq *tipb.DAGRequest) *dagContext {
+// return a dag context according to dagReq and key ranges.
+func makeDagContext(store *TestStore, keyRanges []kv.KeyRange, dagReq *tipb.DAGRequest) *dagContext {
 	sc := flagsToStatementContext(dagReq.Flags)
 	dagCtx := &dagContext{
 		reqCtx: &requestCtx{
@@ -268,7 +245,11 @@ func makeTableScanDagContext(store *TestStore, keyRanges []kv.KeyRange, dagReq *
 		dagReq:  dagReq,
 		evalCtx: &evalContext{sc: sc},
 	}
-	dagCtx.evalCtx.setColumnInfo(dagReq.Executors[0].TblScan.Columns)
+	if dagReq.Executors[0].Tp == tipb.ExecType_TypeTableScan {
+		dagCtx.evalCtx.setColumnInfo(dagReq.Executors[0].TblScan.Columns)
+	} else {
+		dagCtx.evalCtx.setColumnInfo(dagReq.Executors[0].IdxScan.Columns)
+	}
 	dagCtx.keyRanges = make([]*coprocessor.KeyRange, len(keyRanges))
 	for i, keyRange := range keyRanges {
 		dagCtx.keyRanges[i] = &coprocessor.KeyRange{
@@ -279,35 +260,27 @@ func makeTableScanDagContext(store *TestStore, keyRanges []kv.KeyRange, dagReq *
 	return dagCtx
 }
 
-func makeTableScanDag(store *TestStore, colInfos []*tipb.ColumnInfo, keyRanges []kv.KeyRange, tableId int64,
-	outputOffsets []uint32) *DagBuilder {
-	dagRequest := makeTableScanDagRequest(colInfos, tableId, outputOffsets)
-	return &DagBuilder{
-		dagRequest: dagRequest,
-		dagCtx:     makeTableScanDagContext(store, keyRanges, dagRequest),
-	}
-}
-
-// build and execute the executors according to the dagRequest and dagContext of dagBuilder,
-func (dagBuilder *DagBuilder) BuildAndExecutor(store *TestStore) (chunks []tipb.Chunk, err error) {
-	closureExec, error := store.svr.tryBuildClosureExecutor(dagBuilder.dagCtx,
-		dagBuilder.dagRequest)
+// build and execute the executors according to the dagRequest and dagContext,
+// return the result chunk data, rows count and err if occurs.
+func (store *TestStore) BuildExecutorsAndExecute(dagRequest *tipb.DAGRequest,
+	dagCtx *dagContext) (chunks []tipb.Chunk, count int, err error) {
+	closureExec, error := store.svr.tryBuildClosureExecutor(dagCtx, dagRequest)
 	if error != nil {
-		return nil, error
+		return nil, 0, error
 	}
-	var rowCnt int
 	if closureExec != nil {
 		chunks, error = closureExec.execute()
 		if error != nil {
-			return nil, error
+			return nil, 0, error
 		}
-		return chunks, nil
+		return chunks, closureExec.rowCount, nil
 	}
-	e, error := store.svr.buildDAGExecutor(dagBuilder.dagCtx,
-		dagBuilder.dagRequest.Executors)
+	e, error := store.svr.buildDAGExecutor(dagCtx,
+		dagRequest.Executors)
 	if error != nil {
-		return nil, error
+		return nil, 0, error
 	}
+	rowCnt := 0
 	ctx := context.TODO()
 	for {
 		var row [][]byte
@@ -320,13 +293,56 @@ func (dagBuilder *DagBuilder) BuildAndExecutor(store *TestStore) (chunks []tipb.
 			break
 		}
 		data := dummySlice
-		for _, offset := range dagBuilder.dagRequest.OutputOffsets {
+		for _, offset := range dagRequest.OutputOffsets {
 			data = append(data, row[offset]...)
 		}
 		chunks = appendRow(chunks, data, rowCnt)
 		rowCnt++
 	}
-	return chunks, nil
+	return chunks, rowCnt, nil
+}
+
+// dagBuilder is used to build dag request
+type DagBuilder struct {
+	startTs       uint64
+	executors     []*tipb.Executor
+	outputOffsets []uint32
+}
+
+// return a default dagBuilder
+func MakeDagBuilder() *DagBuilder {
+	return &DagBuilder{
+		executors: make([]*tipb.Executor, 0),
+	}
+}
+
+func (dagBuilder *DagBuilder) SetStartTs(startTs uint64) *DagBuilder {
+	dagBuilder.startTs = startTs
+	return dagBuilder
+}
+
+func (dagBuilder *DagBuilder) SetOutputOffsets(outputOffsets []uint32) *DagBuilder {
+	dagBuilder.outputOffsets = outputOffsets
+	return dagBuilder
+}
+
+func (dagBuilder *DagBuilder) AddTableScan(colInfos []*tipb.ColumnInfo, tableId int64) *DagBuilder {
+	dagBuilder.executors = append(dagBuilder.executors, &tipb.Executor{
+		Tp: tipb.ExecType_TypeTableScan,
+		TblScan: &tipb.TableScan{
+			Columns: colInfos,
+			TableId: tableId,
+		},
+	})
+	return dagBuilder
+}
+
+func (dagBuilder *DagBuilder) Build() *tipb.DAGRequest {
+	return &tipb.DAGRequest{
+		StartTs:       dagBuilder.startTs,
+		Executors:     dagBuilder.executors,
+		OutputOffsets: dagBuilder.outputOffsets,
+	}
 }
 
 // see tikv/src/coprocessor/util.rs for more detail
@@ -355,18 +371,28 @@ func TestPointGet(t *testing.T) {
 	require.Nil(t, errors)
 	handle := int64(math.MinInt64)
 	// point get should return nothing when handle is math.MinInt64
-	dagBuilder := makeTableScanDag(store, data.colInfos,
-		[]kv.KeyRange{getTestPointRange(TableId, handle)}, TableId, []uint32{0, 1})
-	chunks, err := dagBuilder.BuildAndExecutor(store)
+	dagRequest := MakeDagBuilder().
+		SetStartTs(DagRequestStartTs).
+		AddTableScan(data.colInfos, TableId).
+		SetOutputOffsets([]uint32{0, 1}).
+		Build()
+	dagCtx := makeDagContext(store, []kv.KeyRange{getTestPointRange(TableId, handle)},
+		dagRequest)
+	chunks, rowCount, err := store.BuildExecutorsAndExecute(dagRequest, dagCtx)
 	require.Nil(t, err)
-	require.Equal(t, len(chunks), 0)
+	require.Equal(t, rowCount, 0)
 	// point get should return one row when handle = 0
 	handle = 0
-	dagBuilder = makeTableScanDag(store, data.colInfos,
-		[]kv.KeyRange{getTestPointRange(TableId, handle)}, TableId, []uint32{0, 1})
-	chunks, err = dagBuilder.BuildAndExecutor(store)
+	dagRequest = MakeDagBuilder().
+		SetStartTs(DagRequestStartTs).
+		AddTableScan(data.colInfos, TableId).
+		SetOutputOffsets([]uint32{0, 1}).
+		Build()
+	dagCtx = makeDagContext(store, []kv.KeyRange{getTestPointRange(TableId, handle)},
+		dagRequest)
+	chunks, rowCount, err = store.BuildExecutorsAndExecute(dagRequest, dagCtx)
 	require.Nil(t, err)
-	require.Equal(t, 1, len(chunks))
+	require.Equal(t, 1, rowCount)
 	returnedRow, err := codec.Decode(chunks[0].RowsData, 2)
 	require.Nil(t, err)
 	// returned row should has 2 cols
