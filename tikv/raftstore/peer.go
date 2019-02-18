@@ -22,9 +22,17 @@ const (
 	InvalidID = 0
 )
 
-// TODO
+type CoprocessorHost struct {
+}
+
+func (c *CoprocessorHost) PrePropose() error {
+	// Todo
+	return nil
+}
+
 type PollContext struct {
 	Cfg *Config
+	CoprocessorHost *CoprocessorHost
 }
 
 type StaleState int
@@ -173,6 +181,10 @@ const (
 
 type ProposalContext byte
 
+func newEmptyProposalContext() *ProposalContext {
+	return &ProposalContext{}
+}
+
 func (c *ProposalContext) ToVec() []byte {
 	var res []byte
 	res = append(res, *c)
@@ -190,8 +202,12 @@ func NewProposalContextFromBytes(ctx []byte) ProposalContext {
 	}
 }
 
-func (c *ProposalContext) contains(flag int) bool {
+func (c *ProposalContext) contains(flag ProposalContext) bool {
 	return *c & flag
+}
+
+func (c *ProposalContext) insert(flag ProposalContext) {
+	*c |= flag
 }
 
 type PeerStat struct {
@@ -1063,7 +1079,7 @@ func (p *Peer) readIndex(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest, e
 		return false
 	}
 
-	renewLeaseTime := MonotonicRawNow()
+	renewLeaseTime := &time.Now()
 	readsLen := len(p.pendingReads.reads)
 	if readsLen > 0 {
 		read := p.pendingReads.reads[readsLen-1]
@@ -1095,7 +1111,153 @@ func (p *Peer) readIndex(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest, e
 
 	// TimeoutNow has been sent out, so we need to propose explicitly to
 	// update leader lease.
+	if p.leaderLease.Inspect(renewLeaseTime) == LeaseState_Suspect {
+		req := raft_cmdpb.RaftCmdRequest{}
+		if index, err := p.ProposeNormal(pollCtx, req); err == nil {
+			meta := &ProposalMeta {
+				Index: index,
+				Term: p.Term(),
+				RenewLeaseTime: renewLeaseTime,
+			}
+			p.PostPropose(meta, false, Callback{})
+		}
+	}
 
+	return true
+}
+
+func (p *Peer) GetMinProgress() uint64 {
+	minMatch := math.MaxUint64
+	hasProgress := false
+	for _, pr := range p.RaftGroup.Status().Progress {
+		hasProgress = true
+		if pr.Match < minMatch {
+			minMatch = pr.Match
+		}
+	}
+	if !hasProgress {
+		return 0
+	}
+	return minMatch
+}
+
+func (p *Peer) preProposePrepareMerge(ctx *PollContext, req *raft_cmdpb.RaftCmdRequest) error {
+	lastIndex := p.RaftGroup.Raft.RaftLog.LastIndex()
+	minProgress := p.GetMinProgress()
+	minIndex := minProgress + 1
+	if minProgress == 0 || lastIndex - minProgress > ctx.Cfg.MergeMaxLogGap {
+		return fmt.Errorf("log gap (%v, %v] is too large, skip merge", minProgress, lastIndex)
+	}
+
+	entrySize := 0
+	for _, entry := range p.RaftGroup.Raft.RaftLog.Entries(minIndex, math.MaxUint64) {
+		entrySize += len(entry.GetData())
+		if entry.GetEntryType() == eraftpb.EntryType_EntryConfChange {
+			return fmt.Errorf("log gap contains conf change, skip merging.")
+		}
+		if len(entry.GetData()) == 0 {
+			continue
+		}
+		cmd := &raft_cmdpb.RaftCmdRequest{}
+		err := cmd.Unmarshal(entry.GetData())
+		if err != nil {
+			panic("%v data is corrupted at %v, error: %v", p.Tag, entry.GetIndex(), err)
+		}
+		if cmd.AdminRequest == nil {
+			continue
+		}
+		cmdType := cmd.AdminRequest.GetCmdType()
+		switch cmdType {
+			case raft_cmdpb.AdminCmdType_TransferLeader, raft_cmdpb.AdminCmdType_ComputeHash,
+			raft_cmdpb.AdminCmdType_VerifyHash, raft_cmdpb.AdminCmdType_InvalidAdmin:
+			continue
+		default:
+		}
+
+		return fmt.Errorf("log gap contains admin request %v, skip merging.", cmdType)
+	}
+
+	if entrySize > ctx.Cfg.RaftEntryMaxSize * 0.9 {
+		return fmt.Errorf("log gap size exceed entry size limit, skip merging.")
+	}
+
+	req.AdminRequest.PrepareMerge.MinIndex = minIndex
+	return nil
+}
+
+func (p *Peer) PrePropose(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest) (*ProposalContext, error) {
+	pollCtx.CoprocessorHost.PrePropose(p.Region(), req)
+	ctx := newEmptyProposalContext()
+
+	if getSyncLogFromRequest(req) {
+		ctx.insert(ProposalContext_SyncLog)
+	}
+
+	if req.AdminRequest == nil {
+		return ctx, nil
+	}
+
+	switch req.AdminRequest.GetCmdType() {
+	case raft_cmdpb.AdminCmdType_Split, raft_cmdpb.AdminCmdType_BatchSplit:
+		ctx.insert(ProposalContext_Split)
+	default:
+	}
+
+	if req.AdminRequest.PrepareMerge != nil {
+		err := p.preProposePrepareMerge(pollCtx, req)
+		if err != nil {
+			return nil, err
+		}
+		ctx.insert(ProposalContext_PrepareMerge)
+	}
+
+	return ctx, nil
+}
+
+func (p *Peer) ProposeNormal(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest) (uint64, error) {
+	if p.PendingMergeState != nil && req.AdminRequest.CmdType != raft_cmdpb.AdminCmdType_RollbackMerge {
+		return fmt.Errorf("peer in merging mode, can't do proposal.")
+	}
+
+	ctx, err := p.PrePropose(pollCtx, req)
+	if err != nil {
+		log.Warnf("%v skip proposal: %v", p.Tag, err);
+		return 0, err
+	}
+	data, err := req.Marshal()
+	if err != nil {
+		return 0, err
+	}
+
+	if len(data) > pollCtx.Cfg.RaftEntryMaxSize {
+		log.Errorf("entry is too large, entry size %v", len(data));
+		return 0, &ErrRaftEntryTooLarge{RegionId: p.regionId, DataLen: len(data)}
+	}
+
+	proposeIndex := p.nextProposalIndex()
+	err = p.RaftGroup.Propose(ctx.ToVec(), data)
+	if err != nil {
+		return 0, err
+	}
+	if proposeIndex == p.nextProposalIndex() {
+		return 0, &ErrNotLeader{RegionId: p.regionId}
+	}
+
+	return proposeIndex, nil
+}
+
+func getSyncLogFromRequest(req *raft_cmdpb.RaftCmdRequest) bool {
+	if req.AdminRequest != nil {
+		switch req.AdminRequest.GetCmdType() {
+		case raft_cmdpb.AdminCmdType_ChangePeer, raft_cmdpb.AdminCmdType_Split,
+			raft_cmdpb.AdminCmdType_BatchSplit, raft_cmdpb.AdminCmdType_PrepareMerge,
+			raft_cmdpb.AdminCmdType_CommitMerge, raft_cmdpb.AdminCmdType_RollbackMerge:
+			return true
+		default:
+			return false
+		}
+	}
+	req.Header.GetSyncLog()
 }
 
 type Proposal struct {
