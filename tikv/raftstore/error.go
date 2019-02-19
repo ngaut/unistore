@@ -1,6 +1,9 @@
 package raftstore
 
-import "fmt"
+import (
+	"fmt"
+	"github.com/pingcap/kvproto/pkg/metapb"
+)
 
 const (
 	ErrStaleCommand = 1
@@ -31,4 +34,13 @@ type ErrNotLeader struct {
 
 func (e *ErrNotLeader) Error() string {
 	fmt.Sprintf("region %v is not leader", e.RegionId)
+}
+
+type ErrKeyNotInRegion struct {
+	Key []byte
+	Region *metapb.Region
+}
+
+func (e *ErrKeyNotInRegion) Error() string {
+	fmt.Sprintf("key %v is not in region %v", e.Key, e.Region)
 }

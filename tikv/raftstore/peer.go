@@ -1384,14 +1384,22 @@ func (r *ReadExecutor) MaybeUpdateSnapshot() {
 	}
 	// Reading current timespec after snapshot, in case we do not
 	// expire lease in time.
-	// atomic::fence(atomic::Ordering::Release)
+	// Todo: atomic::fence(atomic::Ordering::Release)
 	if r.needSnapshotTime {
 		t := time.Now()
 		r.snapshotTime = &t
 	}
 }
 
-func (r *ReadExecutor) DoGet(req *)
+func (r *ReadExecutor) DoGet(req *raft_cmdpb.Request, region *metapb.Region) (*raft_cmdpb.Response, error) {
+	// region key range has no data prefix, so we must use origin key to check.
+	if err := CheckKeyInRegion(req.Get.Key, region); err != nil {
+		return nil, err
+	}
+
+	resp := &raft_cmdpb.Response{}
+	r.snapshot.
+}
 
 type Proposal struct {
 	IsConfChange bool
