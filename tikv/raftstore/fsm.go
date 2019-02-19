@@ -199,12 +199,12 @@ func (r *router) register(addr uint64, mailbox *mailbox) {
 	}
 }
 
-type addrWithMailbox struct {
+type addrMailboxPair struct {
 	addr    uint64
 	mailbox *mailbox
 }
 
-func (r *router) registerAll(mailboxes []addrWithMailbox) {
+func (r *router) registerAll(mailboxes []addrMailboxPair) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, mb := range mailboxes {
