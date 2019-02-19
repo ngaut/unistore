@@ -256,6 +256,7 @@ func (r *router) broadcastShutdown() {
 	for addr, mb := range r.normals {
 		log.Debugf("region %d shutdown mailbox", addr)
 		mb.close()
+		delete(r.normals, addr)
 	}
 	r.controlBox.close()
 	r.controlScheduler.shutdown()
