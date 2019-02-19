@@ -81,13 +81,15 @@ func (l *Lease) nextExpiredTime(sendTs time.Time) time.Time {
 /// Renew the lease to the bound.
 func (l *Lease) Renew(sendTs time.Time) {
 	bound := l.nextExpiredTime(sendTs)
-	if l.boundSuspect != nil || l.boundValid != nil {
-		// Longer than suspect ts or longer than valid ts.
-		if l.boundSuspect != nil && l.boundSuspect.Before(bound) {
+	if l.boundSuspect != nil {
+		// Longer than suspect ts
+		if l.boundSuspect.Before(bound) {
 			l.boundSuspect = nil
 			l.boundValid = &bound
 		}
-		if l.boundValid != nil && l.boundValid.Before(bound) {
+	} else if l.boundValid != nil {
+		// Longer than valid ts
+		if l.boundValid.Before(bound) {
 			l.boundValid = &bound
 		}
 	} else {
