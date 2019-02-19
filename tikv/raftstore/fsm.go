@@ -442,12 +442,20 @@ type poller struct {
 }
 
 func (p *poller) fetchBatch(batch *batch, maxSize int) {
-	msg, ok := <-p.fsmReceiver
-	if !ok {
+	curBatchLen := batch.len()
+	if batch.control != nil || curBatchLen >= maxSize {
+		// Do nothing if there's a pending control fsm or the batch is already full.
 		return
 	}
-	batch.push(msg)
-	n := mathutil.Min(len(p.fsmReceiver), maxSize-1)
+	if curBatchLen == 0 {
+		msg, ok := <-p.fsmReceiver
+		if !ok {
+			return
+		}
+		batch.push(msg)
+		curBatchLen++
+	}
+	n := mathutil.Min(len(p.fsmReceiver), maxSize-curBatchLen)
 	for i := 0; i < n; i++ {
 		msg, ok := <-p.fsmReceiver
 		if !ok {
@@ -459,10 +467,9 @@ func (p *poller) fetchBatch(batch *batch, maxSize int) {
 
 func (p *poller) poll() {
 	const stoppedLen = -1
-	batchSize := p.maxBatchSize
-	batch := newBatchWithCapacity(batchSize)
-	exhaustedFsms := make([][2]int, 0, batchSize)
-	p.fetchBatch(batch, batchSize)
+	batch := newBatchWithCapacity(p.maxBatchSize)
+	exhaustedFsms := make([][2]int, 0, p.maxBatchSize)
+	p.fetchBatch(batch, p.maxBatchSize)
 	for !batch.isEmpty() {
 		p.handler.begin(batch.len())
 		if batch.control != nil {
@@ -493,12 +500,10 @@ func (p *poller) poll() {
 				batch.release(idx, mark)
 			}
 		}
-		if batch.isEmpty() {
-			batchSize = mathutil.Min(batchSize+1, p.maxBatchSize)
-			p.fetchBatch(batch, batchSize)
-		} else {
-			batchSize = mathutil.Max(batchSize-1, 1)
-		}
+
+		// Fetch batch after every round is finished. It's helpful to protect regions
+		// from becoming hungry if some regions are hot points.
+		p.fetchBatch(batch, p.maxBatchSize)
 	}
 }
 
