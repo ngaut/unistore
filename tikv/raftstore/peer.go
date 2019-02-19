@@ -1246,6 +1246,96 @@ func (p *Peer) ProposeNormal(pollCtx *PollContext, req *raft_cmdpb.RaftCmdReques
 	return proposeIndex, nil
 }
 
+// Return true if the transfer leader request is accepted.
+func (p *Peer) ProposeTransferLeaser(ctx *PollContext, req *raft_cmdpb.RaftCmdRequest, cb Callback) bool {
+	transferLeader := getTransferLeaderCmd(req)
+	if transferLeader == nil {
+		panic!("transfer leader is nil")
+	}
+	peer := transferLeader.Peer
+
+	transferred := false
+	if p.readyToTransferLeader(ctx, peer) {
+		p.transferLeader(peer)
+		transferred = true
+	} else {
+		log.Infof("%v transfer leader message %v ignored directly", p.Tag, req)
+		transferred = false
+	}
+
+	// transfer leader command doesn't need to replicate log and apply, so we
+	// return immediately. Note that this command may fail, we can view it just as an advice
+	cb.invokeWithResponse(makeTransferLeaderResponse())
+
+	return transferred
+}
+
+// Fails in such cases:
+// 1. A pending conf change has not been applied yet;
+// 2. Removing the leader is not allowed in the configuration;
+// 3. The conf change makes the raft group not healthy;
+// 4. The conf change is dropped by raft group internally.
+func (p *Peer) ProposeConfChange(ctx *PollContext, req *raft_cmdpb.RaftCmdRequest) (uint64, error) {
+	if p.PendingMergeState != nil {
+		return 0, fmt.Errorf("peer in merging mode, can't do proposal.")
+	}
+
+	if p.RaftGroup.Raft.PendingConfIndex > p.Store().AppliedIndex() {
+		log.Infof("%v there is a pending conf change, try later", p.Tag)
+		return 0, fmt.Errorf("%v there is a pending conf change, try later", p.Tag)
+	}
+
+	if err := p.checkConfChange(ctx, req); err != nil {
+		return 0, err
+	}
+
+	data, err := req.Marshal()
+	if err != nil {
+		return 0, err
+	}
+
+	changePeer := worker.GetChangePeerCmd(req)
+	if changePeer == nil {
+		panic("Change Peer should not be nil")
+	}
+	cc := &eraftpb.ConfChange{}
+	cc.ChangeType = changePeer.ChangeType
+	cc.NodeId = changePeer.Peer.Id
+	cc.Context = data
+
+	log.Infof("%v propose conf change %v peer %v", p.Tag, cc.ChangeType, cc.NodeId)
+
+	proposeIndex := p.nextProposalIndex()
+	if err = p.RaftGroup.ProposeConfChange(ProposalContext_SyncLog.ToVec(), cc); err != nil {
+		return 0, err
+	}
+	if p.nextProposalIndex() == proposeIndex {
+		return 0, &ErrNotLeader{}
+	}
+
+	return proposeIndex, nil
+}
+
+func (p *Peer) handleRead(ctx *PollContext, req *raft_cmdpb.RaftCmdRequest, checkEpoch bool) *ReadResponse {
+
+}
+
+func getTransferLeaderCmd(req *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.TransferLeaderRequest {
+	if req.AdminRequest == nil {
+		return nil
+	}
+	return req.AdminRequest.TransferLeader
+}
+
+func makeTransferLeaderResponse() *raft_cmdpb.RaftCmdResponse {
+	adminResp := &raft_cmdpb.AdminResponse{}
+	adminResp.CmdType = raft_cmdpb.AdminCmdType_TransferLeader
+	adminResp.TransferLeader = &raft_cmdpb.TransferLeaderResponse{}
+	resp := &raft_cmdpb.RaftCmdResponse{}
+	resp.AdminResponse = adminResp
+	return resp
+}
+
 func getSyncLogFromRequest(req *raft_cmdpb.RaftCmdRequest) bool {
 	if req.AdminRequest != nil {
 		switch req.AdminRequest.GetCmdType() {
@@ -1259,6 +1349,49 @@ func getSyncLogFromRequest(req *raft_cmdpb.RaftCmdRequest) bool {
 	}
 	req.Header.GetSyncLog()
 }
+
+type ReadExecutor struct {
+	checkEpoch bool
+	engine *DBBundle
+	snapshot *DBSnapshot
+	snapshotTime *time.Time
+	needSnapshotTime bool
+}
+
+func NewReadExecutor(engine *DBBundle, checkEpoch bool, needSnapshotTime bool) *ReadExecutor {
+	return &ReadExecutor{
+		checkEpoch: checkEpoch,
+		engine: engine,
+		snapshot: nil,
+		snapshotTime: nil,
+		needSnapshotTime: needSnapshotTime,
+	}
+}
+
+func (r *ReadExecutor) SnapshotTime() *time.Time {
+	r.MaybeUpdateSnapshot()
+	r.snapshotTime
+}
+
+func (r *ReadExecutor) MaybeUpdateSnapshot() {
+	if r.snapshot != nil {
+		return
+	}
+	r.snapshot = &DBSnapshot{
+		Txn: r.engine.db.NewTransaction(false),
+		LockStore: r.engine.lockStore,
+		RollbackStore: r.engine.rollbackStore,
+	}
+	// Reading current timespec after snapshot, in case we do not
+	// expire lease in time.
+	// atomic::fence(atomic::Ordering::Release)
+	if r.needSnapshotTime {
+		t := time.Now()
+		r.snapshotTime = &t
+	}
+}
+
+func (r *ReadExecutor) DoGet(req *)
 
 type Proposal struct {
 	IsConfChange bool

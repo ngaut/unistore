@@ -13,6 +13,12 @@ type DBBundle struct {
 	rollbackStore *lockstore.MemStore
 }
 
+type DBSnapshot struct {
+	Txn *badger.Txn
+	LockStore *lockstore.MemStore
+	RollbackStore *lockstore.MemStore
+}
+
 type Engines struct {
 	kv       *badger.DB
 	kvPath   string
