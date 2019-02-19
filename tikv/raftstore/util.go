@@ -67,7 +67,7 @@ func NewLease(maxLease time.Duration) *Lease {
 	return &Lease{
 		maxLease: maxLease,
 		maxDrift: maxLease / 3,
-		lastUpdate: time.Unix(0, 0),
+		lastUpdate: time.Time{},
 	}
 }
 
@@ -98,9 +98,9 @@ func (l *Lease) Renew(sendTs time.Time) {
 	// Renew remote if it's valid.
 	if l.boundValid != nil {
 		if l.boundValid.Sub(l.lastUpdate) > l.maxDrift {
-			l.lastUpdate = l.boundValid
+			l.lastUpdate = *l.boundValid
 			if l.remote != nil {
-				l.remote.Renew(l.boundValid)
+				l.remote.Renew(*l.boundValid)
 			}
 		}
 	}
@@ -121,9 +121,10 @@ func (l *Lease) Inspect(ts *time.Time) LeaseState {
 	}
 	if l.boundValid != nil {
 		if ts == nil {
-			ts = &time.Now()
+			t := time.Now()
+			ts = &t
 		}
-		if ts < l.boundValid {
+		if ts.Before(*l.boundValid) {
 			return LeaseState_Valid
 		} else {
 			return LeaseState_Expired
@@ -158,9 +159,9 @@ func (l *Lease) MaybeNewRemoteLease(term uint64) *RemoteLease {
 			panic("Must expire the old remote lease first!")
 		}
 	}
-	expiredTime := 0
+	expiredTime := uint64(0)
 	if l.boundValid != nil {
-		expiredTime = TimeToU64(l.boundValid)
+		expiredTime = TimeToU64(*l.boundValid)
 	}
 	remote := &RemoteLease {
 		expiredTime: &expiredTime,
@@ -184,9 +185,10 @@ type RemoteLease struct {
 }
 
 func (r *RemoteLease) Inspect(ts *time.Time) LeaseState {
-	expiredTime := atomic.LoadInt64(r.expiredTime)
+	expiredTime := atomic.LoadUint64(r.expiredTime)
 	if ts == nil {
-		ts = &time.Now()
+		t := time.Now()
+		ts = &t
 	}
 	if ts.Before(U64ToTime(expiredTime)) {
 		return LeaseState_Valid
@@ -214,8 +216,8 @@ const (
 )
 
 func TimeToU64(t time.Time) uint64 {
-	sec := t.Unix()
-	msec := t.Nanosecond() / NSEC_PER_MSEC
+	sec := uint64(t.Unix())
+	msec := uint64(t.Nanosecond()) / NSEC_PER_MSEC
 	sec <<= SEC_SHIFT
 	return sec | msec
 }
@@ -223,5 +225,5 @@ func TimeToU64(t time.Time) uint64 {
 func U64ToTime(u uint64) time.Time {
 	sec := u >> SEC_SHIFT
 	nsec := (u & MSEC_MASK) * NSEC_PER_MSEC
-	time.Unix(sec, nsec)
+	return time.Unix(int64(sec), int64(nsec))
 }
