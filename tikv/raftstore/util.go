@@ -61,6 +61,8 @@ type Lease struct {
 	maxDrift time.Duration
 	lastUpdate time.Time
 	remote *RemoteLease
+
+	// Todo: use monotonic_raw instead of time.Now() to fix time jump back issue.
 }
 
 func NewLease(maxLease time.Duration) *Lease {
