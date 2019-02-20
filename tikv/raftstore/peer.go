@@ -4,7 +4,6 @@ import (
 	"time"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"fmt"
-	"sync/atomic"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/coreos/etcd/raft"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
@@ -12,7 +11,6 @@ import (
 	"github.com/pingcap/errors"
 	"math"
 	"github.com/pingcap/kvproto/pkg/pdpb"
-	"github.com/pingcap/tidb-test/_vendor/src/github.com/coreos/etcd/pkg/testutil"
 	"encoding/binary"
 	"github.com/ngaut/log"
 	"./worker"
@@ -20,6 +18,13 @@ import (
 
 const (
 	InvalidID = 0
+	RaftInvalidIndex = 0
+)
+
+type RegionChangeEvent int
+
+const (
+	RegionChangeEvent_Create RegionChangeEvent = 0 + iota
 )
 
 type CoprocessorHost struct {
@@ -30,10 +35,28 @@ func (c *CoprocessorHost) PrePropose() error {
 	return nil
 }
 
+func (c *CoprocessorHost) OnRegionChanged(region *metapb.Region, RegionChangeEvent, role raft.StateType) {
+	// Todo
+}
+
+type ApplyTask struct {
+
+}
+
+type ApplyRouter struct {
+
+}
+
+func (a *ApplyRouter) ScheduleTask(regionId uint64, task *ApplyTask) {
+
+}
+
 type PollContext struct {
 	Cfg *Config
 	CoprocessorHost *CoprocessorHost
-	engine *DBBundle
+	engine *Engines
+	applyRouter *ApplyRouter
+	localReader chan<- *ReadTask
 }
 
 type StaleState int
@@ -122,6 +145,12 @@ func (q *ReadIndexQueue) PopRead() *ReadIndexRequest {
 
 func NotifyStaleReq(term uint64, cb Callback) {
 	resp := ErrResp(&ErrStaleCommand{}, term)
+	cb.invokeWithResponse(resp)
+}
+
+func NotifyReqRegionRemoved(regionId uint64, cb Callback) {
+	regionNotFound := &ErrRegionNotFound{ RegionId: regionId }
+	resp := NewError(regionNotFound)
 	cb.invokeWithResponse(resp)
 }
 
@@ -223,19 +252,21 @@ func NewPeerStat() *PeerStat {
 	}
 }
 
+type ApplyTaskRes struct {
+	// todo
+}
+
+/// A struct that stores the state to wait for `PrepareMerge` apply result.
+///
+/// When handling the apply result of a `CommitMerge`, the source peer may have
+/// not handle the apply result of the `PrepareMerge`, so the target peer has
+/// to abort current handle process and wait for it asynchronously.
 type WaitApplyResultStat struct {
-	Results []*ApplyTaskRes
-	ReadyToMerge atomic.Value
-}
-
-type Lease struct {
-
-}
-
-func NewLease(duration time.Duration) *Lease {
-	return &Lease {
-
-	}
+	/// The following apply results waiting to be handled, including the `CommitMerge`.
+	/// These will be handled once `ReadyToMerge` is true.
+	results []*ApplyTaskRes
+	/// It is used by target peer to check whether the apply result of `PrepareMerge` is handled.
+	readyToMerge *bool
 }
 
 type Proposal struct {
@@ -287,6 +318,21 @@ func (r *RecentAddedPeer) Contains(id uint64) bool {
 	return false
 }
 
+/// `ConsistencyState` is used for consistency check.
+type ConsistencyState struct {
+	LastCheckTime time.Time
+	// (computed_result_or_to_be_verified, index, hash)
+	Index uint64
+	Hash []byte
+}
+
+type DestroyPeerJob struct {
+	Initialized bool
+	AsyncRemove bool
+	RegionId bool
+	Peer *metapb.Peer
+}
+
 type Peer struct {
 	Cfg *Config
 	peerCache map[uint64]*metapb.Peer
@@ -306,37 +352,55 @@ type Peer struct {
 	PeersStartPendingTime map[uint64]time.Time
 	RecentAddedPeer RecentAddedPeer
 
+	/// an inaccurate difference in region size since last reset.
 	SizeDiffHint uint64
+	/// delete keys' count since last reset.
 	deleteKeysHint uint64
+	/// approximate size of the region.
 	ApproximateSize *uint64
+	/// approximate keys of the region.
 	ApproximateKeys *uint64
 	CompactionDeclinedBytes uint64
+
+	ConsistencyState *ConsistencyState
+
 	Tag string
 
+	// Index of last scheduled committed raft log.
 	LastApplyingIdx uint64
 	LastCompactedIdx uint64
+	// The index of the latest urgent proposal index.
 	lastUrgentProposalIdx uint64
+	// The index of the latest committed split command.
 	lastCommittedSplitIdx uint64
+	// Approximate size of logs that is applied but not compacted yet.
 	RaftLogSizeHint uint64
+
 	PendingRemove bool
 
 	// The index of the latest committed prepare merge command.
 	lastCommittedPrepareMergeIdx uint64
 	PendingMergeState *raft_serverpb.MergeState
 	leaderMissingTime *time.Time
-	leaderLease Lease
+	leaderLease *Lease
 
-	pendingMessages []eraftpb.Message
+	// If a snapshot is being applied asynchronously, messages should not be sent.
+	pendingMessages []*eraftpb.Message
 	PendingMergeApplyResult *WaitApplyResultStat
 	PeerStat *PeerStat
 }
 
 func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Region, peer metapb.Peer) (*Peer, error) {
 	if peer.GetId() == InvalidID {
-		return nil, errors.New("Invalid peer id")
+		return nil, fmt.Errorf("invalid peer id")
 	}
 	tag := fmt.Sprintf("[region %v] %v", region.GetId(), peer.GetId())
-	ps := NewPeerStorage(engines, region, tag)
+
+	ps, err := NewPeerStorage(engines, region, tag)
+	if err != nil {
+		return nil, err
+	}
+
 	appliedIndex := ps.AppliedIndex()
 
 	raftCfg := &raft.Config {
@@ -355,7 +419,7 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 	if err != nil {
 		return nil, err
 	}
-	peer := &Peer {
+	p := &Peer {
 		Cfg: cfg,
 		Peer: peer,
 		regionId: region.GetId(),
@@ -364,9 +428,10 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 		proposals: newProposalQueue(),
 		applyProposals: make([]*Proposal, 0),
 		pendingReads: NewReadIndexQueue(),
-		peerCache: make(map[uint64]metapb.Peer),
+		peerCache: make(map[uint64]*metapb.Peer),
 		PeerHeartbeats: make(map[uint64]time.Time),
 		PeersStartPendingTime: make(map[uint64]time.Time),
+		RecentAddedPeer: NewRecentAddedPeer(uint64(cfg.RaftRejectTransferLeaderDuration.Seconds())),
 		SizeDiffHint: 0,
 		deleteKeysHint: 0,
 		ApproximateSize: nil,
@@ -375,6 +440,11 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 		PendingRemove: false,
 		PendingMergeState: nil,
 		lastCommittedPrepareMergeIdx: 0,
+		ConsistencyState: &ConsistencyState{
+			LastCheckTime: time.Now(),
+			Index: RaftInvalidIndex,
+			Hash: make([]byte, 0),
+		},
 		leaderMissingTime: &time.Now(),
 		Tag: tag,
 		LastApplyingIdx: appliedIndex,
@@ -388,35 +458,111 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 		PeerStat: NewPeerStat(),
 	}
 
+	// If this region has only one peer and I am the one, campaign directly.
 	if len(region.GetPeers()) == 1 && region.GetPeers()[0].GetStoreId() == storeId {
-		err := peer.RaftGroup.Campaign()
+		err = p.RaftGroup.Campaign()
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	return peer, nil
+	return p, nil
 }
 
-func (p *Peer) Activate() {
-	panic("unimplemented")
+/// Register self to apply_scheduler and read_scheduler so that the peer is then usable.
+/// Also trigger `RegionChangeEvent::Create` here.
+func (p *Peer) Activate(ctx *PollContext) {
+	ctx.applyRouter.ScheduleTask(p.regionId, &ApplyTask{/*todo self*/})
+	ctx.localReader <- &ReadTask{/*todo self*/}
+	ctx.CoprocessorHost.OnRegionChanged(p.Region(), RegionChangeEvent_Create, p.GetRole())
 }
 
 func (p *Peer) nextProposalIndex() uint64 {
-	p.peerStorage.LastIndex() + 1
+	return p.peerStorage.LastIndex() + 1
 }
 
+/// Tries to destroy itself. Returns a job (if needed) to do more cleaning tasks.
 func (p *Peer) MaybeDestroy() *DestroyPeerJob {
 	if p.PendingRemove {
+		log.Infof("%v is being destroyed, skip", p.Tag)
 		return nil
 	}
 	initialized := p.peerStorage.isInitialized()
+	asyncRemove := false
+	if p.IsApplyingSnapshot() {
+		if !p.Store().CancelApplyingSnap() {
+			log.Infof("%v stale peer %v is applying snapshot")
+			return nil
+		}
+		// There is no tasks in apply/local read worker.
+		asyncRemove = false
+	} else {
+		asyncRemove = initialized
+	}
+	p.PendingRemove = true
 
+	return &DestroyPeerJob {
+		AsyncRemove: asyncRemove,
+		Initialized: initialized,
+		RegionId: p.regionId,
+		Peer: &metapb.Peer(*p.Peer),
+	}
 }
 
-func (p *Peer) Destroy(keepData bool) error {
-	t = time.Now()
+/// Does the real destroy task which includes:
+/// 1. Set the region to tombstone;
+/// 2. Clear data;
+/// 3. Notify all pending requests.
+func (p *Peer) Destroy(ctx *PollContext, keepData bool) error {
+	start := time.Now()
+	region := &metapb.Region(*p.Region())
+	log.Infof("%v begin to destroy", p.Tag)
 
+	// Set Tombstone state explicitly
+	kvWB := new(WriteBatch)
+	raftWB := new(WriteBatch)
+	if err := p.Store().clearMeta(kvWB, raftWB); err != nil {
+		return err
+	}
+	mergeState := nil
+	if p.PendingMergeState != nil {
+		mergeState = &raft_serverpb.MergeState(*p.PendingMergeState)
+	}
+	if err := WritePeerState(ctx.engine, kvWB, &region, raft_serverpb.PeerState_Tombstone, mergeState); err != nil {
+		return err
+	}
+	// write kv rocksdb first in case of restart happen between two write
+	// Todo: sync = ctx.cfg.sync_log
+	if err := kvWB.WriteToDB(ctx.engine.kv); err != nil {
+		return err
+	}
+	if err := raftWB.WriteToDB(ctx.engine.raft); err != nil {
+		return err
+	}
+
+	if p.Store().isInitialized() && !keepData {
+		// If we meet panic when deleting data and raft log, the dirty data
+		// will be cleared by a newer snapshot applying or restart.
+		if err := p.Store().clearData(); err != nil {
+			log.Errorf("%v failed to schedule clear data task %v", p.Tag, err)
+		}
+	}
+
+	for _, read := range p.pendingReads.reads {
+		for _, r := range read.cmds {
+			NotifyReqRegionRemoved(region.Id, r.Cb)
+		}
+		read.cmds = nil
+	}
+	p.pendingReads.reads = nil
+
+	for _, proposal := range p.applyProposals {
+		NotifyReqRegionRemoved(region.Id, proposal.Cb)
+	}
+	p.applyProposals = nil
+
+	log.Infof("%v destroy itself, takes %v", p.Tag, time.Now().Sub(start))
+	return nil
 }
 
 func (p *Peer) isInitialized() bool {
@@ -425,6 +571,22 @@ func (p *Peer) isInitialized() bool {
 
 func (p *Peer) Region() *metapb.Region {
 	return p.peerStorage.Region()
+}
+
+/// Set the region of a peer.
+///
+/// This will update the region of the peer, caller must ensure the region
+/// has been preserved in a durable device.
+func (p *Peer) SetRegion(host *CoprocessorHost, localReader chan<- *ReadTask, region *metapb.Region) {
+	if p.Region().GetRegionEpoch().GetVersion() < region.GetRegionEpoch().GetVersion() {
+		// Epoch version changed, disable read on the localreader for this region.
+		p.leaderLease.ExpireRemoteLease()
+	}
+	regionClone := metapb.Region(*region)
+	p.Store().SetRegion(&regionClone)
+	// Always update read delegate's region to avoid stale region info after a follower
+	// becomeing a leader.
+	p.MaybeUpdateReadProgress(localReader, &ReadTask{})
 }
 
 func (p *Peer) PeerId() uint64 {
@@ -839,7 +1001,7 @@ func (p *Peer) PostSplit() {
 	p.SizeDiffHint = 0
 }
 
-func (p *Peer) MaybeUpdateReadProgress(reader chan ReadTask, ts time.Time) {
+func (p *Peer) MaybeRenewLeaderLease(reader chan *ReadTask, ts time.Time) {
 	if !p.IsLeader() || p.isSplitting() || p.isMerging() {
 		return
 	}

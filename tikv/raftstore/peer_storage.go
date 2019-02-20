@@ -599,3 +599,11 @@ func ClearMeta(engines *Engines, kvWB, raftWB *WriteBatch, regionID uint64, raft
 	)
 	return nil
 }
+
+func WritePeerState(engines *Engines, kvWB *WriteBatch, region *metapb.Region, state PeerStat, mergeState *rspb.MergeState) error {
+
+}
+
+func (p *PeerStorage) SetRegion(region *metapb.Region) {
+	p.region = region
+}
