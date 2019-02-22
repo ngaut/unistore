@@ -19,6 +19,15 @@ import (
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 )
 
+type SnapState int
+
+const (
+	SnapState_Relax SnapState = 0 + iota
+	SnapState_Generating
+	SnapState_Applying
+	SnapState_ApplyAborted
+)
+
 const (
 	// When we create a region peer, we should initialize its log term/index > 0,
 	// so that we can force the follower peer to sync the snapshot first.
@@ -177,6 +186,8 @@ type PeerStorage struct {
 	appliedIndexTerm uint64
 	lastTerm         uint64
 
+	snapState SnapState
+
 	cache *EntryCache
 	stats *CacheQueryStats
 
@@ -330,6 +341,10 @@ func (ps *PeerStorage) isInitialized() bool {
 
 func (ps *PeerStorage) Region() *metapb.Region {
 	return ps.region
+}
+
+func (ps *PeerStorage) IsApplyingSnapshot() bool {
+	return ps.snapState == SnapState_Applying
 }
 
 func (ps *PeerStorage) Entries(low, high, maxSize uint64) ([]raftpb.Entry, error) {

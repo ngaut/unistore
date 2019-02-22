@@ -25,6 +25,7 @@ type RegionChangeEvent int
 
 const (
 	RegionChangeEvent_Create RegionChangeEvent = 0 + iota
+	RegionChangeEvent_Update
 )
 
 type CoprocessorHost struct {
@@ -587,14 +588,18 @@ func (p *Peer) SetRegion(host *CoprocessorHost, localReader chan<- *ReadTask, re
 	// Always update read delegate's region to avoid stale region info after a follower
 	// becomeing a leader.
 	p.MaybeUpdateReadProgress(localReader, &ReadTask{})
+
+	if !p.PendingRemove {
+		host.OnRegionChanged(p.Region(), RegionChangeEvent_Update, p.GetRole())
+	}
 }
 
 func (p *Peer) PeerId() uint64 {
 	return p.Peer.GetId()
 }
 
-func (p *Peer) GetRaftStatus() {
-	p.RaftGroup.Status()
+func (p *Peer) GetRaftStatus() *raft.Status {
+	return p.RaftGroup.Status()
 }
 
 func (p *Peer) LeaderId() uint64 {
@@ -613,37 +618,55 @@ func (p *Peer) GetRole()  raft.StateType {
 }
 
 func (p *Peer) Store() *PeerStorage {
-	p.peerStorage
+	return p.peerStorage
 }
 
 func (p *Peer) IsApplyingSnapshot() bool {
-	p.peerStorage.IsApplyingSnapshot()
+	p.Store().IsApplyingSnapshot()
 }
 
+/// Returns `true` if the raft group has replicated a snapshot but not committed it yet.
 func (p *Peer) HasPendingSnapshot() bool {
 	// TODO etcd raft doesn't export member raft
 	return false
 }
 
-func (p *Peer) Send(msgs []*eraftpb.Message) error {
+func (p *Peer) Send(trans chan *eraftpb.Message, msgs []*eraftpb.Message) error {
 	for _, msg := range msgs {
-		err := p.snedRaftMessage(msg)
+		msgType := msg.MsgType
+		err := p.sendRaftMessage(msg, trans)
 		if err != nil {
 			return err
 		}
+		switch msgType {
+		case eraftpb.MessageType_MsgTimeoutNow:
+			// After a leader transfer procedure is triggered, the lease for
+			// the old leader may be expired earlier than usual, since a new leader
+			// may be elected and the old leader doesn't step down due to
+			// network partition from the new leader.
+			// For lease safety during leader transfer, transit `leader_lease`
+			// to suspect.
+			p.leaderLease.Suspect(time.Now())
+		default:
+		}
 	}
+	return nil
 }
 
+/// Steps the raft message.
 func (p *Peer) Step(m *eraftpb.Message) error {
 	if p.IsLeader() && m.GetFrom() != InvalidID {
 		p.PeerHeartbeats[m.GetFrom()] = time.Now()
+		// As the leader we know we are not missing.
 		p.leaderMissingTime = nil
 	} else if m.GetFrom() == p.LeaderId() {
+		// As another role know we're not missing.
 		p.leaderMissingTime = nil
 	}
 	return p.RaftGroup.Step(m)
 }
 
+/// Checks and updates `peer_heartbeats` for the peer.
 func (p *Peer) CheckPeers() {
 	if !p.IsLeader() {
 		p.PeerHeartbeats = make(map[uint64]time.Time)
