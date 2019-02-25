@@ -1,7 +1,7 @@
 package raftstore
 
 import (
-	"github.com/etcd-io/etcd/raft/raftpb"
+	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 )
 

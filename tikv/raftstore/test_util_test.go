@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/coocood/badger"
-	"github.com/etcd-io/etcd/raft/raftpb"
+	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/stretchr/testify/require"
 )
