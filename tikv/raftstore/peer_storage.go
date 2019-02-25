@@ -8,8 +8,8 @@ import (
 
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
-	"github.com/coreos/etcd/raft"
-	"github.com/coreos/etcd/raft/raftpb"
+	"github.com/etcd-io/etcd/raft"
+	"github.com/etcd-io/etcd/raft/raftpb"
 	"github.com/cznic/mathutil"
 	"github.com/golang/protobuf/proto"
 	"github.com/ngaut/log"

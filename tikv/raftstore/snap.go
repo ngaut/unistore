@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/coocood/badger"
-	"github.com/coreos/etcd/raft/raftpb"
+	"github.com/etcd-io/etcd/raft/raftpb"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/rocksdb"
 	"github.com/ngaut/unistore/util"

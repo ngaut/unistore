@@ -2,9 +2,9 @@ module github.com/ngaut/unistore
 
 require (
 	github.com/coocood/badger v1.5.1-0.20181229021924-c02c9aba9c41
-	github.com/coreos/etcd v3.3.10+incompatible
 	github.com/cznic/mathutil v0.0.0-20181021201202-eba54fb065b7
 	github.com/dgryski/go-farm v0.0.0-20180109070241-2de33835d102
+	github.com/etcd-io/etcd v3.3.12+incompatible
 	github.com/golang/protobuf v1.2.0
 	github.com/juju/errors v0.0.0-20181118221551-089d3ea4e4d5
 	github.com/juju/loggo v0.0.0-20180524022052-584905176618 // indirect
