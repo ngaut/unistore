@@ -35,7 +35,7 @@ var (
 	tableLoadingMode = flag.String("table-loading-mode", "memory-map", "How should LSM tree be accessed. (memory-map/load-to-ram)")
 	maxTableSize     = flag.Int64("max-table-size", 64<<20, "Each table (or file) is at most this size.")
 	numMemTables     = flag.Int("num-mem-tables", 3, "Maximum number of tables to keep in memory, before stalling.")
-	numL0Table       = flag.Int("num-level-zero-tables", 3, "Maximum number of Level 0 tables before we start compacting.")
+	numL0Table       = flag.Int("num-level-zero-tables", 30, "Maximum number of Level 0 tables before we start compacting.")
 	syncWrites       = flag.Bool("sync-write", true, "Sync all writes to disk. Setting this to true would slow down data loading significantly.")
 	maxProcs         = flag.Int("max-procs", 0, "Max CPU cores to use, set 0 to use all CPU cores in the machine.")
 	raft             = flag.Bool("raft", false, "enable raft")
@@ -197,7 +197,7 @@ func createDB(subPath string, safePoint *tikv.SafePoint) *badger.DB {
 	opts.MaxTableSize = *maxTableSize
 	opts.NumMemtables = *numMemTables
 	opts.NumLevelZeroTables = *numL0Table
-	opts.NumLevelZeroTablesStall = opts.NumLevelZeroTables + 5
+	opts.NumLevelZeroTablesStall = opts.NumLevelZeroTables + 30
 	opts.SyncWrites = *syncWrites
 	opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
 	db, err := badger.Open(opts)
