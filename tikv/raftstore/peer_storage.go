@@ -686,8 +686,7 @@ func (p *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *raftpb.Snapshot, k
 /// This function only write data to `ready_ctx`'s `WriteBatch`. It's caller's duty to write
 /// it explicitly to disk. If it's flushed to disk successfully, `post_ready` should be called
 /// to update the memory states properly.
-// Using `&Ready` here to make sure `Ready` struct is not modified in this function. This is
-// a requirement to advance the ready object properly later.
+/// Do not modify ready in this function, this is a requirement to advance the ready object properly later.
 func (p *PeerStorage) HandleRaftReady(readyCtx HandleRaftReadyContext, ready *raft.Ready) (*InvokeContext, error) {
 	ctx := NewInvokeContext(p)
 	var snapshotIdx uint64 = 0
