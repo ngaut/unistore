@@ -702,11 +702,7 @@ func (p *PeerStorage) HandleRaftReady(readyCtx HandleRaftReadyContext, ready *ra
 	}
 
 	if len(ready.Entries) != 0 {
-		ents := make([]*raftpb.Entry, 0, len(ready.Entries))
-		for _, v := range ready.Entries {
-			ents = append(ents, &v)
-		}
-		if err := p.Append(ctx, ents, readyCtx); err != nil {
+		if err := p.Append(ctx, ready.Entries, readyCtx); err != nil {
 			return nil, err
 		}
 	}
