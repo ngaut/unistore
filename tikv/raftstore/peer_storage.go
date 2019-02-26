@@ -57,14 +57,14 @@ func CompactRaftLog(tag string, state *rspb.RaftApplyState, compactIndex, compac
 }
 
 type EntryCache struct {
-	cache []*raftpb.Entry
+	cache []raftpb.Entry
 }
 
-func (ec *EntryCache) front() *raftpb.Entry {
+func (ec *EntryCache) front() raftpb.Entry {
 	return ec.cache[0]
 }
 
-func (ec *EntryCache) back() *raftpb.Entry {
+func (ec *EntryCache) back() raftpb.Entry {
 	return ec.cache[len(ec.cache)-1]
 }
 
@@ -92,12 +92,12 @@ func (ec *EntryCache) fetchEntriesTo(begin, end, maxSize uint64, fetchSize *uint
 		if *fetchSize != entrySize && *fetchSize > maxSize {
 			break
 		}
-		ents = append(ents, *entry)
+		ents = append(ents, entry)
 	}
 	return ents
 }
 
-func (ec *EntryCache) append(tag string, entries []*raftpb.Entry) {
+func (ec *EntryCache) append(tag string, entries []raftpb.Entry) {
 	if len(entries) == 0 {
 		return
 	}
@@ -462,7 +462,7 @@ func (ps *PeerStorage) Snapshot() (raftpb.Snapshot, error) {
 // Append the given entries to the raft log using previous last index or self.last_index.
 // Return the new last index for later update. After we commit in engine, we can set last_index
 // to the return one.
-func (ps *PeerStorage) Append(invokeCtx *InvokeContext, entries []*raftpb.Entry, readyCtx HandleRaftReadyContext) error {
+func (ps *PeerStorage) Append(invokeCtx *InvokeContext, entries []raftpb.Entry, readyCtx HandleRaftReadyContext) error {
 	log.Debugf("%s append %d entries", ps.Tag, len(entries))
 	prevLastIndex := invokeCtx.RaftState.GetLastIndex()
 	if len(entries) == 0 {
@@ -475,7 +475,7 @@ func (ps *PeerStorage) Append(invokeCtx *InvokeContext, entries []*raftpb.Entry,
 		if !readyCtx.SyncLog() {
 			readyCtx.SetSyncLog(getSyncLogFromEntry(entry))
 		}
-		err := readyCtx.RaftWB().SetMsg(RaftLogKey(ps.region.Id, entry.Index), entry)
+		err := readyCtx.RaftWB().SetMsg(RaftLogKey(ps.region.Id, entry.Index), &entry)
 		if err != nil {
 			return err
 		}
@@ -505,7 +505,7 @@ type CacheQueryStats struct {
 	miss uint64
 }
 
-func getSyncLogFromEntry(entry *raftpb.Entry) bool {
+func getSyncLogFromEntry(entry raftpb.Entry) bool {
 	return entryCtx(entry.Data[len(entry.Data)-1]).IsSyncLog()
 }
 
