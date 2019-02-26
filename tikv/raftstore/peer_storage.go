@@ -142,6 +142,13 @@ type InvokeContext struct {
 	SnapRegion *metapb.Region
 }
 
+func CloneRaftLocalState(rs *rspb.RaftLocalState) rspb.RaftLocalState {
+	localState := *rs
+	hs := *rs.HardState
+	localState.HardState = &hs
+	return localState
+}
+
 func NewInvokeContext(store *PeerStorage) *InvokeContext {
 	ctx := &InvokeContext{
 		RegionID:   store.region.GetId(),
@@ -166,6 +173,14 @@ func (ic *InvokeContext) saveRaftStateTo(wb *WriteBatch) error {
 func (ic *InvokeContext) saveApplyStateTo(wb *WriteBatch) error {
 	key := ApplyStateKey(ic.RegionID)
 	return wb.SetMsg(key, &ic.ApplyState)
+}
+
+func (ic *InvokeContext) saveSnapshotRaftStateTo(snapshotIdx uint64, wb *WriteBatch) error {
+	snapshotRaftState := CloneRaftLocalState(&ic.RaftState)
+	snapshotRaftState.HardState.Commit = snapshotIdx
+	snapshotRaftState.LastIndex = snapshotIdx
+	key := SnapshotRaftStateKey(ic.RegionID)
+	wb.SetMsg(key, &snapshotRaftState)
 }
 
 type HandleRaftReadyContext interface {
@@ -621,4 +636,119 @@ func WritePeerState(engines *Engines, kvWB *WriteBatch, region *metapb.Region, s
 
 func (p *PeerStorage) SetRegion(region *metapb.Region) {
 	p.region = region
+}
+
+func (p *PeerStorage) ClearData() {
+	// Todo
+}
+
+func (p *PeerStorage) CancelApplyingSnap() bool {
+	// Todo
+	return true
+}
+
+// Check if the storage is applying a snapshot.
+func (p *PeerStorage) CheckApplyingSnap() bool {
+	// Todo
+	return false
+}
+
+// Apply the peer with given snapshot.
+func (p *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *raftpb.Snapshot, kvWB *WriteBatch, raftWB *WriteBatch) error {
+	log.Infof("%v begin to apply snapshot", p.Tag)
+
+	snapData := new(rspb.RaftSnapshotData)
+	if err := snapData.Unmarshal(snap.Data); err != nil {
+		return err
+	}
+
+	if snapData.Region.Id != p.region.Id {
+		return fmt.Errorf("mismatch region id %v != %v", snapData.Region.Id, p.region.Id)
+	}
+
+	if p.isInitialized() {
+		// we can only delete the old data when the peer is initialized.
+		if err := p.clearMeta(kvWB, raftWB); err != nil {
+			return err
+		}
+	}
+
+	if err := WritePeerState(p.Engines.kv, kvWB, snapData.Region, rspb.PeerState_Applying, nil); err != nil {
+		return err
+	}
+
+	lastIdx := snap.Metadata.Index
+
+	ctx.RaftState.LastIndex = lastIdx
+	ctx.lastTerm = snap.Metadata.Term
+	ctx.ApplyState.AppliedIndex = lastIdx
+
+	// The snapshot only contains log which index > applied index, so
+	// here the truncate state's (index, term) is in snapshot metadata.
+	ctx.ApplyState.TruncatedState.Index = lastIdx
+	ctx.ApplyState.TruncatedState.Term = snap.Metadata.Term
+
+	log.Debugf("%v apply snapshot for region %v with state %v ok", p.Tag, snapData.Region, ctx.ApplyState)
+
+	ctx.SnapRegion = snapData.Region
+	return nil
+}
+
+/// Save memory states to disk.
+///
+/// This function only write data to `ready_ctx`'s `WriteBatch`. It's caller's duty to write
+/// it explicitly to disk. If it's flushed to disk successfully, `post_ready` should be called
+/// to update the memory states properly.
+// Using `&Ready` here to make sure `Ready` struct is not modified in this function. This is
+// a requirement to advance the ready object properly later.
+func (p *PeerStorage) HandleRaftReady(readyCtx *HandleRaftReadyContext, ready *raft.Ready) (*InvokeContext, error) {
+	ctx := NewInvokeContext(p)
+	snapshotIdx := 0
+	if !raft.IsEmptySnap(ready.Snapshot) {
+		if err := p.ApplySnapshot(ctx, ready.Snapshot, readyCtx.KVWB(), readyCtx.RaftWB()); err != nil {
+			return nil, err
+		}
+		snapshotIdx = ctx.RaftState.LastIndex
+	}
+	if ready.MustSync {
+		readyCtx.SetSyncLog(true)
+	}
+
+	if len(ready.Entries) != 0 {
+		if err := p.Append(ctx, ready.Entries, readyCtx); err != nil {
+			return nil, err
+		}
+	}
+
+	// Last index is 0 means the peer is created from raft message
+	// and has not applied snapshot yet, so skip persistent hard state.
+	if ctx.RaftState.LastIndex > 0 {
+		if ready.HardState != nil {
+			ctx.RaftState.HardState = ready.HardState
+		}
+	}
+
+	if ctx.RaftState != p.raftState {
+		if err := ctx.saveRaftStateTo(readyCtx.RaftWB()); err != nil {
+			return nil, err
+		}
+		if snapshotIdx > 0 {
+			// in case of restart happen when we just write region state to Applying,
+			// but not write raft_local_state to raft rocksdb in time.
+			// we write raft state to default rocksdb, with last index set to snap index,
+			// in case of recv raft log after snapshot.
+			if err := ctx.saveSnapshotRaftStateTo(snapshotIdx, readyCtx.KVWB()); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// only when apply snapshot
+	if ctx.ApplyState != p.applyState {
+		if err := ctx.saveApplyStateTo(readyCtx.KVWB()); err != nil {
+			return nil, err
+		}
+	}
+
+	return ctx, nil
 }

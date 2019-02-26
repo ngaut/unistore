@@ -5,7 +5,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"fmt"
 	"github.com/pingcap/kvproto/pkg/metapb"
-	"github.com/coreos/etcd/raft"
+	"go.etcd.io/etcd/raft"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/errors"
@@ -58,6 +58,8 @@ type PollContext struct {
 	engine *Engines
 	applyRouter *ApplyRouter
 	localReader chan<- *ReadTask
+	needFlushTrans bool
+	trans chan<- *eraftpb.Message
 }
 
 type StaleState int
@@ -151,7 +153,7 @@ func NotifyStaleReq(term uint64, cb Callback) {
 
 func NotifyReqRegionRemoved(regionId uint64, cb Callback) {
 	regionNotFound := &ErrRegionNotFound{ RegionId: regionId }
-	resp := NewError(regionNotFound)
+	resp := NewRespFromError(regionNotFound)
 	cb.invokeWithResponse(resp)
 }
 
@@ -185,7 +187,6 @@ func newProposalQueue() *ProposalQueue {
 		queue: make([]*ProposalMeta, 0),
 	}
 }
-
 
 func (q *ProposalQueue) Pop(term uint64) *ProposalMeta {
 	if len(q) == 0 || q.queue[0].Term > term{
@@ -402,7 +403,10 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 		return nil, err
 	}
 
-	appliedIndex := ps.AppliedIndex()
+	appliedIndex, err := ps.AppliedIndex()
+	if err != nil {
+		return nil, err
+	}
 
 	raftCfg := &raft.Config {
 		ID: peer.GetId(),
@@ -544,7 +548,7 @@ func (p *Peer) Destroy(ctx *PollContext, keepData bool) error {
 	if p.Store().isInitialized() && !keepData {
 		// If we meet panic when deleting data and raft log, the dirty data
 		// will be cleared by a newer snapshot applying or restart.
-		if err := p.Store().clearData(); err != nil {
+		if err := p.Store().ClearData(); err != nil {
 			log.Errorf("%v failed to schedule clear data task %v", p.Tag, err)
 		}
 	}
@@ -603,18 +607,15 @@ func (p *Peer) GetRaftStatus() *raft.Status {
 }
 
 func (p *Peer) LeaderId() uint64 {
-	// TODO etcd raft doesn't export member raft
-	return 0
+	return p.RaftGroup.Raft.Lead
 }
 
 func (p *Peer) IsLeader() bool {
-	// TODO etcd raft doesn't export member raft
-	return false
+	return p.RaftGroup.Raft.State == raft.StateLeader
 }
 
 func (p *Peer) GetRole()  raft.StateType {
-	// TODO etcd raft doesn't export member raft
-	return 0
+	return p.RaftGroup.Raft.State
 }
 
 func (p *Peer) Store() *PeerStorage {
@@ -627,8 +628,7 @@ func (p *Peer) IsApplyingSnapshot() bool {
 
 /// Returns `true` if the raft group has replicated a snapshot but not committed it yet.
 func (p *Peer) HasPendingSnapshot() bool {
-	// TODO etcd raft doesn't export member raft
-	return false
+	p.RaftGroup
 }
 
 func (p *Peer) Send(trans chan *eraftpb.Message, msgs []*eraftpb.Message) error {
@@ -675,6 +675,8 @@ func (p *Peer) CheckPeers() {
 	if len(p.PeerHeartbeats) == len(p.Region().GetPeers()) {
 		return
 	}
+
+	// Insert heartbeats in case that some peers never response heartbeats.
 	region := p.Region()
 	for _, peer := range region.GetPeers() {
 		p.PeerHeartbeats[peer.GetId()] = time.Now()
@@ -682,9 +684,10 @@ func (p *Peer) CheckPeers() {
 	}
 }
 
+/// Collects all down peers.
 func (p *Peer) CollectDownPeers(maxDuration time.Duration) []*pdpb.PeerStats {
 	downPeers := make([]*pdpb.PeerStats, 0)
-	for _, peer := p.Region().GetPeers() {
+	for _, peer := range p.Region().GetPeers() {
 		if peer.GetId() == p.Peer.GetId() {
 			continue
 		}
@@ -701,11 +704,13 @@ func (p *Peer) CollectDownPeers(maxDuration time.Duration) []*pdpb.PeerStats {
 	return downPeers
 }
 
+/// Collects all pending peers and update `peers_start_pending_time`.
 func (p *Peer) CollectPendingPeers() []*metapb.Peer {
 	pendingPeers := make([]*metapb.Peer, 0, len(p.Region().GetPeers()))
 	status := p.RaftGroup.Status()
 	truncatedIdx := p.Store().truncatedIndex()
 
+	// status.Progress includes learner progress
 	for id, progress := range status.Progress {
 		if id == p.Peer.GetId() {
 			continue
@@ -713,11 +718,17 @@ func (p *Peer) CollectPendingPeers() []*metapb.Peer {
 		if progress.Match < truncatedIdx {
 			if peer := p.GetPeerFromCache(id); peer != nil {
 				pendingPeers = append(pendingPeers, peer)
-				for peerId, startPendingTime := range p.PeersStartPendingTime {
+				inPeersStartPendingTime := false
+				for peerId, _ := range p.PeersStartPendingTime {
 					if peerId == id {
-						p.PeersStartPendingTime[id] = time.Now()
+						inPeersStartPendingTime = true
 						break
 					}
+				}
+				if !inPeersStartPendingTime {
+					now := time.Now()
+					p.PeersStartPendingTime[id] = now
+					log.Debugf("%v peer %v start pending at %v", p.Tag, id, now)
 				}
 			}
 		}
@@ -727,8 +738,8 @@ func (p *Peer) CollectPendingPeers() []*metapb.Peer {
 
 
 func (p *Peer) clearPeersStartPendingTime() {
-	for k := range p.PeersStartPendingTime {
-		delete (p.PeersStartPendingTime, k)
+	for id := range p.PeersStartPendingTime {
+		delete (p.PeersStartPendingTime, id)
 	}
 }
 
@@ -747,11 +758,15 @@ func (p *Peer) AnyNewPeerCatchUp(peerId uint64) bool {
 			continue
 		}
 		truncatedIdx := p.Store().truncatedIndex()
-		if progress, ok := p.RaftGroup.raft.prs[peerId]; ok {
-			if progress.Matched >= truncatedIdx {
-				delete(p.PeersStartPendingTime, id)
+		if progress, ok := p.RaftGroup.Raft.Prs[peerId]; ok {
+			if progress.Match >= truncatedIdx {
+				if startPendingTime, ok := p.PeersStartPendingTime[id]; ok {
+					delete(p.PeersStartPendingTime, id)
+					elapsed := time.Since(startPendingTime)
+					log.Debugf("%v peer %v has caught up logs, elapsed: %v", p.Tag, id, elapsed)
+				}
+				return true
 			}
-			return true
 		}
 	}
 	return false
@@ -759,42 +774,72 @@ func (p *Peer) AnyNewPeerCatchUp(peerId uint64) bool {
 
 func (p *Peer) CheckStaleState() StaleState {
 	if p.IsLeader() {
+		// Leaders always have valid state.
+		//
+		// We update the leader_missing_time in the `func Step`. However one peer region
+		// does not send any raft messages, so we have to check and update it before
+		// reporting stale states.
 		p.leaderMissingTime = nil
 		return StaleStateValid
 	}
-	naivePeer := !p.isInitialized() || p.RaftGroup.raft.isLeaner()
+	naivePeer := !p.isInitialized() || p.RaftGroup.Raft.IsLearner
+	// Updates the `leader_missing_time` according to the current state.
+	//
+	// If we are checking this it means we suspect the leader might be missing.
+	// Mark down the time when we are called, so we can check later if it's been longer than it
+	// should be.
 	if p.leaderMissingTime == nil {
 		p.leaderMissingTime = &time.Now()
 		return StaleStateValid
 	} else {
 		if time.Since(p.leaderMissingTime) >= p.Cfg.MaxLeaderMissingDuration {
+			// Resets the `leader_missing_time` to avoid sending the same tasks to
+			// PD worker continuously during the leader missing timeout.
 			p.leaderMissingTime = &time.Now()
 			return StaleStateToValidate
 		} else if time.Since(p.leaderMissingTime) >= p.Cfg.AbnormalLeaderMissingDuration && !naivePeer {
+			// A peer is considered as in the leader missing state
+			// if it's initialized but is isolated from its leader or
+			// something bad happens that the raft group can not elect a leader.
 			return StaleStateLeaderMissing
 		}
 		return StaleStateValid
 	}
 }
 
-// TODO: finish the function after local reader implemented
-func (p *Peer) OnRoleChanged(ready *raft.Ready) {
+// We are not going to port local reader module
+func (p *Peer) OnRoleChanged(ctx *PollContext, ready *raft.Ready) {
 	ss := ready.SoftState
 	if ss != nil {
 		if ss.RaftState == raft.StateFollower {
-
-		} else if ss.RaftState == raft.StateFollower {
-
+			p.HeartbeatPd(ctx)
 		}
+		ctx.CoprocessorHost.OnRegionChanged(p.Region(), ss.RaftState)
 	}
 }
 
 func (p *Peer) ReadyToHandlePendingSnap() bool {
+	// If apply worker is still working, written apply state may be overwritten
+	// by apply worker. So we have to wait here.
+	// Please note that committed_index can't be used here. When applying a snapshot,
+	// a stale heartbeat can make the leader think follower has already applied
+	// the snapshot, and send remaining log entries, which may increase committed_index.
 	return p.LastApplyingIdx == p.Store().AppliedIndex()
 }
 
 func (p *Peer) readyToHandleRead() bool {
-	return p.Store().appliedIndexTerm == p.Term() && !p.isSplitting() && !p.isMerging()
+	// There may be some values that are not applied by this leader yet but the old leader,
+	// if applied_index_term isn't equal to current term.
+	return p.Store().appliedIndexTerm == p.Term()
+		// There may be stale read if the old leader splits really slow,
+		// the new region may already elected a new leader while
+		// the old leader still think it owns the splitted range.
+		&& !p.isSplitting()
+		// There may be stale read if a target leader is in another store and
+		// applied commit merge, written new values, but the sibling peer in
+		// this store does not apply commit merge, so the leader is not ready
+		// to read, until the merge is rollbacked.
+		&& !p.isMerging()
 }
 
 func (p *Peer) isSplitting() bool {
@@ -814,32 +859,48 @@ func (p *Peer) TakeApplyProposals() *RegionProposal {
 	return NewRegionProposal(p.PeerId(), p.regionId, props)
 }
 
-func (p *Peer) HandleRaftReadyAppend() {
+func (p *Peer) HandleRaftReadyAppend(ctx *PollContext) {
 	if p.PendingRemove {
 		return
 	}
-	if p.Store().CheckApplySnap() {
+	if p.Store().CheckApplyingSnap() {
+		// If we continue to handle all the messages, it may cause too many messages because
+		// leader will send all the remaining messages to this follower, which can lead
+		// to full message queue under high load.
+		log.Debugf("%v still applying snapshot, skip further handling")
 		return
 	}
+
 	if len(p.pendingMessages) > 0 {
 		messages := p.pendingMessages
 		p.pendingMessages = make([]*eraftpb.Message, 0)
-		p.Send(messages)
+		ctx.needFlushTrans = true
+		p.Send(ctx.trans, messages)
 	}
+
 	if p.HasPendingSnapshot() && !p.ReadyToHandlePendingSnap() {
+		log.Debugf("%v [apply_id: %v, last_applying_idx: %v] is not ready to apply snapshot.", p.Tag, p.Store().AppliedIndex(), p.LastApplyingIdx)
 		return
 	}
+
 	if !p.RaftGroup.HasReadySince(p.LastApplyingIdx) {
 		return
 	}
-	ready := p.RaftGroup.ReadySince(p.LastApplyingIdx)
-	p.OnRoleChanged(&ready)
 
+	log.Debugf("%v handle raft ready", p.Tag)
+
+	ready := p.RaftGroup.ReadySince(p.LastApplyingIdx)
+	p.OnRoleChanged(ctx, &ready)
+
+	// The leader can write to disk and replicate to the followers concurrently
+	// For more details, check raft thesis 10.2.1.
 	if p.IsLeader() {
-		p.Send(ready.Messages)
+		p.Send(ctx, ready.Messages)
+		ctx.needFlushTrans = true
 		ready.Messages = ready.Messages[:0]
 	}
-	invokeCtx, err := p.Store().HandleRaftReady(&ready)
+
+	invokeCtx, err := p.Store().HandleRaftReady(ctx, &ready)
 	if err != nil {
 		panic(fmt.Sprintf("failed to handle raft ready, error: %v", err))
 	}
@@ -868,7 +929,7 @@ func (p *Peer) PostRaftReadyAppend(ctx PollContext, ready *raft.Ready, invokeCtx
 			ready.Messages = nil
 		} else {
 			p.Send(ready.Messages)
-			ctx.NeedFlushTrans = true
+			ctx.needFlushTrans = true
 		}
 	}
 	if applySnapResult != nil {
