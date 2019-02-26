@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -617,18 +618,21 @@ func (store *MVCCStore) GC(reqCtx *requestCtx, safePoint uint64) error {
 
 type SafePoint struct {
 	timestamp uint64
+	RM        RegionManager
 }
 
 // CreateCompactionFilter implements badger.CompactionFilterFactory function.
 func (sp *SafePoint) CreateCompactionFilter() badger.CompactionFilter {
 	return &GCCompactionFilter{
 		safePoint: atomic.LoadUint64(&sp.timestamp),
+		rm:        sp.RM,
 	}
 }
 
 // GCCompactionFilter implements the badger.CompactionFilter interface.
 type GCCompactionFilter struct {
 	safePoint uint64
+	rm        RegionManager
 }
 
 // (old key first byte) = (latest key first byte) + 1
@@ -667,4 +671,13 @@ func (f *GCCompactionFilter) Filter(key, value, userMeta []byte) badger.Decision
 		}
 	}
 	return badger.DecisionKeep
+}
+
+func (f *GCCompactionFilter) Guards() [][]byte {
+	guards := f.rm.RegionEndKeys()
+
+	sort.Slice(guards, func(i, j int) bool {
+		return bytes.Compare(guards[i], guards[j]) < 0
+	})
+	return guards
 }

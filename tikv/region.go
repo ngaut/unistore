@@ -194,6 +194,7 @@ type RegionOptions struct {
 type RegionManager interface {
 	GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error)
 	Close() error
+	RegionEndKeys() [][]byte
 }
 
 type regionManager struct {
@@ -319,6 +320,20 @@ func (rm *RaftRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx,
 
 func (rm *RaftRegionManager) Close() error {
 	return nil
+}
+
+func (rm *RaftRegionManager) RegionEndKeys() [][]byte {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	regionEnds := make([][]byte, 0, len(rm.regions))
+	for _, ctx := range rm.regions {
+		if len(ctx.endKey) > 0 {
+			regionEnds = append(regionEnds, ctx.endKey)
+		}
+	}
+
+	return regionEnds
 }
 
 type StandAloneRegionManager struct {
@@ -710,4 +725,18 @@ func (rm *StandAloneRegionManager) Close() error {
 	close(rm.closeCh)
 	rm.wg.Wait()
 	return nil
+}
+
+func (rm *StandAloneRegionManager) RegionEndKeys() [][]byte {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	regionEnds := make([][]byte, 0, len(rm.regions))
+	for _, ctx := range rm.regions {
+		if len(ctx.endKey) > 0 {
+			regionEnds = append(regionEnds, ctx.endKey)
+		}
+	}
+
+	return regionEnds
 }
