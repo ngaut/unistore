@@ -641,21 +641,21 @@ func WritePeerState(kvWB *WriteBatch, region *metapb.Region, state rspb.PeerStat
 }
 
 // Apply the peer with given snapshot.
-func (p *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *raftpb.Snapshot, kvWB *WriteBatch, raftWB *WriteBatch) error {
-	log.Infof("%v begin to apply snapshot", p.Tag)
+func (ps *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *raftpb.Snapshot, kvWB *WriteBatch, raftWB *WriteBatch) error {
+	log.Infof("%v begin to apply snapshot", ps.Tag)
 
 	snapData := new(rspb.RaftSnapshotData)
 	if err := snapData.Unmarshal(snap.Data); err != nil {
 		return err
 	}
 
-	if snapData.Region.Id != p.region.Id {
-		return fmt.Errorf("mismatch region id %v != %v", snapData.Region.Id, p.region.Id)
+	if snapData.Region.Id != ps.region.Id {
+		return fmt.Errorf("mismatch region id %v != %v", snapData.Region.Id, ps.region.Id)
 	}
 
-	if p.isInitialized() {
+	if ps.isInitialized() {
 		// we can only delete the old data when the peer is initialized.
-		if err := p.clearMeta(kvWB, raftWB); err != nil {
+		if err := ps.clearMeta(kvWB, raftWB); err != nil {
 			return err
 		}
 	}
@@ -675,7 +675,7 @@ func (p *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *raftpb.Snapshot, k
 	ctx.ApplyState.TruncatedState.Index = lastIdx
 	ctx.ApplyState.TruncatedState.Term = snap.Metadata.Term
 
-	log.Debugf("%v apply snapshot for region %v with state %v ok", p.Tag, snapData.Region, ctx.ApplyState)
+	log.Debugf("%v apply snapshot for region %v with state %v ok", ps.Tag, snapData.Region, ctx.ApplyState)
 
 	ctx.SnapRegion = snapData.Region
 	return nil
@@ -687,11 +687,11 @@ func (p *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *raftpb.Snapshot, k
 /// it explicitly to disk. If it's flushed to disk successfully, `post_ready` should be called
 /// to update the memory states properly.
 /// Do not modify ready in this function, this is a requirement to advance the ready object properly later.
-func (p *PeerStorage) HandleRaftReady(readyCtx HandleRaftReadyContext, ready *raft.Ready) (*InvokeContext, error) {
-	ctx := NewInvokeContext(p)
+func (ps *PeerStorage) HandleRaftReady(readyCtx HandleRaftReadyContext, ready *raft.Ready) (*InvokeContext, error) {
+	ctx := NewInvokeContext(ps)
 	var snapshotIdx uint64 = 0
 	if !raft.IsEmptySnap(ready.Snapshot) {
-		if err := p.ApplySnapshot(ctx, &ready.Snapshot, readyCtx.KVWB(), readyCtx.RaftWB()); err != nil {
+		if err := ps.ApplySnapshot(ctx, &ready.Snapshot, readyCtx.KVWB(), readyCtx.RaftWB()); err != nil {
 			return nil, err
 		}
 		snapshotIdx = ctx.RaftState.LastIndex
@@ -701,7 +701,7 @@ func (p *PeerStorage) HandleRaftReady(readyCtx HandleRaftReadyContext, ready *ra
 	}
 
 	if len(ready.Entries) != 0 {
-		if err := p.Append(ctx, ready.Entries, readyCtx); err != nil {
+		if err := ps.Append(ctx, ready.Entries, readyCtx); err != nil {
 			return nil, err
 		}
 	}
@@ -717,7 +717,7 @@ func (p *PeerStorage) HandleRaftReady(readyCtx HandleRaftReadyContext, ready *ra
 		}
 	}
 
-	if !RaftStateEqual(&ctx.RaftState, p.raftState) {
+	if !RaftStateEqual(&ctx.RaftState, ps.raftState) {
 		if err := ctx.saveRaftStateTo(readyCtx.RaftWB()); err != nil {
 			return nil, err
 		}
@@ -733,7 +733,7 @@ func (p *PeerStorage) HandleRaftReady(readyCtx HandleRaftReadyContext, ready *ra
 	}
 
 	// only when apply snapshot
-	if !ApplyStateEqual(&ctx.ApplyState, p.applyState) {
+	if !ApplyStateEqual(&ctx.ApplyState, ps.applyState) {
 		if err := ctx.saveApplyStateTo(readyCtx.KVWB()); err != nil {
 			return nil, err
 		}
