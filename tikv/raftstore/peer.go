@@ -52,6 +52,11 @@ func (a *ApplyRouter) ScheduleTask(regionId uint64, task *ApplyTask) {
 
 }
 
+type ReadyICPair struct {
+	Ready raft.Ready
+	IC *InvokeContext
+}
+
 type PollContext struct {
 	Cfg *Config
 	CoprocessorHost *CoprocessorHost
@@ -60,6 +65,7 @@ type PollContext struct {
 	localReader chan<- *ReadTask
 	needFlushTrans bool
 	trans chan<- *eraftpb.Message
+	ReadyRes []ReadyICPair
 }
 
 type StaleState int
@@ -390,6 +396,8 @@ type Peer struct {
 	pendingMessages []*eraftpb.Message
 	PendingMergeApplyResult *WaitApplyResultStat
 	PeerStat *PeerStat
+
+	applyRouter router
 }
 
 func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Region, peer metapb.Peer) (*Peer, error) {
@@ -904,51 +912,75 @@ func (p *Peer) HandleRaftReadyAppend(ctx *PollContext) {
 	if err != nil {
 		panic(fmt.Sprintf("failed to handle raft ready, error: %v", err))
 	}
-	// ctx.ready_res.push((ready, invokeCtx))
+	ctx.ReadyRes = append(ctx.ReadyRes, ReadyICPair{Ready:ready, IC:invokeCtx})
 }
 
 func (p *Peer) PostRaftReadyAppend(ctx PollContext, ready *raft.Ready, invokeCtx InvokeContext) *ApplySnapResult {
 	if invokeCtx.hasSnapshot() {
+		// When apply snapshot, there is no log applied and not compacted yet.
 		p.RaftLogSizeHint = 0
 	}
+
 	applySnapResult := p.Store().PostReady(invokeCtx)
 	if applySnapResult != nil && p.Peer.GetIsLearner() {
+		// The peer may change from learner to voter after snapshot applied.
 		var pr metapb.Peer
 		for _, peer := range p.Region().GetPeers() {
 			if peer.GetId() == p.Peer.GetId() {
-				pr = peer
+				pr = metapb.Peer{
+					Id: peer.Id,
+					StoreId: peer.Id,
+					IsLearner: peer.Id,
+				}
 			}
 		}
 		if pr != p.Peer {
+			log.Infof("%v meta changed in applying snapshot, before %v, after %v", p.Tag, p.Peer, pr)
 			p.Peer = pr
 		}
 	}
+
 	if !p.IsLeader() {
 		if p.IsApplyingSnapshot() {
 			p.pendingMessages = ready.Messages
 			ready.Messages = nil
 		} else {
-			p.Send(ready.Messages)
+			p.Send(ctx.trans, ready.Messages)
 			ctx.needFlushTrans = true
 		}
 	}
+
 	if applySnapResult != nil {
 		p.Activate(ctx)
 	}
+
 	return applySnapResult
 }
 
-func (p *Peer) HandleRaftReadyApply(ctx PollContext, ready *raft.Ready) {
+func (p *Peer) HandleRaftReadyApply(ctx *PollContext, ready *raft.Ready) {
+	// Call `HandleRaftCommittedEntries` directly here may lead to inconsistency.
+	// In some cases, there will be some pending committed entries when applying a
+	// snapshot. If we call `HandleRaftCommittedEntries` directly, these updates
+	// will be written to disk. Because we apply snapshot asynchronously, so these
+	// updates will soon be removed. But the soft state of raft is still be updated
+	// in memory. Hence when handle ready next time, these updates won't be included
+	// in `ready.committed_entries` again, which will lead to inconsistency.
 	if p.IsApplyingSnapshot() {
+		// Snapshot's metadata has been applied.
 		p.LastApplyingIdx = p.Store().truncatedIndex()
 	} else {
 		committedEntries := ready.CommittedEntries
 		ready.CommittedEntries = nil
+		// leader needs to update lease and last commited split index.
 		leaseToBeUpdated, splitToBeUpdated, mergeToBeUpdated := p.IsLeader(), p.IsLeader(), p.IsLeader()
 		if !leaseToBeUpdated {
+			// It's not leader anymore, we are safe to clear proposals. If it becomes leader
+			// again, the lease should be updated when election is finished, old proposals
+			// have no effect.
 			p.proposals := p.proposals.Clear()
 		}
 		for _, entry := range committedEntries {
+			// raft meta is very small, can be ignored.
 			p.RaftLogSizeHint += len(entry.Data)
 			if leaseToBeUpdated {
 				proposeTime := p.findProposeTime(entry.Index, entry.Term)
@@ -958,15 +990,28 @@ func (p *Peer) HandleRaftReadyApply(ctx PollContext, ready *raft.Ready) {
 				}
 			}
 
+			// We care about split/merge commands that are committed in the current term.
 			if entry.Term == p.Term() && (splitToBeUpdated || mergeToBeUpdated) {
-				ctx := NewProposalContextFromBytes(entry.Context)
-				if splitToBeUpdated && ctx.contains(ProposalContext_Split) {
+				//ctx := NewProposalContextFromBytes(entry.Context)
+				proposalCtx := NewProposalContextFromBytes([]byte{0})
+				if splitToBeUpdated && proposalCtx.contains(ProposalContext_Split) {
+					// We dont need to suspect its lease because peers of new region that
+					// in other store do not start election before theirs election timeout
+					// which is longer than the max leader lease.
+					// It's safe to read local within its current lease, however, it's not
+					// safe to renew its lease.
 					p.lastCommittedSplitIdx = entry.Index
 					splitToBeUpdated = false
 				}
-				if mergeToBeUpdated && ctx.contains(ProposalContext_PrepareMerge) {
+				if mergeToBeUpdated && proposalCtx.contains(ProposalContext_PrepareMerge) {
+					// We committed prepare merge, to prevent unsafe read index,
+					// we must record its index.
 					p.lastCommittedPrepareMergeIdx = entry.Index
-					p.leaderLease.suspect(MonotonicRawNow())
+					// After prepare_merge is committed, the leader can not know
+					// when the target region merges majority of this region, also
+					// it can not know when the target region writes new values.
+					// To prevent unsafe local read, we suspect its leader lease.
+					p.leaderLease.Suspect(time.Now())
 					mergeToBeUpdated = false
 				}
 			}
@@ -976,6 +1021,7 @@ func (p *Peer) HandleRaftReadyApply(ctx PollContext, ready *raft.Ready) {
 		if l > 0 {
 			p.LastApplyingIdx = committedEntries[l-1].Index
 			if p.LastApplyingIdx >= p.lastUrgentProposalIdx {
+				// Urgent requests are flushed, make it lazy again.
 				p.RaftGroup.SkipBcastCommit(true)
 				p.lastUrgentProposalIdx = math.MaxUint64
 			}
@@ -984,13 +1030,15 @@ func (p *Peer) HandleRaftReadyApply(ctx PollContext, ready *raft.Ready) {
 				Term: p.Term(),
 				Entries: committedEntries,
 			}
-			p.ApplyRouter.ScheduleTask(p.regionId, apply)
+			ctx.applyRouter.ScheduleTask(p.regionId, apply)
 		}
 
 		p.ApplyReads(ctx, ready)
 
-		p.RaftGroup.AdvanceAppend(ready)
+		p.RaftGroup.Advance(ready)
 		if p.IsApplyingSnapshot() {
+			// Because we only handle raft ready when not applying snapshot, so following
+			// line won't be called twice for the same snapshot.
 			p.RaftGroup.AdvanceApply(p.LastApplyingIdx)
 		}
 	}
