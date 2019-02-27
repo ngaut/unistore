@@ -13,6 +13,10 @@ import (
 	"github.com/ngaut/unistore/tikv/mvcc"
 )
 
+const (
+	batchChanSize = 1024
+)
+
 type writeDBBatch struct {
 	entries []*badger.Entry
 	buf     []byte
@@ -121,9 +125,17 @@ func (w *writeDBWorker) run() {
 	defer w.store.wg.Done()
 	var batches []*writeDBBatch
 	for {
-
-
-
+		batches = batches[:0]
+		select {
+		case <-w.closeCh:
+			return
+		case batch := <-w.batchCh:
+			batches = append(batches, batch)
+		}
+		chLen := len(w.batchCh)
+		for i := 0; i < chLen; i++ {
+			batches = append(batches, <-w.batchCh)
+		}
 		if len(batches) > 0 {
 			w.updateBatchGroup(batches)
 		}
