@@ -127,7 +127,7 @@ func OriginKey(key []byte) []byte {
 func EncStartKey(region *metapb.Region) []byte {
 	// only initialized region's start_key can be encoded, otherwise there must be bugs
 	// somewhere.
-	y.AssertTrue(len(region.Peers) > 0)
+	y.AssertTruef(len(region.Peers) > 0, "region is not initialized")
 	return DataKey(region.StartKey)
 }
 
@@ -135,7 +135,7 @@ func EncStartKey(region *metapb.Region) []byte {
 func EncEndKey(region *metapb.Region) []byte {
 	// only initialized region's end_key can be encoded, otherwise there must be bugs
 	// somewhere.
-	y.AssertTrue(len(region.Peers) > 0)
+	y.AssertTruef(len(region.Peers) > 0, "region is not initialized")
 	return DataEndKey(region.EndKey)
 }
 
