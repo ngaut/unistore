@@ -157,7 +157,7 @@ type ApplySnapResult struct {
 	Region     *metapb.Region
 }
 
-type RegionTaskType int
+type RegionTaskType int64
 
 const (
 	RegionTaskType_Gen RegionTaskType = 0 + iota
@@ -171,7 +171,7 @@ const (
 type RegionTask struct {
 	RegionId uint64
 	TaskType RegionTaskType
-	Notifier chan<- eraftpb.Snapshot
+	Notifier chan<- *eraftpb.Snapshot
 	Status   *JobStatus
 	StartKey []byte
 	EndKey   []byte
