@@ -7,7 +7,25 @@ import (
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/ngaut/log"
 	"fmt"
+	"github.com/pingcap/kvproto/pkg/eraftpb"
 )
+
+/// `is_initial_msg` checks whether the `msg` can be used to initialize a new peer or not.
+// There could be two cases:
+// 1. Target peer already exists but has not established communication with leader yet
+// 2. Target peer is added newly due to member change or region split, but it's not
+//    created yet
+// For both cases the region start key and end key are attached in RequestVote and
+// Heartbeat message for the store of that peer to check whether to create a new peer
+// when receiving these messages, or just to wait for a pending region split to perform
+// later.
+func isInitialMsg(msg *eraftpb.Message) bool {
+	return msg.MsgType == eraftpb.MessageType_MsgRequestVote ||
+		msg.MsgType == eraftpb.MessageType_MsgRequestPreVote ||
+		// the peer has not been known to this leader, it may exist or not.
+		(msg.MsgType == eraftpb.MessageType_MsgHeartbeat && msg.Commit == RaftInvalidIndex)
+}
+
 
 type LeaseState int
 

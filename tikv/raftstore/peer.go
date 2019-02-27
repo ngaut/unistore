@@ -14,6 +14,7 @@ import (
 	"encoding/binary"
 	"github.com/ngaut/log"
 	"./worker"
+	"bytes"
 )
 
 const (
@@ -62,7 +63,6 @@ type PollContext struct {
 	CoprocessorHost *CoprocessorHost
 	engine *Engines
 	applyRouter *ApplyRouter
-	localReader chan<- *ReadTask
 	needFlushTrans bool
 	trans chan<- *eraftpb.Message
 	ReadyRes []ReadyICPair
@@ -142,7 +142,7 @@ func NewReadIndexQueue() *ReadIndexQueue {
 	}
 }
 
-func (q *ReadIndexQueue) PopRead() *ReadIndexRequest {
+func (q *ReadIndexQueue) PopFront() *ReadIndexRequest {
 	if len(q.reads) > 0 {
 		req := q.reads[0]
 		q.reads = q.reads[1:]
@@ -218,10 +218,6 @@ const (
 )
 
 type ProposalContext byte
-
-func newEmptyProposalContext() *ProposalContext {
-	return &ProposalContext{}
-}
 
 func (c *ProposalContext) ToVec() []byte {
 	var res []byte
@@ -597,9 +593,6 @@ func (p *Peer) SetRegion(host *CoprocessorHost, localReader chan<- *ReadTask, re
 	}
 	regionClone := metapb.Region(*region)
 	p.Store().SetRegion(&regionClone)
-	// Always update read delegate's region to avoid stale region info after a follower
-	// becomeing a leader.
-	p.MaybeUpdateReadProgress(localReader, &ReadTask{})
 
 	if !p.PendingRemove {
 		host.OnRegionChanged(p.Region(), RegionChangeEvent_Update, p.GetRole())
@@ -977,7 +970,7 @@ func (p *Peer) HandleRaftReadyApply(ctx *PollContext, ready *raft.Ready) {
 			// It's not leader anymore, we are safe to clear proposals. If it becomes leader
 			// again, the lease should be updated when election is finished, old proposals
 			// have no effect.
-			p.proposals := p.proposals.Clear()
+			p.proposals.Clear()
 		}
 		for _, entry := range committedEntries {
 			// raft meta is very small, can be ignored.
@@ -985,7 +978,7 @@ func (p *Peer) HandleRaftReadyApply(ctx *PollContext, ready *raft.Ready) {
 			if leaseToBeUpdated {
 				proposeTime := p.findProposeTime(entry.Index, entry.Term)
 				if proposeTime != nil {
-					p.MaybeRenewLeaderLease(ctx.localReader, proposeTime)
+					p.MaybeRenewLeaderLease(proposeTime)
 					leaseToBeUpdated = false
 				}
 			}
@@ -1052,11 +1045,11 @@ func (p *Peer) ApplyReads(ctx *PollContext, ready *raft.Ready) {
 			if read == nil {
 				panic("read should exist")
 			}
-			if state.RequestCtx != read.bianryId() {
+			if bytes.Compare(state.RequestCtx, read.bianryId()) != 0 {
 				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.bianryId()))
 			}
 			for _, reqCb := range read.cmds {
-				reqCb.Cb.invokeWithResponse(p.HandleRead(ctx, reqCb.Req, true));
+				reqCb.Cb.invokeWithResponse(p.handleRead(ctx, reqCb.Req, true));
 			}
 			read.cmds = nil
 			proposeTime = read.renewLeaseTime
@@ -1064,7 +1057,7 @@ func (p *Peer) ApplyReads(ctx *PollContext, ready *raft.Ready) {
 	} else {
 		for _, state := range ready.ReadStates {
 			read := p.pendingReads.reads[p.pendingReads.readyCnt]
-			if state.RequestCtx != read.bianryId() {
+			if bytes.Compare(state.RequestCtx, read.bianryId()) != 0 {
 				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.bianryId()))
 			}
 			p.pendingReads.readyCnt += 1
@@ -1072,15 +1065,20 @@ func (p *Peer) ApplyReads(ctx *PollContext, ready *raft.Ready) {
 		}
 	}
 
+	// Note that only after handle read_states can we identify what requests are
+	// actually stale.
 	if ready.SoftState != nil {
+		// all uncommitted reads will be dropped silently in raft.
 		p.pendingReads.ClearUncommitted(p.Term())
 	}
 
 	if proposeTime != nil {
+		// `propose_time` is a placeholder, here cares about `Suspect` only,
+		// and if it is in `Suspect` phase, the actual timestamp is useless.
 		if p.leaderLease.Inspect(proposeTime) == LeaseState_Suspect {
 			return
 		}
-		p.MaybeRenewLeaderLease(ctx.LocalReader, proposeTime)
+		p.MaybeRenewLeaderLease(proposeTime)
 	}
 }
 
@@ -1094,8 +1092,7 @@ func (p *Peer) PostApply(ctx *PollContext, applyState raft_serverpb.RaftApplySta
 		p.RaftGroup.AdvanceApply(applyState.AppliedIndex)
 	}
 
-	progressToBeUpdated := p.Store().appliedIndexTerm != appliedIndexTerm
-	p.Store().applyState = applyState
+	p.Store().applyState = &applyState
 	p.Store().appliedIndexTerm = appliedIndexTerm
 
 	p.PeerStat.WrittenBytes += applyMetrics.WrittenBytes
@@ -1110,95 +1107,81 @@ func (p *Peer) PostApply(ctx *PollContext, applyState raft_serverpb.RaftApplySta
 
 	if p.pendingReads.readyCnt > 0 && p.readyToHandleRead() {
 		for i := 0; i < p.pendingReads.readyCnt; i++ {
-			read := p.pendingReads.PopRead()
+			read := p.pendingReads.PopFront()
 			if read == nil {
 				panic("read is nil, this should not happen")
 			}
 			for _, reqCb := range read.cmds {
-				reqCb.Cb(p.HandleRead(ctx, reqCb.Req, true))
+				reqCb.Cb(p.handleRead(ctx, reqCb.Req, true))
 			}
+			read.cmds = read.cmds[:0]
 		}
 		p.pendingReads.readyCnt = 0
 	}
 
-	if progressToBeUpdated && p.IsLeader() {
-		progress = ReadProgress::appliedIndexTerm(appliedIndexTerm)
-		p.MaybeUpdateReadProgress(ctx.LocalReader, progress)
-	}
 	return hasReady
 }
 
 func (p *Peer) PostSplit() {
+	// Reset delete_keys_hint and size_diff_hint.
 	p.deleteKeysHint = 0
 	p.SizeDiffHint = 0
 }
 
-func (p *Peer) MaybeRenewLeaderLease(reader chan *ReadTask, ts time.Time) {
+// Try to renew leader lease.
+func (p *Peer) MaybeRenewLeaderLease(ts time.Time) {
+	// A non-leader peer should never has leader lease.
+	// A splitting leader should not renew its lease.
+	// Because we split regions asynchronous, the leader may read stale results
+	// if splitting runs slow on the leader.
+	// // A merging leader should not renew its lease.
+	// Because we merge regions asynchronous, the leader may read stale results
+	// if commit merge runs slow on sibling peers.
 	if !p.IsLeader() || p.isSplitting() || p.isMerging() {
 		return
 	}
 	p.leaderLease.Renew(ts)
-	remoteLease := p.leaderLease.MaybeNewRemoteLease(p.Term())
-	if remoteLease != nil {
-		progress := ReadProgress::leader_lease(remoteLease);
-		p.MaybeUpdateReadProgress(reader, progress)
-	}
-}
-
-func (p *Peer) MaybeUpdateReadProgress(localReader chan ReadTask, progress ReadProgress) {
-	if p.PendingRemove {
-		return
-	}
-	update := ReadTask::update(p.regionId, progress)
-	localReader <- update
 }
 
 func (p *Peer) MaybeCampaign(parentIsLeader bool) bool {
+	// The peer campaigned when it was created, no need to do it again.
 	if len(p.Region().GetPeers()) <= 1 || !parentIsLeader{
 		return false
 	}
 
+	// If last peer is the leader of the region before split, it's intuitional for
+	// it to become the leader of new split region.
 	p.RaftGroup.Campaign()
 	return true
 }
 
-func IsUrgentRequest(req *raft_cmdpb.RaftCmdRequest) bool {
-	if req.AdminRequest == nil {
-		return false
+func (p *Peer) findProposeTime(index, term uint64) *time.Time {
+	for {
+		meta := p.proposals.Pop(term)
+		if meta == nil {
+			return nil
+		}
+		if meta.Index == index && meta.Term == term {
+			return meta.RenewLeaseTime
+		}
 	}
-	switch req.AdminRequest.CmdType {
-		case raft_cmdpb.AdminCmdType_Split,
-			raft_cmdpb.AdminCmdType_BatchSplit,
-			raft_cmdpb.AdminCmdType_ChangePeer,
-			raft_cmdpb.AdminCmdType_ComputeHash,
-			raft_cmdpb.AdminCmdType_VerifyHash,
-			raft_cmdpb.AdminCmdType_PrepareMerge,
-			raft_cmdpb.AdminCmdType_CommitMerge,
-			raft_cmdpb.AdminCmdType_RollbackMerge:
-		    return true
-		default:
-		    return false
-	}
+	return nil
 }
 
-const (
-	RequestPolicy_ReadLocal int = 0 + iota
-	RequestPolicy_ReadIndex
-	RequestPolicy_ProposeNormal
-	RequestPolicy_ProposeTransferLeader
-	RequestPolicy_ProposeConfChange
-)
-
+// Propose a request.
+//
+// Return true means the request has been proposed successfully.
 func (p *Peer) Propose(ctx *PollContext, cb Callback, req raft_cmdpb.RaftCmdRequest, errResp *raft_cmdpb.RaftCmdResponse) bool {
 	if p.PendingRemove {
 		return false
 	}
+
 	isConfChange := false
 	isUrgent := IsUrgentRequest(&req)
 
-	policy, err := p.Inspect(&req)
+	policy, err := p.inspect(&req)
 	if err != nil {
-		BindError(errResp, err)
+		BindRespError(errResp, err)
 		cb.invokeWithResponse(errResp)
 		return false
 	}
@@ -1206,10 +1189,10 @@ func (p *Peer) Propose(ctx *PollContext, cb Callback, req raft_cmdpb.RaftCmdRequ
 	var err error
 	switch policy {
 	case RequestPolicy_ReadLocal:
-		p.ReadLocal(ctx, req, cb)
+		p.readLocal(ctx, req, cb)
 		return false
 	case RequestPolicy_ReadIndex:
-		return p.ReadIndex(ctx, req, errResp, cb)
+		return p.readIndex(ctx, req, errResp, cb)
 	case RequestPolicy_ProposeNormal:
 		idx, err = p.ProposeNormal(ctx, req)
 	case RequestPolicy_ProposeTransferLeader:
@@ -1218,13 +1201,17 @@ func (p *Peer) Propose(ctx *PollContext, cb Callback, req raft_cmdpb.RaftCmdRequ
 		isConfChange = true
 		idx, err = p.ProposeConfChange(ctx, req)
 	}
+
 	if err != nil {
-		BindError(errResp, err)
+		BindRespError(errResp, err)
 		cb.invokeWithResponse(errResp)
 		return false
 	}
+
 	if isUrgent {
 		p.lastUrgentProposalIdx = idx
+		// Eager flush to make urgent proposal be applied on all nodes as soon as
+		// possible.
 		p.RaftGroup.SkipBcastCommit(false)
 	}
 	meta := &ProposalMeta{
@@ -1237,16 +1224,25 @@ func (p *Peer) Propose(ctx *PollContext, cb Callback, req raft_cmdpb.RaftCmdRequ
 }
 
 func (p *Peer) PostPropose(meta *ProposalMeta, isConfChange bool, cb Callback) {
-	meta.RenewLeaseTime = MonotonicRawNow()
+	// Try to renew leader lease on every consistent read/write request.
+	t := time.Now()
+	meta.RenewLeaseTime = &t
 	proposal := &Proposal{
-		IsConfChange: isConfChange,
-		Index: meta.Index,
-		Term: meta.Term,
-		Cb: cb
+		isConfChange: isConfChange,
+		index: meta.Index,
+		term: meta.Term,
+		Cb: cb,
 	}
-
+	p.applyProposals = append(p.applyProposals, proposal)
+	p.proposals.Push(meta)
 }
 
+/// Count the number of the healthy nodes.
+/// A node is healthy when
+/// 1. it's the leader of the Raft group, which has the latest logs
+/// 2. it's a follower, and it does not lag behind the leader a lot.
+///    If a snapshot is involved between it and the Raft leader, it's not healthy since
+///    it cannot works as a node in the quorum to receive replicating logs from leader.
 func (p *Peer) countHealthyNode(progress map[uint64]raft.Progress) int {
 	healthy := 0
 	for _, pr := range progress {
@@ -1257,8 +1253,20 @@ func (p *Peer) countHealthyNode(progress map[uint64]raft.Progress) int {
 	return healthy
 }
 
+/// Validate the `ConfChange` request and check whether it's safe to
+/// propose the specified conf change request.
+/// It's safe iff at least the quorum of the Raft group is still healthy
+/// right after that conf change is applied.
+/// Define the total number of nodes in current Raft cluster to be `total`.
+/// To ensure the above safety, if the cmd is
+/// 1. A `AddNode` request
+///    Then at least '(total + 1)/2 + 1' nodes need to be up to date for now.
+/// 2. A `RemoveNode` request
+///    Then at least '(total - 1)/2 + 1' other nodes (the node about to be removed is excluded)
+///    need to be up to date for now. If 'allow_remove_leader' is false then
+///    the peer to be removed should not be the leader.
 func (p *Peer) checkConfChange(ctx *PollContext, cmd *raft_cmdpb.RaftCmdRequest) error {
-	changePeer := worker.GetChangePeerCmd(cmd)
+	changePeer := GetChangePeerCmd(cmd)
 	if changePeer == nil {
 		panic("Change Peer is nil")
 	}
@@ -1286,28 +1294,34 @@ func (p *Peer) checkConfChange(ctx *PollContext, cmd *raft_cmdpb.RaftCmdRequest)
 
 	switch changeType {
 	case eraftpb.ConfChangeType_AddNode:
-		if pr, ok := status.LearnerProgress[peer.Id]; ok {
+		if pr, ok := status.Progress[peer.Id]; ok && pr.IsLearner {
+			// For promote learner to voter.
 			pr.IsLearner = false
 			status.Progress[peer.Id] = pr
-			delete(status.LearnerProgress, peer.Id)
 		} else {
 			status.Progress[peer.Id] = raft.Progress{}
 		}
 	case eraftpb.ConfChangeType_RemoveNode:
 		if peer.GetIsLearner() {
+			// If the node is a learner, we can return directly.
 			return nil
 		}
 		if _, ok := status.Progress[peer.Id]; ok {
+			// It's always safe to remove a not existing node.
 			return nil
 		}
 	case eraftpb.ConfChangeType_AddLearnerNode:
 		return nil
 	}
+
 	healthy := p.countHealthyNode(status.Progress)
 	quorumAfterChange := Quorum(len(status.Progress))
 	if healthy >= quorumAfterChange {
 		return nil
 	}
+
+	log.Infof("%v rejects unsafe conf chagne request %v, total %v, healthy %v, " +
+		"quorum after change %v", p.Tag, changePeer, total, healthy, quorumAfterChange)
 
 	return fmt.Errorf("unsafe to perform conf change %v, total %v, healthy %v, quorum after chagne %v",
 	changePeer, total, healthy, quorumAfterChange)
@@ -1347,10 +1361,11 @@ func (p *Peer) readyToTransferLeader(ctx *PollContext, peer *metapb.Peer) bool {
 }
 
 func (p *Peer) readLocal(ctx *PollContext, req *raft_cmdpb.RaftCmdRequest, cb Callback) {
-	cb.invokeWithResponse(p.HandleRead(ctx, req, false))
+	cb.invokeWithResponse(p.handleRead(ctx, req, false))
 }
 
 func (p *Peer) preReadIndex() error {
+	// See more in ReadyToHandleRead().
 	if p.isSplitting() {
 		return fmt.Errorf("can not read index due to split")
 	}
@@ -1369,17 +1384,18 @@ func (p *Peer) readIndex(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest, e
 	err := p.preReadIndex()
 	if err != nil {
 		log.Debugf("%v prevents unsafe read index, err: %v", p.Tag, err)
-		BindError(errResp, e)
+		BindRespError(errResp, err)
 		cb.invokeWithResponse(errResp)
 		return false
 	}
 
-	renewLeaseTime := &time.Now()
+	now := time.Now()
+	renewLeaseTime := &now
 	readsLen := len(p.pendingReads.reads)
 	if readsLen > 0 {
 		read := p.pendingReads.reads[readsLen-1]
-		if read.renewLeaseTime + pollCtx.Cfg.RaftStoreMaxLeaderLease > renewLeaseTime {
-			read.cmds.push(&ReqCbPair{Req:req, Cb:cb})
+		if (read.renewLeaseTime.Add(pollCtx.Cfg.RaftStoreMaxLeaderLease).After(renewLeaseTime)) {
+			read.cmds = append(read.cmds, &ReqCbPair{Req:req, Cb:cb})
 			return false
 		}
 	}
@@ -1396,6 +1412,7 @@ func (p *Peer) readIndex(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest, e
 	readyReadCount := p.RaftGroup.Raft.ReadyReadCount
 
 	if pendingReadCount == lastPendingReadCount && readyReadCount == lastReadyReadCount {
+		// The message gets dropped silently, can't be handled anymore.
 		NotifyStaleReq(p.Term(), cb)
 		return false
 	}
@@ -1407,7 +1424,7 @@ func (p *Peer) readIndex(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest, e
 	// TimeoutNow has been sent out, so we need to propose explicitly to
 	// update leader lease.
 	if p.leaderLease.Inspect(renewLeaseTime) == LeaseState_Suspect {
-		req := raft_cmdpb.RaftCmdRequest{}
+		req := new(raft_cmdpb.RaftCmdRequest)
 		if index, err := p.ProposeNormal(pollCtx, req); err == nil {
 			meta := &ProposalMeta {
 				Index: index,
@@ -1445,18 +1462,23 @@ func (p *Peer) preProposePrepareMerge(ctx *PollContext, req *raft_cmdpb.RaftCmdR
 	}
 
 	entrySize := 0
-	for _, entry := range p.RaftGroup.Raft.RaftLog.Entries(minIndex, math.MaxUint64) {
-		entrySize += len(entry.GetData())
-		if entry.GetEntryType() == eraftpb.EntryType_EntryConfChange {
+
+	ents, err := p.RaftGroup.Raft.RaftLog.Entries(minIndex, math.MaxUint64)
+	if err != nil {
+		return err
+	}
+	for _, entry := range ents {
+		entrySize += len(entry.Data)
+		if entry.Type == eraftpb.EntryType_EntryConfChange {
 			return fmt.Errorf("log gap contains conf change, skip merging.")
 		}
-		if len(entry.GetData()) == 0 {
+		if len(entry.Data) == 0 {
 			continue
 		}
-		cmd := &raft_cmdpb.RaftCmdRequest{}
-		err := cmd.Unmarshal(entry.GetData())
+		cmd := raft_cmdpb.RaftCmdRequest{}
+		err := cmd.Unmarshal(entry.Data)
 		if err != nil {
-			panic("%v data is corrupted at %v, error: %v", p.Tag, entry.GetIndex(), err)
+			panic("%v data is corrupted at %v, error: %v", p.Tag, entry.Index, err)
 		}
 		if cmd.AdminRequest == nil {
 			continue
@@ -1469,6 +1491,7 @@ func (p *Peer) preProposePrepareMerge(ctx *PollContext, req *raft_cmdpb.RaftCmdR
 		default:
 		}
 
+		// Any command that can change epoch or log gap should be rejected.
 		return fmt.Errorf("log gap contains admin request %v, skip merging.", cmdType)
 	}
 
@@ -1481,8 +1504,10 @@ func (p *Peer) preProposePrepareMerge(ctx *PollContext, req *raft_cmdpb.RaftCmdR
 }
 
 func (p *Peer) PrePropose(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest) (*ProposalContext, error) {
-	pollCtx.CoprocessorHost.PrePropose(p.Region(), req)
-	ctx := newEmptyProposalContext()
+	if err := pollCtx.CoprocessorHost.PrePropose(p.Region(), req); err != nil {
+		return err
+	}
+	ctx := &ProposalContext{}
 
 	if getSyncLogFromRequest(req) {
 		ctx.insert(ProposalContext_SyncLog)
@@ -1510,10 +1535,11 @@ func (p *Peer) PrePropose(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest) 
 }
 
 func (p *Peer) ProposeNormal(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest) (uint64, error) {
-	if p.PendingMergeState != nil && req.AdminRequest.CmdType != raft_cmdpb.AdminCmdType_RollbackMerge {
+	if p.PendingMergeState != nil && (req.AdminRequest == nil || req.AdminRequest.CmdType != raft_cmdpb.AdminCmdType_RollbackMerge) {
 		return fmt.Errorf("peer in merging mode, can't do proposal.")
 	}
 
+	// TODO: validate request for unexpected changes.
 	ctx, err := p.PrePropose(pollCtx, req)
 	if err != nil {
 		log.Warnf("%v skip proposal: %v", p.Tag, err);
@@ -1526,15 +1552,19 @@ func (p *Peer) ProposeNormal(pollCtx *PollContext, req *raft_cmdpb.RaftCmdReques
 
 	if len(data) > pollCtx.Cfg.RaftEntryMaxSize {
 		log.Errorf("entry is too large, entry size %v", len(data));
-		return 0, &ErrRaftEntryTooLarge{RegionId: p.regionId, DataLen: len(data)}
+		return 0, &ErrRaftEntryTooLarge{RegionId: p.regionId, EntrySize: len(data)}
 	}
 
 	proposeIndex := p.nextProposalIndex()
-	err = p.RaftGroup.Propose(ctx.ToVec(), data)
+	// Todo: after the raft implement propose with context, chagne to:
+	// err = p.RaftGroup.Propose(ctx.ToVec(), data)
+	err = p.RaftGroup.Propose(data)
 	if err != nil {
 		return 0, err
 	}
 	if proposeIndex == p.nextProposalIndex() {
+		// The message is dropped silently, this usually due to leader absence
+		// or transferring leader. Both cases can be considered as NotLeader error.
 		return 0, &ErrNotLeader{RegionId: p.regionId}
 	}
 
@@ -1542,7 +1572,7 @@ func (p *Peer) ProposeNormal(pollCtx *PollContext, req *raft_cmdpb.RaftCmdReques
 }
 
 // Return true if the transfer leader request is accepted.
-func (p *Peer) ProposeTransferLeaser(ctx *PollContext, req *raft_cmdpb.RaftCmdRequest, cb Callback) bool {
+func (p *Peer) ProposeTransferLeader(ctx *PollContext, req *raft_cmdpb.RaftCmdRequest, cb Callback) bool {
 	transferLeader := getTransferLeaderCmd(req)
 	if transferLeader == nil {
 		panic!("transfer leader is nil")
@@ -1589,11 +1619,11 @@ func (p *Peer) ProposeConfChange(ctx *PollContext, req *raft_cmdpb.RaftCmdReques
 		return 0, err
 	}
 
-	changePeer := worker.GetChangePeerCmd(req)
+	changePeer := GetChangePeerCmd(req)
 	if changePeer == nil {
 		panic("Change Peer should not be nil")
 	}
-	cc := &eraftpb.ConfChange{}
+	cc := new(eraftpb.ConfChange)
 	cc.ChangeType = changePeer.ChangeType
 	cc.NodeId = changePeer.Peer.Id
 	cc.Context = data
@@ -1605,7 +1635,9 @@ func (p *Peer) ProposeConfChange(ctx *PollContext, req *raft_cmdpb.RaftCmdReques
 		return 0, err
 	}
 	if p.nextProposalIndex() == proposeIndex {
-		return 0, &ErrNotLeader{}
+		// The message is dropped silently, this usually due to leader absence
+		// or transferring leader. Both cases can be considered as NotLeader error.
+		return 0, &ErrNotLeader{RegionId: p.regionId}
 	}
 
 	return proposeIndex, nil
@@ -1613,7 +1645,7 @@ func (p *Peer) ProposeConfChange(ctx *PollContext, req *raft_cmdpb.RaftCmdReques
 
 func (p *Peer) handleRead(ctx *PollContext, req *raft_cmdpb.RaftCmdRequest, checkEpoch bool) *ReadResponse {
 	resp := NewReadExecutor(NewDBSnapshot(ctx.engine), checkEpoch, false).Execute(req, p.Region())
-	BindTerm(resp.Response, p.Term())
+	BindRespTerm(resp.Response, p.Term())
 	return resp
 }
 
@@ -1635,212 +1667,78 @@ func (p *Peer) RemovePeerFromCache(peerId uint64) {
 
 func (p *Peer) GetPeerFromCache(peerId uint64) *metapb.Peer {
 	if peer, ok := p.peerCache[peerId]; ok {
-		return peer
+		return &metapb.Peer{
+			Id: peer.Id,
+			StoreId: peer.StoreId,
+			IsLearner: peer.IsLearner,
+		}
 	}
+
+	// Try to find in region, if found, set in cache.
 	for _, peer := range p.Region().Peers {
 		if peer.Id == peerId {
-			p.peerCache[peerId] = peer
-			return peer
+			p.peerCache[peerId] = &metapb.Peer{
+				Id: peer.Id,
+				StoreId: peer.StoreId,
+				IsLearner: peer.IsLearner,
+			}
+			return &metapb.Peer{
+				Id: peer.Id,
+				StoreId: peer.StoreId,
+				IsLearner: peer.IsLearner,
+			}
 		}
 	}
 	return nil
 }
 
 func (p *Peer) HeartbeatPd(ctx *PollContext) {
-	// todo
+	// Todo
 }
 
-func (p *Peer) sendRaftMessage(msg *eraftpb.Message, ch chan *raft_serverpb.RaftMessage) error {
-	return nil
-	// todo
-}
-
-type ReadExecutor struct {
-	checkEpoch bool
-	engine *DBBundle
-	snapshot *DBSnapshot
-	snapshotTime *time.Time
-	needSnapshotTime bool
-}
-
-func NewReadExecutor(engine *DBBundle, checkEpoch bool, needSnapshotTime bool) *ReadExecutor {
-	return &ReadExecutor{
-		checkEpoch: checkEpoch,
-		engine: engine,
-		snapshot: nil,
-		snapshotTime: nil,
-		needSnapshotTime: needSnapshotTime,
-	}
-}
-
-func (r *ReadExecutor) SnapshotTime() *time.Time {
-	r.MaybeUpdateSnapshot()
-	r.snapshotTime
-}
-
-func (r *ReadExecutor) MaybeUpdateSnapshot() {
-	if r.snapshot != nil {
-		return
-	}
-	r.snapshot = &DBSnapshot{
-		Txn: r.engine.db.NewTransaction(false),
-		LockStore: r.engine.lockStore,
-		RollbackStore: r.engine.rollbackStore,
-	}
-	// Reading current timespec after snapshot, in case we do not
-	// expire lease in time.
-	// Todo: atomic::fence(atomic::Ordering::Release)
-	if r.needSnapshotTime {
-		t := time.Now()
-		r.snapshotTime = &t
-	}
-}
-
-func (r *ReadExecutor) DoGet(req *raft_cmdpb.Request, region *metapb.Region) (*raft_cmdpb.Response, error) {
-	// region key range has no data prefix, so we must use origin key to check.
-	if err := CheckKeyInRegion(req.Get.Key, region); err != nil {
-		return nil, err
+func (p *Peer) sendRaftMessage(msg *eraftpb.Message, trans chan<- *raft_serverpb.RaftMessage) error {
+	sendMsg := new(raft_serverpb.RaftMessage)
+	sendMsg.RegionId = p.regionId
+	// set current epoch
+	sendMsg.RegionEpoch = &metapb.RegionEpoch{
+		ConfVer: p.Region().RegionEpoch.ConfVer,
+		Version: p.Region().RegionEpoch.Version,
 	}
 
-	resp := &raft_cmdpb.Response{}
-	resp.Get.Value = r.snapshot.GetValue(DataKey(req.Get.Key))
-	return resp, nil
-}
-
-func (r *ReadExecutor) Execute(msg *raft_cmdpb.RaftCmdRequest, region *metapb.Region) *ReadResponse {
-	if r.checkEpoch {
-		if err := CheckRegionEpoch(msg, region, true); err != nil {
-			log.Debugf("[region %v] epoch not match, err: %v", region.Id, err)
-			return &ReadResponse{ Response: NewError(err), Snapshot: nil }
-		}
+	fromPeer := *p.Peer
+	toPeer := p.GetPeerFromCache(msg.To)
+	if toPeer == nil {
+		return fmt.Errorf("failed to lookup recipient peer %v in region %v", msg.To, p.regionId)
 	}
+	log.Debugf("%v, send raft msg %v from %v to %v", p.Tag, msg.MsgType, fromPeer.Id, toPeer.Id)
 
-	r.MaybeUpdateSnapshot()
-	needSnapshot := false
-	resps := make([]*raft_cmdpb.Response, 0, len(msg.Requests))
-	var resp *raft_cmdpb.Response
-	for _, req := range msg.Requests {
-		switch req.CmdType {
-		case raft_cmdpb.CmdType_Get:
-			if resp, err := r.DoGet(req, region); err != nil {
-				log.Errorf("[region %v] execute raft command err %v", region.Id, err)
-				return &ReadResponse{ Response: NewError(err), Snapshot: nil }
-			}
-		case raft_cmdpb.CmdType_Snap:
-			needSnapshot = true
-			resp = &raft_cmdpb.Response{}
-		case raft_cmdpb.CmdType_Prewrite, raft_cmdpb.CmdType_Put, raft_cmdpb.CmdType_Delete,
-			raft_cmdpb.CmdType_DeleteRange, raft_cmdpb.CmdType_IngestSST, raft_cmdpb.CmdType_Invalid:
-			panic("unreachable")
-		}
+	sendMsg.FromPeer = &fromPeer
+	sendMsg.ToPeer = toPeer
 
-		resp.CmdType = req.CmdType
-		resps = append(resps, resp)
+	// There could be two cases:
+	// 1. Target peer already exists but has not established communication with leader yet
+	// 2. Target peer is added newly due to member change or region split, but it's not
+	//    created yet
+	// For both cases the region start key and end key are attached in RequestVote and
+	// Heartbeat message for the store of that peer to check whether to create a new peer
+	// when receiving these messages, or just to wait for a pending region split to perform
+	// later.
+	if p.Store().isInitialized() && isInitialMsg(msg) {
+		sendMsg.StartKey = append([]byte{}, p.Region().StartKey...)
+		sendMsg.EndKey = append([]byte{}, p.Region().EndKey...)
 	}
+	sendMsg.Message = msg
 
-	response := &raft_cmdpb.RaftCmdResponse{}
-	response.Responses = resps
-	if needSnapshot {
-		return &ReadResponse{ Response: response, Snapshot: r.snapshot }
-	} else {
-		return &ReadResponse{ Response: response, Snapshot: nil }
-	}
-}
-
-func getTransferLeaderCmd(req *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.TransferLeaderRequest {
-	if req.AdminRequest == nil {
-		return nil
-	}
-	return req.AdminRequest.TransferLeader
-}
-
-func getSyncLogFromRequest(req *raft_cmdpb.RaftCmdRequest) bool {
-	if req.AdminRequest != nil {
-		switch req.AdminRequest.GetCmdType() {
-		case raft_cmdpb.AdminCmdType_ChangePeer, raft_cmdpb.AdminCmdType_Split,
-			raft_cmdpb.AdminCmdType_BatchSplit, raft_cmdpb.AdminCmdType_PrepareMerge,
-			raft_cmdpb.AdminCmdType_CommitMerge, raft_cmdpb.AdminCmdType_RollbackMerge:
-			return true
-		default:
-			return false
-		}
-	}
-	req.Header.GetSyncLog()
-}
-
-/// We enable follower lazy commit to get a better performance.
-/// But it may not be appropriate for some requests. This function
-/// checks whether the request should be committed on all followers
-/// as soon as possible.
-func isRequestUrgent(req *raft_cmdpb.RaftCmdRequest) bool {
-	if req.AdminRequest == nil {
-		return false
-	}
-
-	switch req.AdminRequest.CmdType {
-	case raft_cmdpb.AdminCmdType_Split, raft_cmdpb.AdminCmdType_BatchSplit,
-		raft_cmdpb.AdminCmdType_ChangePeer, raft_cmdpb.AdminCmdType_ComputeHash,
-		raft_cmdpb.AdminCmdType_VerifyHash, raft_cmdpb.AdminCmdType_PrepareMerge,
-		raft_cmdpb.AdminCmdType_CommitMerge, raft_cmdpb.AdminCmdType_RollbackMerge:
-		return true
-	default:
-		return false
-	}
-}
-
-func makeTransferLeaderResponse() *raft_cmdpb.RaftCmdResponse {
-	adminResp := &raft_cmdpb.AdminResponse{}
-	adminResp.CmdType = raft_cmdpb.AdminCmdType_TransferLeader
-	adminResp.TransferLeader = &raft_cmdpb.TransferLeaderResponse{}
-	resp := &raft_cmdpb.RaftCmdResponse{}
-	resp.AdminResponse = adminResp
-	return resp
-}
-
-type Proposal struct {
-	IsConfChange bool
-	Index uint64
-	Term uint64
-	Cb Callback
-}
-
-type ProposalMeta struct {
-	Index uint64
-	Term uint64
-	RenewLeaseTime *time.Time
-}
-
-type Apply struct {
-	RegionId uint64
-	Term uint64
-	Entries []eraftpb.Entry
-}
-
-type ApplyMetrics struct {
-	SizeDiffHint uint64
-	DeleteKeysHint uint64
-	WrittenBytes uint64
-	WrittenKeys uint64
-	LockCfWrittenBytes uint64
-}
-
-func (p *Peer) findProposeTime(index, term uint64) *time.Time {
-	for {
-		meta := p.proposals.Pop(term)
-		if meta == nil {
-			return nil
-		}
-		if meta.Index == index && meta.Term == term {
-			return meta.RenewLeaseTime
-		}
-	}
+	trans<- sendMsg
 	return nil
 }
 
 type RequestPolicy int
 
 const (
-	RequestPolicy_ReadLocal RequestPolicy = 1 + iota
+	// Handle the read request directly without dispatch.
+	RequestPolicy_ReadLocal RequestPolicy = 0 + iota
+	// Handle the read request via raft's SafeReadIndex mechanism.
 	RequestPolicy_ReadIndex
 	RequestPolicy_ProposeNormal
 	RequestPolicy_ProposeTransferLeader
@@ -1849,8 +1747,12 @@ const (
 )
 
 type RequestInspector interface {
+	// Has the current term been applied?
 	hasAppliedToCurrentTerm() bool
+	// Inspects its lease.
 	inspectLease() LeaseState
+	// Inspect a request, return a policy that tells us how to
+	// handle the request.
 	inspect(req *raft_cmdpb.RaftCmdRequest)
 }
 
@@ -1862,7 +1764,7 @@ func (p *Peer) inspectLease() LeaseState {
 	if !p.RaftGroup.Raft.InLease() {
 		return LeaseState_Suspect
 	}
-	// None means now.
+	// nil means now.
 	state := p.leaderLease.Inspect(nil)
 	if state == LeaseState_Expired {
 		log.Debugf("%v leader lease is expired %v", p.Tag, p.leaderLease)
@@ -1873,7 +1775,7 @@ func (p *Peer) inspectLease() LeaseState {
 
 func (p *Peer) inspect(req *raft_cmdpb.RaftCmdRequest) (RequestPolicy, error) {
 	if req.AdminRequest != nil {
-		if worker.GetChangePeerCmd(req) != nil {
+		if GetChangePeerCmd(req) != nil {
 			return RequestPolicy_ProposeConfChange, nil
 		}
 		if getTransferLeaderCmd(req) != nil {
@@ -1919,6 +1821,200 @@ func (p *Peer) inspect(req *raft_cmdpb.RaftCmdRequest) (RequestPolicy, error) {
 	case LeaseState_Valid:
 		return RequestPolicy_ReadLocal, nil
 	case LeaseState_Expired, LeaseState_Suspect:
+		// Perform a consistent read to Raft quorum and try to renew the leader lease.
 		return RequestPolicy_ReadIndex, nil
 	}
+	return RequestPolicy_ReadLocal, nil
+}
+
+type ReadExecutor struct {
+	checkEpoch bool
+	engine *DBBundle
+	snapshot *DBSnapshot
+	snapshotTime *time.Time
+	needSnapshotTime bool
+}
+
+func NewReadExecutor(engine *DBBundle, checkEpoch bool, needSnapshotTime bool) *ReadExecutor {
+	return &ReadExecutor{
+		checkEpoch: checkEpoch,
+		engine: engine,
+		snapshot: nil,
+		snapshotTime: nil,
+		needSnapshotTime: needSnapshotTime,
+	}
+}
+
+func (r *ReadExecutor) SnapshotTime() *time.Time {
+	r.MaybeUpdateSnapshot()
+	return r.snapshotTime
+}
+
+func (r *ReadExecutor) MaybeUpdateSnapshot() {
+	if r.snapshot != nil {
+		return
+	}
+	r.snapshot = &DBSnapshot{
+		Txn: r.engine.db.NewTransaction(false),
+		LockStore: r.engine.lockStore,
+		RollbackStore: r.engine.rollbackStore,
+	}
+	// Reading current timespec after snapshot, in case we do not
+	// expire lease in time.
+	// Todo: atomic::fence(atomic::Ordering::Release)
+	if r.needSnapshotTime {
+		t := time.Now()
+		r.snapshotTime = &t
+	}
+}
+
+func (r *ReadExecutor) DoGet(req *raft_cmdpb.Request, region *metapb.Region) (*raft_cmdpb.Response, error) {
+	// region key range has no data prefix, so we must use origin key to check.
+	if err := CheckKeyInRegion(req.Get.Key, region); err != nil {
+		return nil, err
+	}
+
+	resp := new(raft_cmdpb.Response)
+	item, err := r.snapshot.Txn.Get(DataKey(req.Get.Key))
+	if err != nil {
+		panic(fmt.Sprintf("[region %v] failed to get %v, err: %v", region.Id, req.Get.Key, err))
+	}
+	if item != nil {
+		value, err := item.Value()
+		if err != nil {
+			panic(fmt.Sprintf("[region %v] failed to get %v, err: %v", region.Id, req.Get.Key, err))
+		}
+		resp.Get = new(raft_cmdpb.GetResponse)
+		resp.Get.Value = append([]byte{}, value...)
+	}
+	return resp, nil
+}
+
+func (r *ReadExecutor) Execute(msg *raft_cmdpb.RaftCmdRequest, region *metapb.Region) *ReadResponse {
+	if r.checkEpoch {
+		if err := CheckRegionEpoch(msg, region, true); err != nil {
+			log.Debugf("[region %v] epoch not match, err: %v", region.Id, err)
+			return &ReadResponse{ Response: NewRespFromError(err), Snapshot: nil }
+		}
+	}
+
+	r.MaybeUpdateSnapshot()
+	needSnapshot := false
+	resps := make([]*raft_cmdpb.Response, 0, len(msg.Requests))
+	var resp *raft_cmdpb.Response
+	var err error
+	for _, req := range msg.Requests {
+		switch req.CmdType {
+		case raft_cmdpb.CmdType_Get:
+			if resp, err = r.DoGet(req, region); err != nil {
+				log.Errorf("[region %v] execute raft command err %v", region.Id, err)
+				return &ReadResponse{ Response: NewRespFromError(err), Snapshot: nil }
+			}
+		case raft_cmdpb.CmdType_Snap:
+			needSnapshot = true
+			resp = new(raft_cmdpb.Response)
+		case raft_cmdpb.CmdType_Prewrite, raft_cmdpb.CmdType_Put, raft_cmdpb.CmdType_Delete,
+			raft_cmdpb.CmdType_DeleteRange, raft_cmdpb.CmdType_IngestSST, raft_cmdpb.CmdType_Invalid:
+			panic("unreachable")
+		}
+
+		resp.CmdType = req.CmdType
+		resps = append(resps, resp)
+	}
+
+	response := new(raft_cmdpb.RaftCmdResponse)
+	response.Responses = resps
+	if needSnapshot {
+		return &ReadResponse{ Response: response, Snapshot: r.snapshot }
+	} else {
+		return &ReadResponse{ Response: response, Snapshot: nil }
+	}
+}
+
+func getTransferLeaderCmd(req *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.TransferLeaderRequest {
+	if req.AdminRequest == nil {
+		return nil
+	}
+	return req.AdminRequest.TransferLeader
+}
+
+func getSyncLogFromRequest(req *raft_cmdpb.RaftCmdRequest) bool {
+	if req.AdminRequest != nil {
+		switch req.AdminRequest.GetCmdType() {
+		case raft_cmdpb.AdminCmdType_ChangePeer, raft_cmdpb.AdminCmdType_Split,
+			raft_cmdpb.AdminCmdType_BatchSplit, raft_cmdpb.AdminCmdType_PrepareMerge,
+			raft_cmdpb.AdminCmdType_CommitMerge, raft_cmdpb.AdminCmdType_RollbackMerge:
+			return true
+		default:
+			return false
+		}
+	}
+	req.Header.GetSyncLog()
+}
+
+/// We enable follower lazy commit to get a better performance.
+/// But it may not be appropriate for some requests. This function
+/// checks whether the request should be committed on all followers
+/// as soon as possible.
+func IsUrgentRequest(req *raft_cmdpb.RaftCmdRequest) bool {
+	if req.AdminRequest == nil {
+		return false
+	}
+	switch req.AdminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_Split,
+		raft_cmdpb.AdminCmdType_BatchSplit,
+		raft_cmdpb.AdminCmdType_ChangePeer,
+		raft_cmdpb.AdminCmdType_ComputeHash,
+		raft_cmdpb.AdminCmdType_VerifyHash,
+		raft_cmdpb.AdminCmdType_PrepareMerge,
+		raft_cmdpb.AdminCmdType_CommitMerge,
+		raft_cmdpb.AdminCmdType_RollbackMerge:
+		return true
+	default:
+		return false
+	}
+}
+
+func makeTransferLeaderResponse() *raft_cmdpb.RaftCmdResponse {
+	adminResp := &raft_cmdpb.AdminResponse{}
+	adminResp.CmdType = raft_cmdpb.AdminCmdType_TransferLeader
+	adminResp.TransferLeader = &raft_cmdpb.TransferLeaderResponse{}
+	resp := &raft_cmdpb.RaftCmdResponse{}
+	resp.AdminResponse = adminResp
+	return resp
+}
+
+type Proposal struct {
+	IsConfChange bool
+	Index uint64
+	Term uint64
+	Cb Callback
+}
+
+type ProposalMeta struct {
+	Index uint64
+	Term uint64
+	RenewLeaseTime *time.Time
+}
+
+type Apply struct {
+	RegionId uint64
+	Term uint64
+	Entries []eraftpb.Entry
+}
+
+type ApplyMetrics struct {
+	SizeDiffHint uint64
+	DeleteKeysHint uint64
+	WrittenBytes uint64
+	WrittenKeys uint64
+	LockCfWrittenBytes uint64
+}
+
+func GetChangePeerCmd(msg *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.ChangePeerRequest {
+	adminReq := msg.GetAdminRequest()
+	if adminReq == nil || adminReq.ChangePeer == nil{
+		return nil
+	}
+	return adminReq.ChangePeer
 }
