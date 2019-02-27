@@ -42,7 +42,7 @@ const (
 type SnapState struct {
 	StateType SnapStateType
 	Status    *JobStatus
-	Receiver  chan<- eraftpb.Snapshot
+	Receiver  chan<- *eraftpb.Snapshot
 }
 
 const (
