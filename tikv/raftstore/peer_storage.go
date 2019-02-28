@@ -15,7 +15,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
-	"github.com/zhangjinpeng1987/raft/raft"
+	"github.com/zhangjinpeng1987/raft"
 )
 
 type JobStatus int64
