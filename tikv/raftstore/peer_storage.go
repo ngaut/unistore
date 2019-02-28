@@ -480,8 +480,8 @@ func (ps *PeerStorage) LastIndex() (uint64, error) {
 	return ps.raftState.LastIndex, nil
 }
 
-func (ps *PeerStorage) AppliedIndex() (uint64, error) {
-	return ps.applyState.AppliedIndex, nil
+func (ps *PeerStorage) AppliedIndex() uint64 {
+	return ps.applyState.AppliedIndex
 }
 
 func (ps *PeerStorage) FirstIndex() (uint64, error) {
@@ -818,6 +818,18 @@ func ApplyStateEqual(l, r *rspb.RaftApplyState) bool {
 	return l.AppliedIndex == r.AppliedIndex && TruncatedStateEqual(l.TruncatedState, r.TruncatedState)
 }
 
+func PeerEqual(l, r *metapb.Peer) bool {
+	return l.Id == r.Id && l.StoreId == r.StoreId && l.IsLearner == r.IsLearner
+}
+
+func ClonePeer(peer *metapb.Peer) *metapb.Peer {
+	return &metapb.Peer{
+		Id: peer.Id,
+		StoreId: peer.StoreId,
+		IsLearner: peer.IsLearner,
+	}
+}
+
 func CloneRegion(region *metapb.Region) *metapb.Region {
 	cloned := new(metapb.Region)
 	cloned.Id = region.Id
@@ -831,6 +843,15 @@ func CloneRegion(region *metapb.Region) *metapb.Region {
 	}
 
 	return cloned
+}
+
+func CloneMergeState(state *rspb.MergeState) *rspb.MergeState {
+	mergeState := &rspb.MergeState{
+		MinIndex: state.MinIndex,
+		Commit: state.Commit,
+	}
+	mergeState.Target = CloneRegion(state.Target)
+	return mergeState
 }
 
 func CloneRaftLocalState(state *rspb.RaftLocalState) *rspb.RaftLocalState {
@@ -892,8 +913,9 @@ func (ps *PeerStorage) SetRegion(region *metapb.Region) {
 	ps.region = region
 }
 
-func (ps *PeerStorage) ClearData() {
+func (ps *PeerStorage) ClearData() error {
 	// Todo
+	return nil
 }
 
 func (p *PeerStorage) CancelApplyingSnap() bool {

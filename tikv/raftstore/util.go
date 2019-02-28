@@ -8,6 +8,7 @@ import (
 	"github.com/ngaut/log"
 	"fmt"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
+	"bytes"
 )
 
 /// `is_initial_msg` checks whether the `msg` can be used to initialize a new peer or not.
@@ -31,7 +32,7 @@ type LeaseState int
 
 const (
 	/// The lease is suspicious, may be invalid.
-	LeaseState_Suspect LeaseState = 1
+	LeaseState_Suspect LeaseState = 1 + iota
 	/// The lease is valid.
 	LeaseState_Valid
 	/// The lease is expired.
@@ -255,7 +256,7 @@ func U64ToTime(u uint64) time.Time {
 }
 
 func CheckKeyInRegion(key []byte, region *metapb.Region) error {
-	if key >= region.StartKey && (len(region.EndKey) == 0 || key < region.EndKey) {
+	if bytes.Compare(key, region.StartKey) >= 0 && (len(region.EndKey) == 0 || bytes.Compare(key, region.EndKey) < 0) {
 		return nil
 	} else {
 		return &ErrKeyNotInRegion{ Key: key, Region: region }
