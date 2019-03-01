@@ -30,3 +30,5 @@ require (
 replace github.com/pingcap/tidb v0.0.0-20181130082510-08f0168a6cae => github.com/bobotu/tidb v0.0.0-20181221085922-487bfe4bf561
 
 replace go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.0.0-20190226085253-137eac022b64
+
+replace github.com/coocood/badger v1.5.1-0.20181229021924-c02c9aba9c41 => github.com/coocood/badger v1.5.1-0.20190301065622-9233d5b97a32
