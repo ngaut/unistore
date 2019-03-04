@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const RaftInvalidIndex uint64 = 0
+
 /// `is_initial_msg` checks whether the `msg` can be used to initialize a new peer or not.
 // There could be two cases:
 // 1. Target peer already exists but has not established communication with leader yet
@@ -254,12 +256,36 @@ func U64ToTime(u uint64) time.Time {
 	return time.Unix(int64(sec), int64(nsec))
 }
 
+/// Check if key in region range [`start_key`, `end_key`).
 func CheckKeyInRegion(key []byte, region *metapb.Region) error {
 	if bytes.Compare(key, region.StartKey) >= 0 && (len(region.EndKey) == 0 || bytes.Compare(key, region.EndKey) < 0) {
 		return nil
 	} else {
 		return &ErrKeyNotInRegion{Key: key, Region: region}
 	}
+}
+
+/// Check if key in region range (`start_key`, `end_key`).
+func CheckKeyInRegionExclusive(key []byte, region *metapb.Region) error {
+	if bytes.Compare(region.StartKey, key) < 0 && (len(region.EndKey) == 0 || bytes.Compare(key, region.EndKey) < 0) {
+		return nil
+	} else {
+		return &ErrKeyNotInRegion{Key: key, Region: region}
+	}
+}
+
+/// Check if key in region range [`start_key`, `end_key`].
+func CheckKeyInRegionInclusive(key []byte, region *metapb.Region) error {
+	if bytes.Compare(key, region.StartKey) >= 0 && (len(region.EndKey) == 0 || bytes.Compare(key, region.EndKey) <= 0) {
+		return nil
+	} else {
+		return &ErrKeyNotInRegion{Key: key, Region: region}
+	}
+}
+
+/// check whether epoch is staler than check_epoch.
+func IsEpochStale(epoch *metapb.RegionEpoch, checkEpoch *metapb.RegionEpoch) bool {
+	return epoch.Version < checkEpoch.Version || epoch.ConfVer < checkEpoch.ConfVer
 }
 
 func CheckRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, includeRegion bool) error {
@@ -270,8 +296,6 @@ func CheckRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, inc
 		switch req.AdminRequest.CmdType {
 		case raft_cmdpb.AdminCmdType_CompactLog, raft_cmdpb.AdminCmdType_InvalidAdmin,
 			raft_cmdpb.AdminCmdType_ComputeHash, raft_cmdpb.AdminCmdType_VerifyHash:
-			{
-			}
 		case raft_cmdpb.AdminCmdType_ChangePeer:
 			checkConfVer = true
 		case raft_cmdpb.AdminCmdType_Split, raft_cmdpb.AdminCmdType_BatchSplit,
@@ -284,6 +308,10 @@ func CheckRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, inc
 
 	if !checkVer && !checkConfVer {
 		return nil
+	}
+
+	if req.Header == nil {
+		return fmt.Errorf("missing header!")
 	}
 
 	if req.Header.RegionEpoch == nil {
