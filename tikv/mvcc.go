@@ -47,7 +47,7 @@ func NewMVCCStore(dbs []*badger.DB, dataDir string, safePoint *SafePoint) *MVCCS
 		lockStore:     ls,
 		rollbackStore: rollbackStore,
 		writeLockWorker: &writeLockWorker{
-			wakeUp:  make(chan struct{}, 1),
+			batchCh: make(chan *writeLockBatch, batchChanSize),
 			closeCh: closeCh,
 		},
 		closeCh:   closeCh,
@@ -56,7 +56,7 @@ func NewMVCCStore(dbs []*badger.DB, dataDir string, safePoint *SafePoint) *MVCCS
 	workers := make([]*writeDBWorker, 8)
 	for i := 0; i < 8; i++ {
 		workers[i] = &writeDBWorker{
-			wakeUp:  make(chan struct{}, 1),
+			batchCh: make(chan *writeDBBatch, batchChanSize),
 			closeCh: closeCh,
 			store:   store,
 			idx:     i,
@@ -154,16 +154,31 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 	lockBatch := newWriteLockBatch(reqCtx)
 	// Check the DB.
 	txn := reqCtx.getDBReader().GetTxn()
+	keys := make([][]byte, len(mutations))
+	for i, m := range mutations {
+		keys[i] = m.Key
+	}
+	items, err := txn.MultiGet(keys)
+	if err != nil {
+		return []error{err}
+	}
 	var buf []byte
 	var enc rowcodec.Encoder
 	for i, m := range mutations {
-		oldMeta, oldVal, err := store.checkPrewriteInDB(reqCtx, txn, m, startTS)
+		oldMeta, oldVal, err := store.checkPrewriteInDB(reqCtx, txn, items[i], startTS)
 		if err != nil {
 			anyError = true
 		}
 		errs[i] = err
 		if !anyError {
-			if isRowKey(m.Key) && m.Op == kvrpcpb.Op_Put {
+			op := m.Op
+			if op == kvrpcpb.Op_Insert {
+				if len(oldVal) > 0 {
+					return []error{ErrKeyAlreadyExists{}}
+				}
+				op = kvrpcpb.Op_Put
+			}
+			if isRowKey(m.Key) && op == kvrpcpb.Op_Put {
 				buf, err = enc.EncodeFromOldRow(m.Value, buf)
 				if err != nil {
 					log.Errorf("err:%v m.Value:%v m.Key:%q m.Op:%d", err, m.Value, m.Key, m.Op)
@@ -174,7 +189,7 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 			lock := mvcc.MvccLock{
 				MvccLockHdr: mvcc.MvccLockHdr{
 					StartTS:    startTS,
-					Op:         uint8(m.Op),
+					Op:         uint8(op),
 					HasOldVer:  oldMeta != nil,
 					TTL:        uint32(ttl),
 					PrimaryLen: uint16(len(primary)),
@@ -190,7 +205,7 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 	if anyError {
 		return errs
 	}
-	err := store.writeLocks(lockBatch)
+	err = store.writeLocks(lockBatch)
 	if err != nil {
 		return []error{err}
 	}
@@ -223,11 +238,7 @@ func (store *MVCCStore) checkPrewriteInLockStore(
 // checkPrewrietInDB checks that there is no committed version greater than startTS or return write conflict error.
 // And it returns the old version if there is one.
 func (store *MVCCStore) checkPrewriteInDB(
-	req *requestCtx, txn *badger.Txn, mutation *kvrpcpb.Mutation, startTS uint64) (userMeta mvcc.DBUserMeta, val []byte, err error) {
-	item, err := txn.Get(mutation.Key)
-	if err != nil && err != badger.ErrKeyNotFound {
-		return nil, nil, err
-	}
+	req *requestCtx, txn *badger.Txn, item *badger.Item, startTS uint64) (userMeta mvcc.DBUserMeta, val []byte, err error) {
 	if item == nil {
 		return nil, nil, nil
 	}
