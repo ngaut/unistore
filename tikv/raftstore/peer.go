@@ -5,8 +5,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"fmt"
 	"github.com/pingcap/kvproto/pkg/metapb"
-	"go.etcd.io/etcd/raft"
-	"go.etcd.io/etcd/raft/raftpb"
+	"github.com/zhangjinpeng1987/raft"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"math"
@@ -383,7 +382,7 @@ type Peer struct {
 	leaderLease *Lease
 
 	// If a snapshot is being applied asynchronously, messages should not be sent.
-	pendingMessages []*eraftpb.Message
+	pendingMessages []eraftpb.Message
 	PendingMergeApplyResult *WaitApplyResultStat
 	PeerStat *PeerStat
 
@@ -454,7 +453,7 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 		lastCommittedSplitIdx: 0,
 		RaftLogSizeHint: 0,
 		leaderLease: NewLease(cfg.RaftStoreMaxLeaderLease),
-		pendingMessages: make([]*eraftpb.Message, 0),
+		pendingMessages: make([]eraftpb.Message, 0),
 		PendingMergeApplyResult: nil,
 		PeerStat: NewPeerStat(),
 	}
@@ -659,7 +658,7 @@ func (p *Peer) Step(m *eraftpb.Message) error {
 		// As another role know we're not missing.
 		p.leaderMissingTime = nil
 	}
-	return p.RaftGroup.Step(m)
+	return p.RaftGroup.Step(*m)
 }
 
 /// Checks and updates `peer_heartbeats` for the peer.
@@ -868,7 +867,7 @@ func (p *Peer) HandleRaftReadyAppend(ctx *PollContext) {
 
 	if len(p.pendingMessages) > 0 {
 		messages := p.pendingMessages
-		p.pendingMessages = make([]*eraftpb.Message, 0)
+		p.pendingMessages = make([]eraftpb.Message, 0)
 		ctx.needFlushTrans = true
 		p.Send(ctx.trans, messages)
 	}
@@ -1466,7 +1465,7 @@ func (p *Peer) preProposePrepareMerge(ctx *PollContext, req *raft_cmdpb.RaftCmdR
 	}
 	for _, entry := range ents {
 		entrySize += len(entry.Data)
-		if entry.Type == raftpb.EntryConfChange {
+		if entry.EntryType == eraftpb.EntryType_EntryConfChange {
 			return fmt.Errorf("log gap contains conf change, skip merging.")
 		}
 		if len(entry.Data) == 0 {
@@ -1537,7 +1536,8 @@ func (p *Peer) ProposeNormal(pollCtx *PollContext, req *raft_cmdpb.RaftCmdReques
 	}
 
 	// TODO: validate request for unexpected changes.
-	ctx, err := p.PrePropose(pollCtx, req)
+	// ctx, err := p.PrePropose(pollCtx, req)
+	_, err := p.PrePropose(pollCtx, req)
 	if err != nil {
 		log.Warnf("%v skip proposal: %v", p.Tag, err);
 		return 0, err
@@ -1620,12 +1620,12 @@ func (p *Peer) ProposeConfChange(ctx *PollContext, req *raft_cmdpb.RaftCmdReques
 	if changePeer == nil {
 		panic("Change Peer should not be nil")
 	}
-	var cc raftpb.ConfChange
-	cc.Type = raftpb.ConfChangeType(int32(changePeer.ChangeType))
-	cc.NodeID = changePeer.Peer.Id
+	var cc eraftpb.ConfChange
+	cc.ChangeType = eraftpb.ConfChangeType(int32(changePeer.ChangeType))
+	cc.NodeId = changePeer.Peer.Id
 	cc.Context = data
 
-	log.Infof("%v propose conf change %v peer %v", p.Tag, cc.Type, cc.NodeID)
+	log.Infof("%v propose conf change %v peer %v", p.Tag, cc.ChangeType, cc.NodeId)
 
 	proposeIndex := p.nextProposalIndex()
 	//var proposalCtx ProposalContext = ProposalContext_SyncLog
@@ -1986,7 +1986,7 @@ func makeTransferLeaderResponse() *raft_cmdpb.RaftCmdResponse {
 type ApplyTask struct {
 	RegionId uint64
 	Term uint64
-	Entries []raftpb.Entry
+	Entries []eraftpb.Entry
 }
 
 type ApplyMetrics struct {
