@@ -1,15 +1,15 @@
 package raftstore
 
 import (
-	"time"
-	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
-	"fmt"
-	"github.com/pingcap/kvproto/pkg/metapb"
-	"github.com/zhangjinpeng1987/raft"
-	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
-	"github.com/pingcap/kvproto/pkg/eraftpb"
-	"math"
 	"encoding/binary"
+	"fmt"
+	"github.com/pingcap/kvproto/pkg/eraftpb"
+	"github.com/pingcap/kvproto/pkg/metapb"
+	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
+	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/zhangjinpeng1987/raft"
+	"math"
+	"time"
 )
 
 type StaleState int
@@ -22,19 +22,19 @@ const (
 
 type ReqCbPair struct {
 	Req *raft_cmdpb.RaftCmdRequest
-	Cb Callback
+	Cb  Callback
 }
 
 type ReadIndexRequest struct {
-	id uint64
-	cmds []*ReqCbPair
+	id             uint64
+	cmds           []*ReqCbPair
 	renewLeaseTime *time.Time
 }
 
 func NewReadIndexRequest(id uint64, cmds []*ReqCbPair, renewLeaseTime *time.Time) *ReadIndexRequest {
 	return &ReadIndexRequest{
-		id: id,
-		cmds: cmds,
+		id:             id,
+		cmds:           cmds,
 		renewLeaseTime: renewLeaseTime,
 	}
 }
@@ -47,16 +47,8 @@ func (r *ReadIndexRequest) bianryId() []byte {
 
 type ReadIndexQueue struct {
 	idAllocator uint64
-	reads []*ReadIndexRequest
-	readyCnt int
-}
-
-func NewReadIndexQueue() *ReadIndexQueue {
-	return &ReadIndexQueue{
-		idAllocator: 0,
-		reads: make([]*ReadIndexRequest, 0),
-		readyCnt: 0,
-	}
+	reads       []*ReadIndexRequest
+	readyCnt    int
 }
 
 func (q *ReadIndexQueue) PopFront() *ReadIndexRequest {
@@ -68,14 +60,13 @@ func (q *ReadIndexQueue) PopFront() *ReadIndexRequest {
 	return nil
 }
 
-
 func NotifyStaleReq(term uint64, cb Callback) {
 	resp := ErrResp(&ErrStaleCommand{}, term)
 	cb(resp)
 }
 
 func NotifyReqRegionRemoved(regionId uint64, cb Callback) {
-	regionNotFound := &ErrRegionNotFound{ RegionId: regionId }
+	regionNotFound := &ErrRegionNotFound{RegionId: regionId}
 	resp := NewRespFromError(regionNotFound)
 	cb(resp)
 }
@@ -96,8 +87,8 @@ func (r *ReadIndexQueue) ClearUncommitted(term uint64) {
 }
 
 type ProposalMeta struct {
-	Index uint64
-	Term uint64
+	Index          uint64
+	Term           uint64
 	RenewLeaseTime *time.Time
 }
 
@@ -105,14 +96,8 @@ type ProposalQueue struct {
 	queue []*ProposalMeta
 }
 
-func newProposalQueue() *ProposalQueue {
-	return &ProposalQueue {
-		queue: make([]*ProposalMeta, 0),
-	}
-}
-
-func (q *ProposalQueue) Pop(term uint64) *ProposalMeta {
-	if len(q.queue) == 0 || q.queue[0].Term > term{
+func (q *ProposalQueue) PopFront(term uint64) *ProposalMeta {
+	if len(q.queue) == 0 || q.queue[0].Term > term {
 		return nil
 	}
 	meta := q.queue[0]
@@ -130,27 +115,20 @@ func (q *ProposalQueue) Clear() {
 
 type PeerStat struct {
 	WrittenBytes uint64
-	WrittenKeys uint64
-}
-
-func NewPeerStat() *PeerStat {
-	return &PeerStat {
-		WrittenBytes: 0,
-		WrittenKeys: 0,
-	}
+	WrittenKeys  uint64
 }
 
 type ApplyTask struct {
 	RegionId uint64
-	Term uint64
-	Entries []eraftpb.Entry
+	Term     uint64
+	Entries  []eraftpb.Entry
 }
 
 type ApplyMetrics struct {
-	SizeDiffHint uint64
-	DeleteKeysHint uint64
-	WrittenBytes uint64
-	WrittenKeys uint64
+	SizeDiffHint       uint64
+	DeleteKeysHint     uint64
+	WrittenBytes       uint64
+	WrittenKeys        uint64
 	LockCfWrittenBytes uint64
 }
 
@@ -173,36 +151,36 @@ type WaitApplyResultStat struct {
 
 type Proposal struct {
 	isConfChange bool
-	index uint64
-	term uint64
-	Cb Callback
+	index        uint64
+	term         uint64
+	Cb           Callback
 }
 
 type RegionProposal struct {
-	Id uint64
+	Id       uint64
 	RegionId uint64
-	Props []*Proposal
+	Props    []*Proposal
 }
 
 func NewRegionProposal(id uint64, regionId uint64, props []*Proposal) *RegionProposal {
-	return &RegionProposal {
-		Id: id,
+	return &RegionProposal{
+		Id:       id,
 		RegionId: regionId,
-		Props: props,
+		Props:    props,
 	}
 }
 
 type RecentAddedPeer struct {
 	RejectDurationAsSecs uint64
-	Id uint64
-	AddedTime time.Time
+	Id                   uint64
+	AddedTime            time.Time
 }
 
 func NewRecentAddedPeer(rejectDurationAsSecs uint64) *RecentAddedPeer {
 	return &RecentAddedPeer{
 		RejectDurationAsSecs: rejectDurationAsSecs,
-		Id: 0,
-		AddedTime: time.Now(),
+		Id:                   0,
+		AddedTime:            time.Now(),
 	}
 }
 
@@ -225,26 +203,25 @@ type ConsistencyState struct {
 	LastCheckTime time.Time
 	// (computed_result_or_to_be_verified, index, hash)
 	Index uint64
-	Hash []byte
+	Hash  []byte
 }
 
 type DestroyPeerJob struct {
 	Initialized bool
 	AsyncRemove bool
-	RegionId uint64
-	Peer *metapb.Peer
+	RegionId    uint64
+	Peer        *metapb.Peer
 }
 
 type Peer struct {
-	Cfg *Config
-	peerCache map[uint64]*metapb.Peer
-	Peer *metapb.Peer
-	regionId uint64
-	RaftGroup *raft.RawNode
-	peerStorage *PeerStorage
-	proposals *ProposalQueue
+	peerCache      map[uint64]*metapb.Peer
+	Peer           *metapb.Peer
+	regionId       uint64
+	RaftGroup      *raft.RawNode
+	peerStorage    *PeerStorage
+	proposals      *ProposalQueue
 	applyProposals []*Proposal
-	pendingReads *ReadIndexQueue
+	pendingReads   *ReadIndexQueue
 
 	// Record the last instant of each peer's heartbeat response.
 	PeerHeartbeats map[uint64]time.Time
@@ -252,7 +229,7 @@ type Peer struct {
 	/// Record the instants of peers being added into the configuration.
 	/// Remove them after they are not pending any more.
 	PeersStartPendingTime map[uint64]time.Time
-	RecentAddedPeer *RecentAddedPeer
+	RecentAddedPeer       *RecentAddedPeer
 
 	/// an inaccurate difference in region size since last reset.
 	SizeDiffHint uint64
@@ -261,7 +238,7 @@ type Peer struct {
 	/// approximate size of the region.
 	ApproximateSize *uint64
 	/// approximate keys of the region.
-	ApproximateKeys *uint64
+	ApproximateKeys         *uint64
 	CompactionDeclinedBytes uint64
 
 	ConsistencyState *ConsistencyState
@@ -269,7 +246,7 @@ type Peer struct {
 	Tag string
 
 	// Index of last scheduled committed raft log.
-	LastApplyingIdx uint64
+	LastApplyingIdx  uint64
 	LastCompactedIdx uint64
 	// The index of the latest urgent proposal index.
 	lastUrgentProposalIdx uint64
@@ -282,16 +259,14 @@ type Peer struct {
 
 	// The index of the latest committed prepare merge command.
 	lastCommittedPrepareMergeIdx uint64
-	PendingMergeState *rspb.MergeState
-	leaderMissingTime *time.Time
-	leaderLease *Lease
+	PendingMergeState            *rspb.MergeState
+	leaderMissingTime            *time.Time
+	leaderLease                  *Lease
 
 	// If a snapshot is being applied asynchronously, messages should not be sent.
-	pendingMessages []eraftpb.Message
+	pendingMessages         []eraftpb.Message
 	PendingMergeApplyResult *WaitApplyResultStat
-	PeerStat *PeerStat
-
-	applyRouter router
+	PeerStat                *PeerStat
 }
 
 func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Region, peer *metapb.Peer) (*Peer, error) {
@@ -307,16 +282,16 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 
 	appliedIndex := ps.AppliedIndex()
 
-	raftCfg := &raft.Config {
-		ID: peer.GetId(),
-		ElectionTick: cfg.RaftElectionTimeoutTicks,
-		HeartbeatTick: cfg.RaftHeartbeatTicks,
-		MaxSizePerMsg: cfg.RaftMaxSizePerMsg,
+	raftCfg := &raft.Config{
+		ID:              peer.GetId(),
+		ElectionTick:    cfg.RaftElectionTimeoutTicks,
+		HeartbeatTick:   cfg.RaftHeartbeatTicks,
+		MaxSizePerMsg:   cfg.RaftMaxSizePerMsg,
 		MaxInflightMsgs: cfg.RaftMaxInflightMsgs,
-		Applied: appliedIndex,
-		CheckQuorum: true,
-		PreVote: cfg.Prevote,
-		Storage: ps,
+		Applied:         appliedIndex,
+		CheckQuorum:     true,
+		PreVote:         cfg.Prevote,
+		Storage:         ps,
 	}
 
 	raftGroup, err := raft.NewRawNode(raftCfg, nil)
@@ -324,43 +299,35 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 		return nil, err
 	}
 	now := time.Now()
-	p := &Peer {
-		Cfg: cfg,
-		Peer: peer,
-		regionId: region.GetId(),
-		RaftGroup: raftGroup,
-		peerStorage: ps,
-		proposals: newProposalQueue(),
-		applyProposals: make([]*Proposal, 0),
-		pendingReads: NewReadIndexQueue(),
-		peerCache: make(map[uint64]*metapb.Peer),
-		PeerHeartbeats: make(map[uint64]time.Time),
+	p := &Peer{
+		Peer:                  peer,
+		regionId:              region.GetId(),
+		RaftGroup:             raftGroup,
+		peerStorage:           ps,
+		proposals:             new(ProposalQueue),
+		applyProposals:        make([]*Proposal, 0),
+		pendingReads:          new(ReadIndexQueue),
+		peerCache:             make(map[uint64]*metapb.Peer),
+		PeerHeartbeats:        make(map[uint64]time.Time),
 		PeersStartPendingTime: make(map[uint64]time.Time),
-		RecentAddedPeer: NewRecentAddedPeer(uint64(cfg.RaftRejectTransferLeaderDuration.Seconds())),
-		SizeDiffHint: 0,
-		deleteKeysHint: 0,
-		ApproximateSize: nil,
-		ApproximateKeys: nil,
-		CompactionDeclinedBytes: 0,
-		PendingRemove: false,
-		PendingMergeState: nil,
-		lastCommittedPrepareMergeIdx: 0,
+		RecentAddedPeer:       NewRecentAddedPeer(uint64(cfg.RaftRejectTransferLeaderDuration.Seconds())),
+		ApproximateSize:       nil,
+		ApproximateKeys:       nil,
+		PendingRemove:         false,
+		PendingMergeState:     nil,
 		ConsistencyState: &ConsistencyState{
 			LastCheckTime: now,
-			Index: RaftInvalidIndex,
-			Hash: make([]byte, 0),
+			Index:         RaftInvalidIndex,
+			Hash:          make([]byte, 0),
 		},
-		leaderMissingTime: &now,
-		Tag: tag,
-		LastApplyingIdx: appliedIndex,
-		LastCompactedIdx: 0,
-		lastUrgentProposalIdx: math.MaxInt64,
-		lastCommittedSplitIdx: 0,
-		RaftLogSizeHint: 0,
-		leaderLease: NewLease(cfg.RaftStoreMaxLeaderLease),
-		pendingMessages: make([]eraftpb.Message, 0),
+		leaderMissingTime:       &now,
+		Tag:                     tag,
+		LastApplyingIdx:         appliedIndex,
+		lastUrgentProposalIdx:   math.MaxInt64,
+		leaderLease:             NewLease(cfg.RaftStoreMaxLeaderLease),
+		pendingMessages:         make([]eraftpb.Message, 0),
 		PendingMergeApplyResult: nil,
-		PeerStat: NewPeerStat(),
+		PeerStat:                new(PeerStat),
 	}
 
 	// If this region has only one peer and I am the one, campaign directly.
