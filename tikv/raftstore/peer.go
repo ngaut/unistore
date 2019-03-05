@@ -313,14 +313,12 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 		ConsistencyState: &ConsistencyState{
 			LastCheckTime: now,
 			Index:         RaftInvalidIndex,
-			Hash:          make([]byte, 0),
 		},
 		leaderMissingTime:     &now,
 		Tag:                   tag,
 		LastApplyingIdx:       appliedIndex,
 		lastUrgentProposalIdx: math.MaxInt64,
 		leaderLease:           NewLease(cfg.RaftStoreMaxLeaderLease),
-		pendingMessages:       make([]eraftpb.Message, 0),
 		PeerStat:              new(PeerStat),
 	}
 
