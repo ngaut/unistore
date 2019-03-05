@@ -1,15 +1,18 @@
 package raftstore
 
 import (
-	"time"
-	"sync/atomic"
+	"bytes"
+	"fmt"
+	"github.com/ngaut/log"
+	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
-	"github.com/ngaut/log"
-	"fmt"
-	"github.com/pingcap/kvproto/pkg/eraftpb"
-	"bytes"
+	"sync/atomic"
+	"time"
 )
+
+const RaftInvalidIndex uint64 = 0
+const InvalidID uint64 = 0
 
 /// `is_initial_msg` checks whether the `msg` can be used to initialize a new peer or not.
 // There could be two cases:
@@ -26,7 +29,6 @@ func isInitialMsg(msg *eraftpb.Message) bool {
 		// the peer has not been known to this leader, it may exist or not.
 		(msg.MsgType == eraftpb.MessageType_MsgHeartbeat && msg.Commit == RaftInvalidIndex)
 }
-
 
 type LeaseState int
 
@@ -78,20 +80,20 @@ type Lease struct {
 	// If boundSuspect is not nil, then boundValid must be nil, if boundValid is not nil, then
 	// boundSuspect must be nil
 	boundSuspect *time.Time
-	boundValid *time.Time
-	maxLease time.Duration
+	boundValid   *time.Time
+	maxLease     time.Duration
 
-	maxDrift time.Duration
+	maxDrift   time.Duration
 	lastUpdate time.Time
-	remote *RemoteLease
+	remote     *RemoteLease
 
 	// Todo: use monotonic_raw instead of time.Now() to fix time jump back issue.
 }
 
 func NewLease(maxLease time.Duration) *Lease {
 	return &Lease{
-		maxLease: maxLease,
-		maxDrift: maxLease / 3,
+		maxLease:   maxLease,
+		maxDrift:   maxLease / 3,
 		lastUpdate: time.Time{},
 	}
 }
@@ -190,14 +192,14 @@ func (l *Lease) MaybeNewRemoteLease(term uint64) *RemoteLease {
 	if l.boundValid != nil {
 		expiredTime = TimeToU64(*l.boundValid)
 	}
-	remote := &RemoteLease {
+	remote := &RemoteLease{
 		expiredTime: &expiredTime,
-		term: term,
+		term:        term,
 	}
 	// Clone the remote.
-	remoteClone := &RemoteLease {
+	remoteClone := &RemoteLease{
 		expiredTime: &expiredTime,
-		term: term,
+		term:        term,
 	}
 	l.remote = remote
 	return remoteClone
@@ -208,7 +210,7 @@ func (l *Lease) MaybeNewRemoteLease(term uint64) *RemoteLease {
 /// expire too.
 type RemoteLease struct {
 	expiredTime *uint64
-	term uint64
+	term        uint64
 }
 
 func (r *RemoteLease) Inspect(ts *time.Time) LeaseState {
@@ -238,8 +240,8 @@ func (r *RemoteLease) Term() uint64 {
 
 const (
 	NSEC_PER_MSEC uint64 = 1000000
-	SEC_SHIFT uint64 = 10
-	MSEC_MASK uint64 = (1 << SEC_SHIFT) - 1
+	SEC_SHIFT     uint64 = 10
+	MSEC_MASK     uint64 = (1 << SEC_SHIFT) - 1
 )
 
 func TimeToU64(t time.Time) uint64 {
@@ -255,12 +257,36 @@ func U64ToTime(u uint64) time.Time {
 	return time.Unix(int64(sec), int64(nsec))
 }
 
+/// Check if key in region range [`start_key`, `end_key`).
 func CheckKeyInRegion(key []byte, region *metapb.Region) error {
 	if bytes.Compare(key, region.StartKey) >= 0 && (len(region.EndKey) == 0 || bytes.Compare(key, region.EndKey) < 0) {
 		return nil
 	} else {
-		return &ErrKeyNotInRegion{ Key: key, Region: region }
+		return &ErrKeyNotInRegion{Key: key, Region: region}
 	}
+}
+
+/// Check if key in region range (`start_key`, `end_key`).
+func CheckKeyInRegionExclusive(key []byte, region *metapb.Region) error {
+	if bytes.Compare(region.StartKey, key) < 0 && (len(region.EndKey) == 0 || bytes.Compare(key, region.EndKey) < 0) {
+		return nil
+	} else {
+		return &ErrKeyNotInRegion{Key: key, Region: region}
+	}
+}
+
+/// Check if key in region range [`start_key`, `end_key`].
+func CheckKeyInRegionInclusive(key []byte, region *metapb.Region) error {
+	if bytes.Compare(key, region.StartKey) >= 0 && (len(region.EndKey) == 0 || bytes.Compare(key, region.EndKey) <= 0) {
+		return nil
+	} else {
+		return &ErrKeyNotInRegion{Key: key, Region: region}
+	}
+}
+
+/// check whether epoch is staler than check_epoch.
+func IsEpochStale(epoch *metapb.RegionEpoch, checkEpoch *metapb.RegionEpoch) bool {
+	return epoch.Version < checkEpoch.Version || epoch.ConfVer < checkEpoch.ConfVer
 }
 
 func CheckRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, includeRegion bool) error {
@@ -271,7 +297,6 @@ func CheckRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, inc
 		switch req.AdminRequest.CmdType {
 		case raft_cmdpb.AdminCmdType_CompactLog, raft_cmdpb.AdminCmdType_InvalidAdmin,
 			raft_cmdpb.AdminCmdType_ComputeHash, raft_cmdpb.AdminCmdType_VerifyHash:
-			{}
 		case raft_cmdpb.AdminCmdType_ChangePeer:
 			checkConfVer = true
 		case raft_cmdpb.AdminCmdType_Split, raft_cmdpb.AdminCmdType_BatchSplit,
@@ -284,6 +309,10 @@ func CheckRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, inc
 
 	if !checkVer && !checkConfVer {
 		return nil
+	}
+
+	if req.Header == nil {
+		return fmt.Errorf("missing header!")
 	}
 
 	if req.Header.RegionEpoch == nil {
@@ -305,14 +334,14 @@ func CheckRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, inc
 	if (checkConfVer && fromEpoch.ConfVer != currentEpoch.ConfVer) ||
 		(checkVer && fromEpoch.Version != currentEpoch.Version) {
 		log.Debugf("epoch not match, region id %v, from epoch %v, current epoch %v",
-		region.Id, fromEpoch, currentEpoch)
+			region.Id, fromEpoch, currentEpoch)
 
 		regions := []*metapb.Region{}
 		if includeRegion {
 			regions = []*metapb.Region{region}
 		}
 		return &ErrEpochNotMatch{Message: fmt.Sprintf("current epoch of region %v is %v, but you sent %v",
-		region.Id, currentEpoch, fromEpoch), Regions: regions}
+			region.Id, currentEpoch, fromEpoch), Regions: regions}
 	}
 
 	return nil

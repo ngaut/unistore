@@ -15,11 +15,6 @@ import (
 	"bytes"
 )
 
-const (
-	InvalidID = 0
-	RaftInvalidIndex = 0
-)
-
 type RegionChangeEvent int
 
 const (
