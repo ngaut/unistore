@@ -410,11 +410,7 @@ func (p *Peer) Activate(ctx *PollContext) {
 }
 
 func (p *Peer) nextProposalIndex() uint64 {
-	lastIdx, err := p.Store().LastIndex()
-	if err != nil {
-		panic(fmt.Sprintf("get last index from peer storage failed, err %v", err))
-	}
-	return lastIdx + 1
+	return p.RaftGroup.Raft.RaftLog.LastIndex() + 1
 }
 
 /// Tries to destroy itself. Returns a job (if needed) to do more cleaning tasks.
@@ -596,7 +592,9 @@ func (p *Peer) Step(m *eraftpb.Message) error {
 /// Checks and updates `peer_heartbeats` for the peer.
 func (p *Peer) CheckPeers() {
 	if !p.IsLeader() {
-		p.PeerHeartbeats = make(map[uint64]time.Time)
+		if len(p.PeerHeartbeats) > 0 {
+			p.PeerHeartbeats = make(map[uint64]time.Time)
+		}
 		return
 	}
 	if len(p.PeerHeartbeats) == len(p.Region().GetPeers()) {
