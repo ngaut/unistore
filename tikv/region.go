@@ -211,21 +211,25 @@ type RegionManager struct {
 	wg         sync.WaitGroup
 }
 
-func NewRegionManager(dbs []*badger.DB, opts RegionOptions) *RegionManager {
+func NewRegionManager() *RegionManager {
+	rm := &RegionManager{
+		regions: make(map[uint64]*regionCtx),
+		closeCh: make(chan struct{}),
+	}
+	return rm
+}
+
+func (rm *RegionManager) Init(dbs []*badger.DB, opts RegionOptions) {
 	pdc, err := pd.NewClient(opts.PDAddr, "")
 	if err != nil {
 		log.Fatal(err)
 	}
 	clusterID := pdc.GetClusterID(context.TODO())
 	log.Infof("cluster id %v", clusterID)
-	rm := &RegionManager{
-		dbs:        dbs,
-		pdc:        pdc,
-		clusterID:  clusterID,
-		regions:    make(map[uint64]*regionCtx),
-		regionSize: opts.RegionSize,
-		closeCh:    make(chan struct{}),
-	}
+	rm.dbs = dbs
+	rm.pdc = pdc
+	rm.clusterID = clusterID
+	rm.regionSize = opts.RegionSize
 	err = rm.dbs[0].View(func(txn *badger.Txn) error {
 		item, err1 := txn.Get(InternalStoreMetaKey)
 		if err1 != nil {
@@ -272,7 +276,6 @@ func NewRegionManager(dbs []*badger.DB, opts RegionOptions) *RegionManager {
 	rm.wg.Add(2)
 	go rm.runSplitWorker()
 	go rm.storeHeartBeatLoop()
-	return rm
 }
 
 func (rm *RegionManager) initStore(storeAddr string) error {
@@ -634,4 +637,18 @@ func (rm *RegionManager) Close() error {
 	close(rm.closeCh)
 	rm.wg.Wait()
 	return nil
+}
+
+func (rm *RegionManager) RegionEndKeys() [][]byte {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	regionEnds := make([][]byte, 0, len(rm.regions))
+	for _, ctx := range rm.regions {
+		if len(ctx.endKey) > 0 {
+			regionEnds = append(regionEnds, ctx.endKey)
+		}
+	}
+
+	return regionEnds
 }

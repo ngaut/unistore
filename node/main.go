@@ -60,7 +60,8 @@ func main() {
 		numDB = 8
 		tikv.EnableSharding()
 	}
-	safePoint := &tikv.SafePoint{}
+	rm := tikv.NewRegionManager()
+	safePoint := &tikv.SafePoint{RM: rm}
 	dbs := make([]*badger.DB, numDB)
 	for i := 0; i < numDB; i++ {
 		dbs[i] = createDB(i, safePoint)
@@ -71,7 +72,8 @@ func main() {
 		PDAddr:     *pdAddr,
 		RegionSize: *regionSize,
 	}
-	rm := tikv.NewRegionManager(dbs, regionOpts)
+
+	rm.Init(dbs, regionOpts)
 	store := tikv.NewMVCCStore(dbs, *dbPath, safePoint)
 	tikvServer := tikv.NewServer(rm, store)
 
@@ -133,7 +135,7 @@ func createDB(idx int, safePoint *tikv.SafePoint) *badger.DB {
 	opts.MaxTableSize = *maxTableSize
 	opts.NumMemtables = *numMemTables
 	opts.NumLevelZeroTables = *numL0Table
-	opts.NumLevelZeroTablesStall = opts.NumLevelZeroTables + 5
+	opts.NumLevelZeroTablesStall = opts.NumLevelZeroTables + 120
 	opts.SyncWrites = *syncWrites
 	opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
 	db, err := badger.Open(opts)
