@@ -553,8 +553,7 @@ func (p *Peer) SetRegion(host *CoprocessorHost, region *metapb.Region) {
 		// Epoch version changed, disable read on the localreader for this region.
 		p.leaderLease.ExpireRemoteLease()
 	}
-	regionClone := metapb.Region(*region)
-	p.Store().SetRegion(&regionClone)
+	p.Store().SetRegion(CloneRegion(region))
 
 	if !p.PendingRemove {
 		host.OnRegionChanged(p.Region(), RegionChangeEvent_Update, p.GetRole())
