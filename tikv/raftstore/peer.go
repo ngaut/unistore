@@ -109,7 +109,7 @@ func NewReadIndexRequest(id uint64, cmds []*ReqCbPair, renewLeaseTime *time.Time
 	}
 }
 
-func (r *ReadIndexRequest) bianryId() []byte {
+func (r *ReadIndexRequest) binaryId() []byte {
 	var buf = make([]byte, 8)
 	binary.BigEndian.PutUint64(buf, r.id)
 	return buf
@@ -1124,8 +1124,8 @@ func (p *Peer) ApplyReads(ctx *PollContext, ready *raft.Ready) {
 			if read == nil {
 				panic("read should exist")
 			}
-			if bytes.Compare(state.RequestCtx, read.bianryId()) != 0 {
-				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.bianryId()))
+			if bytes.Compare(state.RequestCtx, read.binaryId()) != 0 {
+				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.binaryId()))
 			}
 			for _, reqCb := range read.cmds {
 				reqCb.Cb(p.handleRead(ctx, reqCb.Req, true))
@@ -1136,8 +1136,8 @@ func (p *Peer) ApplyReads(ctx *PollContext, ready *raft.Ready) {
 	} else {
 		for _, state := range ready.ReadStates {
 			read := p.pendingReads.reads[p.pendingReads.readyCnt]
-			if bytes.Compare(state.RequestCtx, read.bianryId()) != 0 {
-				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.bianryId()))
+			if bytes.Compare(state.RequestCtx, read.binaryId()) != 0 {
+				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.binaryId()))
 			}
 			p.pendingReads.readyCnt += 1
 			proposeTime = read.renewLeaseTime
