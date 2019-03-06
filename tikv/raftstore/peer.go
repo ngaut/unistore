@@ -4,14 +4,14 @@ import (
 	"time"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"fmt"
-	"github.com/pingcap/kvproto/pkg/metapb"
-	"github.com/zhangjinpeng1987/raft"
-	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
-	"github.com/pingcap/kvproto/pkg/eraftpb"
-	"math"
-	"github.com/pingcap/kvproto/pkg/pdpb"
-	"encoding/binary"
 	"github.com/ngaut/log"
+	"github.com/pingcap/kvproto/pkg/eraftpb"
+	"github.com/pingcap/kvproto/pkg/metapb"
+	"github.com/pingcap/kvproto/pkg/pdpb"
+	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/zhangjinpeng1987/raft"
+	"math"
+	"encoding/binary"
 	"bytes"
 )
 
@@ -23,46 +23,47 @@ const (
 )
 
 type CoprocessorHost struct {
+	// Todo: currently it is a place holder
 }
 
 func (c *CoprocessorHost) PrePropose(region *metapb.Region, req *raft_cmdpb.RaftCmdRequest) error {
-	// Todo
+	// Todo: currently it is a place holder
 	return nil
 }
 
 func (c *CoprocessorHost) OnRegionChanged(region *metapb.Region, event RegionChangeEvent, role raft.StateType) {
-	// Todo
+	// Todo: currently it is a place holder
 }
 
 func (c *CoprocessorHost) OnRoleChanged(region *metapb.Region, role raft.StateType) {
-	// Todo
+	// Todo: currently it is a place holder
 }
 
 type ApplyRouter struct {
-
+	// Todo: currently it is a place holder
 }
 
 func (a *ApplyRouter) ScheduleTask(regionId uint64, task *ApplyTask) {
-
+	// Todo: currently it is a place holder
 }
 
 type ReadyICPair struct {
 	Ready raft.Ready
-	IC *InvokeContext
+	IC    *InvokeContext
 }
 
 type PollContext struct {
-	Cfg *Config
+	Cfg             *Config
 	CoprocessorHost *CoprocessorHost
-	engine *Engines
-	dbBundle *DBBundle
-	applyRouter *ApplyRouter
-	needFlushTrans bool
-	trans chan<- *rspb.RaftMessage
-	ReadyRes []ReadyICPair
-	kvWB *WriteBatch
-	raftWB *WriteBatch
-	syncLog bool
+	engine          *Engines
+	dbBundle        *DBBundle
+	applyRouter     *ApplyRouter
+	needFlushTrans  bool
+	trans           chan<- *rspb.RaftMessage
+	ReadyRes        []ReadyICPair
+	kvWB            *WriteBatch
+	raftWB          *WriteBatch
+	syncLog         bool
 }
 
 func (pc *PollContext) KVWB() *WriteBatch {
@@ -219,7 +220,7 @@ func (c *ProposalContext) insert(flag ProposalContext) {
 
 type PeerStat struct {
 	WrittenBytes uint64
-	WrittenKeys uint64
+	WrittenKeys  uint64
 }
 
 type ApplyTask struct {
@@ -437,19 +438,15 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 	return p, nil
 }
 
-/// Register self to apply_scheduler and read_scheduler so that the peer is then usable.
+/// Register self to applyRouter so that the peer is then usable.
 /// Also trigger `RegionChangeEvent::Create` here.
 func (p *Peer) Activate(ctx *PollContext) {
-	ctx.applyRouter.ScheduleTask(p.regionId, &ApplyTask{/*todo: register self*/})
+	ctx.applyRouter.ScheduleTask(p.regionId, &ApplyTask{ /*todo: register self*/ })
 	ctx.CoprocessorHost.OnRegionChanged(p.Region(), RegionChangeEvent_Create, p.GetRole())
 }
 
 func (p *Peer) nextProposalIndex() uint64 {
-	lastIdx, err := p.Store().LastIndex()
-	if err != nil {
-		panic(fmt.Sprintf("get last index from peer storage failed, err %v", err))
-	}
-	return lastIdx + 1
+	return p.RaftGroup.Raft.RaftLog.LastIndex() + 1
 }
 
 /// Tries to destroy itself. Returns a job (if needed) to do more cleaning tasks.
@@ -472,11 +469,11 @@ func (p *Peer) MaybeDestroy() *DestroyPeerJob {
 	}
 	p.PendingRemove = true
 
-	return &DestroyPeerJob {
+	return &DestroyPeerJob{
 		AsyncRemove: asyncRemove,
 		Initialized: initialized,
-		RegionId: p.regionId,
-		Peer: ClonePeer(p.Peer),
+		RegionId:    p.regionId,
+		Peer:        ClonePeer(p.Peer),
 	}
 }
 
@@ -576,7 +573,7 @@ func (p *Peer) IsLeader() bool {
 	return p.RaftGroup.Raft.State == raft.StateLeader
 }
 
-func (p *Peer) GetRole()  raft.StateType {
+func (p *Peer) GetRole() raft.StateType {
 	return p.RaftGroup.Raft.State
 }
 
@@ -631,7 +628,9 @@ func (p *Peer) Step(m *eraftpb.Message) error {
 /// Checks and updates `peer_heartbeats` for the peer.
 func (p *Peer) CheckPeers() {
 	if !p.IsLeader() {
-		p.PeerHeartbeats = make(map[uint64]time.Time)
+		if len(p.PeerHeartbeats) > 0 {
+			p.PeerHeartbeats = make(map[uint64]time.Time)
+		}
 		return
 	}
 	if len(p.PeerHeartbeats) == len(p.Region().GetPeers()) {
@@ -641,7 +640,9 @@ func (p *Peer) CheckPeers() {
 	// Insert heartbeats in case that some peers never response heartbeats.
 	region := p.Region()
 	for _, peer := range region.GetPeers() {
-		p.PeerHeartbeats[peer.GetId()] = time.Now()
+		if _, ok := p.PeerHeartbeats[peer.GetId()]; !ok {
+			p.PeerHeartbeats[peer.GetId()] = time.Now()
+		}
 	}
 }
 
@@ -653,10 +654,11 @@ func (p *Peer) CollectDownPeers(maxDuration time.Duration) []*pdpb.PeerStats {
 			continue
 		}
 		if hb, ok := p.PeerHeartbeats[peer.GetId()]; ok {
-			if time.Since(hb) > maxDuration {
+			elapsed := time.Since(hb)
+			if elapsed > maxDuration {
 				stats := &pdpb.PeerStats{
-					Peer: peer,
-					DownSeconds: uint64(time.Since(hb).Seconds()),
+					Peer:        peer,
+					DownSeconds: uint64(elapsed.Seconds()),
 				}
 				downPeers = append(downPeers, stats)
 			}
@@ -679,14 +681,7 @@ func (p *Peer) CollectPendingPeers() []*metapb.Peer {
 		if progress.Match < truncatedIdx {
 			if peer := p.GetPeerFromCache(id); peer != nil {
 				pendingPeers = append(pendingPeers, peer)
-				inPeersStartPendingTime := false
-				for peerId, _ := range p.PeersStartPendingTime {
-					if peerId == id {
-						inPeersStartPendingTime = true
-						break
-					}
-				}
-				if !inPeersStartPendingTime {
+				if _, ok := p.PeersStartPendingTime[id]; !ok {
 					now := time.Now()
 					p.PeersStartPendingTime[id] = now
 					log.Debugf("%v peer %v start pending at %v", p.Tag, id, now)
@@ -697,10 +692,9 @@ func (p *Peer) CollectPendingPeers() []*metapb.Peer {
 	return pendingPeers
 }
 
-
 func (p *Peer) clearPeersStartPendingTime() {
 	for id := range p.PeersStartPendingTime {
-		delete (p.PeersStartPendingTime, id)
+		delete(p.PeersStartPendingTime, id)
 	}
 }
 
@@ -714,18 +708,13 @@ func (p *Peer) AnyNewPeerCatchUp(peerId uint64) bool {
 		p.clearPeersStartPendingTime()
 		return false
 	}
-	for id, _ := range p.PeersStartPendingTime {
-		if id == peerId {
-			continue
-		}
+	if startPendingTime, ok := p.PeersStartPendingTime[peerId]; ok {
 		truncatedIdx := p.Store().truncatedIndex()
 		if progress, ok := p.RaftGroup.Raft.Prs[peerId]; ok {
 			if progress.Match >= truncatedIdx {
-				if startPendingTime, ok := p.PeersStartPendingTime[id]; ok {
-					delete(p.PeersStartPendingTime, id)
-					elapsed := time.Since(startPendingTime)
-					log.Debugf("%v peer %v has caught up logs, elapsed: %v", p.Tag, id, elapsed)
-				}
+				delete(p.PeersStartPendingTime, peerId)
+				elapsed := time.Since(startPendingTime)
+				log.Debugf("%v peer %v has caught up logs, elapsed: %v", p.Tag, peerId, elapsed)
 				return true
 			}
 		}
@@ -754,13 +743,14 @@ func (p *Peer) CheckStaleState(ctx *PollContext) StaleState {
 		p.leaderMissingTime = &now
 		return StaleStateValid
 	} else {
-		if time.Since(*p.leaderMissingTime) >= ctx.Cfg.MaxLeaderMissingDuration {
+		elapsed := time.Since(*p.leaderMissingTime)
+		if elapsed >= ctx.Cfg.MaxLeaderMissingDuration {
 			// Resets the `leader_missing_time` to avoid sending the same tasks to
 			// PD worker continuously during the leader missing timeout.
 			now := time.Now()
 			p.leaderMissingTime = &now
 			return StaleStateToValidate
-		} else if time.Since(*p.leaderMissingTime) >= ctx.Cfg.AbnormalLeaderMissingDuration && !naivePeer {
+		} else if elapsed >= ctx.Cfg.AbnormalLeaderMissingDuration && !naivePeer {
 			// A peer is considered as in the leader missing state
 			// if it's initialized but is isolated from its leader or
 			// something bad happens that the raft group can not elect a leader.
@@ -770,11 +760,10 @@ func (p *Peer) CheckStaleState(ctx *PollContext) StaleState {
 	}
 }
 
-// We are not going to port local reader module
 func (p *Peer) OnRoleChanged(ctx *PollContext, ready *raft.Ready) {
 	ss := ready.SoftState
 	if ss != nil {
-		if ss.RaftState == raft.StateFollower {
+		if ss.RaftState == raft.StateLeader {
 			p.HeartbeatPd(ctx)
 		}
 		ctx.CoprocessorHost.OnRoleChanged(p.Region(), ss.RaftState)
@@ -816,7 +805,7 @@ func (p *Peer) TakeApplyProposals() *RegionProposal {
 		return nil
 	}
 	props := p.applyProposals
-	p.applyProposals = make([]*Proposal, 0)
+	p.applyProposals = nil
 	return NewRegionProposal(p.PeerId(), p.regionId, props)
 }
 
@@ -828,15 +817,17 @@ func (p *Peer) HandleRaftReadyAppend(ctx *PollContext) {
 		// If we continue to handle all the messages, it may cause too many messages because
 		// leader will send all the remaining messages to this follower, which can lead
 		// to full message queue under high load.
-		log.Debugf("%v still applying snapshot, skip further handling")
+		log.Debugf("%v still applying snapshot, skip further handling", p.Tag)
 		return
 	}
 
 	if len(p.pendingMessages) > 0 {
 		messages := p.pendingMessages
-		p.pendingMessages = make([]eraftpb.Message, 0)
+		p.pendingMessages = nil
 		ctx.needFlushTrans = true
-		p.Send(ctx.trans, messages)
+		if err := p.Send(ctx.trans, messages); err != nil {
+			log.Warnf("%v clear snapshot pengding messages err: %v", p.Tag, err)
+		}
 	}
 
 	if p.HasPendingSnapshot() && !p.ReadyToHandlePendingSnap() {
@@ -856,8 +847,10 @@ func (p *Peer) HandleRaftReadyAppend(ctx *PollContext) {
 	// The leader can write to disk and replicate to the followers concurrently
 	// For more details, check raft thesis 10.2.1.
 	if p.IsLeader() {
-		p.Send(ctx.trans, ready.Messages)
 		ctx.needFlushTrans = true
+		if err := p.Send(ctx.trans, ready.Messages); err != nil {
+			log.Warnf("%v leader send message err: %v", p.Tag, err)
+		}
 		ready.Messages = ready.Messages[:0]
 	}
 
@@ -865,7 +858,7 @@ func (p *Peer) HandleRaftReadyAppend(ctx *PollContext) {
 	if err != nil {
 		panic(fmt.Sprintf("failed to handle raft ready, error: %v", err))
 	}
-	ctx.ReadyRes = append(ctx.ReadyRes, ReadyICPair{Ready:ready, IC:invokeCtx})
+	ctx.ReadyRes = append(ctx.ReadyRes, ReadyICPair{Ready: ready, IC: invokeCtx})
 }
 
 func (p *Peer) PostRaftReadyAppend(ctx *PollContext, ready *raft.Ready, invokeCtx InvokeContext) *ApplySnapResult {
@@ -881,8 +874,8 @@ func (p *Peer) PostRaftReadyAppend(ctx *PollContext, ready *raft.Ready, invokeCt
 		for _, peer := range p.Region().GetPeers() {
 			if peer.GetId() == p.Peer.GetId() {
 				pr = &metapb.Peer{
-					Id: peer.Id,
-					StoreId: peer.Id,
+					Id:        peer.Id,
+					StoreId:   peer.Id,
 					IsLearner: peer.IsLearner,
 				}
 			}
@@ -898,7 +891,9 @@ func (p *Peer) PostRaftReadyAppend(ctx *PollContext, ready *raft.Ready, invokeCt
 			p.pendingMessages = ready.Messages
 			ready.Messages = nil
 		} else {
-			p.Send(ctx.trans, ready.Messages)
+			if err := p.Send(ctx.trans, ready.Messages); err != nil {
+				log.Warnf("%v follower send messages err: %v", p.Tag, err)
+			}
 			ctx.needFlushTrans = true
 		}
 	}
@@ -908,6 +903,130 @@ func (p *Peer) PostRaftReadyAppend(ctx *PollContext, ready *raft.Ready, invokeCt
 	}
 
 	return applySnapResult
+}
+
+// Try to renew leader lease.
+func (p *Peer) MaybeRenewLeaderLease(ts time.Time) {
+	// A non-leader peer should never has leader lease.
+	// A splitting leader should not renew its lease.
+	// Because we split regions asynchronous, the leader may read stale results
+	// if splitting runs slow on the leader.
+	// // A merging leader should not renew its lease.
+	// Because we merge regions asynchronous, the leader may read stale results
+	// if commit merge runs slow on sibling peers.
+	if !p.IsLeader() || p.isSplitting() || p.isMerging() {
+		return
+	}
+	p.leaderLease.Renew(ts)
+}
+
+func (p *Peer) MaybeCampaign(parentIsLeader bool) bool {
+	// The peer campaigned when it was created, no need to do it again.
+	if len(p.Region().GetPeers()) <= 1 || !parentIsLeader {
+		return false
+	}
+
+	// If last peer is the leader of the region before split, it's intuitional for
+	// it to become the leader of new split region.
+	p.RaftGroup.Campaign()
+	return true
+}
+
+func (p *Peer) findProposeTime(index, term uint64) *time.Time {
+	for {
+		meta := p.proposals.PopFront(term)
+		if meta == nil {
+			return nil
+		}
+		if meta.Index == index && meta.Term == term {
+			return meta.RenewLeaseTime
+		}
+	}
+	return nil
+}
+
+func (p *Peer) Term() uint64 {
+	return p.RaftGroup.Raft.Term
+}
+
+func (p *Peer) Stop() {
+	p.Store().CancelApplyingSnap()
+}
+
+func (p *Peer) InsertPeerCache(peer *metapb.Peer) {
+	p.peerCache[peer.Id] = peer
+}
+
+func (p *Peer) RemovePeerFromCache(peerId uint64) {
+	delete(p.peerCache, peerId)
+}
+
+func (p *Peer) GetPeerFromCache(peerId uint64) *metapb.Peer {
+	if peer, ok := p.peerCache[peerId]; ok {
+		return &metapb.Peer{
+			Id:        peer.Id,
+			StoreId:   peer.StoreId,
+			IsLearner: peer.IsLearner,
+		}
+	}
+
+	// Try to find in region, if found, set in cache.
+	for _, peer := range p.Region().Peers {
+		if peer.Id == peerId {
+			p.peerCache[peerId] = &metapb.Peer{
+				Id:        peer.Id,
+				StoreId:   peer.StoreId,
+				IsLearner: peer.IsLearner,
+			}
+			return &metapb.Peer{
+				Id:        peer.Id,
+				StoreId:   peer.StoreId,
+				IsLearner: peer.IsLearner,
+			}
+		}
+	}
+	return nil
+}
+
+func (p *Peer) HeartbeatPd(ctx *PollContext) {
+	// Todo: currently it is a place holder
+}
+
+func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans chan<- *rspb.RaftMessage) error {
+	sendMsg := new(rspb.RaftMessage)
+	sendMsg.RegionId = p.regionId
+	// set current epoch
+	sendMsg.RegionEpoch = &metapb.RegionEpoch{
+		ConfVer: p.Region().RegionEpoch.ConfVer,
+		Version: p.Region().RegionEpoch.Version,
+	}
+
+	fromPeer := *p.Peer
+	toPeer := p.GetPeerFromCache(msg.To)
+	if toPeer == nil {
+		return fmt.Errorf("failed to lookup recipient peer %v in region %v", msg.To, p.regionId)
+	}
+	log.Debugf("%v, send raft msg %v from %v to %v", p.Tag, msg.MsgType, fromPeer.Id, toPeer.Id)
+
+	sendMsg.FromPeer = &fromPeer
+	sendMsg.ToPeer = toPeer
+
+	// There could be two cases:
+	// 1. Target peer already exists but has not established communication with leader yet
+	// 2. Target peer is added newly due to member change or region split, but it's not
+	//    created yet
+	// For both cases the region start key and end key are attached in RequestVote and
+	// Heartbeat message for the store of that peer to check whether to create a new peer
+	// when receiving these messages, or just to wait for a pending region split to perform
+	// later.
+	if p.Store().isInitialized() && isInitialMsg(&msg) {
+		sendMsg.StartKey = append([]byte{}, p.Region().StartKey...)
+		sendMsg.EndKey = append([]byte{}, p.Region().EndKey...)
+	}
+	sendMsg.Message = &msg
+
+	trans <- sendMsg
+	return nil
 }
 
 func (p *Peer) HandleRaftReadyApply(ctx *PollContext, ready *raft.Ready) {
@@ -1090,46 +1209,6 @@ func (p *Peer) PostSplit() {
 	// Reset delete_keys_hint and size_diff_hint.
 	p.deleteKeysHint = 0
 	p.SizeDiffHint = 0
-}
-
-// Try to renew leader lease.
-func (p *Peer) MaybeRenewLeaderLease(ts time.Time) {
-	// A non-leader peer should never has leader lease.
-	// A splitting leader should not renew its lease.
-	// Because we split regions asynchronous, the leader may read stale results
-	// if splitting runs slow on the leader.
-	// // A merging leader should not renew its lease.
-	// Because we merge regions asynchronous, the leader may read stale results
-	// if commit merge runs slow on sibling peers.
-	if !p.IsLeader() || p.isSplitting() || p.isMerging() {
-		return
-	}
-	p.leaderLease.Renew(ts)
-}
-
-func (p *Peer) MaybeCampaign(parentIsLeader bool) bool {
-	// The peer campaigned when it was created, no need to do it again.
-	if len(p.Region().GetPeers()) <= 1 || !parentIsLeader{
-		return false
-	}
-
-	// If last peer is the leader of the region before split, it's intuitional for
-	// it to become the leader of new split region.
-	p.RaftGroup.Campaign()
-	return true
-}
-
-func (p *Peer) findProposeTime(index, term uint64) *time.Time {
-	for {
-		meta := p.proposals.PopFront(term)
-		if meta == nil {
-			return nil
-		}
-		if meta.Index == index && meta.Term == term {
-			return meta.RenewLeaseTime
-		}
-	}
-	return nil
 }
 
 // Propose a request.
@@ -1613,90 +1692,6 @@ func (p *Peer) handleRead(ctx *PollContext, req *raft_cmdpb.RaftCmdRequest, chec
 	resp, snap := readExecutor.Execute(req, p.Region())
 	BindRespTerm(resp, p.Term())
 	return resp, snap
-}
-
-func (p *Peer) Term() uint64 {
-	return p.RaftGroup.Raft.Term
-}
-
-func (p *Peer) Stop() {
-	p.Store().CancelApplyingSnap()
-}
-
-func (p *Peer) InsertPeerCache(peer *metapb.Peer) {
-	p.peerCache[peer.Id] = peer
-}
-
-func (p *Peer) RemovePeerFromCache(peerId uint64) {
-	delete(p.peerCache, peerId)
-}
-
-func (p *Peer) GetPeerFromCache(peerId uint64) *metapb.Peer {
-	if peer, ok := p.peerCache[peerId]; ok {
-		return &metapb.Peer{
-			Id: peer.Id,
-			StoreId: peer.StoreId,
-			IsLearner: peer.IsLearner,
-		}
-	}
-
-	// Try to find in region, if found, set in cache.
-	for _, peer := range p.Region().Peers {
-		if peer.Id == peerId {
-			p.peerCache[peerId] = &metapb.Peer{
-				Id: peer.Id,
-				StoreId: peer.StoreId,
-				IsLearner: peer.IsLearner,
-			}
-			return &metapb.Peer{
-				Id: peer.Id,
-				StoreId: peer.StoreId,
-				IsLearner: peer.IsLearner,
-			}
-		}
-	}
-	return nil
-}
-
-func (p *Peer) HeartbeatPd(ctx *PollContext) {
-	// Todo
-}
-
-func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans chan<- *rspb.RaftMessage) error {
-	sendMsg := new(rspb.RaftMessage)
-	sendMsg.RegionId = p.regionId
-	// set current epoch
-	sendMsg.RegionEpoch = &metapb.RegionEpoch{
-		ConfVer: p.Region().RegionEpoch.ConfVer,
-		Version: p.Region().RegionEpoch.Version,
-	}
-
-	fromPeer := *p.Peer
-	toPeer := p.GetPeerFromCache(msg.To)
-	if toPeer == nil {
-		return fmt.Errorf("failed to lookup recipient peer %v in region %v", msg.To, p.regionId)
-	}
-	log.Debugf("%v, send raft msg %v from %v to %v", p.Tag, msg.MsgType, fromPeer.Id, toPeer.Id)
-
-	sendMsg.FromPeer = &fromPeer
-	sendMsg.ToPeer = toPeer
-
-	// There could be two cases:
-	// 1. Target peer already exists but has not established communication with leader yet
-	// 2. Target peer is added newly due to member change or region split, but it's not
-	//    created yet
-	// For both cases the region start key and end key are attached in RequestVote and
-	// Heartbeat message for the store of that peer to check whether to create a new peer
-	// when receiving these messages, or just to wait for a pending region split to perform
-	// later.
-	if p.Store().isInitialized() && isInitialMsg(&msg) {
-		sendMsg.StartKey = append([]byte{}, p.Region().StartKey...)
-		sendMsg.EndKey = append([]byte{}, p.Region().EndKey...)
-	}
-	sendMsg.Message = &msg
-
-	trans<- sendMsg
-	return nil
 }
 
 type RequestPolicy int

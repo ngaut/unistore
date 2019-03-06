@@ -913,17 +913,17 @@ func (ps *PeerStorage) SetRegion(region *metapb.Region) {
 }
 
 func (ps *PeerStorage) ClearData() error {
-	// Todo
+	// Todo: currently it is a place holder
 	return nil
 }
 
 func (p *PeerStorage) CancelApplyingSnap() bool {
-	// Todo
+	// Todo: currently it is a place holder
 	return true
 }
 
 // Check if the storage is applying a snapshot.
 func (p *PeerStorage) CheckApplyingSnap() bool {
-	// Todo
+	// Todo: currently it is a place holder
 	return false
 }
