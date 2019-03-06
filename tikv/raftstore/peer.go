@@ -1,18 +1,18 @@
 package raftstore
 
 import (
-	"time"
-	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
+	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/zhangjinpeng1987/raft"
 	"math"
-	"encoding/binary"
-	"bytes"
+	"time"
 )
 
 type RegionChangeEvent int
@@ -184,8 +184,8 @@ func (q *ProposalQueue) Clear() {
 }
 
 const (
-	ProposalContext_SyncLog ProposalContext = 1
-	ProposalContext_Split ProposalContext = 1 << 1
+	ProposalContext_SyncLog      ProposalContext = 1
+	ProposalContext_Split        ProposalContext = 1 << 1
 	ProposalContext_PrepareMerge ProposalContext = 1 << 2
 )
 
@@ -211,7 +211,7 @@ func NewProposalContextFromBytes(ctx []byte) *ProposalContext {
 }
 
 func (c *ProposalContext) contains(flag ProposalContext) bool {
-	return byte(*c) & byte(flag) != 0
+	return byte(*c)&byte(flag) != 0
 }
 
 func (c *ProposalContext) insert(flag ProposalContext) {
@@ -1099,8 +1099,8 @@ func (p *Peer) HandleRaftReadyApply(ctx *PollContext, ready *raft.Ready) {
 			}
 			apply := &ApplyTask{
 				RegionId: p.regionId,
-				Term: p.Term(),
-				Entries: committedEntries,
+				Term:     p.Term(),
+				Entries:  committedEntries,
 			}
 			ctx.applyRouter.ScheduleTask(p.regionId, apply)
 		}
@@ -1128,7 +1128,7 @@ func (p *Peer) ApplyReads(ctx *PollContext, ready *raft.Ready) {
 				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.bianryId()))
 			}
 			for _, reqCb := range read.cmds {
-				reqCb.Cb(p.handleRead(ctx, reqCb.Req, true));
+				reqCb.Cb(p.handleRead(ctx, reqCb.Req, true))
 			}
 			read.cmds = nil
 			proposeTime = read.renewLeaseTime
@@ -1257,8 +1257,8 @@ func (p *Peer) Propose(ctx *PollContext, cb Callback, req *raft_cmdpb.RaftCmdReq
 		p.RaftGroup.SkipBcastCommit(false)
 	}
 	meta := &ProposalMeta{
-		Index: idx,
-		Term: p.Term(),
+		Index:          idx,
+		Term:           p.Term(),
 		RenewLeaseTime: nil,
 	}
 	p.PostPropose(meta, isConfChange, cb)
@@ -1271,9 +1271,9 @@ func (p *Peer) PostPropose(meta *ProposalMeta, isConfChange bool, cb Callback) {
 	meta.RenewLeaseTime = &t
 	proposal := &Proposal{
 		isConfChange: isConfChange,
-		index: meta.Index,
-		term: meta.Term,
-		Cb: cb,
+		index:        meta.Index,
+		term:         meta.Term,
+		Cb:           cb,
 	}
 	p.applyProposals = append(p.applyProposals, proposal)
 	p.proposals.Push(meta)
@@ -1362,11 +1362,11 @@ func (p *Peer) checkConfChange(ctx *PollContext, cmd *raft_cmdpb.RaftCmdRequest)
 		return nil
 	}
 
-	log.Infof("%v rejects unsafe conf chagne request %v, total %v, healthy %v, " +
+	log.Infof("%v rejects unsafe conf chagne request %v, total %v, healthy %v, "+
 		"quorum after change %v", p.Tag, changePeer, total, healthy, quorumAfterChange)
 
 	return fmt.Errorf("unsafe to perform conf change %v, total %v, healthy %v, quorum after chagne %v",
-	changePeer, total, healthy, quorumAfterChange)
+		changePeer, total, healthy, quorumAfterChange)
 }
 
 func Quorum(total int) int {
@@ -1399,7 +1399,7 @@ func (p *Peer) readyToTransferLeader(ctx *PollContext, peer *metapb.Peer) bool {
 
 	lastIndex, _ := p.Store().LastIndex()
 
-	return lastIndex <= status.Progress[peerId].Match + ctx.Cfg.LeaderTransferMaxLogLag
+	return lastIndex <= status.Progress[peerId].Match+ctx.Cfg.LeaderTransferMaxLogLag
 }
 
 func (p *Peer) readLocal(ctx *PollContext, req *raft_cmdpb.RaftCmdRequest, cb Callback) {
@@ -1436,8 +1436,8 @@ func (p *Peer) readIndex(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest, e
 	readsLen := len(p.pendingReads.reads)
 	if readsLen > 0 {
 		read := p.pendingReads.reads[readsLen-1]
-		if (read.renewLeaseTime.Add(pollCtx.Cfg.RaftStoreMaxLeaderLease).After(*renewLeaseTime)) {
-			read.cmds = append(read.cmds, &ReqCbPair{Req:req, Cb:cb})
+		if read.renewLeaseTime.Add(pollCtx.Cfg.RaftStoreMaxLeaderLease).After(*renewLeaseTime) {
+			read.cmds = append(read.cmds, &ReqCbPair{Req: req, Cb: cb})
 			return false
 		}
 	}
@@ -1468,9 +1468,9 @@ func (p *Peer) readIndex(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest, e
 	if p.leaderLease.Inspect(renewLeaseTime) == LeaseState_Suspect {
 		req := new(raft_cmdpb.RaftCmdRequest)
 		if index, err := p.ProposeNormal(pollCtx, req); err == nil {
-			meta := &ProposalMeta {
-				Index: index,
-				Term: p.Term(),
+			meta := &ProposalMeta{
+				Index:          index,
+				Term:           p.Term(),
 				RenewLeaseTime: renewLeaseTime,
 			}
 			p.PostPropose(meta, false, EmptyCallback)
@@ -1499,7 +1499,7 @@ func (p *Peer) preProposePrepareMerge(ctx *PollContext, req *raft_cmdpb.RaftCmdR
 	lastIndex := p.RaftGroup.Raft.RaftLog.LastIndex()
 	minProgress := p.GetMinProgress()
 	minIndex := minProgress + 1
-	if minProgress == 0 || lastIndex - minProgress > ctx.Cfg.MergeMaxLogGap {
+	if minProgress == 0 || lastIndex-minProgress > ctx.Cfg.MergeMaxLogGap {
 		return fmt.Errorf("log gap (%v, %v] is too large, skip merge", minProgress, lastIndex)
 	}
 
@@ -1527,7 +1527,7 @@ func (p *Peer) preProposePrepareMerge(ctx *PollContext, req *raft_cmdpb.RaftCmdR
 		}
 		cmdType := cmd.AdminRequest.GetCmdType()
 		switch cmdType {
-			case raft_cmdpb.AdminCmdType_TransferLeader, raft_cmdpb.AdminCmdType_ComputeHash,
+		case raft_cmdpb.AdminCmdType_TransferLeader, raft_cmdpb.AdminCmdType_ComputeHash,
 			raft_cmdpb.AdminCmdType_VerifyHash, raft_cmdpb.AdminCmdType_InvalidAdmin:
 			continue
 		default:
@@ -1537,7 +1537,7 @@ func (p *Peer) preProposePrepareMerge(ctx *PollContext, req *raft_cmdpb.RaftCmdR
 		return fmt.Errorf("log gap contains admin request %v, skip merging.", cmdType)
 	}
 
-	if float64(entrySize) > float64(ctx.Cfg.RaftEntryMaxSize) * 0.9 {
+	if float64(entrySize) > float64(ctx.Cfg.RaftEntryMaxSize)*0.9 {
 		return fmt.Errorf("log gap size exceed entry size limit, skip merging.")
 	}
 
@@ -1585,7 +1585,7 @@ func (p *Peer) ProposeNormal(pollCtx *PollContext, req *raft_cmdpb.RaftCmdReques
 	// ctx, err := p.PrePropose(pollCtx, req)
 	_, err := p.PrePropose(pollCtx, req)
 	if err != nil {
-		log.Warnf("%v skip proposal: %v", p.Tag, err);
+		log.Warnf("%v skip proposal: %v", p.Tag, err)
 		return 0, err
 	}
 	data, err := req.Marshal()
@@ -1594,7 +1594,7 @@ func (p *Peer) ProposeNormal(pollCtx *PollContext, req *raft_cmdpb.RaftCmdReques
 	}
 
 	if uint64(len(data)) > pollCtx.Cfg.RaftEntryMaxSize {
-		log.Errorf("entry is too large, entry size %v", len(data));
+		log.Errorf("entry is too large, entry size %v", len(data))
 		return 0, &ErrRaftEntryTooLarge{RegionId: p.regionId, EntrySize: uint64(len(data))}
 	}
 
@@ -1789,19 +1789,19 @@ func (p *Peer) inspect(req *raft_cmdpb.RaftCmdRequest) (RequestPolicy, error) {
 }
 
 type ReadExecutor struct {
-	checkEpoch bool
-	engine *DBBundle
-	snapshot *DBSnapshot
-	snapshotTime *time.Time
+	checkEpoch       bool
+	engine           *DBBundle
+	snapshot         *DBSnapshot
+	snapshotTime     *time.Time
 	needSnapshotTime bool
 }
 
 func NewReadExecutor(engine *DBBundle, checkEpoch bool, needSnapshotTime bool) *ReadExecutor {
 	return &ReadExecutor{
-		checkEpoch: checkEpoch,
-		engine: engine,
-		snapshot: nil,
-		snapshotTime: nil,
+		checkEpoch:       checkEpoch,
+		engine:           engine,
+		snapshot:         nil,
+		snapshotTime:     nil,
 		needSnapshotTime: needSnapshotTime,
 	}
 }
@@ -1816,8 +1816,8 @@ func (r *ReadExecutor) MaybeUpdateSnapshot() {
 		return
 	}
 	r.snapshot = &DBSnapshot{
-		Txn: r.engine.db.NewTransaction(false),
-		LockStore: r.engine.lockStore,
+		Txn:           r.engine.db.NewTransaction(false),
+		LockStore:     r.engine.lockStore,
 		RollbackStore: r.engine.rollbackStore,
 	}
 	// Reading current timespec after snapshot, in case we do not
@@ -1947,7 +1947,7 @@ func makeTransferLeaderResponse() *raft_cmdpb.RaftCmdResponse {
 
 func GetChangePeerCmd(msg *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.ChangePeerRequest {
 	adminReq := msg.GetAdminRequest()
-	if adminReq == nil || adminReq.ChangePeer == nil{
+	if adminReq == nil || adminReq.ChangePeer == nil {
 		return nil
 	}
 	return adminReq.ChangePeer
