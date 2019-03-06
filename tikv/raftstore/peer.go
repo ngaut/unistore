@@ -645,11 +645,7 @@ func (p *Peer) CollectPendingPeers() []*metapb.Peer {
 		if progress.Match < truncatedIdx {
 			if peer := p.GetPeerFromCache(id); peer != nil {
 				pendingPeers = append(pendingPeers, peer)
-				inPeersStartPendingTime := false
-				if _, ok := p.PeersStartPendingTime[id]; ok {
-					inPeersStartPendingTime = true
-				}
-				if !inPeersStartPendingTime {
+				if _, ok := p.PeersStartPendingTime[id]; !ok {
 					now := time.Now()
 					p.PeersStartPendingTime[id] = now
 					log.Debugf("%v peer %v start pending at %v", p.Tag, id, now)
@@ -676,20 +672,14 @@ func (p *Peer) AnyNewPeerCatchUp(peerId uint64) bool {
 		p.clearPeersStartPendingTime()
 		return false
 	}
-	for id, _ := range p.PeersStartPendingTime {
-		if id != peerId {
-			continue
-		}
+	if startPendingTime, ok := p.PeersStartPendingTime[peerId]; ok {
 		truncatedIdx := p.Store().truncatedIndex()
 		if progress, ok := p.RaftGroup.Raft.Prs[peerId]; ok {
 			if progress.Match >= truncatedIdx {
-				if startPendingTime, ok := p.PeersStartPendingTime[id]; ok {
-					delete(p.PeersStartPendingTime, id)
-					elapsed := time.Since(startPendingTime)
-					log.Debugf("%v peer %v has caught up logs, elapsed: %v", p.Tag, id, elapsed)
-				}
-				return true
+				elapsed := time.Since(startPendingTime)
+				log.Debugf("%v peer %v has caught up logs, elapsed: %v", p.Tag, peerId, elapsed)
 			}
+			return true
 		}
 	}
 	return false
