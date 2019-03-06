@@ -676,10 +676,11 @@ func (p *Peer) AnyNewPeerCatchUp(peerId uint64) bool {
 		truncatedIdx := p.Store().truncatedIndex()
 		if progress, ok := p.RaftGroup.Raft.Prs[peerId]; ok {
 			if progress.Match >= truncatedIdx {
+				delete(p.PeersStartPendingTime, peerId)
 				elapsed := time.Since(startPendingTime)
 				log.Debugf("%v peer %v has caught up logs, elapsed: %v", p.Tag, peerId, elapsed)
+				return true
 			}
-			return true
 		}
 	}
 	return false
