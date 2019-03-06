@@ -604,7 +604,9 @@ func (p *Peer) CheckPeers() {
 	// Insert heartbeats in case that some peers never response heartbeats.
 	region := p.Region()
 	for _, peer := range region.GetPeers() {
-		p.PeerHeartbeats[peer.GetId()] = time.Now()
+		if _, ok := p.PeerHeartbeats[peer.GetId()]; !ok {
+			p.PeerHeartbeats[peer.GetId()] = time.Now()
+		}
 	}
 }
 
@@ -616,7 +618,8 @@ func (p *Peer) CollectDownPeers(maxDuration time.Duration) []*pdpb.PeerStats {
 			continue
 		}
 		if hb, ok := p.PeerHeartbeats[peer.GetId()]; ok {
-			if time.Since(hb) > maxDuration {
+			elapsed := time.Since(hb)
+			if elapsed > maxDuration {
 				stats := &pdpb.PeerStats{
 					Peer:        peer,
 					DownSeconds: uint64(time.Since(hb).Seconds()),
@@ -643,11 +646,8 @@ func (p *Peer) CollectPendingPeers() []*metapb.Peer {
 			if peer := p.GetPeerFromCache(id); peer != nil {
 				pendingPeers = append(pendingPeers, peer)
 				inPeersStartPendingTime := false
-				for peerId, _ := range p.PeersStartPendingTime {
-					if peerId == id {
-						inPeersStartPendingTime = true
-						break
-					}
+				if _, ok := p.PeersStartPendingTime[id]; ok {
+					inPeersStartPendingTime = true
 				}
 				if !inPeersStartPendingTime {
 					now := time.Now()
@@ -677,7 +677,7 @@ func (p *Peer) AnyNewPeerCatchUp(peerId uint64) bool {
 		return false
 	}
 	for id, _ := range p.PeersStartPendingTime {
-		if id == peerId {
+		if id != peerId {
 			continue
 		}
 		truncatedIdx := p.Store().truncatedIndex()
@@ -716,13 +716,14 @@ func (p *Peer) CheckStaleState(ctx *PollContext) StaleState {
 		p.leaderMissingTime = &now
 		return StaleStateValid
 	} else {
-		if time.Since(*p.leaderMissingTime) >= ctx.Cfg.MaxLeaderMissingDuration {
+		elapsed := time.Since(*p.leaderMissingTime)
+		if elapsed >= ctx.Cfg.MaxLeaderMissingDuration {
 			// Resets the `leader_missing_time` to avoid sending the same tasks to
 			// PD worker continuously during the leader missing timeout.
 			now := time.Now()
 			p.leaderMissingTime = &now
 			return StaleStateToValidate
-		} else if time.Since(*p.leaderMissingTime) >= ctx.Cfg.AbnormalLeaderMissingDuration && !naivePeer {
+		} else if elapsed >= ctx.Cfg.AbnormalLeaderMissingDuration && !naivePeer {
 			// A peer is considered as in the leader missing state
 			// if it's initialized but is isolated from its leader or
 			// something bad happens that the raft group can not elect a leader.
@@ -732,11 +733,10 @@ func (p *Peer) CheckStaleState(ctx *PollContext) StaleState {
 	}
 }
 
-// We are not going to port local reader module
 func (p *Peer) OnRoleChanged(ctx *PollContext, ready *raft.Ready) {
 	ss := ready.SoftState
 	if ss != nil {
-		if ss.RaftState == raft.StateFollower {
+		if ss.RaftState == raft.StateLeader {
 			p.HeartbeatPd(ctx)
 		}
 		ctx.CoprocessorHost.OnRoleChanged(p.Region(), ss.RaftState)
@@ -778,7 +778,7 @@ func (p *Peer) TakeApplyProposals() *RegionProposal {
 		return nil
 	}
 	props := p.applyProposals
-	p.applyProposals = make([]*Proposal, 0)
+	p.applyProposals = nil
 	return NewRegionProposal(p.PeerId(), p.regionId, props)
 }
 
@@ -790,15 +790,17 @@ func (p *Peer) HandleRaftReadyAppend(ctx *PollContext) {
 		// If we continue to handle all the messages, it may cause too many messages because
 		// leader will send all the remaining messages to this follower, which can lead
 		// to full message queue under high load.
-		log.Debugf("%v still applying snapshot, skip further handling")
+		log.Debugf("%v still applying snapshot, skip further handling", p.Tag)
 		return
 	}
 
 	if len(p.pendingMessages) > 0 {
 		messages := p.pendingMessages
-		p.pendingMessages = make([]eraftpb.Message, 0)
+		p.pendingMessages = nil
 		ctx.needFlushTrans = true
-		p.Send(ctx.trans, messages)
+		if err := p.Send(ctx.trans, messages); err != nil {
+			log.Warnf("%v clear snapshot pengding messages err: %v", p.Tag, err)
+		}
 	}
 
 	if p.HasPendingSnapshot() && !p.ReadyToHandlePendingSnap() {
@@ -818,8 +820,10 @@ func (p *Peer) HandleRaftReadyAppend(ctx *PollContext) {
 	// The leader can write to disk and replicate to the followers concurrently
 	// For more details, check raft thesis 10.2.1.
 	if p.IsLeader() {
-		p.Send(ctx.trans, ready.Messages)
 		ctx.needFlushTrans = true
+		if err := p.Send(ctx.trans, ready.Messages); err != nil {
+			log.Warnf("%v leader send message err: %v", p.Tag, err)
+		}
 		ready.Messages = ready.Messages[:0]
 	}
 
@@ -860,7 +864,9 @@ func (p *Peer) PostRaftReadyAppend(ctx *PollContext, ready *raft.Ready, invokeCt
 			p.pendingMessages = ready.Messages
 			ready.Messages = nil
 		} else {
-			p.Send(ctx.trans, ready.Messages)
+			if err := p.Send(ctx.trans, ready.Messages); err != nil {
+				log.Warnf("%v follower send messages err: %v", p.Tag, err)
+			}
 			ctx.needFlushTrans = true
 		}
 	}
