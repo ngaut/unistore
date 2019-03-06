@@ -622,7 +622,7 @@ func (p *Peer) CollectDownPeers(maxDuration time.Duration) []*pdpb.PeerStats {
 			if elapsed > maxDuration {
 				stats := &pdpb.PeerStats{
 					Peer:        peer,
-					DownSeconds: uint64(time.Since(hb).Seconds()),
+					DownSeconds: uint64(elapsed.Seconds()),
 				}
 				downPeers = append(downPeers, stats)
 			}
