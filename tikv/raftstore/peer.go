@@ -459,7 +459,7 @@ func (p *Peer) MaybeDestroy() *DestroyPeerJob {
 	asyncRemove := false
 	if p.IsApplyingSnapshot() {
 		if !p.Store().CancelApplyingSnap() {
-			log.Infof("%v stale peer %v is applying snapshot")
+			log.Infof("%v stale peer %v is applying snapshot", p.Tag, p.Peer.Id)
 			return nil
 		}
 		// There is no tasks in apply/local read worker.
