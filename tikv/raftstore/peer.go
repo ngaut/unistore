@@ -1714,7 +1714,7 @@ type RequestInspector interface {
 	inspectLease() LeaseState
 	// Inspect a request, return a policy that tells us how to
 	// handle the request.
-	inspect(req *raft_cmdpb.RaftCmdRequest)
+	inspect(req *raft_cmdpb.RaftCmdRequest) (RequestPolicy, error)
 }
 
 func (p *Peer) hasAppliedToCurrentTerm() bool {
@@ -1735,6 +1735,10 @@ func (p *Peer) inspectLease() LeaseState {
 }
 
 func (p *Peer) inspect(req *raft_cmdpb.RaftCmdRequest) (RequestPolicy, error) {
+	return Inspect(p, req)
+}
+
+func Inspect(i RequestInspector, req *raft_cmdpb.RaftCmdRequest) (RequestPolicy, error) {
 	if req.AdminRequest != nil {
 		if GetChangePeerCmd(req) != nil {
 			return RequestPolicy_ProposeConfChange, nil
@@ -1766,19 +1770,19 @@ func (p *Peer) inspect(req *raft_cmdpb.RaftCmdRequest) (RequestPolicy, error) {
 		return RequestPolicy_ProposeNormal, nil
 	}
 
-	if req.Header.ReadQuorum {
+	if req.Header != nil && req.Header.ReadQuorum {
 		return RequestPolicy_ReadIndex, nil
 	}
 
 	// If applied index's term is differ from current raft's term, leader transfer
 	// must happened, if read locally, we may read old value.
-	if !p.hasAppliedToCurrentTerm() {
+	if !i.hasAppliedToCurrentTerm() {
 		return RequestPolicy_ReadIndex, nil
 	}
 
 	// Local read should be performed, if and only if leader is in lease.
 	// None for now.
-	switch p.inspectLease() {
+	switch i.inspectLease() {
 	case LeaseState_Valid:
 		return RequestPolicy_ReadLocal, nil
 	case LeaseState_Expired, LeaseState_Suspect:
@@ -1946,9 +1950,8 @@ func makeTransferLeaderResponse() *raft_cmdpb.RaftCmdResponse {
 }
 
 func GetChangePeerCmd(msg *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.ChangePeerRequest {
-	adminReq := msg.GetAdminRequest()
-	if adminReq == nil || adminReq.ChangePeer == nil {
+	if msg.AdminRequest == nil || msg.AdminRequest.ChangePeer == nil {
 		return nil
 	}
-	return adminReq.ChangePeer
+	return msg.AdminRequest.ChangePeer
 }
