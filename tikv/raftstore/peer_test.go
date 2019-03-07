@@ -163,43 +163,43 @@ func TestRequestInspector(t *testing.T) {
 		}
 	}
 
-	//// Read quorum
-	//request := new(raft_cmdpb.Request)
-	//request.CmdType = raft_cmdpb.CmdType_Snap
-	//req = new(raft_cmdpb.RaftCmdRequest)
-	//req.Requests = []*raft_cmdpb.Request{request}
-	//req.Header = new(raft_cmdpb.RaftRequestHeader)
-	//req.Header.ReadQuorum = true
-	//inspector := DummyInspector{
-	//	AppliedToIndexTerm: true,
-	//	LeaseState:         LeaseState_Valid,
-	//}
-	//inspectPolicy, err := inspector.inspect(req)
-	//assert.Nil(t, err)
-	//assert.Equal(t, inspectPolicy, RequestPolicy_ReadIndex)
-	//
-	//// Err(_)
-	//var errTbl []*raft_cmdpb.RaftCmdRequest
-	//for _, op := range []raft_cmdpb.CmdType{raft_cmdpb.CmdType_Prewrite, raft_cmdpb.CmdType_Invalid} {
-	//	request := new(raft_cmdpb.Request)
-	//	request.CmdType = op
-	//	req = new(raft_cmdpb.RaftCmdRequest)
-	//	req.Requests = []*raft_cmdpb.Request{request}
-	//	errTbl = append(errTbl, req)
-	//}
-	//snap := new(raft_cmdpb.Request)
-	//snap.CmdType = raft_cmdpb.CmdType_Snap
-	//put := new(raft_cmdpb.Request)
-	//put.CmdType = raft_cmdpb.CmdType_Put
-	//req = new(raft_cmdpb.RaftCmdRequest)
-	//req.Requests = []*raft_cmdpb.Request{snap, put}
-	//
-	//for _, req := range errTbl {
-	//	inspector := DummyInspector{
-	//		AppliedToIndexTerm: true,
-	//		LeaseState:         LeaseState_Valid,
-	//	}
-	//	_, err := inspector.inspect(req)
-	//	assert.NotNil(t, err)
-	//}
+	// Read quorum
+	request := new(raft_cmdpb.Request)
+	request.CmdType = raft_cmdpb.CmdType_Snap
+	req = new(raft_cmdpb.RaftCmdRequest)
+	req.Requests = []*raft_cmdpb.Request{request}
+	req.Header = new(raft_cmdpb.RaftRequestHeader)
+	req.Header.ReadQuorum = true
+	inspector := DummyInspector{
+		AppliedToIndexTerm: true,
+		LeaseState:         LeaseState_Valid,
+	}
+	inspectPolicy, err := inspector.inspect(req)
+	assert.Nil(t, err)
+	assert.Equal(t, inspectPolicy, RequestPolicy_ReadIndex)
+
+	// Err(_)
+	var errTbl []*raft_cmdpb.RaftCmdRequest
+	for _, op := range []raft_cmdpb.CmdType{raft_cmdpb.CmdType_Prewrite, raft_cmdpb.CmdType_Invalid} {
+		request := new(raft_cmdpb.Request)
+		request.CmdType = op
+		req = new(raft_cmdpb.RaftCmdRequest)
+		req.Requests = []*raft_cmdpb.Request{request}
+		errTbl = append(errTbl, req)
+	}
+	snap := new(raft_cmdpb.Request)
+	snap.CmdType = raft_cmdpb.CmdType_Snap
+	put := new(raft_cmdpb.Request)
+	put.CmdType = raft_cmdpb.CmdType_Put
+	req = new(raft_cmdpb.RaftCmdRequest)
+	req.Requests = []*raft_cmdpb.Request{snap, put}
+
+	for _, req := range errTbl {
+		inspector := DummyInspector{
+			AppliedToIndexTerm: true,
+			LeaseState:         LeaseState_Valid,
+		}
+		_, err := inspector.inspect(req)
+		assert.NotNil(t, err)
+	}
 }
