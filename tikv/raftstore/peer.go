@@ -1566,7 +1566,7 @@ func (p *Peer) PrePropose(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest) 
 }
 
 func (p *Peer) ProposeNormal(pollCtx *PollContext, req *raft_cmdpb.RaftCmdRequest) (uint64, error) {
-	if p.PendingMergeState != nil && (req.AdminRequest == nil || req.AdminRequest.CmdType != raft_cmdpb.AdminCmdType_RollbackMerge) {
+	if p.PendingMergeState != nil && (req.AdminRequest.GetCmdType() != raft_cmdpb.AdminCmdType_RollbackMerge) {
 		return 0, fmt.Errorf("peer in merging mode, can't do proposal.")
 	}
 
