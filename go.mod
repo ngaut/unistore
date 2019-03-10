@@ -17,9 +17,10 @@ require (
 	github.com/pingcap/tidb v0.0.0-20181130082510-08f0168a6cae
 	github.com/pingcap/tipb v0.0.0-20181012112600-11e33c750323
 	github.com/stretchr/testify v1.3.0
-	github.com/zhangjinpeng1987/raft v0.0.0-20190228081702-27ed295a81b4
+	github.com/zhangjinpeng1987/raft v0.0.0-20190310021757-193cec114d0c
 	go.etcd.io/etcd v3.3.12+incompatible
 	golang.org/x/net v0.0.0-20181029044818-c44066c5c816
+	golang.org/x/text v0.3.0
 	golang.org/x/time v0.0.0-20181108054448-85acf8d2951c
 	google.golang.org/genproto v0.0.0-20181016170114-94acd270e44e // indirect
 	google.golang.org/grpc v1.16.0
