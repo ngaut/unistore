@@ -20,7 +20,6 @@ require (
 	github.com/zhangjinpeng1987/raft v0.0.0-20190310021757-193cec114d0c
 	go.etcd.io/etcd v3.3.12+incompatible
 	golang.org/x/net v0.0.0-20181029044818-c44066c5c816
-	golang.org/x/text v0.3.0
 	golang.org/x/time v0.0.0-20181108054448-85acf8d2951c
 	google.golang.org/genproto v0.0.0-20181016170114-94acd270e44e // indirect
 	google.golang.org/grpc v1.16.0
