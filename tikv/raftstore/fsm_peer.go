@@ -195,6 +195,9 @@ func (d *peerFsmDelegate) handleMsgs(msgs []*Msg) {
 }
 
 func (d *peerFsmDelegate) onTick(tick PeerTick) {
+	if d.stopped {
+		return
+	}
 	d.ticker.step()
 	if d.ticker.isOnTick(PeerTickRaft) {
 		d.onRaftBaseTick()
@@ -357,9 +360,7 @@ func (d *peerFsmDelegate) onRaftBaseTick() {
 	}
 	// TODO: make Tick returns bool to indicate if there is ready.
 	d.peer.RaftGroup.Tick()
-	if d.peer.RaftGroup.HasReady() {
-		d.hasReady = true
-	}
+	d.hasReady = d.peer.RaftGroup.HasReady()
 	d.ticker.schedule(PeerTickRaft)
 }
 
