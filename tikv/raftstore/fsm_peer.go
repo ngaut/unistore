@@ -525,7 +525,7 @@ func (d *peerFsmDelegate) needGCMerge(msg *rspb.RaftMessage) (bool, error) {
 
 func (d *peerFsmDelegate) handleGCPeerMsg(msg *rspb.RaftMessage) {
 	fromEpoch := msg.RegionEpoch
-	if !IsEpochStale(fromEpoch, d.peer.Region().RegionEpoch) {
+	if !IsEpochStale(d.peer.Region().RegionEpoch, fromEpoch) {
 		return
 	}
 	if !PeerEqual(d.peer.Peer, msg.ToPeer) {

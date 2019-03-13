@@ -81,8 +81,7 @@ func (pc *PollContext) handleStaleMsg(msg *rspb.RaftMessage, curEpoch *metapb.Re
 	} else {
 		gcMsg.IsTombstone = true
 	}
-	err := pc.trans.Send(gcMsg)
-	if err != nil {
+	if err := pc.trans.Send(gcMsg); err != nil {
 		log.Errorf("[region %d] send message failed %v", regionID, err)
 	}
 }
