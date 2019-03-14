@@ -30,14 +30,14 @@ import (
 type TaskType int64
 
 const (
-	TaskAskSplit TaskType = 1
-	TaskAskBatchSplit TaskType = 2
-	TaskHeartbeat TaskType = 3
-	TaskStoreHeartbeat TaskType = 4
+	TaskAskSplit         TaskType = 1
+	TaskAskBatchSplit    TaskType = 2
+	TaskHeartbeat        TaskType = 3
+	TaskStoreHeartbeat   TaskType = 4
 	TaskReportBatchSplit TaskType = 5
-	TaskValidatePeer TaskType = 6
-	TaskReadStats TaskType = 7
-	TaskDestroyPeer TaskType = 8
+	TaskValidatePeer     TaskType = 6
+	TaskReadStats        TaskType = 7
+	TaskDestroyPeer      TaskType = 8
 )
 
 type Callback func(err error)
@@ -48,25 +48,25 @@ type AskSplit struct {
 	Peer     *metapb.Peer
 	// If true, right Region derives origin region_id.
 	RightDerive bool
-	Callback Callback
+	Callback    Callback
 }
 
 type AskBatchSplit struct {
-	Region *metapb.Region
+	Region    *metapb.Region
 	SplitKeys [][]byte
-	Peer    *metapb.Peer
+	Peer      *metapb.Peer
 	// If true, right Region derives origin region_id.
 	RightDerive bool
-	Callback Callback
+	Callback    Callback
 }
 
 type RegionHeartbeat struct {
-	Region *metapb.Region
-	Peer    *metapb.Peer
-	DownPeers []*pdpb.PeerStats
-	PendingPeers []*metapb.Peer
-	WrittenBytes uint64
-	WrittenKeys uint64
+	Region          *metapb.Region
+	Peer            *metapb.Peer
+	DownPeers       []*pdpb.PeerStats
+	PendingPeers    []*metapb.Peer
+	WrittenBytes    uint64
+	WrittenKeys     uint64
 	approximateSize *uint64
 	approximateKeys *uint64
 }
@@ -83,8 +83,8 @@ type ReportBatchSplit struct {
 }
 
 type ValidatePeer struct {
-	Region *metapb.Region
-	Peer   *metapb.Peer
+	Region      *metapb.Region
+	Peer        *metapb.Peer
 	MergeSource *uint64
 }
 
