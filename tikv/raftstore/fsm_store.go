@@ -10,21 +10,30 @@ import (
 )
 
 type storeMeta struct {
-	// region end key -> region ID
+	/// region end key -> region ID
 	regionRanges *lockstore.MemStore
-	regions      map[uint64]*metapb.Region
-	// A marker used to indicate if the peer of a region is going to apply a snapshot
-	// with different range.
-	// It assumes that when a peer is going to accept snapshot, it can never
-	// catch up by normal log replication.
-	pendingCrossSnap       map[uint64]*metapb.RegionEpoch
+	/// region_id -> region
+	regions map[uint64]*metapb.Region
+	/// `MsgRequestPreVote` or `MsgRequestVote` messages from newly split Regions shouldn't be dropped if there is no
+	/// such Region in this store now. So the messages are recorded temporarily and will be handled later.
+	pendingVotes []*rspb.RaftMessage
+	/// The regions with pending snapshots.
 	pendingSnapshotRegions []*metapb.Region
-	mergeLocks             map[uint64]*mergeLock
-	pendingVotes           []*rspb.RaftMessage
+	/// A marker used to indicate the peer of a Region has received a merge target message and waits to be destroyed.
+	/// target_region_id -> (source_region_id -> merge_target_epoch)
+	pendingMergeTargets map[uint64]map[uint64]*metapb.RegionEpoch
+	/// An inverse mapping of `pending_merge_targets` used to let source peer help target peer to clean up related entry.
+	/// source_region_id -> target_region_id
+	targetsMap map[uint64]uint64
+	/// In raftstore, the execute order of `PrepareMerge` and `CommitMerge` is not certain because of the messages
+	/// belongs two regions. To make them in order, `PrepareMerge` will set this structure and `CommitMerge` will retry
+	/// later if there is no related lock.
+	/// source_region_id -> (version, BiLock).
+	mergeLocks map[uint64]*mergeLock
 }
 
 func (m *storeMeta) setRegion(host *CoprocessorHost, region *metapb.Region, peer *Peer) {
-	m.regions[region.Id] = region
+	m.regions[region.Id] = CloneRegion(region)
 	peer.SetRegion(host, region)
 }
 

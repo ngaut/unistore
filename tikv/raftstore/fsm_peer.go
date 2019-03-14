@@ -580,32 +580,38 @@ func (d *peerFsmDelegate) checkSnapshot(msg *rspb.RaftMessage) (*SnapKey, error)
 			panic(fmt.Sprintf("%s meta corrupted %s != %s", d.tag(), meta.regions[d.regionID()], d.region()))
 		}
 	}
-	existOverlapRegion := d.findOverlapRegion(meta, snapRegion)
-	if existOverlapRegion != nil {
-		log.Infof("%s region overlapped %s %s", d.tag(), existOverlapRegion, snapRegion)
-		// In some extreme case, it may happen that a new snapshot is received whereas a snapshot is still in applying
-		// if the snapshot under applying is generated before merge and the new snapshot is generated after merge,
-		// update `pending_cross_snap` here may cause source peer destroys itself improperly. So don't update
-		// `pending_cross_snap` here if peer is applying snapshot.
-		if !d.peer.IsApplyingSnapshot() && !d.peer.HasPendingSnapshot() {
-			meta.pendingCrossSnap[regionID] = snapRegion.RegionEpoch
-		}
-		return &key, nil
-	}
 	for _, region := range meta.pendingSnapshotRegions {
 		if bytes.Compare(region.StartKey, snapRegion.EndKey) < 0 &&
-			bytes.Compare(region.EndKey, snapRegion.StartKey) > 0 &&
+			bytes.Compare(region.EndKey, snapRegion.StartKey) > 9 &&
 			// Same region can overlap, we will apply the latest version of snapshot.
 			region.Id != snapRegion.Id {
-			log.Infof("%s pending region overlapped %s, %s", d.tag(), region, snapRegion)
+			log.Infof("pending region overlapped regionID %d peerID %d region %s snap %s",
+				d.regionID(), d.peerID(), region, snap)
 			return &key, nil
 		}
 	}
-	if r, ok := meta.pendingCrossSnap[regionID]; ok {
-		if IsEpochStale(snapRegion.RegionEpoch, r) {
-			log.Infof("%s snapshot epoch is stale %s, %s, drop", d.tag(), snapRegion.RegionEpoch, r)
-			return &key, nil
+
+	var regionsToDestroy []uint64
+	// In some extreme cases, it may cause source peer destroyed improperly so that a later
+	// CommitMerge may panic because source is already destroyed, so just drop the message:
+	// 1. A new snapshot is received whereas a snapshot is still in applying, and the snapshot
+	// under applying is generated before merge and the new snapshot is generated after merge.
+	// After the applying snapshot is finished, the log may able to catch up and so a
+	// CommitMerge will be applied.
+	// 2. There is a CommitMerge pending in apply thread.
+	ready := !d.peer.IsApplyingSnapshot() && !d.peer.HasPendingSnapshot() && d.peer.ReadyToHandlePendingSnap()
+
+	existRegions := d.findOverlapRegions(meta, snapRegion)
+	for _, existRegion := range existRegions {
+		log.Infof("%s region overlapped %s %s", d.tag(), existRegion, snapRegion)
+		if ready && maybeDestroySource(meta, d.regionID(), existRegion.Id, snapRegion.RegionEpoch) {
+			// The snapshot that we decide to whether destroy peer based on must can be applied.
+			// So here not to destroy peer immediately, or the snapshot maybe dropped in later
+			// check but the peer is already destroyed.
+			regionsToDestroy = append(regionsToDestroy, existRegion.Id)
+			continue
 		}
+		return &key, nil
 	}
 	// check if snapshot file exists.
 	_, err = d.ctx.snapMgr.GetSnapshotForApplying(key)
@@ -614,11 +620,19 @@ func (d *peerFsmDelegate) checkSnapshot(msg *rspb.RaftMessage) (*SnapKey, error)
 	}
 	meta.pendingSnapshotRegions = append(meta.pendingSnapshotRegions, snapRegion)
 	d.ctx.queuedSnaps[regionID] = struct{}{}
-	delete(meta.pendingCrossSnap, regionID)
+	for _, regionID := range regionsToDestroy {
+		err := d.ctx.router.send(regionID, NewPeerMsg(MsgTypeMergeResult, regionID, &MsgMergeResult{
+			TargetPeer: ClonePeer(d.getPeer().Peer),
+			Stale:      true,
+		}))
+		if err != nil {
+			panic(err)
+		}
+	}
 	return nil, nil
 }
 
-func (d *peerFsmDelegate) findOverlapRegion(storeMeta *storeMeta, snapRegion *metapb.Region) *metapb.Region {
+func (d *peerFsmDelegate) findOverlapRegions(storeMeta *storeMeta, snapRegion *metapb.Region) (result []*metapb.Region) {
 	it := storeMeta.regionRanges.NewIterator()
 	it.Seek(snapRegion.StartKey)
 	for it.Valid() {
@@ -629,12 +643,12 @@ func (d *peerFsmDelegate) findOverlapRegion(storeMeta *storeMeta, snapRegion *me
 		}
 		region := storeMeta.regions[regionID]
 		if bytes.Compare(region.StartKey, snapRegion.EndKey) < 0 {
-			return region
+			result = append(result, region)
 		} else {
-			return nil
+			return
 		}
 	}
-	return nil
+	return
 }
 
 func (d *peerFsmDelegate) handleDestroyPeer(job *DestroyPeerJob) bool {
@@ -657,7 +671,18 @@ func (d *peerFsmDelegate) destroyPeer(mergeByTarget bool) {
 	d.ctx.storeMetaLock.Lock()
 	defer d.ctx.storeMetaLock.Unlock()
 	meta := d.ctx.storeMeta
-	delete(meta.pendingCrossSnap, regionID)
+	delete(meta.pendingMergeTargets, regionID)
+	if targetID, ok := meta.targetsMap[regionID]; ok {
+		delete(meta.targetsMap, regionID)
+		if target, ok1 := meta.pendingMergeTargets[targetID]; ok1 {
+			delete(target, regionID)
+			// When the target doesn't exist(add peer but the store is isolated), source peer decide to destroy by itself.
+			// Without target, the `pending_merge_targets` for target won't be removed, so here source peer help target to clear.
+			if meta.regions[targetID] == nil && len(meta.pendingMergeTargets[targetID]) == 0 {
+				delete(meta.pendingMergeTargets, targetID)
+			}
+		}
+	}
 	delete(meta.mergeLocks, regionID)
 
 	d.ctx.applyRouter.ScheduleTask(regionID, NewPeerMsg(MsgTypeApplyDestroy, regionID, nil))
@@ -849,8 +874,8 @@ func (d *peerFsmDelegate) onReadySplitRegion(derived *metapb.Region, regions []*
 		if !campaigned {
 			if len(meta.pendingVotes) > 0 {
 				msg := meta.pendingVotes[0]
-				meta.pendingVotes = meta.pendingVotes[1:]
 				if PeerEqual(msg.ToPeer, metaPeer) {
+					meta.pendingVotes = meta.pendingVotes[1:]
 					_ = d.ctx.router.send(newRegionID, NewPeerMsg(MsgTypeRaftMessage, newRegionID, msg))
 				}
 			}
@@ -975,6 +1000,10 @@ func (d *peerFsmDelegate) onIngestSSTResult(ssts []import_sstpb.SSTMeta) {
 }
 
 func (d *peerFsmDelegate) verifyAndStoreHash(expectedIndex uint64, expectedHash []byte) bool {
+	return false // TODO: stub
+}
+
+func maybeDestroySource(meta *storeMeta, targetID, sourceID uint64, epoch *metapb.RegionEpoch) bool {
 	return false // TODO: stub
 }
 
