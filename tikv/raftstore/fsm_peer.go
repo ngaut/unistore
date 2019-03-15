@@ -582,7 +582,7 @@ func (d *peerFsmDelegate) checkSnapshot(msg *rspb.RaftMessage) (*SnapKey, error)
 	}
 	for _, region := range meta.pendingSnapshotRegions {
 		if bytes.Compare(region.StartKey, snapRegion.EndKey) < 0 &&
-			bytes.Compare(region.EndKey, snapRegion.StartKey) > 9 &&
+			bytes.Compare(region.EndKey, snapRegion.StartKey) > 0 &&
 			// Same region can overlap, we will apply the latest version of snapshot.
 			region.Id != snapRegion.Id {
 			log.Infof("pending region overlapped regionID %d peerID %d region %s snap %s",
@@ -872,11 +872,11 @@ func (d *peerFsmDelegate) onReadySplitRegion(derived *metapb.Region, regions []*
 		d.ctx.router.register(newRegionID, mb)
 		_ = d.ctx.router.send(newRegionID, NewPeerMsg(MsgTypeStart, newRegionID, nil))
 		if !campaigned {
-			if len(meta.pendingVotes) > 0 {
-				msg := meta.pendingVotes[0]
+			for i, msg := range meta.pendingVotes {
 				if PeerEqual(msg.ToPeer, metaPeer) {
-					meta.pendingVotes = meta.pendingVotes[1:]
+					meta.pendingVotes = append(meta.pendingVotes[:i], meta.pendingVotes[i+1:]...)
 					_ = d.ctx.router.send(newRegionID, NewPeerMsg(MsgTypeRaftMessage, newRegionID, msg))
+					break
 				}
 			}
 		}
