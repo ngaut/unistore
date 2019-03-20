@@ -1073,8 +1073,11 @@ func (d *peerFsmDelegate) findSiblingRegion() *metapb.Region {
 		it.Next()
 		valid = it.Valid()
 	}
+	if !valid {
+		return nil
+	}
 	regionID := regionIDFromBytes(it.Value())
-	return meta.regions[regionID]
+	return CloneRegion(meta.regions[regionID])
 }
 
 func (d *peerFsmDelegate) onRaftGCLogTick() {
