@@ -1270,10 +1270,12 @@ func (d *peerFsmDelegate) onCompactionDeclinedBytes(declinedBytes uint64) {
 func (d *peerFsmDelegate) onScheduleHalfSplitRegion(regionEpoch *metapb.RegionEpoch, policy pdpb.CheckPolicy) {
 	if !d.peer.IsLeader() {
 		log.Warnf("%s not leader, skip", d.tag())
+		return
 	}
 	region := d.region()
 	if IsEpochStale(regionEpoch, region.RegionEpoch) {
 		log.Warnf("%s receive a stale halfsplit message", d.tag())
+		return
 	}
 	task := splitCheckTask{
 		region: CloneRegion(region),
