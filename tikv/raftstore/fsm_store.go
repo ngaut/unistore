@@ -203,7 +203,7 @@ func (d *storeFsmDelegate) onTick(tick StoreTick) {
 		d.onSnapMgrGC()
 	case StoreTickConsistencyCheck:
 		d.onComputeHashTick()
-	case StoreTickCleanupImportSSI:
+	case StoreTickCleanupImportSST:
 		d.onCleanUpImportSSTTick()
 	}
 }
@@ -240,7 +240,7 @@ func (d *storeFsmDelegate) start(store *metapb.Store) {
 	d.id = store.Id
 	now := time.Now()
 	d.startTime = &now
-	d.ticker.scheduleStore(StoreTickCleanupImportSSI)
+	d.ticker.scheduleStore(StoreTickCleanupImportSST)
 	d.ticker.scheduleStore(StoreTickCompactCheck)
 	d.ticker.scheduleStore(StoreTickPdStoreHeartbeat)
 	d.ticker.scheduleStore(StoreTickSnapGC)

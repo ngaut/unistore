@@ -40,7 +40,7 @@ func newStoreTicker(cfg *Config) *ticker {
 	t.schedules[int(StoreTickPdStoreHeartbeat)].interval = int64(cfg.PdStoreHeartbeatTickInterval / baseInterval)
 	t.schedules[int(StoreTickSnapGC)].interval = int64(cfg.SnapMgrGcTickInterval / baseInterval)
 	t.schedules[int(StoreTickConsistencyCheck)].interval = int64(cfg.ConsistencyCheckInterval / baseInterval)
-	t.schedules[int(StoreTickCleanupImportSSI)].interval = int64(cfg.CleanupImportSstInterval / baseInterval)
+	t.schedules[int(StoreTickCleanupImportSST)].interval = int64(cfg.CleanupImportSstInterval / baseInterval)
 	return t
 }
 

@@ -91,7 +91,7 @@ const (
 	StoreTickPdStoreHeartbeat StoreTick = 1
 	StoreTickSnapGC           StoreTick = 2
 	StoreTickConsistencyCheck StoreTick = 3
-	StoreTickCleanupImportSSI StoreTick = 4
+	StoreTickCleanupImportSST StoreTick = 4
 )
 
 type MsgSignificantType int
