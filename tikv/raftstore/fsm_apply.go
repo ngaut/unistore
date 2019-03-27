@@ -1,8 +1,6 @@
 package raftstore
 
 import (
-	"container/list"
-	"github.com/ngaut/unistore/tikv/import"
 	"github.com/ngaut/unistore/util"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/import_sstpb"
@@ -12,34 +10,16 @@ import (
 	"github.com/uber-go/atomic"
 )
 
-type PendingCmd struct {
+type pendingCmd struct {
 	index uint64
 	term  uint64
 	cb    Callback
 }
 
-type PendingCmdQueue struct {
-	normals    *list.List
-	confChange *PendingCmd
+type pendingCmdQueue struct {
+	normals    []pendingCmd
+	confChange *pendingCmd
 }
-
-func (pendQueue *PendingCmdQueue) popNormal(term uint64) *PendingCmd {
-	ele := pendQueue.normals.Front()
-	if ele != nil {
-		cmd := ele.Value.(*PendingCmd)
-		if cmd.term > term {
-			return nil
-		}
-		pendQueue.normals.Remove(ele)
-		return cmd
-	}
-	return nil
-}
-
-func (pendQueue *PendingCmdQueue) appendNormal(cmd *PendingCmd) {
-	pendQueue.normals.PushBack(cmd)
-}
-
 
 type changePeer struct {
 	confChange *eraftpb.ConfChange
@@ -129,10 +109,10 @@ type execResult struct {
 	data interface{}
 }
 
-type ApplyResultType int
+type applyResultType int
 
 const (
-	None ApplyResultType = iota
+	None applyResultType = iota
 	ExecResultType
 	WaitMergeResourceType
 )
@@ -140,29 +120,29 @@ const (
 /// applyResult has three kinds of types which are `None`, `ExecResultType` and `WaitMergeResourceType`.
 /// The data is different for `ExecResultType` and `WaitMergeResourceType`. For `ExecResultType`, the data
 /// is a ExecResult, and for `WaitMergeResourceType`, it is a `WaitMergeSource`.
-type ApplyResult struct {
-	tp   ApplyResultType
+type applyResult struct {
+	tp   applyResultType
 	data interface{}
 }
 
-type WaitMergeSource struct {
+type waitMergeSource struct {
 	status *atomic.Uint64
 }
 
-type ExecContext struct {
+type applyExecContext struct {
 	index      uint64
 	term       uint64
-	applyState rspb.RaftApplyState
+	applyState *rspb.RaftApplyState
 }
 
-type ApplyCallback struct {
-	region metapb.Region
-	cbs    []*CallBackResponseHolder
+type applyCallback struct {
+	region *metapb.Region
+	cbs    []*callBackResponseHolder
 }
 
-type CallBackResponseHolder struct {
+type callBackResponseHolder struct {
 	callBack        Callback
-	raftCmdResponse raft_cmdpb.RaftCmdResponse
+	raftCmdResponse *raft_cmdpb.RaftCmdResponse
 }
 
 type proposal struct {
@@ -206,17 +186,16 @@ type notifier struct {
 	router *router
 }
 
-type ApplyContext struct {
+type applyContext struct {
 	tag              string
 	timer            *util.SlowTimer
 	host             *CoprocessorHost
-	importer         *_import.SSTImporter
-	router           ApplyRouter
+	router           applyRouter
 	notifier         notifier
-	engines          Engines
+	engines          *Engines
 	cbs              util.MustConsumerVec
 	applyTaskResList []ApplyTaskRes
-	execCtx          *ExecContext
+	execCtx          *applyExecContext
 	wb               *WriteBatch
 	wbLastBytes      uint64
 	wbLastKeys       uint64
@@ -228,77 +207,48 @@ type ApplyContext struct {
 	useDeleteRange bool
 }
 
-type WaitSourceMergeState struct {
-	pendingEntries []eraftpb.Entry
+type waitSourceMergeState struct {
+	pendingEntries []*eraftpb.Entry
 	pendingMsgs    []Msg
 	readyToMerge   *atomic.Uint64
-	catchUpLogs    *CatchUpLogs
+	catchUpLogs    *catchUpLogs
 }
 
-type ApplyDelegate struct {
+type applyDelegate struct {
 	id                uint64
 	term              uint64
-	region            metapb.Region
+	region            *metapb.Region
 	tag               string
 	stopped           bool
 	pendingRemove     bool
-	pendingCmds       PendingCmdQueue
+	pendingCmds       pendingCmdQueue
 	merged            bool
 	isMerging         bool
 	lastMergeVersion  uint64
-	waitMergeState    *WaitSourceMergeState
+	waitMergeState    *waitSourceMergeState
 	readySourceRegion uint64
-	applyState        rspb.RaftApplyState
+	applyState        *rspb.RaftApplyState
 	appliedIndexTerm  uint64
 	metrics           ApplyMetrics
 }
 
-type Destroy struct {
+type applyDestroy struct {
 	regionId uint64
-	peerId   uint64
 }
 
-type DelegateMailBox mailbox
-
-type CatchUpLogs struct {
-	targetMailBox DelegateMailBox
-	merge         raft_cmdpb.CommitMergeRequest
+type catchUpLogs struct {
+	targetMailBox mailbox
+	merge         *raft_cmdpb.CommitMergeRequest
 	readyToMerge  *atomic.Uint64
 }
 
-type TaskResType int
-
-const (
-	ApplyTaskResType TaskResType = iota
-	DestroyResType
-)
-
-type TaskRes struct {
-	tp      TaskResType
-	destroy Destroy
-}
-
-type Builder struct {
+type applyPollerBuilder struct {
 	tag             string
 	cfg             *Config
 	coprocessorHost *CoprocessorHost
-	importer        *_import.SSTImporter
-	engines         Engines
+	engines         *Engines
 	sender          notifier
-	router          ApplyRouter
-}
-
-type ApplyBatchSystem batchSystem
-
-type ApplyRouter struct {
-	// Todo: currently it is a place holder
-}
-
-func (a *ApplyRouter) ScheduleTask(regionId uint64, msg Msg) {
-	// Todo: currently it is a place holder
-}
-
-type applyPollerBuilder struct {
+	router          applyRouter
 }
 
 func newApplyPollerBuilder(raftPollerBuilder *raftPollerBuilder, sender notifier, router *applyRouter) *applyPollerBuilder {
