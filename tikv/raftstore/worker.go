@@ -1,7 +1,9 @@
 package raftstore
 
 import (
+	"encoding/hex"
 	"github.com/coocood/badger"
+	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -180,6 +182,13 @@ func newWorker(name string, wg *sync.WaitGroup) *worker {
 	}
 }
 
+type splitCheckKeyEntry struct {
+	key       []byte
+	pos       uint64
+	valueSize uint64
+	cf        string
+}
+
 type splitCheckRunner struct {
 	engine          *badger.DB
 	router          *router
@@ -187,7 +196,66 @@ type splitCheckRunner struct {
 }
 
 func (r *splitCheckRunner) run(t task) {
-	// TODO: stub
+	spCheckTask := t.data.(*splitCheckTask)
+	region := spCheckTask.region
+	regionId := region.Id
+	startKey := EncStartKey(region)
+	endKey := EncEndKey(region)
+	log.Debugf("executing task: [regionId: %d, startKey: %s, endKey: %s]", regionId,
+		hex.EncodeToString(startKey), hex.EncodeToString(endKey))
+	/// todo, a metrics method ignored here.
+	host := r.coprocessorHost.newSplitCheckerHost(region, r.engine, spCheckTask.autoSplit,
+		spCheckTask.policy)
+	if host.skip() {
+		log.Debugf("skip split check, [regionId : %d]", regionId)
+	}
+	var keys [][]byte
+	var err error
+	switch host.policy() {
+	case pdpb.CheckPolicy_APPROXIMATE:
+		keys, err = host.approximateSplitKeys(region, r.engine)
+		if err == nil {
+			for i, k := range keys {
+				keys[i] = OriginKey(k)
+			}
+			break
+		}
+		log.Errorf("failed to get approximate split key, try scan way: [regionId: %d, err : %v]",
+			regionId, err)
+		fallthrough
+	case pdpb.CheckPolicy_SCAN:
+		keys, err = r.scanSplitKeys(host, region, startKey, endKey)
+		if err != nil {
+			log.Errorf("failed to scan split key: [regionId: %d, err: %v]", regionId, err)
+			return
+		}
+	}
+	if keys != nil && len(keys) != 0 {
+		regionEpoch := region.GetRegionEpoch()
+		msg := Msg{
+			Type: MsgTypeSplitRegion,
+			RegionID: regionId,
+			Data: &MsgSplitRegion{
+				RegionEpoch:regionEpoch,
+				SplitKeys: keys,
+				Callback: EmptyCallback,
+			},
+		}
+		err = r.router.send(regionId, msg)
+		if err != nil {
+			log.Warnf("failed to send check result: [regionId: %d, err: %v]", regionId, err)
+		}
+		/// todo, here is a metrics api called here.
+	} else {
+		log.Debugf("no need to send, split key not found: [regionId: %v]", regionId)
+		/// todo, here is a metrics api called here.
+	}
+}
+
+func (r *splitCheckRunner) scanSplitKeys(spCheckerHost *splitCheckerHost, region *metapb.Region,
+	startKey []byte, endKey []byte) ([][]byte, error) {
+	/// Todo, currently it is a place holder
+	return nil, nil
 }
 
 type pendingDeleteRanges struct {
