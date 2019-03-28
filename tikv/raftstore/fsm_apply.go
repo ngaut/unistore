@@ -112,21 +112,14 @@ type execResult struct {
 type applyResultType int
 
 const (
-	None applyResultType = iota
-	ExecResultType
-	WaitMergeResourceType
+	applyResultTypeNone applyResultType = iota
+	applyResultTypeExecResult
+	applyResultTypeWaitMergeResource
 )
 
-/// applyResult has three kinds of types which are `None`, `ExecResultType` and `WaitMergeResourceType`.
-/// The data is different for `ExecResultType` and `WaitMergeResourceType`. For `ExecResultType`, the data
-/// is a ExecResult, and for `WaitMergeResourceType`, it is a `WaitMergeSource`.
 type applyResult struct {
 	tp   applyResultType
 	data interface{}
-}
-
-type waitMergeSource struct {
-	status *atomic.Uint64
 }
 
 type applyExecContext struct {
@@ -237,7 +230,7 @@ type applyDestroy struct {
 }
 
 type catchUpLogs struct {
-	targetMailBox mailbox
+	targetMailBox *mailbox
 	merge         *raft_cmdpb.CommitMergeRequest
 	readyToMerge  *atomic.Uint64
 }
