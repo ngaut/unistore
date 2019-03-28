@@ -1,13 +1,13 @@
 package raftstore
 
 import (
-	"github.com/ngaut/unistore/util"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/import_sstpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/uber-go/atomic"
+	"time"
 )
 
 type pendingCmd struct {
@@ -188,12 +188,12 @@ type notifier struct {
 
 type applyContext struct {
 	tag              string
-	timer            *util.SlowTimer
+	timer            time.Time
 	host             *CoprocessorHost
-	router           applyRouter
+	router           *applyRouter
 	notifier         notifier
 	engines          *Engines
-	cbs              util.MustConsumerVec
+	cbs              []applyCallback
 	applyTaskResList []ApplyTaskRes
 	execCtx          *applyExecContext
 	wb               *WriteBatch
