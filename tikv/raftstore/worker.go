@@ -323,10 +323,3 @@ type computeHashRunner struct {
 func (r *computeHashRunner) run(t task) {
 	// TODO: stub
 }
-
-type cleanupSSTRunner struct {
-}
-
-func (r *cleanupSSTRunner) run(t task) {
-	// TODO: stub
-}
