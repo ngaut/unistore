@@ -248,7 +248,7 @@ type applyPollerBuilder struct {
 	coprocessorHost *CoprocessorHost
 	engines         *Engines
 	sender          notifier
-	router          applyRouter
+	router          *applyRouter
 }
 
 func newApplyPollerBuilder(raftPollerBuilder *raftPollerBuilder, sender notifier, router *applyRouter) *applyPollerBuilder {
