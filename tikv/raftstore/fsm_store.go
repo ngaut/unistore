@@ -796,8 +796,8 @@ func (d *storeFsmDelegate) checkMsg(msg *rspb.RaftMessage) (bool, error) {
 
 func (d *storeFsmDelegate) onRaftMessage(msg *rspb.RaftMessage) error {
 	regionID := msg.RegionId
-	if err := d.ctx.router.send(regionID, Msg{Type: MsgTypeRaftMessage, Data: msg}); err != nil {
-		panic(err)
+	if err := d.ctx.router.send(regionID, Msg{Type: MsgTypeRaftMessage, Data: msg}); err == nil {
+		return nil
 	}
 	log.Debugf("handle raft message. from_peer:%d, to_peer:%d, store:%d, region:%d, msg_type:%s",
 		msg.FromPeer.Id, msg.ToPeer.Id, d.storeFsm.id, regionID, msg.Message.MsgType)
@@ -820,6 +820,13 @@ func (d *storeFsmDelegate) onRaftMessage(msg *rspb.RaftMessage) error {
 		return err
 	}
 	if ok {
+		return nil
+	}
+	created, err := d.maybeCreatePeer(regionID, msg)
+	if err != nil {
+		return err
+	}
+	if !created {
 		return nil
 	}
 	_ = d.ctx.router.send(regionID, Msg{Type: MsgTypeRaftMessage, Data: msg})
@@ -874,6 +881,7 @@ func (d *storeFsmDelegate) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessag
 				continue
 			}
 		}
+		regionsToDestroy = nil
 		return false, nil
 	}
 
