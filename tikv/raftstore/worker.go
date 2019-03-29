@@ -7,7 +7,6 @@ import (
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
-	"github.com/pingcap/kvproto/pkg/import_sstpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"sync"
@@ -33,9 +32,6 @@ const (
 
 	taskTypeCompact         taskType = 201
 	taskTypeCheckAndCompact taskType = 202
-
-	taskTypeCleanUpSSTDelete   taskType = 301
-	taskTypeCleanUpSSTValidate taskType = 302
 
 	taskTypeRegionGen   taskType = 401
 	taskTypeRegionApply taskType = 402
@@ -75,10 +71,6 @@ type computeHashTask struct {
 	index  uint64
 	region *metapb.Region
 	snap   *DBSnapshot
-}
-
-type cleanUpSSTTask struct {
-	ssts []*import_sstpb.SSTMeta
 }
 
 type pdAskSplitTask struct {

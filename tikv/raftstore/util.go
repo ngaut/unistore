@@ -363,6 +363,14 @@ func isVoteMessage(msg *eraftpb.Message) bool {
 	return tp == eraftpb.MessageType_MsgRequestVote || tp == eraftpb.MessageType_MsgRequestPreVote
 }
 
+/// `is_first_vote_msg` checks `msg` is the first vote (or prevote) message or not. It's used for
+/// when the message is received but there is no such region in `Store::region_peers` and the
+/// region overlaps with others. In this case we should put `msg` into `pending_votes` instead of
+/// create the peer.
+func isFirstVoteMessage(msg *eraftpb.Message) bool {
+	return isVoteMessage(msg) && msg.Term == RaftInitLogTerm+1
+}
+
 func regionIDToBytes(id uint64) []byte {
 	b := make([]byte, 8)
 	binary.LittleEndian.PutUint64(b, id)
@@ -414,7 +422,7 @@ func checkRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, inc
 		(checkVer && fromEpoch.Version != currentEpoch.Version) {
 		err := &ErrEpochNotMatch{}
 		if includeRegion {
-			err.Regions = []*metapb.Region{CloneRegion(region)}
+			err.Regions = []*metapb.Region{region}
 		}
 		err.Message = fmt.Sprintf("current epoch of region %d is %s, but you sent %s",
 			region.Id, currentEpoch, fromEpoch)
