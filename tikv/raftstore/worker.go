@@ -187,6 +187,7 @@ type splitCheckRunner struct {
 	coprocessorHost *CoprocessorHost
 }
 
+/// run checks a region with split checkers to produce split keys and generates split admin command.
 func (r *splitCheckRunner) run(t task) {
 	spCheckTask := t.data.(*splitCheckTask)
 	region := spCheckTask.region
@@ -195,34 +196,35 @@ func (r *splitCheckRunner) run(t task) {
 	endKey := EncEndKey(region)
 	log.Debugf("executing task: [regionId: %d, startKey: %s, endKey: %s]", regionId,
 		hex.EncodeToString(startKey), hex.EncodeToString(endKey))
-	/// todo, a metrics method ignored here.
 	host := r.coprocessorHost.newSplitCheckerHost(region, r.engine, spCheckTask.autoSplit,
 		spCheckTask.policy)
 	if host.skip() {
 		log.Debugf("skip split check, [regionId : %d]", regionId)
+		return
 	}
 	var keys [][]byte
 	var err error
 	switch host.policy() {
-	case pdpb.CheckPolicy_APPROXIMATE:
-		keys, err = host.approximateSplitKeys(region, r.engine)
-		if err == nil {
-			for i, k := range keys {
-				keys[i] = OriginKey(k)
-			}
-			break
-		}
-		log.Errorf("failed to get approximate split key, try scan way: [regionId: %d, err : %v]",
-			regionId, err)
-		fallthrough
 	case pdpb.CheckPolicy_SCAN:
-		keys, err = r.scanSplitKeys(host, region, startKey, endKey)
-		if err != nil {
+		if keys, err = r.scanSplitKeys(host, region, startKey, endKey); err != nil {
 			log.Errorf("failed to scan split key: [regionId: %d, err: %v]", regionId, err)
 			return
 		}
+	case pdpb.CheckPolicy_APPROXIMATE:
+		if keys, err = host.approximateSplitKeys(region, r.engine); err != nil {
+			log.Errorf("failed to get approximate split key, try scan way: [regionId: %d, err : %v]",
+				regionId, err)
+			if keys, err = r.scanSplitKeys(host, region, startKey, endKey); err != nil {
+				log.Errorf("failed to scan split key: [regionId: %d, err: %v]", regionId, err)
+				return
+			}
+		} else {
+			for i, k := range keys {
+				keys[i] = OriginKey(k)
+			}
+		}
 	}
-	if keys != nil && len(keys) != 0 {
+	if len(keys) != 0 {
 		regionEpoch := region.GetRegionEpoch()
 		msg := Msg{
 			Type: MsgTypeSplitRegion,
@@ -237,13 +239,12 @@ func (r *splitCheckRunner) run(t task) {
 		if err != nil {
 			log.Warnf("failed to send check result: [regionId: %d, err: %v]", regionId, err)
 		}
-		/// todo, here is a metrics api called here.
 	} else {
 		log.Debugf("no need to send, split key not found: [regionId: %v]", regionId)
-		/// todo, here is a metrics api called here.
 	}
 }
 
+/// scanSplitKeys gets the split keys by scanning the range.
 func (r *splitCheckRunner) scanSplitKeys(spCheckerHost *splitCheckerHost, region *metapb.Region,
 	startKey []byte, endKey []byte) ([][]byte, error) {
 	/// Todo, currently it is a place holder

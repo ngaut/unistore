@@ -21,16 +21,27 @@ type observerContext struct {
 	bypass bool
 }
 
+/// splitChecker is invoked during a split check scan, and decides to use
+/// which keys to split a region.
 type splitChecker interface {
+
+	/// onKv is a hook called for every kv scanned during split.
+	/// Return true to abort scan early.
 	onKv(_ *observerContext, _ splitCheckKeyEntry) bool
+
+	/// splitKeys returns the desired split keys.
 	splitKeys() [][]byte
+
+	/// approximateSplitKeys returns the split keys without scan.
 	approximateSplitKeys(_ *metapb.Region, _ *badger.DB) ([][]byte, error)
+
+	/// policy returns the policy.
 	policy() pdpb.CheckPolicy
 }
 
 type splitCheckerHost struct {
 	autoSplit bool
-	checkers  []*splitChecker
+	checkers  []splitChecker
 }
 
 func (spCheckerHost *splitCheckerHost) skip() bool {
@@ -38,7 +49,7 @@ func (spCheckerHost *splitCheckerHost) skip() bool {
 	return false
 }
 
-func (spCheckerHost *splitCheckerHost) onKv() bool {
+func (spCheckerHost *splitCheckerHost) onKv(observerCtx *observerContext, spCheKeyEntry splitCheckKeyEntry) bool {
 	// Todo: currently it is a place holder
 	return false
 }
@@ -48,7 +59,7 @@ func (spCheckerHost *splitCheckerHost) splitKeys() [][]byte {
 	return nil
 }
 
-func (spCheckerHost *splitCheckerHost) approximateSplitKeys(_ *metapb.Region, _ *badger.DB) ([][]byte, error) {
+func (spCheckerHost *splitCheckerHost) approximateSplitKeys(region *metapb.Region, db *badger.DB) ([][]byte, error) {
 	// Todo: currently it is a place holder
 	return nil, nil
 }
