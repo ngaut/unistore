@@ -681,17 +681,14 @@ func (d *applyDelegate) findCallback(index, term uint64, isConfChange bool) Call
 	regionID := d.region.Id
 	peerID := d.id
 	if isConfChange {
-		for {
-			cmd := d.pendingCmds.takeConfChange()
-			if cmd == nil {
-				break
-			}
-			if cmd.index == index && cmd.term == term {
-				return cmd.cb
-			} else {
-				notifyStaleCommand(regionID, peerID, term, *cmd)
-			}
+		cmd := d.pendingCmds.takeConfChange()
+		if cmd == nil {
+			return nil
 		}
+		if cmd.index == index && cmd.term == term {
+			return cmd.cb
+		}
+		notifyStaleCommand(regionID, peerID, term, *cmd)
 		return nil
 	}
 	for {
