@@ -2,10 +2,15 @@ package raftstore
 
 import (
 	"context"
+	"time"
 
 	"github.com/coocood/badger"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/pd"
+	"github.com/pingcap/kvproto/pkg/metapb"
+	"github.com/pingcap/kvproto/pkg/pdpb"
+	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
+	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 )
 
 type pdRunner struct {
@@ -14,6 +19,10 @@ type pdRunner struct {
 	router    *router
 	db        *badger.DB
 	scheduler chan<- task
+
+	// statistics
+	storeStats storeStatistics
+	peerStats  map[uint64]*peerStatistics
 }
 
 func newPDRunner(storeID uint64, pdClient pd.Client, router *router, db *badger.DB, scheduler chan<- task) *pdRunner {
@@ -23,6 +32,7 @@ func newPDRunner(storeID uint64, pdClient pd.Client, router *router, db *badger.
 		router:    router,
 		db:        db,
 		scheduler: scheduler,
+		peerStats: make(map[uint64]*peerStatistics),
 	}
 }
 
@@ -41,7 +51,7 @@ func (r *pdRunner) run(t task) {
 	case taskTypePDValidatePeer:
 		r.onValidatePeer(t.data.(*pdValidatePeerTask))
 	case taskTypePDReadStats:
-		r.onReadStats(t.data.(*pdReadStatsTask))
+		r.onReadStats(t.data.(readStats))
 	case taskTypePDDestroyPeer:
 		r.onDestroyPeer(t.data.(*pdDestroyPeerTask))
 	default:
@@ -53,33 +63,198 @@ func (r *pdRunner) onAskSplit(t *pdAskSplitTask) {
 	resp, err := r.pdClient.AskSplit(context.TODO(), t.region)
 	if err != nil {
 		log.Error(err)
+		return
 	}
+	aq := &raft_cmdpb.AdminRequest{
+		CmdType: raft_cmdpb.AdminCmdType_Split,
+		Split: &raft_cmdpb.SplitRequest{
+			SplitKey:    t.splitKey,
+			NewRegionId: resp.NewRegionId,
+			NewPeerIds:  resp.NewPeerIds,
+			RightDerive: t.rightDerive,
+		},
+	}
+	r.sendAdminRequest(t.region.GetId(), t.region.GetRegionEpoch(), t.peer, aq, t.callback)
 }
 
 func (r *pdRunner) onAskBatchSplit(t *pdAskBatchSplitTask) {
-
+	resp, err := r.pdClient.AskBatchSplit(context.TODO(), t.region, len(t.splitKeys))
+	if err != nil {
+		log.Error(err)
+		return
+	}
+	srs := make([]*raft_cmdpb.SplitRequest, len(resp.Ids))
+	for i, splitID := range resp.Ids {
+		srs[i] = &raft_cmdpb.SplitRequest{
+			SplitKey:    t.splitKeys[i],
+			NewRegionId: splitID.NewRegionId,
+			NewPeerIds:  splitID.NewPeerIds,
+		}
+	}
+	aq := &raft_cmdpb.AdminRequest{
+		CmdType: raft_cmdpb.AdminCmdType_BatchSplit,
+		Splits: &raft_cmdpb.BatchSplitRequest{
+			Requests:    srs,
+			RightDerive: t.rightDerive,
+		},
+	}
+	r.sendAdminRequest(t.region.GetId(), t.region.GetRegionEpoch(), t.peer, aq, t.callback)
 }
 
 func (r *pdRunner) onHeartbeat(t *pdRegionHeartbeatTask) {
+	var size, keys int64
+	if t.approximateSize != nil {
+		size = int64(*t.approximateSize)
+	}
+	if t.approximateKeys != nil {
+		keys = int64(*t.approximateKeys)
+	}
 
+	req := &pdpb.RegionHeartbeatRequest{
+		Region:          t.region,
+		Leader:          t.peer,
+		DownPeers:       t.downPeers,
+		PendingPeers:    t.pendingPeers,
+		ApproximateSize: uint64(size),
+		ApproximateKeys: uint64(keys),
+	}
+
+	s, ok := r.peerStats[t.region.GetId()]
+	if !ok {
+		s = &peerStatistics{}
+	}
+	req.BytesWritten = t.writtenBytes - s.lastWrittenBytes
+	req.KeysWritten = t.writtenKeys - s.lastWrittenKeys
+	req.BytesRead = s.readBytes - s.lastReadBytes
+	req.KeysRead = s.readKeys - s.lastReadKeys
+	req.Interval = &pdpb.TimeInterval{StartTimestamp: uint64(s.lastReport.Unix())}
+
+	s.lastReadBytes = s.readBytes
+	s.lastReadKeys = s.readKeys
+	s.lastWrittenBytes = t.writtenBytes
+	s.lastWrittenKeys = t.writtenKeys
+	s.lastReport = time.Now()
+
+	r.pdClient.ReportRegion(req)
 }
 
 func (r *pdRunner) onStoreHeartbeat(t *pdStoreHeartbeatTask) {
+	t.stats.BytesRead = r.storeStats.totalReadBytes - r.storeStats.lastTotalReadBytes
+	t.stats.KeysRead = r.storeStats.totalReadKeys - r.storeStats.lastTotalReadKeys
+	t.stats.Interval = &pdpb.TimeInterval{StartTimestamp: uint64(r.storeStats.lastReport.Unix())}
 
+	r.storeStats.lastTotalReadBytes = r.storeStats.totalReadBytes
+	r.storeStats.lastTotalReadKeys = r.storeStats.totalReadKeys
+	r.storeStats.lastReport = time.Now()
+
+	r.pdClient.StoreHeartbeat(context.TODO(), t.stats)
 }
 
 func (r *pdRunner) onReportBatchSplit(t *pdReportBatchSplitTask) {
-
+	r.pdClient.ReportBatchSplit(context.TODO(), t.regions)
 }
 
 func (r *pdRunner) onValidatePeer(t *pdValidatePeerTask) {
-
+	resp, err := r.pdClient.GetRegionByID(context.TODO(), t.region.GetId())
+	if err != nil {
+		log.Error("get region failed:", err)
+		return
+	}
+	if IsEpochStale(t.region.GetRegionEpoch(), resp.GetRegionEpoch()) {
+		log.Infof("local region epoch is greater than region epoch in PD ignore validate peer. regionID: %v, peerID: %v, localRegionEpoch: %v, pdRegionEpoch: %v", t.region.GetId(), t.peer.GetId(), t.region.GetRegionEpoch(), resp.GetRegionEpoch())
+		return
+	}
+	for _, peer := range resp.GetPeers() {
+		if peer.GetId() == t.peer.GetId() {
+			log.Infof("peer is still valid a member of region. regionID: %v, peerID: %v, pdRegion: %v", t.region.GetId(), t.peer.GetId(), resp)
+			return
+		}
+	}
+	log.Infof("peer is not a valid member of region, to be destroyed soon. regionID: %v, peerID: %v, pdRegion: %v", t.region.GetId(), t.peer.GetId(), resp)
+	if t.mergeSource != nil {
+		r.sendMergeFail(*t.mergeSource, t.peer)
+	} else {
+		r.sendDestroyPeer(t.region, t.peer, resp)
+	}
 }
 
-func (r *pdRunner) onReadStats(t *pdReadStatsTask) {
+func (r *pdRunner) onReadStats(t readStats) {
+	for id, stats := range t {
+		s, ok := r.peerStats[id]
+		if !ok {
+			s = &peerStatistics{}
+			r.peerStats[id] = s
+		}
+		s.readBytes += stats.readBytes
+		s.readKeys += stats.readKeys
 
+		r.storeStats.totalReadBytes += stats.readBytes
+		r.storeStats.totalReadKeys += stats.readKeys
+	}
 }
 
 func (r *pdRunner) onDestroyPeer(t *pdDestroyPeerTask) {
+	delete(r.peerStats, t.regionID)
+}
 
+func (r *pdRunner) sendAdminRequest(regionID uint64, epoch *metapb.RegionEpoch, peer *metapb.Peer, req *raft_cmdpb.AdminRequest, callback Callback) {
+	r.router.send(regionID, Msg{
+		Type:     MsgTypeRaftCmd,
+		RegionID: regionID,
+		Data: &MsgRaftCmd{
+			SendTime: time.Now(),
+			Request: &raft_cmdpb.RaftCmdRequest{
+				Header: &raft_cmdpb.RaftRequestHeader{
+					RegionId:    regionID,
+					Peer:        peer,
+					RegionEpoch: epoch,
+				},
+				AdminRequest: req,
+			},
+			Callback: callback,
+		},
+	})
+}
+
+func (r *pdRunner) sendMergeFail(source uint64, target *metapb.Peer) {
+	r.router.send(source, Msg{
+		Type:     MsgTypeMergeResult,
+		RegionID: source,
+		Data: &MsgMergeResult{
+			TargetPeer: target,
+			Stale:      true,
+		},
+	})
+}
+
+func (r *pdRunner) sendDestroyPeer(local *metapb.Region, peer *metapb.Peer, pdRegion *metapb.Region) {
+	r.router.send(local.GetId(), Msg{
+		Type:     MsgTypeRaftMessage,
+		RegionID: local.GetId(),
+		Data: &raft_serverpb.RaftMessage{
+			RegionId:    local.GetId(),
+			FromPeer:    peer,
+			ToPeer:      peer,
+			RegionEpoch: pdRegion.GetRegionEpoch(),
+			IsTombstone: true,
+		},
+	})
+}
+
+type storeStatistics struct {
+	totalReadBytes     uint64
+	totalReadKeys      uint64
+	lastTotalReadBytes uint64
+	lastTotalReadKeys  uint64
+	lastReport         time.Time
+}
+
+type peerStatistics struct {
+	readBytes        uint64
+	readKeys         uint64
+	lastReadBytes    uint64
+	lastReadKeys     uint64
+	lastWrittenBytes uint64
+	lastWrittenKeys  uint64
+	lastReport       time.Time
 }

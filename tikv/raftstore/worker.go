@@ -9,7 +9,6 @@ import (
 	"github.com/coocood/badger"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/lockstore"
-	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -124,6 +123,10 @@ type pdValidatePeerTask struct {
 }
 
 type readStats map[uint64]flowStats
+
+type pdDestroyPeerTask struct {
+	regionID uint64
+}
 
 type flowStats struct {
 	readBytes uint64
@@ -264,7 +267,7 @@ func (r *splitCheckRunner) scanSplitKeys(spCheckerHost *splitCheckerHost, region
 			break
 		}
 		if value, err := item.Value(); err == nil {
-			if (spCheckerHost.onKv(region, splitCheckKeyEntry{key: key, valueSize: uint64(len(value)),})) {
+			if (spCheckerHost.onKv(region, splitCheckKeyEntry{key: key, valueSize: uint64(len(value))})) {
 				break
 			}
 		} else {
