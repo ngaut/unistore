@@ -36,10 +36,9 @@ type observerContext struct {
 /// splitChecker is invoked during a split check scan, and decides to use
 /// which keys to split a region.
 type splitChecker interface {
-
 	/// onKv is a hook called for every kv scanned during split.
 	/// Return true to abort scan early.
-	onKv(_ *observerContext, _ *splitCheckKeyEntry) bool
+	onKv(_ *observerContext, _ splitCheckKeyEntry) bool
 
 	/// splitKeys returns the desired split keys.
 	splitKeys() [][]byte
@@ -62,7 +61,7 @@ func (spCheckerHost *splitCheckerHost) skip() bool {
 
 /// onKv is a hook called for every check during split.
 /// Return true means abort early.
-func (spCheckerHost *splitCheckerHost) onKv(region *metapb.Region, spCheKeyEntry *splitCheckKeyEntry) bool {
+func (spCheckerHost *splitCheckerHost) onKv(region *metapb.Region, spCheKeyEntry splitCheckKeyEntry) bool {
 	obCtx := &observerContext{region: region}
 	for _, checker := range spCheckerHost.checkers {
 		if checker.onKv(obCtx, spCheKeyEntry) {

@@ -258,12 +258,14 @@ func (r *splitCheckRunner) scanSplitKeys(spCheckerHost *splitCheckerHost, region
 	defer reader.Close()
 	for ite.Seek(startKey); ite.Valid(); ite.Next() {
 		item := ite.Item()
-		key := item.KeyCopy(nil)
+		key := item.Key()
 		if exceedEndKey(key, endKey) {
 			break
 		}
 		if value, err := item.Value(); err == nil {
-			spCheckerHost.onKv(region, &splitCheckKeyEntry{key: key, valueSize: uint64(len(value)),})
+			if (spCheckerHost.onKv(region, splitCheckKeyEntry{key: key, valueSize: uint64(len(value)),})) {
+				break
+			}
 		} else {
 			return nil, errors.Trace(err)
 		}
