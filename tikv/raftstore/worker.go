@@ -3,6 +3,9 @@ package raftstore
 import (
 	"bytes"
 	"encoding/hex"
+	"sync"
+	"time"
+
 	"github.com/coocood/badger"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/lockstore"
@@ -12,8 +15,6 @@ import (
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
-	"sync"
-	"time"
 )
 
 type taskType int64
@@ -31,7 +32,7 @@ const (
 	taskTypePDReportBatchSplit taskType = 105
 	taskTypePDValidatePeer     taskType = 106
 	taskTypePDReadStats        taskType = 107
-	tasktypePDDestroyPeer      taskType = 108
+	taskTypePDDestroyPeer      taskType = 108
 
 	taskTypeCompact         taskType = 201
 	taskTypeCheckAndCompact taskType = 202
@@ -312,22 +313,6 @@ type compactRunner struct {
 }
 
 func (r *compactRunner) run(t task) {
-	// TODO: stub
-}
-
-type pdRunner struct {
-	storeID   uint64
-	pdClient  pd.Client
-	router    *router
-	db        *badger.DB
-	scheduler chan<- task
-}
-
-func newPDRunner(storeID uint64, pdClient pd.Client, router *router, db *badger.DB, scheduler chan<- task) *pdRunner {
-	return nil // TODO: stub
-}
-
-func (r *pdRunner) run(t task) {
 	// TODO: stub
 }
 
