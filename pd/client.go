@@ -273,7 +273,6 @@ func (c *client) IsBootstrapped(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		log.Info(herr)
 		return false, errors.New(herr.String())
 	}
 	return resp.Bootstrapped, nil
@@ -290,7 +289,6 @@ func (c *client) PutStore(ctx context.Context, store *metapb.Store) error {
 		return err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		log.Info(herr)
 		return errors.New(herr.String())
 	}
 	return nil
@@ -307,7 +305,6 @@ func (c *client) GetStore(ctx context.Context, storeID uint64) (*metapb.Store, e
 		return nil, err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		log.Info(herr)
 		return nil, errors.New(herr.String())
 	}
 	return resp.Store, nil
@@ -324,7 +321,6 @@ func (c *client) GetAllStores(ctx context.Context, excludeTombstone bool) ([]*me
 		return nil, err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		log.Info(herr)
 		return nil, errors.New(herr.String())
 	}
 	return resp.Stores, nil
@@ -340,7 +336,6 @@ func (c *client) GetClusterConfig(ctx context.Context) (*metapb.Cluster, error) 
 		return nil, err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		log.Info(herr)
 		return nil, errors.New(herr.String())
 	}
 	return resp.Cluster, nil
@@ -357,7 +352,6 @@ func (c *client) GetRegion(ctx context.Context, key []byte) (*metapb.Region, err
 		return nil, err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		log.Info(herr)
 		return nil, errors.New(herr.String())
 	}
 	return resp.Region, nil
@@ -374,7 +368,6 @@ func (c *client) GetRegionByID(ctx context.Context, regionID uint64) (*metapb.Re
 		return nil, err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		log.Info(herr)
 		return nil, errors.New(herr.String())
 	}
 	return resp.Region, nil
@@ -391,7 +384,6 @@ func (c *client) AskSplit(ctx context.Context, region *metapb.Region) (*pdpb.Ask
 		return nil, err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		log.Info(herr)
 		return nil, errors.New(herr.String())
 	}
 	return resp, nil
@@ -409,7 +401,6 @@ func (c *client) AskBatchSplit(ctx context.Context, region *metapb.Region, count
 		return nil, err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		log.Info(herr)
 		return nil, errors.New(herr.String())
 	}
 	return resp, nil
@@ -426,7 +417,6 @@ func (c *client) ReportBatchSplit(ctx context.Context, regions []*metapb.Region)
 		return err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		log.Info(herr)
 		return errors.New(herr.String())
 	}
 	return nil
@@ -442,7 +432,6 @@ func (c *client) GetGCSafePoint(ctx context.Context) (uint64, error) {
 		return 0, err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		log.Info(herr)
 		return 0, errors.New(herr.String())
 	}
 	return resp.SafePoint, nil
@@ -459,7 +448,6 @@ func (c *client) StoreHeartbeat(ctx context.Context, stats *pdpb.StoreStats) err
 		return err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		log.Info(herr)
 		return errors.New(herr.String())
 	}
 	return nil
