@@ -96,4 +96,12 @@ func (c *CoprocessorHost) newSplitCheckerHost(region *metapb.Region, engine *bad
 	return nil
 }
 
+func (c *CoprocessorHost) preApply(region *metapb.Region, req *raft_cmdpb.RaftCmdRequest) {
+	// TODO: placeholder
+}
+
+func (c *CoprocessorHost) postApply(region *metapb.Region, resp *raft_cmdpb.RaftCmdResponse) {
+	// TODO: placeholder
+}
+
 func (c *CoprocessorHost) shutdown() {}

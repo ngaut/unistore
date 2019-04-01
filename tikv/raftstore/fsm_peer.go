@@ -162,7 +162,7 @@ func (d *peerFsmDelegate) handleMsgs(msgs []Msg) {
 		case MsgTypeTick:
 			d.onTick()
 		case MsgTypeApplyRes:
-			res := msg.Data.(*ApplyTaskRes)
+			res := msg.Data.(*applyTaskRes)
 			if state := d.peer.PendingMergeApplyResult; state != nil {
 				state.results = append(state.results, res)
 				continue
@@ -371,7 +371,7 @@ func (d *peerFsmDelegate) onRaftBaseTick() {
 	d.ticker.schedule(PeerTickRaft)
 }
 
-func (d *peerFsmDelegate) onApplyResult(res *ApplyTaskRes) {
+func (d *peerFsmDelegate) onApplyResult(res *applyTaskRes) {
 	if res.destroyPeerID != 0 {
 		y.Assert(res.destroyPeerID == d.peerID())
 		d.destroyPeer(false)
@@ -382,7 +382,7 @@ func (d *peerFsmDelegate) onApplyResult(res *ApplyTaskRes) {
 		if readyToMerge != nil {
 			// There is a `CommitMerge` needed to wait
 			d.peer.PendingMergeApplyResult = &WaitApplyResultState{
-				results:      []*ApplyTaskRes{res},
+				results:      []*applyTaskRes{res},
 				readyToMerge: readyToMerge,
 			}
 			return
@@ -757,16 +757,16 @@ func (d *peerFsmDelegate) onReadyChangePeer(cp changePeer) {
 	}
 }
 
-func (d *peerFsmDelegate) onReadyCompactLog(firstIndex uint64, state *rspb.RaftTruncatedState) {
+func (d *peerFsmDelegate) onReadyCompactLog(firstIndex uint64, truncatedIndex uint64) {
 	totalCnt := d.peer.LastApplyingIdx - firstIndex
 	// the size of current CompactLog command can be ignored.
-	remainCnt := d.peer.LastApplyingIdx - state.Index - 1
+	remainCnt := d.peer.LastApplyingIdx - truncatedIndex - 1
 	d.peer.RaftLogSizeHint *= remainCnt / totalCnt
 	raftLogGCTask := &raftLogGCTask{
 		raftEngine: d.ctx.engine.raft,
 		regionID:   d.regionID(),
 		startIdx:   d.peer.LastCompactedIdx,
-		endIdx:     state.Index + 1,
+		endIdx:     truncatedIndex + 1,
 	}
 	d.peer.LastCompactedIdx = raftLogGCTask.endIdx
 	d.peer.Store().CompactTo(raftLogGCTask.endIdx)
@@ -932,12 +932,12 @@ func (d *peerFsmDelegate) onReadyResult(merged bool, execResults []execResult) (
 
 	// handle executing committed log results
 	for i, result := range execResults {
-		switch x := result.data.(type) {
+		switch x := result.(type) {
 		case *execResultChangePeer:
 			d.onReadyChangePeer(x.cp)
 		case *execResultCompactLog:
 			if !merged {
-				d.onReadyCompactLog(x.firstIndex, x.state)
+				d.onReadyCompactLog(x.firstIndex, x.truncatedIndex)
 			}
 		case *execResultSplitRegion:
 			d.onReadySplitRegion(x.derived, x.regions)
