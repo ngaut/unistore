@@ -11,6 +11,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/shirou/gopsutil/disk"
 )
 
 type pdRunner struct {
@@ -143,6 +144,27 @@ func (r *pdRunner) onHeartbeat(t *pdRegionHeartbeatTask) {
 }
 
 func (r *pdRunner) onStoreHeartbeat(t *pdStoreHeartbeatTask) {
+	diskStat, err := disk.Usage(t.path)
+	if err != nil {
+		log.Error(err)
+		return
+	}
+
+	capacity := t.capacity
+	if capacity == 0 || diskStat.Total < capacity {
+		capacity = diskStat.Total
+	}
+	lsmSize, vlogSize := t.engine.Size()
+	usedSize := t.stats.UsedSize + uint64(lsmSize) + uint64(vlogSize) // t.stats.UsedSize contains size of snapshot files.
+	available := uint64(0)
+	if capacity > usedSize {
+		available = capacity - usedSize
+	}
+
+	t.stats.Capacity = capacity
+	t.stats.UsedSize = usedSize
+	t.stats.Available = available
+
 	t.stats.BytesRead = r.storeStats.totalReadBytes - r.storeStats.lastTotalReadBytes
 	t.stats.KeysRead = r.storeStats.totalReadKeys - r.storeStats.lastTotalReadKeys
 	t.stats.Interval = &pdpb.TimeInterval{
