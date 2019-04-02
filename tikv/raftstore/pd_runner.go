@@ -189,17 +189,17 @@ func (r *pdRunner) onValidatePeer(t *pdValidatePeerTask) {
 		log.Error("get region failed:", err)
 		return
 	}
-	if IsEpochStale(t.region.GetRegionEpoch(), resp.GetRegionEpoch()) {
-		log.Infof("local region epoch is greater than region epoch in PD ignore validate peer. regionID: %v, peerID: %v, localRegionEpoch: %v, pdRegionEpoch: %v", t.region.GetId(), t.peer.GetId(), t.region.GetRegionEpoch(), resp.GetRegionEpoch())
+	if IsEpochStale(resp.GetRegionEpoch(), t.region.GetRegionEpoch()) {
+		log.Infof("local region epoch is greater than region epoch in PD ignore validate peer. regionID: %v, peerID: %v, localRegionEpoch: %s, pdRegionEpoch: %s", t.region.GetId(), t.peer.GetId(), t.region.GetRegionEpoch(), resp.GetRegionEpoch())
 		return
 	}
 	for _, peer := range resp.GetPeers() {
 		if peer.GetId() == t.peer.GetId() {
-			log.Infof("peer is still valid a member of region. regionID: %v, peerID: %v, pdRegion: %v", t.region.GetId(), t.peer.GetId(), resp)
+			log.Infof("peer is still valid a member of region. regionID: %v, peerID: %v, pdRegion: %s", t.region.GetId(), t.peer.GetId(), resp)
 			return
 		}
 	}
-	log.Infof("peer is not a valid member of region, to be destroyed soon. regionID: %v, peerID: %v, pdRegion: %v", t.region.GetId(), t.peer.GetId(), resp)
+	log.Infof("peer is not a valid member of region, to be destroyed soon. regionID: %v, peerID: %v, pdRegion: %s", t.region.GetId(), t.peer.GetId(), resp)
 	if t.mergeSource != nil {
 		r.sendMergeFail(*t.mergeSource, t.peer)
 	} else {
