@@ -259,6 +259,7 @@ func (r *splitCheckRunner) scanSplitKeys(spCheckerHost *splitCheckerHost, region
 	txn := r.engine.NewTransaction(false)
 	reader := dbreader.NewDBReader(startKey, endKey, txn, 0)
 	ite := reader.GetIter()
+	defer reader.Close()
 	for ite.Seek(startKey); ite.Valid(); ite.Next() {
 		item := ite.Item()
 		key := item.Key()
@@ -273,8 +274,6 @@ func (r *splitCheckRunner) scanSplitKeys(spCheckerHost *splitCheckerHost, region
 			return nil, errors.Trace(err)
 		}
 	}
-	// Close the reader early, and in the `onKv` method above, some keys must be copied.
-	reader.Close()
 	return spCheckerHost.splitKeys(), nil
 }
 

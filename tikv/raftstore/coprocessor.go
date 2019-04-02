@@ -2,10 +2,10 @@ package raftstore
 
 import (
 	"github.com/coocood/badger"
+	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
-	"github.com/prometheus/common/log"
 	"github.com/zhangjinpeng1987/raft"
 )
 
@@ -101,12 +101,9 @@ func (checker *sizeSplitChecker) getSplitKeys() [][]byte {
 			checker.splitKeys = checker.splitKeys[:len(checker.splitKeys)-1]
 		}
 	}
-	if len(checker.splitKeys) != 0 {
-		keys := checker.splitKeys
-		checker.splitKeys = nil
-		return keys
-	}
-	return nil
+	keys := checker.splitKeys
+	checker.splitKeys = nil
+	return keys
 }
 
 func getRegionApproximateSplitKeys(db *badger.DB, region *metapb.Region, splitSize, maxSize,
