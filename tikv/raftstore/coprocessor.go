@@ -225,14 +225,14 @@ func (observer *keysSplitCheckObserver) addChecker(obCtx *observerContext, host 
 
 type tableSplitChecker struct {
 	firstEncodedTablePrefix []byte
-	splitKeys               []byte
+	splitKey                []byte
 	checkPolicy             pdpb.CheckPolicy
 }
 
-func newTableSplitChecker(firstEncodedTablePrefix, splitKeys []byte, policy pdpb.CheckPolicy) *tableSplitChecker {
+func newTableSplitChecker(firstEncodedTablePrefix, splitKey []byte, policy pdpb.CheckPolicy) *tableSplitChecker {
 	return &tableSplitChecker{
 		firstEncodedTablePrefix: firstEncodedTablePrefix,
-		splitKeys:               splitKeys,
+		splitKey:                splitKey,
 		checkPolicy:             policy,
 	}
 }
