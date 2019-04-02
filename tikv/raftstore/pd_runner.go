@@ -122,12 +122,16 @@ func (r *pdRunner) onHeartbeat(t *pdRegionHeartbeatTask) {
 	s, ok := r.peerStats[t.region.GetId()]
 	if !ok {
 		s = &peerStatistics{}
+		r.peerStats[t.region.GetId()] = s
 	}
 	req.BytesWritten = t.writtenBytes - s.lastWrittenBytes
 	req.KeysWritten = t.writtenKeys - s.lastWrittenKeys
 	req.BytesRead = s.readBytes - s.lastReadBytes
 	req.KeysRead = s.readKeys - s.lastReadKeys
-	req.Interval = &pdpb.TimeInterval{StartTimestamp: uint64(s.lastReport.Unix())}
+	req.Interval = &pdpb.TimeInterval{
+		StartTimestamp: uint64(s.lastReport.Unix()),
+		EndTimestamp:   uint64(time.Now().Unix()),
+	}
 
 	s.lastReadBytes = s.readBytes
 	s.lastReadKeys = s.readKeys
@@ -141,7 +145,10 @@ func (r *pdRunner) onHeartbeat(t *pdRegionHeartbeatTask) {
 func (r *pdRunner) onStoreHeartbeat(t *pdStoreHeartbeatTask) {
 	t.stats.BytesRead = r.storeStats.totalReadBytes - r.storeStats.lastTotalReadBytes
 	t.stats.KeysRead = r.storeStats.totalReadKeys - r.storeStats.lastTotalReadKeys
-	t.stats.Interval = &pdpb.TimeInterval{StartTimestamp: uint64(r.storeStats.lastReport.Unix())}
+	t.stats.Interval = &pdpb.TimeInterval{
+		StartTimestamp: uint64(r.storeStats.lastReport.Unix()),
+		EndTimestamp:   uint64(time.Now().Unix()),
+	}
 
 	r.storeStats.lastTotalReadBytes = r.storeStats.totalReadBytes
 	r.storeStats.lastTotalReadKeys = r.storeStats.totalReadKeys
