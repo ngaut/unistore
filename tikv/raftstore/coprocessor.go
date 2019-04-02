@@ -97,7 +97,9 @@ func (checker *sizeSplitChecker) onKv(obCtx *observerContext, spCheckKeyEntry sp
 func (checker *sizeSplitChecker) getSplitKeys() [][]byte {
 	// Make sure not to split when less than maxSize for last part
 	if checker.currentSize+checker.splitSize < checker.maxSize {
-		checker.splitKeys = checker.splitKeys[:len(checker.splitKeys) - 1]
+		if len(checker.splitKeys) != 0 {
+			checker.splitKeys = checker.splitKeys[:len(checker.splitKeys)-1]
+		}
 	}
 	if len(checker.splitKeys) != 0 {
 		keys := checker.splitKeys
