@@ -41,7 +41,7 @@ type splitChecker interface {
 	onKv(_ *observerContext, _ splitCheckKeyEntry) bool
 
 	/// splitKeys returns the desired split keys.
-	splitKeys() [][]byte
+	getSplitKeys() [][]byte
 
 	/// approximateSplitKeys returns the split keys without scan.
 	approximateSplitKeys(_ *metapb.Region, _ *badger.DB) ([][]byte, error)
@@ -54,7 +54,7 @@ type sizeSplitChecker struct {
 	maxSize         uint64
 	splitSize       uint64
 	currentSize     uint64
-	spKeys          [][]byte
+	splitKeys       [][]byte
 	batchSplitLimit uint64
 	checkPolicy     pdpb.CheckPolicy
 }
@@ -73,7 +73,7 @@ func (checker *sizeSplitChecker) onKv(obCtx *observerContext, spCheckKeyEntry sp
 	return false
 }
 
-func (checker *sizeSplitChecker) splitKeys() [][]byte {
+func (checker *sizeSplitChecker) getSplitKeys() [][]byte {
 	//Todo, currently it is a place holder
 	return nil
 }
@@ -128,7 +128,7 @@ func (checker *halfSplitChecker) onKv(obCtx *observerContext, spCheckKeyEntry sp
 	return false
 }
 
-func (checker *halfSplitChecker) splitKeys() [][]byte {
+func (checker *halfSplitChecker) getSplitKeys() [][]byte {
 	//Todo, currently it is a place holder
 	return nil
 }
@@ -164,7 +164,7 @@ type keysSplitChecker struct {
 	maxKeysCount    uint64
 	splitThreshold  uint64
 	currentCount    uint64
-	spKeys          [][]byte
+	splitKeys       [][]byte
 	batchSplitLimit uint64
 	checkPolicy     pdpb.CheckPolicy
 }
@@ -184,7 +184,7 @@ func (checker *keysSplitChecker) onKv(obCtx *observerContext, spCheckKeyEntry sp
 	return false
 }
 
-func (checker *keysSplitChecker) splitKeys() [][]byte {
+func (checker *keysSplitChecker) getSplitKeys() [][]byte {
 	//Todo, currently it is a place holder
 	return nil
 }
@@ -225,14 +225,14 @@ func (observer *keysSplitCheckObserver) addChecker(obCtx *observerContext, host 
 
 type tableSplitChecker struct {
 	firstEncodedTablePrefix []byte
-	spKeys                  []byte
+	splitKeys               []byte
 	checkPolicy             pdpb.CheckPolicy
 }
 
-func newTableSplitChecker(firstEncodedTablePrefix, spKeys []byte, policy pdpb.CheckPolicy) *tableSplitChecker {
+func newTableSplitChecker(firstEncodedTablePrefix, splitKeys []byte, policy pdpb.CheckPolicy) *tableSplitChecker {
 	return &tableSplitChecker{
 		firstEncodedTablePrefix: firstEncodedTablePrefix,
-		spKeys:                  spKeys,
+		splitKeys:               splitKeys,
 		checkPolicy:             policy,
 	}
 }
@@ -242,7 +242,7 @@ func (checker *tableSplitChecker) onKv(obCtx *observerContext, spCheckKeyEntry s
 	return false
 }
 
-func (checker *tableSplitChecker) splitKeys() [][]byte {
+func (checker *tableSplitChecker) getSplitKeys() [][]byte {
 	//Todo, currently it is a place holder
 	return nil
 }
@@ -289,7 +289,7 @@ func (spCheckerHost *splitCheckerHost) onKv(region *metapb.Region, spCheKeyEntry
 
 func (spCheckerHost *splitCheckerHost) splitKeys() [][]byte {
 	for _, checker := range spCheckerHost.checkers {
-		keys := checker.splitKeys()
+		keys := checker.getSplitKeys()
 		if len(keys) != 0 {
 			return keys
 		}
