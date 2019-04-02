@@ -17,6 +17,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/juju/errors"
@@ -45,6 +46,7 @@ type Client interface {
 	ReportBatchSplit(ctx context.Context, regions []*metapb.Region) error
 	GetGCSafePoint(ctx context.Context) (uint64, error)
 	StoreHeartbeat(ctx context.Context, stats *pdpb.StoreStats) error
+	SetRegionHeartbeatResponseHandler(h func(*pdpb.RegionHeartbeatResponse))
 	Close()
 }
 
@@ -70,6 +72,8 @@ type client struct {
 	wg     sync.WaitGroup
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	heartbeatHandler atomic.Value
 }
 
 // NewClient creates a PD client.
@@ -189,10 +193,14 @@ func (c *client) heartbeatStreamLoop() {
 func (c *client) receiveRegionHeartbeat(ctx context.Context, stream pdpb.PD_RegionHeartbeatClient, errCh chan error, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for {
-		_, err := stream.Recv()
+		resp, err := stream.Recv()
 		if err != nil {
 			errCh <- err
 			return
+		}
+
+		if h := c.heartbeatHandler.Load(); h != nil {
+			h.(func(*pdpb.RegionHeartbeatResponse))(resp)
 		}
 	}
 }
@@ -445,6 +453,13 @@ func (c *client) StoreHeartbeat(ctx context.Context, stats *pdpb.StoreStats) err
 
 func (c *client) ReportRegion(request *pdpb.RegionHeartbeatRequest) {
 	c.regionCh <- request
+}
+
+func (c *client) SetRegionHeartbeatResponseHandler(h func(*pdpb.RegionHeartbeatResponse)) {
+	if h == nil {
+		h = func(*pdpb.RegionHeartbeatResponse) {}
+	}
+	c.heartbeatHandler.Store(h)
 }
 
 func (c *client) requestHeader() *pdpb.RequestHeader {

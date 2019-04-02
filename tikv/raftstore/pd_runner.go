@@ -60,6 +60,45 @@ func (r *pdRunner) run(t task) {
 	}
 }
 
+func (r *pdRunner) start() {
+	r.pdClient.SetRegionHeartbeatResponseHandler(r.onRegionHeartbeatResponse)
+}
+
+func (r *pdRunner) onRegionHeartbeatResponse(resp *pdpb.RegionHeartbeatResponse) {
+	if changePeer := resp.GetChangePeer(); changePeer != nil {
+		r.sendAdminRequest(resp.RegionId, resp.RegionEpoch, resp.TargetPeer, &raft_cmdpb.AdminRequest{
+			CmdType: raft_cmdpb.AdminCmdType_ChangePeer,
+			ChangePeer: &raft_cmdpb.ChangePeerRequest{
+				ChangeType: changePeer.ChangeType,
+				Peer:       changePeer.Peer,
+			},
+		}, EmptyCallback)
+	} else if transferLeader := resp.GetTransferLeader(); transferLeader != nil {
+		r.sendAdminRequest(resp.RegionId, resp.RegionEpoch, resp.TargetPeer, &raft_cmdpb.AdminRequest{
+			CmdType: raft_cmdpb.AdminCmdType_TransferLeader,
+			TransferLeader: &raft_cmdpb.TransferLeaderRequest{
+				Peer: transferLeader.Peer,
+			},
+		}, EmptyCallback)
+	} else if splitRegion := resp.GetSplitRegion(); splitRegion != nil {
+		r.router.send(resp.RegionId, Msg{
+			Type:     MsgTypeHalfSplitRegion,
+			RegionID: resp.RegionId,
+			Data: &MsgHalfSplitRegion{
+				RegionEpoch: resp.RegionEpoch,
+				Policy:      splitRegion.Policy,
+			},
+		})
+	} else if merge := resp.GetMerge(); merge != nil {
+		r.sendAdminRequest(resp.RegionId, resp.RegionEpoch, resp.TargetPeer, &raft_cmdpb.AdminRequest{
+			CmdType: raft_cmdpb.AdminCmdType_PrepareMerge,
+			PrepareMerge: &raft_cmdpb.PrepareMergeRequest{
+				Target: merge.Target,
+			},
+		}, EmptyCallback)
+	}
+}
+
 func (r *pdRunner) onAskSplit(t *pdAskSplitTask) {
 	resp, err := r.pdClient.AskSplit(context.TODO(), t.region)
 	if err != nil {

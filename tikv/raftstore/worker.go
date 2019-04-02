@@ -155,10 +155,17 @@ type taskRunner interface {
 	run(t task)
 }
 
+type starter interface {
+	start()
+}
+
 func (w *worker) start(runner taskRunner) {
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
+		if s, ok := runner.(starter); ok {
+			s.start()
+		}
 		for {
 			task := <-w.receiver
 			if task.tp == taskTypeStop {
