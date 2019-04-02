@@ -182,6 +182,10 @@ type splitCheckKeyEntry struct {
 	valueSize uint64
 }
 
+func (keyEntry *splitCheckKeyEntry) entrySize() uint64 {
+	return uint64(len(keyEntry.key)) + keyEntry.valueSize
+}
+
 type splitCheckRunner struct {
 	engine          *badger.DB
 	router          *router
@@ -255,7 +259,6 @@ func (r *splitCheckRunner) scanSplitKeys(spCheckerHost *splitCheckerHost, region
 	txn := r.engine.NewTransaction(false)
 	reader := dbreader.NewDBReader(startKey, endKey, txn, 0)
 	ite := reader.GetIter()
-	defer reader.Close()
 	for ite.Seek(startKey); ite.Valid(); ite.Next() {
 		item := ite.Item()
 		key := item.Key()
@@ -270,6 +273,8 @@ func (r *splitCheckRunner) scanSplitKeys(spCheckerHost *splitCheckerHost, region
 			return nil, errors.Trace(err)
 		}
 	}
+	// Close the reader early, and in the `onKv` method above, some keys must be copied.
+	reader.Close()
 	return spCheckerHost.splitKeys(), nil
 }
 

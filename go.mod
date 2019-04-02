@@ -1,6 +1,8 @@
 module github.com/ngaut/unistore
 
 require (
+	github.com/alecthomas/template v0.0.0-20160405071501-a0175ee3bccc // indirect
+	github.com/alecthomas/units v0.0.0-20151022065526-2efee857e7cf // indirect
 	github.com/coocood/badger v1.5.1-0.20181115111105-250ee6037b80
 	github.com/cznic/mathutil v0.0.0-20181021201202-eba54fb065b7
 	github.com/dgryski/go-farm v0.0.0-20190104051053-3adb47b1fb0f
@@ -24,6 +26,7 @@ require (
 	golang.org/x/time v0.0.0-20181108054448-85acf8d2951c
 	google.golang.org/genproto v0.0.0-20181016170114-94acd270e44e // indirect
 	google.golang.org/grpc v1.16.0
+	gopkg.in/alecthomas/kingpin.v2 v2.2.6 // indirect
 	gopkg.in/mgo.v2 v2.0.0-20180705113604-9856a29383ce // indirect
 )
 
