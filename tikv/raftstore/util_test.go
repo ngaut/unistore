@@ -300,3 +300,11 @@ func cloneEpoch(epoch *metapb.RegionEpoch) *metapb.RegionEpoch {
 		Version: epoch.Version,
 	}
 }
+
+func TestEscape(t *testing.T) {
+	assert.Equal(t, "ab", escape([]byte("ab")))
+	assert.Equal(t, `a\\023`, escape([]byte("a\\023")))
+	assert.Equal(t, `a\000`, escape([]byte("a\000")))
+	assert.Equal(t, "a\\r\\n\\t '\\\"\\\\", escape([]byte("a\r\n\t '\"\\")))
+	assert.Equal(t, `\342\235\244\360\237\220\267`, escape([]byte("❤🐷")))
+}
