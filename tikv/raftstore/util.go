@@ -9,7 +9,6 @@ import (
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
-	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -458,39 +457,3 @@ func checkPeerID(req *raft_cmdpb.RaftCmdRequest, peerID uint64) error {
 	return errors.Errorf("mismatch peer id %d != %d", peer.Id, peerID)
 }
 
-var (
-	backslashN      = []byte{'\\', 'n'}
-	backslashR      = []byte{'\\', 'r'}
-	backslashT      = []byte{'\\', 't'}
-	backslashDQ     = []byte{'\\', '"'}
-	backslashBS     = []byte{'\\', '\\'}
-)
-
-// escape is a function to escape byte array to a readable ascii strings.
-// Escape rules follow golang/protobuf.
-// See https://github.com/golang/protobuf/blob/master/proto/text.go#L578 for more detail.
-func escape(data []byte) string {
-	var b strings.Builder
-	for _, d := range data {
-		switch d {
-		case '\n':
-			b.Write(backslashN)
-		case '\r':
-			b.Write(backslashR)
-		case '\t':
-			b.Write(backslashT)
-		case '"':
-			b.Write(backslashDQ)
-		case '\\':
-			b.Write(backslashBS)
-		default:
-			if d >= 0x20 && d < 0x7f {
-				// d is printable
-				b.WriteByte(d)
-			} else {
-				b.WriteString(fmt.Sprintf("\\%03o", d))
-			}
-		}
-	}
-	return b.String()
-}

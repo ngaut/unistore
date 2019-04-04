@@ -498,7 +498,7 @@ func (observer *tableSplitCheckObserver) addChecker(obCtx *observerContext, host
 		// As the comment above, outside needs scan for finding a split key.
 		firstEncodedTablePrefix = extractTablePrefix(encodedStartKey)
 	default:
-		panic(fmt.Sprintf("start key: %s and end key: %s out of order", escape(encodedStartKey), escape(encodedEndKey)))
+		panic(fmt.Sprintf("start key: %v and end key: %v out of order", encodedStartKey, encodedEndKey))
 	}
 	host.addChecker(newTableSplitChecker(firstEncodedTablePrefix, splitKey, policy))
 }
