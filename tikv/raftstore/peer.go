@@ -392,9 +392,7 @@ func (p *Peer) Destroy(ctx *PollContext, keepData bool) error {
 	if p.PendingMergeState != nil {
 		mergeState = p.PendingMergeState
 	}
-	if err := WritePeerState(kvWB, region, rspb.PeerState_Tombstone, mergeState); err != nil {
-		return err
-	}
+	WritePeerState(kvWB, region, rspb.PeerState_Tombstone, mergeState)
 	// write kv rocksdb first in case of restart happen between two write
 	// Todo: sync = ctx.cfg.sync_log
 	if err := kvWB.WriteToKV(ctx.engine.kv); err != nil {
