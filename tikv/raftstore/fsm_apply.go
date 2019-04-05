@@ -279,7 +279,7 @@ type applyContext struct {
 	timer            *time.Time
 	host             *CoprocessorHost
 	router           *applyRouter
-	notifier         *notifier
+	notifier         notifier
 	engines          *Engines
 	txn              *badger.Txn
 	cbs              []applyCallback
@@ -300,7 +300,7 @@ type applyContext struct {
 }
 
 func newApplyContext(tag string, host *CoprocessorHost, engines *Engines, router *applyRouter,
-	notifier *notifier, cfg *Config) *applyContext {
+	notifier notifier, cfg *Config) *applyContext {
 	return &applyContext{
 		tag:            tag,
 		host:           host,
@@ -486,7 +486,7 @@ func shouldWriteToEngine(cmd *raft_cmdpb.RaftCmdRequest, wbKeys int) bool {
 type waitSourceMergeState struct {
 	/// All of the entries that need to continue to be applied after
 	/// the source peer has applied its logs.
-	pendingEntries []*eraftpb.Entry
+	pendingEntries []eraftpb.Entry
 	/// All of messages that need to continue to be handled after
 	/// the source peer has applied its logs and pending entries
 	/// are all handled.
@@ -576,7 +576,7 @@ func newApplyDelegate(reg *registration) *applyDelegate {
 }
 
 /// Handles all the committed_entries, namely, applies the committed entries.
-func (d *applyDelegate) handleRaftCommittedEntries(aCtx *applyContext, committedEntries []*eraftpb.Entry) {
+func (d *applyDelegate) handleRaftCommittedEntries(aCtx *applyContext, committedEntries []eraftpb.Entry) {
 	if len(committedEntries) == 0 {
 		return
 	}
@@ -587,7 +587,8 @@ func (d *applyDelegate) handleRaftCommittedEntries(aCtx *applyContext, committed
 	// commands again.
 	aCtx.committedCount += len(committedEntries)
 	var results []execResult
-	for i, entry := range committedEntries {
+	for i := range committedEntries {
+		entry := &committedEntries[i]
 		if d.pendingRemove {
 			// This peer is about to be destroyed, skip everything.
 			break
@@ -616,7 +617,7 @@ func (d *applyDelegate) handleRaftCommittedEntries(aCtx *applyContext, committed
 		case applyResultTypeWaitMergeResource:
 			readyToMerge := res.data.(*atomic.Uint64)
 			aCtx.committedCount -= len(committedEntries) - i
-			pendingEntries := make([]*eraftpb.Entry, 0, len(committedEntries)-i)
+			pendingEntries := make([]eraftpb.Entry, 0, len(committedEntries)-i)
 			// Note that CommitMerge is skipped when `WaitMergeSource` is returned.
 			// So we need to enqueue it again and execute it again when resuming.
 			pendingEntries = append(pendingEntries, committedEntries[i:]...)
@@ -735,7 +736,7 @@ func (d *applyDelegate) processRaftCmd(aCtx *applyContext, index, term uint64, c
 	if cmd.AdminRequest != nil {
 		aCtx.syncLogHint = true
 	}
-	isConfChange := getChangePeerCmd(cmd) != nil
+	isConfChange := GetChangePeerCmd(cmd) != nil
 	aCtx.host.preApply(d.region, cmd)
 	resp, result := d.applyRaftCmd(aCtx, index, term, cmd)
 	if result.tp == applyResultTypeWaitMergeResource {
@@ -1365,28 +1366,62 @@ func (d *applyDelegate) execRollbackMerge(aCtx *applyContext, req *raft_cmdpb.Ad
 
 func (d *applyDelegate) execCompactLog(aCtx *applyContext, req *raft_cmdpb.AdminRequest) (
 	resp *raft_cmdpb.AdminResponse, result applyResult, err error) {
-	return // TODO: stub
+	compactIndex := req.CompactLog.CompactIndex
+	resp = new(raft_cmdpb.AdminResponse)
+	applyState := aCtx.execCtx.applyState
+	firstIndex := firstIndex(applyState)
+	if compactIndex <= firstIndex {
+		log.Debugf("%s compact index <= first index, no need to compact", d.tag)
+		return
+	}
+	if d.isMerging {
+		log.Debugf("%s in merging mode, skip compact", d.tag)
+		return
+	}
+	compactTerm := req.CompactLog.CompactTerm
+	if compactTerm == 0 {
+		log.Infof("%s compact term missing, skip", d.tag)
+		// old format compact log command, safe to ignore.
+		err = errors.New("command format is outdated, please upgrade leader")
+		return
+	}
+
+	// compact failure is safe to be omitted, no need to assert.
+	err = CompactRaftLog(d.tag, &applyState, compactIndex, compactTerm)
+	if err != nil {
+		return
+	}
+	result = applyResult{tp: applyResultTypeExecResult, data: &execResultCompactLog{
+		truncatedIndex: applyState.truncatedIndex,
+		firstIndex:     firstIndex,
+	}}
+	return
 }
 
 func (d *applyDelegate) execComputeHash(aCtx *applyContext, req *raft_cmdpb.AdminRequest) (
 	resp *raft_cmdpb.AdminResponse, result applyResult, err error) {
-	return // TODO: stub
+	resp = new(raft_cmdpb.AdminResponse)
+	result = applyResult{tp: applyResultTypeExecResult, data: &execResultComputeHash{
+		region: d.region,
+		index:  aCtx.execCtx.index,
+		// This snapshot may be held for a long time, which may cause too many
+		// open files in rocksdb.
+		// TODO: figure out another way to do consistency check without snapshot
+		// or short life snapshot.
+		snap: NewDBSnapshot(aCtx.engines.kv),
+	}}
+	return
 }
 
 func (d *applyDelegate) execVerifyHash(aCtx *applyContext, req *raft_cmdpb.AdminRequest) (
 	resp *raft_cmdpb.AdminResponse, result applyResult, err error) {
-	return // TODO: stub
-}
-
-func getChangePeerCmd(msg *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.ChangePeerRequest {
-	return nil // TODO: stub
-}
-
-/// Updates the `state` with given `compact_index` and `compact_term`.
-///
-/// Remember the Raft log is not deleted here.
-func compactRaftLog(tag string, state *applyState, compactIndex, compactTerm uint64) error {
-	return nil // TODO: stub
+	verifyReq := req.VerifyHash
+	resp = new(raft_cmdpb.AdminResponse)
+	result = applyResult{tp: applyResultTypeExecResult, data: &execResultVerifyHash{
+		index: verifyReq.Index,
+		hash:  verifyReq.Hash,
+	}}
+	return
 }
 
 type catchUpLogs struct {
@@ -1405,11 +1440,22 @@ type applyPollerBuilder struct {
 }
 
 func newApplyPollerBuilder(raftPollerBuilder *raftPollerBuilder, sender notifier, router *applyRouter) *applyPollerBuilder {
-	return nil // TODO: stub
+	return &applyPollerBuilder{
+		tag:             fmt.Sprintf("[store %d]", raftPollerBuilder.store.Id),
+		cfg:             raftPollerBuilder.cfg,
+		coprocessorHost: raftPollerBuilder.coprocessorHost,
+		engines:         raftPollerBuilder.engines,
+		sender:          sender,
+		router:          router,
+	}
 }
 
 func (b *applyPollerBuilder) build() pollHandler {
-	return nil // TODO: stub
+	return &applyPoller{
+		msgBuf:          make([]Msg, 0, b.cfg.MessagesPerTick),
+		aCtx:            newApplyContext(b.tag, b.coprocessorHost, b.engines, b.router, b.sender, b.cfg),
+		messagesPerTick: int(b.cfg.MessagesPerTick),
+	}
 }
 
 type applyFsm struct {
@@ -1419,35 +1465,98 @@ type applyFsm struct {
 }
 
 func newApplyFsmFromPeer(peer *peerFsm) (chan<- Msg, fsm) {
-	return nil, nil // TODO: stub
+	reg := newRegistration(peer.peer)
+	return newApplyFsmFromRegistration(reg)
 }
 
 func newApplyFsmFromRegistration(reg *registration) (chan<- Msg, fsm) {
-	return nil, nil // TODO: stub
+	ch := make(chan Msg, msgDefaultChanSize)
+	delegate := newApplyDelegate(reg)
+	aFsm := &applyFsm{
+		applyDelegate: *delegate,
+		receiver:      ch,
+	}
+	return ch, aFsm
 }
 
 /// Handles peer registration. When a peer is created, it will register an apply delegate.
 func (a *applyFsm) handleRegistration(reg *registration) {
-	// TODO: stub
+	log.Infof("%s re-register to apply delegate, term %d", a.tag, reg.term)
+	y.Assert(a.id == reg.id)
+	a.term = reg.term
+	a.clearAllCommandsAsStale()
+	a.applyDelegate = *newApplyDelegate(reg)
 }
 
 /// Handles apply tasks, and uses the apply delegate to handle the committed entries.
 func (a *applyFsm) handleApply(aCtx *applyContext, apply *apply) {
-	// TODO: stub
+	if aCtx.timer == nil {
+		now := time.Now()
+		aCtx.timer = &now
+	}
+	if len(apply.entries) == 0 || a.pendingRemove || a.stopped {
+		return
+	}
+	a.metrics = applyMetrics{}
+	a.term = apply.term
+	a.handleRaftCommittedEntries(aCtx, apply.entries)
+	if a.waitMergeState != nil {
+		return
+	}
+	if a.pendingRemove {
+		a.destroy(aCtx)
+	}
 }
 
 /// Handles proposals, and appends the commands to the apply delegate.
 func (a *applyFsm) handleProposal(regionProposal *regionProposal) {
-	// TODO: stub
+	regionID, peerID := a.region.Id, a.id
+	y.Assert(a.id == regionProposal.Id)
+	if a.stopped {
+		for _, p := range regionProposal.Props {
+			cmd := pendingCmd{index: p.index, term: p.term, cb: p.cb}
+			notifyStaleCommand(regionID, peerID, a.term, cmd)
+		}
+		return
+	}
+	for _, p := range regionProposal.Props {
+		cmd := pendingCmd{index: p.index, term: p.term, cb: p.cb}
+		if p.isConfChange {
+			if confCmd := a.pendingCmds.takeConfChange(); confCmd != nil {
+				// if it loses leadership before conf change is replicated, there may be
+				// a stale pending conf change before next conf change is applied. If it
+				// becomes leader again with the stale pending conf change, will enter
+				// this block, so we notify leadership may have been changed.
+				notifyStaleCommand(regionID, peerID, a.term, *confCmd)
+			}
+			a.pendingCmds.setConfChange(&cmd)
+		} else {
+			a.pendingCmds.appendNormal(cmd)
+		}
+	}
 }
 
 func (a *applyFsm) destroy(aCtx *applyContext) {
-	// TODO: stub
+	regionID := a.region.Id
+	for _, res := range aCtx.applyTaskResList {
+		if res.regionID == regionID {
+			// Flush before destroying to avoid reordering messages.
+			aCtx.flush()
+		}
+	}
+	log.Infof("%s remove delegate from apply delegate", a.tag)
+	a.applyDelegate.destroy(aCtx)
 }
 
 /// Handles peer destroy. When a peer is destroyed, the corresponding apply delegate should be removed too.
 func (a *applyFsm) handleDestroy(aCtx *applyContext, regionID uint64) {
-	// TODO: stub
+	if !a.stopped {
+		a.destroy(aCtx)
+		aCtx.notifier.notify(regionID, NewPeerMsg(MsgTypeApplyRes, a.region.Id, &applyTaskRes{
+			regionID:      a.region.Id,
+			destroyPeerID: a.id,
+		}))
+	}
 }
 
 func (a *applyFsm) resumePendingMerge(aCtx *applyContext) bool {
@@ -1459,7 +1568,25 @@ func (a *applyFsm) catchUpLogsForMerge(aCtx *applyContext, logs *catchUpLogs) {
 }
 
 func (a *applyFsm) handleTasks(aCtx *applyContext, msgs []Msg) {
-	// TODO: stub
+	for i, msg := range msgs {
+		switch msg.Type {
+		case MsgTypeApply:
+			a.handleApply(aCtx, msg.Data.(*apply))
+			if a.waitMergeState != nil {
+				a.waitMergeState.pendingMsgs = msgs[i+1:]
+				break
+			}
+		case MsgTypeApplyProposal:
+			a.handleProposal(msg.Data.(*regionProposal))
+		case MsgTypeApplyRegistration:
+			a.handleRegistration(msg.Data.(*registration))
+		case MsgTypeApplyDestroy:
+			a.handleDestroy(aCtx, msg.Data.(uint64))
+		case MsgTypeApplyCatchUpLogs:
+			a.catchUpLogsForMerge(aCtx, msg.Data.(*catchUpLogs))
+		case MsgTypeApplyLogsUpToDate:
+		}
+	}
 }
 
 func (a *applyFsm) isStopped() bool {
@@ -1479,7 +1606,7 @@ func (a *applyFsm) takeMailbox() *mailbox {
 type applyPoller struct {
 	msgBuf          []Msg
 	aCtx            *applyContext
-	messagesPerTick uint64
+	messagesPerTick int
 }
 
 func (p *applyPoller) begin(batchSize int) {}
@@ -1490,13 +1617,36 @@ func (p *applyPoller) handleControl(control fsm) (pause bool, chLen int) {
 }
 
 func (p *applyPoller) handleNormal(normal fsm) (pause bool, chLen int) {
-	return // TODO: stub
+	applyFsm := normal.(*applyFsm)
+	receiverLen := len(applyFsm.receiver)
+	if applyFsm.waitMergeState != nil {
+		// We need to query the length first, otherwise there is a race
+		// condition that new messages are queued after resuming and before
+		// query the length.
+		if !applyFsm.resumePendingMerge(p.aCtx) {
+			return true, receiverLen
+		}
+	}
+	numToRecv := p.messagesPerTick - len(p.msgBuf)
+	if numToRecv >= receiverLen {
+		numToRecv = receiverLen
+	}
+	for i := 0; i < numToRecv; i++ {
+		p.msgBuf = append(p.msgBuf, <-applyFsm.receiver)
+	}
+	applyFsm.handleTasks(p.aCtx, p.msgBuf)
+	if applyFsm.merged {
+		applyFsm.destroy(p.aCtx)
+	}
+	return false, 0
 }
 
 func (p *applyPoller) end(fsms []fsm) {
-	// TODO: stub
+	p.aCtx.flush()
 }
 
 func createApplyBatchSystem(cfg *Config) (*applyRouter, *batchSystem) {
-	return nil, nil // TODO: stub
+	router, system := createBatchSystem(int(cfg.ApplyPoolSize), int(cfg.ApplyMaxBatchSize), nil, nil)
+	applyRouter := &applyRouter{router: *router}
+	return applyRouter, system
 }

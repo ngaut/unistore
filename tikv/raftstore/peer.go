@@ -337,7 +337,7 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 /// Register self to applyRouter so that the peer is then usable.
 /// Also trigger `RegionChangeEvent::Create` here.
 func (p *Peer) Activate(ctx *PollContext) {
-	ctx.applyRouter.scheduleTask(p.regionId, NewMsg(MsgTypeApplyTask, &apply{ /*todo: register self*/ }))
+	ctx.applyRouter.scheduleTask(p.regionId, NewMsg(MsgTypeApplyRegistration, newRegistration(p)))
 	ctx.coprocessorHost.OnRegionChanged(p.Region(), RegionChangeEvent_Create, p.GetRole())
 }
 
@@ -968,7 +968,7 @@ func (p *Peer) HandleRaftReadyApply(ctx *PollContext, ready *raft.Ready) {
 				term:     p.Term(),
 				entries:  committedEntries,
 			}
-			ctx.applyRouter.scheduleTask(p.regionId, NewMsg(MsgTypeApplyTask, apply))
+			ctx.applyRouter.scheduleTask(p.regionId, newApplyMsg(apply))
 		}
 	}
 
