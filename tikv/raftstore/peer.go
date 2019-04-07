@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
+	"time"
+
 	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -11,8 +14,6 @@ import (
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/zhangjinpeng1987/raft"
-	"math"
-	"time"
 )
 
 type ReadyICPair struct {
@@ -336,7 +337,7 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 /// Register self to applyRouter so that the peer is then usable.
 /// Also trigger `RegionChangeEvent::Create` here.
 func (p *Peer) Activate(ctx *PollContext) {
-	ctx.applyRouter.scheduleTask(p.regionId, NewMsg(MsgTypeApplyTask, &apply{ /*todo: register self*/ }))
+	ctx.applyRouter.scheduleTask(p.regionId, NewMsg(MsgTypeApplyRegistration, newRegistration(p)))
 	ctx.coprocessorHost.OnRegionChanged(p.Region(), RegionChangeEvent_Create, p.GetRole())
 }
 
@@ -391,15 +392,13 @@ func (p *Peer) Destroy(ctx *PollContext, keepData bool) error {
 	if p.PendingMergeState != nil {
 		mergeState = p.PendingMergeState
 	}
-	if err := WritePeerState(kvWB, region, rspb.PeerState_Tombstone, mergeState); err != nil {
-		return err
-	}
+	WritePeerState(kvWB, region, rspb.PeerState_Tombstone, mergeState)
 	// write kv rocksdb first in case of restart happen between two write
 	// Todo: sync = ctx.cfg.sync_log
-	if err := kvWB.WriteToDB(ctx.engine.kv); err != nil {
+	if err := kvWB.WriteToKV(ctx.engine.kv); err != nil {
 		return err
 	}
-	if err := raftWB.WriteToDB(ctx.engine.raft); err != nil {
+	if err := raftWB.WriteToRaft(ctx.engine.raft); err != nil {
 		return err
 	}
 
@@ -969,7 +968,7 @@ func (p *Peer) HandleRaftReadyApply(ctx *PollContext, ready *raft.Ready) {
 				term:     p.Term(),
 				entries:  committedEntries,
 			}
-			ctx.applyRouter.scheduleTask(p.regionId, NewMsg(MsgTypeApplyTask, apply))
+			ctx.applyRouter.scheduleTask(p.regionId, newApplyMsg(apply))
 		}
 	}
 

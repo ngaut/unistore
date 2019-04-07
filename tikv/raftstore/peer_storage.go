@@ -199,7 +199,7 @@ func (ic *InvokeContext) saveSnapshotRaftStateTo(snapshotIdx uint64, wb *WriteBa
 func recoverFromApplyingState(engines *Engines, raftWB *WriteBatch, regionID uint64) error {
 	snapRaftStateKey := SnapshotRaftStateKey(regionID)
 	snapRaftState := raftState{}
-	val, err := getValue(engines.kv, snapRaftStateKey)
+	val, err := getValue(engines.kv.db, snapRaftStateKey)
 	if err != nil {
 		return errors.Errorf("region %d failed to get raftstate from kv engine when recover from applying state", regionID)
 	}
@@ -207,7 +207,7 @@ func recoverFromApplyingState(engines *Engines, raftWB *WriteBatch, regionID uin
 
 	raftStateKey := RaftStateKey(regionID)
 	raftState := raftState{}
-	val, err = getValue(engines.kv, raftStateKey)
+	val, err = getValue(engines.kv.db, raftStateKey)
 	if err != nil && err != badger.ErrKeyNotFound {
 		return errors.WithStack(err)
 	}
@@ -258,7 +258,7 @@ func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- 
 	if err != nil {
 		return nil, err
 	}
-	applyState, err := initApplyState(engines.kv, region)
+	applyState, err := initApplyState(engines.kv.db, region)
 	if err != nil {
 		return nil, err
 	}
@@ -740,14 +740,15 @@ func ClearMeta(engines *Engines, kvWB, raftWB *WriteBatch, regionID uint64, last
 	return nil
 }
 
-func WritePeerState(kvWB *WriteBatch, region *metapb.Region, state rspb.PeerState, mergeState *rspb.MergeState) error {
+func WritePeerState(kvWB *WriteBatch, region *metapb.Region, state rspb.PeerState, mergeState *rspb.MergeState) {
 	regionID := region.Id
 	regionState := new(rspb.RegionLocalState)
 	regionState.State = state
 	if mergeState != nil {
 		regionState.MergeState = mergeState
 	}
-	return kvWB.SetMsg(RegionStateKey(regionID), regionState)
+	data, _ := regionState.Marshal()
+	kvWB.Set(RegionStateKey(regionID), data)
 }
 
 // Apply the peer with given snapshot.
@@ -770,9 +771,7 @@ func (ps *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *eraftpb.Snapshot,
 		}
 	}
 
-	if err := WritePeerState(kvWB, snapData.Region, rspb.PeerState_Applying, nil); err != nil {
-		return err
-	}
+	WritePeerState(kvWB, snapData.Region, rspb.PeerState_Applying, nil)
 
 	lastIdx := snap.Metadata.Index
 
