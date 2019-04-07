@@ -2,15 +2,14 @@ package raftstore
 
 import (
 	"bytes"
-	"fmt"
 	"github.com/coocood/badger"
 	"github.com/ngaut/log"
-	"github.com/ngaut/unistore/tikv"
 	"github.com/ngaut/unistore/tikv/dbreader"
+	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
-	tablecodec "github.com/pingcap/tidb/tablecodec"
+	"github.com/pingcap/tidb/tablecodec"
 	otablecodec "github.com/pingcap/tidb/tablecodec/origin"
 	"github.com/zhangjinpeng1987/raft"
 )
@@ -105,8 +104,6 @@ func (checker *sizeSplitChecker) getSplitKeys() [][]byte {
 	if checker.currentSize+checker.splitSize < checker.maxSize {
 		splitKeyLen := len(checker.splitKeys)
 		if splitKeyLen != 0 {
-			// Help gc
-			checker.splitKeys[splitKeyLen - 1] = nil
 			checker.splitKeys = checker.splitKeys[:splitKeyLen-1]
 		}
 	}
@@ -212,8 +209,6 @@ func (checker *halfSplitChecker) getSplitKeys() [][]byte {
 	}
 	dataKey := checker.buckets[mid]
 	checker.buckets[mid] = checker.buckets[bucketLen-1]
-	// Help gc
-	checker.buckets[bucketLen-1] = nil
 	checker.buckets = checker.buckets[:bucketLen-1]
 	return [][]byte{OriginKey(dataKey)}
 }
@@ -332,7 +327,6 @@ func (observer *keysSplitCheckObserver) addChecker(obCtx *observerContext, host 
 }
 
 type tableSplitChecker struct {
-	firstEncodedTablePrefix []byte
 	splitKey                []byte
 	checkPolicy             pdpb.CheckPolicy
 }
@@ -341,51 +335,46 @@ func newTableSplitCheckerByPolicy(policy pdpb.CheckPolicy) *tableSplitChecker {
 	return &tableSplitChecker{checkPolicy: policy}
 }
 
-func newTableSplitChecker(firstEncodedTablePrefix, splitKey []byte, policy pdpb.CheckPolicy) *tableSplitChecker {
+func newTableSplitChecker(splitKey []byte, policy pdpb.CheckPolicy) *tableSplitChecker {
 	return &tableSplitChecker{
-		firstEncodedTablePrefix: firstEncodedTablePrefix,
 		splitKey:                splitKey,
 		checkPolicy:             policy,
 	}
 }
 
+const tablecodecTableSplitKeyLen = tablecodec.TableSplitKeyLen + 2
+
 func isTableKey(encodedKey []byte) bool {
-	if tikv.IsShardingEnabled() {
-		return len(encodedKey) >= tablecodec.TableSplitKeyLen &&
-			tablecodec.TablePrefix()[0] == encodedKey[0]
+	if mvcc.IsShardingEnabled() {
+		return len(encodedKey) >= tablecodecTableSplitKeyLen
 	}
-	return len(encodedKey) >= otablecodec.TableSplitKeyLen &&
-		otablecodec.TablePrefix()[0] == encodedKey[0]
+	return len(encodedKey) >= otablecodec.TableSplitKeyLen
 }
 
 func isSameTable(leftKey, rightKey []byte) bool {
-	if tikv.IsShardingEnabled() {
-		return isTableKey(leftKey) && isTableKey(rightKey) && bytes.Compare(leftKey[:tablecodec.TableSplitKeyLen],
-			rightKey[:tablecodec.TableSplitKeyLen]) == 0
+	if mvcc.IsShardingEnabled() {
+		return bytes.Compare(leftKey[:tablecodecTableSplitKeyLen], rightKey[:tablecodecTableSplitKeyLen]) == 0
 	}
-	return isTableKey(leftKey) && isTableKey(rightKey) && bytes.Compare(leftKey[:otablecodec.TableSplitKeyLen],
-		rightKey[:otablecodec.TableSplitKeyLen]) == 0
+	return bytes.Compare(leftKey[:otablecodec.TableSplitKeyLen], rightKey[:otablecodec.TableSplitKeyLen]) == 0
 }
 
 func extractTablePrefix(key []byte) []byte {
-	if tikv.IsShardingEnabled() {
-		return key[:tablecodec.TableSplitKeyLen]
+	if mvcc.IsShardingEnabled() {
+		return key[:tablecodecTableSplitKeyLen]
 	} else {
 		return key[:otablecodec.TableSplitKeyLen]
 	}
 }
 
 // Feed keys in order to find the split key.
-// If currentEncodedKey doesn't belong to checker.firstEncodedTablePrefix, returns the encoded table prefix
-// of currentEncodedKey
 func (checker *tableSplitChecker) onKv(obCtx *observerContext, spCheckKeyEntry splitCheckKeyEntry) bool {
 	if len(checker.splitKey) != 0 {
 		return true
 	}
 	currentEncodedKey := OriginKey(spCheckKeyEntry.key)
 	var splitKey []byte
-	// Different tables or meet the very first table key of this region.
-	if !isSameTable(checker.firstEncodedTablePrefix, currentEncodedKey) || isTableKey(currentEncodedKey) {
+	// No need to check firstEncodedTablePrefix, since it is always nil.
+	if isTableKey(currentEncodedKey) {
 		splitKey = currentEncodedKey
 	}
 	if len(splitKey) != 0 {
@@ -444,9 +433,9 @@ func (observer *tableSplitCheckObserver) addChecker(obCtx *observerContext, host
 	encodedEndKey := OriginKey(endKey)
 	encodedStartKeyLen := len(encodedStartKey)
 	encodedEndKeyLen := len(encodedEndKey)
-	if tikv.IsShardingEnabled() {
+	if mvcc.IsShardingEnabled() {
 		// For now, let us scan region if encodedStartKey or encodedEndKey is less than TableSplitKeyLen
-		if encodedStartKeyLen < tablecodec.TableSplitKeyLen || encodedEndKeyLen < tablecodec.TableSplitKeyLen {
+		if encodedStartKeyLen < tablecodecTableSplitKeyLen || encodedEndKeyLen < tablecodecTableSplitKeyLen {
 			host.addChecker(newTableSplitCheckerByPolicy(policy))
 			return
 		}
@@ -457,50 +446,16 @@ func (observer *tableSplitCheckObserver) addChecker(obCtx *observerContext, host
 			return
 		}
 	}
-	// Table data starts with table prefix
-	// Find out the actual range of this region by comparing with table prefix
-	var startKeyCmp, endKeyCmp int
-	if tikv.IsShardingEnabled() {
-		startKeyCmp = bytes.Compare(extractTablePrefix(encodedStartKey), tablecodec.TablePrefix())
-		endKeyCmp = bytes.Compare(extractTablePrefix(encodedEndKey), tablecodec.TablePrefix())
-	} else {
-		startKeyCmp = bytes.Compare(extractTablePrefix(encodedStartKey), otablecodec.TablePrefix())
-		endKeyCmp = bytes.Compare(extractTablePrefix(encodedEndKey), otablecodec.TablePrefix())
-	}
-	var splitKey, firstEncodedTablePrefix []byte
-	switch {
-	// The range doesn't cover table data
-	case (startKeyCmp < 0 && endKeyCmp < 0) || (startKeyCmp > 0 && endKeyCmp > 0):
+	if isSameTable(encodedStartKey, encodedEndKey) {
+		// Same table
 		return
-	// Following arms matches when region contains table data.
-	// Covers all table data
-	case startKeyCmp < 0 && endKeyCmp > 0:
-
-	// The later part contains table data.
-	case startKeyCmp < 0 && endKeyCmp == 0:
-		// It starts from non-table area to table area,
-		// try to extract a split key from encodedEndKey, and save it in status.
-		splitKey = extractTablePrefix(encodedEndKey)
-	// Region is in table area
-	case startKeyCmp == 0 && endKeyCmp == 0:
-		if isSameTable(encodedStartKey, encodedEndKey) {
-			// Same table
-			return
-		} else {
-			// Different tables.
-			// Note that table id does not grow by 1, so have to use
-			// encodedEndKey to extract a table prefix.
-			// See more: https://github.com/pingcap/tidb/issues/4727
-			splitKey = extractTablePrefix(encodedEndKey)
-		}
-	// The region starts from table area to non-table area
-	case startKeyCmp == 0 && endKeyCmp > 0:
-		// As the comment above, outside needs scan for finding a split key.
-		firstEncodedTablePrefix = extractTablePrefix(encodedStartKey)
-	default:
-		panic(fmt.Sprintf("start key: %v and end key: %v out of order", encodedStartKey, encodedEndKey))
+	} else {
+		// Different tables.
+		// Note that table id does not grow by 1, so have to use encodedEndKey to extract a table prefix.
+		// See more: https://github.com/pingcap/tidb/issues/4727.
+		splitKey := extractTablePrefix(encodedEndKey)
+		host.addChecker(newTableSplitChecker(splitKey, policy))
 	}
-	host.addChecker(newTableSplitChecker(firstEncodedTablePrefix, splitKey, policy))
 }
 
 type splitCheckerHost struct {
