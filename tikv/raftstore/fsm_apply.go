@@ -1184,9 +1184,8 @@ func (d *applyDelegate) execChangePeer(aCtx *applyContext, req *raft_cmdpb.Admin
 				log.Error(errMsg)
 				err = errors.New(errMsg)
 				return
-			} else {
-				p.IsLearner = true
 			}
+			p.IsLearner = false
 		}
 		if !exist {
 			// TODO: Do we allow adding peer in same node?
