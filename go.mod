@@ -30,3 +30,5 @@ require (
 replace go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.0.0-20190226085253-137eac022b64
 
 replace github.com/coocood/badger => github.com/coocood/badger v0.0.0-20190404050323-c22705509a6a
+
+replace github.com/pingcap/kvproto => github.com/pingcap/kvproto v0.0.0-20190313025117-cac7819cb728

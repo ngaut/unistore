@@ -187,6 +187,21 @@ func (p *kvScanProcessor) Process(key, value []byte) (err error) {
 	return nil
 }
 
+func (srv *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.PessimisticLockRequest) (*kvrpcpb.PessimisticLockResponse, error) {
+	reqCtx, err := newRequestCtx(srv, req.Context, "PessimisticLock")
+	if err != nil {
+		return &kvrpcpb.PessimisticLockResponse{Errors: convertToKeyErrors([]error{err})}, nil
+	}
+	defer reqCtx.finish()
+	if reqCtx.regErr != nil {
+		return &kvrpcpb.PessimisticLockResponse{RegionError: reqCtx.regErr}, nil
+	}
+	errs := srv.mvccStore.PessimisticLock(reqCtx, req.Mutations, req.PrimaryLock, req.GetStartVersion(), req.GetForUpdateTs(), req.GetLockTtl())
+	return &kvrpcpb.PessimisticLockResponse{
+		Errors: convertToKeyErrors(errs),
+	}, nil
+}
+
 func (svr *Server) KvPrewrite(ctx context.Context, req *kvrpcpb.PrewriteRequest) (*kvrpcpb.PrewriteResponse, error) {
 	reqCtx, err := newRequestCtx(svr, req.Context, "KvPrewrite")
 	if err != nil {

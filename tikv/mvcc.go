@@ -119,6 +119,76 @@ func (store *MVCCStore) updateLatestTS(ts uint64) {
 	}
 }
 
+func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, primary []byte, startTS, forUpdateTS uint64, ttl uint64) []error {
+	regCtx := reqCtx.regCtx
+	hashVals := mutationsToHashVals(mutations)
+	errs := make([]error, 0, len(mutations))
+	anyError := false
+
+	regCtx.acquireLatches(hashVals)
+	defer regCtx.releaseLatches(hashVals)
+
+	// Must check the LockStore first.
+	for _, m := range mutations {
+		duplicate, err := store.checkPrewriteInLockStore(reqCtx, m, startTS)
+		if err != nil {
+			anyError = true
+		}
+		if duplicate {
+			return nil
+		}
+		errs = append(errs, err)
+	}
+	if anyError {
+		return errs
+	}
+
+	lockBatch := newWriteLockBatch(reqCtx)
+	// Check the DB.
+	txn := reqCtx.getDBReader().GetTxn()
+	keys := make([][]byte, len(mutations))
+	for i, m := range mutations {
+		keys[i] = m.Key
+	}
+	items, err := txn.MultiGet(keys)
+	if err != nil {
+		return []error{err}
+	}
+
+	for i, m := range mutations {
+		// Note the use of `forUpdateTS` here!
+		oldMeta, oldVal, err := store.checkPrewriteInDB(reqCtx, txn, items[i], forUpdateTS)
+		if err != nil {
+			anyError = true
+		}
+		errs[i] = err
+		if !anyError {
+			lock := mvcc.MvccLock{
+				MvccLockHdr: mvcc.MvccLockHdr{
+					StartTS:    startTS,
+					Op:         uint8(kvrpcpb.Op_PessimisticLock),
+					HasOldVer:  oldMeta != nil,
+					TTL:        uint32(ttl),
+					PrimaryLen: uint16(len(primary)),
+				},
+				Primary: primary,
+				Value:   m.Value,
+				OldMeta: oldMeta,
+				OldVal:  oldVal,
+			}
+			lockBatch.set(m.Key, lock.MarshalBinary())
+		}
+	}
+	if anyError {
+		return errs
+	}
+	err = store.writeLocks(lockBatch)
+	if err != nil {
+		return []error{err}
+	}
+	return nil
+}
+
 func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, primary []byte, startTS uint64, ttl uint64) []error {
 	regCtx := reqCtx.regCtx
 	hashVals := mutationsToHashVals(mutations)
