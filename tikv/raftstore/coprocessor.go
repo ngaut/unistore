@@ -554,8 +554,8 @@ func (c *CoprocessorHost) newSplitCheckerHost(region *metapb.Region, engine *bad
 	policy pdpb.CheckPolicy) *splitCheckerHost {
 	host := &splitCheckerHost{autoSplit: autoSplit}
 	ctx := &observerContext{region: region}
-	for _, server := range c.registry.splitCheckObservers {
-		server.addChecker(ctx, host, engine, policy)
+	for _, observer := range c.registry.splitCheckObservers {
+		observer.addChecker(ctx, host, engine, policy)
 		if ctx.bypass {
 			break
 		}
