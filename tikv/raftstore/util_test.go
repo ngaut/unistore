@@ -300,4 +300,3 @@ func cloneEpoch(epoch *metapb.RegionEpoch) *metapb.RegionEpoch {
 		Version: epoch.Version,
 	}
 }
-

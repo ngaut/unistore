@@ -476,4 +476,3 @@ func CloneMsg(origin, cloned proto.Message) error {
 	}
 	return proto.Unmarshal(data, cloned)
 }
-
