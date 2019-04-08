@@ -325,7 +325,6 @@ func (observer *keysSplitCheckObserver) addChecker(obCtx *observerContext, host 
 }
 
 type tableSplitChecker struct {
-	firstEncodedTablePrefix []byte
 	splitKey                []byte
 	checkPolicy             pdpb.CheckPolicy
 }
@@ -334,9 +333,8 @@ func newTableSplitCheckerByPolicy(policy pdpb.CheckPolicy) *tableSplitChecker {
 	return &tableSplitChecker{checkPolicy: policy}
 }
 
-func newTableSplitChecker(firstEncodedTablePrefix, splitKey []byte, policy pdpb.CheckPolicy) *tableSplitChecker {
+func newTableSplitChecker(splitKey []byte, policy pdpb.CheckPolicy) *tableSplitChecker {
 	return &tableSplitChecker{
-		firstEncodedTablePrefix: firstEncodedTablePrefix,
 		splitKey:                splitKey,
 		checkPolicy:             policy,
 	}
@@ -361,8 +359,7 @@ func (checker *tableSplitChecker) onKv(obCtx *observerContext, spCheckKeyEntry s
 	}
 	currentEncodedKey := OriginKey(spCheckKeyEntry.key)
 	var splitKey []byte
-	// No need to check firstEncodedTablePrefix, since it is always nil.
-	if len(checker.firstEncodedTablePrefix) == 0 && isTableKey(currentEncodedKey) {
+	if isTableKey(currentEncodedKey) {
 		splitKey = currentEncodedKey
 	}
 	if len(splitKey) != 0 {
@@ -427,7 +424,7 @@ func (observer *tableSplitCheckObserver) addChecker(obCtx *observerContext, host
 		// Note that table id does not grow by 1, so have to use encodedEndKey to extract a table prefix.
 		// See more: https://github.com/pingcap/tidb/issues/4727.
 		splitKey := extractTablePrefix(encodedEndKey)
-		host.addChecker(newTableSplitChecker(nil, splitKey, policy))
+		host.addChecker(newTableSplitChecker(splitKey, policy))
 	}
 }
 
