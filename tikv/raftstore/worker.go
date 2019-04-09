@@ -3,7 +3,9 @@ package raftstore
 import (
 	"bytes"
 	"encoding/hex"
+	"github.com/coocood/badger/y"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coocood/badger"
@@ -50,11 +52,13 @@ type task struct {
 }
 
 type regionTask struct {
-	regionId uint64
-	notifier chan<- *eraftpb.Snapshot
-	status   *JobStatus
-	startKey []byte
-	endKey   []byte
+	regionId     uint64
+	kvSnapshot   Snapshot
+	raftSnapshot Snapshot
+	notifier     chan<- *eraftpb.Snapshot
+	status       *JobStatus
+	startKey     []byte
+	endKey       []byte
 }
 
 type raftLogGCTask struct {
@@ -285,12 +289,116 @@ type pendingDeleteRanges struct {
 	ranges *lockstore.MemStore
 }
 
+func (pendDelRanges *pendingDeleteRanges) insert(regionId uint64, startKey, endKey []byte, timeout time.Time) {
+	// todo, currently it is a place holder.
+}
+
+type delRangeHolder struct {
+	startKey []byte
+	endKey   []byte
+	regionId uint64
+}
+
+// findOverlapRanges finds ranges that overlap with [start_key, end_key).
+func (pendDelRanges *pendingDeleteRanges) findOverlapRanges(startKey, endKey []byte) []delRangeHolder {
+	// todo, currently it is a a place holder.
+	return nil
+}
+
+// drainOverlapRanges gets ranges that overlap with [start_key, end_key).
+func (pendDelRanges *pendingDeleteRanges) drainOverlapRanges(startKey, endKey []byte) []delRangeHolder {
+	ranges := pendDelRanges.findOverlapRanges(startKey, endKey)
+	for _, r := range ranges {
+		y.Assert(pendDelRanges.ranges.Delete(r.startKey))
+	}
+	return ranges
+}
+
 type snapContext struct {
 	engiens             *Engines
-	batchSize           int
+	batchSize           uint64
 	mgr                 *SnapManager
 	cleanStalePeerDelay time.Duration
 	pendingDeleteRanges *pendingDeleteRanges
+}
+
+// handleGen handles the task of generating snapshot of the Region. It calls `generateSnap` to do the actual work.
+func (snapCtx *snapContext) handleGen(regionId uint64, raftSnapshot, kvSnapshot Snapshot, notifier chan<- *eraftpb.Snapshot) {
+	if err := snapCtx.generateSnap(regionId, raftSnapshot, kvSnapshot, notifier); err != nil {
+		log.Errorf("failed to generate snapshot!!!, [regionId: %d, err : %v]", regionId, err)
+	}
+}
+
+// generateSnap generates the snapshots of the Region
+func (snapCtx *snapContext) generateSnap(regionId uint64, raftSnapshot, kvSnapshot Snapshot, notifier chan<- *eraftpb.Snapshot) error {
+	// do we need to check leader here?
+	snap, err := doSnapshot(snapCtx.mgr, raftSnapshot, kvSnapshot, regionId)
+	if err != nil {
+		return err
+	}
+	notifier <- snap
+	return nil
+}
+
+// applySnap applies snapshot data of the Region.
+func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus) (int, error) {
+	// todo, currently, it is a place holder.
+	return 0, nil
+}
+
+// handleApply tries to apply the snapshot of the specified Region. It calls `applySnap` to do the actual work.
+func (snapCtx *snapContext) handleApply(regionId uint64, status *JobStatus) {
+	atomic.CompareAndSwapInt64(status, JobStatus_Pending, JobStatus_Running)
+	retCode, err := snapCtx.applySnap(regionId, status)
+	switch retCode {
+	case 0:
+		atomic.SwapInt64(status, JobStatus_Finished)
+	case -1:
+		log.Warnf("applying snapshot is aborted. [regionId: %d]", regionId)
+		y.Assert(atomic.SwapInt64(status, JobStatus_Cancelled) == JobStatus_Cancelling)
+	case -2:
+		log.Errorf("failed to apply snap!!!. err: %v", err)
+		atomic.SwapInt64(status, JobStatus_Failed)
+	}
+}
+
+/// ingestMaybeStall checks the number of files at level 0 to avoid write stall after ingesting sst.
+/// Returns true if the ingestion causes write stall.
+func (snapCtx *snapContext) ingestMaybeStall() bool {
+	for _, cf := range snapshotCFs {
+		if plainFileUsed(cf) {
+			continue
+		}
+		// todo, related to cf.
+	}
+	return false
+}
+
+// cleanupOverlapRanges gets the overlapping ranges and cleans them up.
+func (snapCtx *snapContext) cleanUpOverlapRanges(startKey, endKey []byte) {
+	overlapRanges := snapCtx.pendingDeleteRanges.drainOverlapRanges(startKey, endKey)
+	useDeleteFiles := false
+	for _, r := range overlapRanges {
+		snapCtx.cleanUpRange(r.regionId, r.startKey, r.endKey, useDeleteFiles)
+	}
+}
+
+// insertPendingDeleteRange inserts a new pending range, and it will be cleaned up with some delay.
+func (snapCtx *snapContext) insertPendingDeleteRange(regionId uint64, startKey, endKey []byte) bool {
+	if int64(snapCtx.cleanStalePeerDelay.Seconds()) == 0 {
+		return false
+	}
+	snapCtx.cleanUpOverlapRanges(startKey, endKey)
+	log.Infof("register deleting data in range. [regionId: %d, startKey: %s, endKey: %s]", regionId,
+		regionId, hex.EncodeToString(startKey), hex.EncodeToString(endKey))
+	timeout := time.Now().Add(snapCtx.cleanStalePeerDelay)
+	snapCtx.pendingDeleteRanges.insert(regionId, startKey, endKey, timeout)
+	return true
+}
+
+// cleanUpRange cleans up the data within the range.
+func (snapCtx *snapContext) cleanUpRange(regionId uint64, startKey, endKey []byte, useDeleteFiles bool) {
+	// todo, currently it is a place holder.
 }
 
 type regionRunner struct {
@@ -298,14 +406,65 @@ type regionRunner struct {
 	// we may delay some apply tasks if level 0 files to write stall threshold,
 	// pending_applies records all delayed apply task, and will check again later
 	pendingApplies []task
+	wg             sync.WaitGroup
 }
 
 func newRegionRunner(engines *Engines, mgr *SnapManager, batchSize uint64, cleanStalePeerDelay time.Duration) *regionRunner {
-	return nil // TODO: stub
+	return &regionRunner{
+		ctx: &snapContext{
+			engiens:             engines,
+			mgr:                 mgr,
+			batchSize:           batchSize,
+			cleanStalePeerDelay: cleanStalePeerDelay,
+			pendingDeleteRanges: &pendingDeleteRanges{},
+		},
+	}
+}
+
+// handlePendingApplies tries to apply pending tasks if there is some.
+func (r *regionRunner) handlePendingApplies() {
+	for len(r.pendingApplies) != 0 {
+		// Should not handle too many applies than the number of files that can be ingested.
+		// Check level 0 every time because we can not make sure how does the number of level 0 files change.
+		if r.ctx.ingestMaybeStall() {
+			break
+		}
+		task := r.pendingApplies[0].data.(*regionTask)
+		r.pendingApplies = r.pendingApplies[1:]
+		r.ctx.handleApply(task.regionId, task.status)
+	}
+}
+
+func (r *regionRunner) handleGen(regionTask *regionTask) {
+	go r.ctx.handleGen(regionTask.regionId, regionTask.raftSnapshot, regionTask.kvSnapshot, regionTask.notifier)
+	r.wg.Done()
 }
 
 func (r *regionRunner) run(t task) {
-	// TODO: stub
+	switch t.tp {
+	case taskTypeRegionGen:
+		// It is safe for now to handle generating and applying snapshot concurrently,
+		// but it may not when merge is implemented.
+		regionTask := t.data.(*regionTask)
+		r.handleGen(regionTask)
+		r.wg.Add(1)
+	case taskTypeRegionApply:
+		// To make sure applying snapshots in order.
+		r.pendingApplies = append(r.pendingApplies, t)
+		r.handlePendingApplies()
+	case taskTypeRegionDestroy:
+		// Try to delay the range deletion because
+		// there might be a coprocessor request related to this range
+		regionTask := t.data.(regionTask)
+		if !r.ctx.insertPendingDeleteRange(regionTask.regionId, regionTask.startKey, regionTask.endKey) {
+			// Use delete files
+			r.ctx.cleanUpRange(regionTask.regionId, regionTask.startKey, regionTask.endKey, false)
+		}
+	}
+}
+
+func (r *regionRunner) shutdown() {
+	r.wg.Wait()
 }
 
 type raftLogGCRunner struct {
