@@ -52,11 +52,11 @@ type task struct {
 }
 
 type regionTask struct {
-	regionId     uint64
-	notifier     chan<- *eraftpb.Snapshot
-	status       *JobStatus
-	startKey     []byte
-	endKey       []byte
+	regionId uint64
+	notifier chan<- *eraftpb.Snapshot
+	status   *JobStatus
+	startKey []byte
+	endKey   []byte
 }
 
 type raftLogGCTask struct {
