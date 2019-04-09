@@ -354,17 +354,15 @@ func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus) error 
 func (snapCtx *snapContext) handleApply(regionId uint64, status *JobStatus) {
 	atomic.CompareAndSwapInt64(status, JobStatus_Pending, JobStatus_Running)
 	err := snapCtx.applySnap(regionId, status)
-	if err == nil {
+	switch err.(type) {
+	case nil:
 		atomic.SwapInt64(status, JobStatus_Finished)
-	} else {
-		switch err.(type) {
-		case applySnapAbortError:
-			log.Warnf("applying snapshot is aborted. [regionId: %d]", regionId)
-			y.Assert(atomic.SwapInt64(status, JobStatus_Cancelled) == JobStatus_Cancelling)
-		default:
-			log.Errorf("failed to apply snap!!!. err: %v", err)
-			atomic.SwapInt64(status, JobStatus_Failed)
-		}
+	case applySnapAbortError:
+		log.Warnf("applying snapshot is aborted. [regionId: %d]", regionId)
+		y.Assert(atomic.SwapInt64(status, JobStatus_Cancelled) == JobStatus_Cancelling)
+	default:
+		log.Errorf("failed to apply snap!!!. err: %v", err)
+		atomic.SwapInt64(status, JobStatus_Failed)
 	}
 }
 
