@@ -407,6 +407,7 @@ const (
 
 func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint64) error {
 	store.updateLatestTS(startTS)
+	keys = deduplicateKeys(keys)
 	hashVals := keysToHashVals(keys...)
 	regCtx := reqCtx.regCtx
 	lockBatch := newWriteLockBatch(reqCtx)
@@ -429,6 +430,18 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 	}
 	err := store.writeLocks(lockBatch)
 	return errors.Trace(err)
+}
+
+func deduplicateKeys(keys [][]byte) [][]byte {
+	m := make(map[string]struct{})
+	deduped := make([][]byte, 0, len(keys))
+	for _, key := range keys {
+		if _, ok := m[string(key)]; !ok {
+			m[string(key)] = struct{}{}
+			deduped = append(deduped, key)
+		}
+	}
+	return deduped
 }
 
 func (store *MVCCStore) rollbackKeyReadLock(batch *writeLockBatch, key []byte, startTS uint64) (status int) {
