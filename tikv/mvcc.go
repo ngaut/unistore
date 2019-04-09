@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	"github.com/coocood/badger"
+	"github.com/coocood/badger/y"
 	"github.com/cznic/mathutil"
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
@@ -130,11 +131,13 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb
 
 	// Must check the LockStore first.
 	for _, m := range mutations {
-		duplicate, err := store.checkPrewriteInLockStore(reqCtx, m, startTS)
+		lock, err := store.checkConflictInLockStore(reqCtx, m, startTS)
 		if err != nil {
 			anyError = true
 		}
-		if duplicate {
+		if lock != nil {
+			// The lock already exists, it's a duplicate command, we can return directly.
+			y.Assert(lock.Op == uint8(kvrpcpb.Op_PessimisticLock))
 			return nil
 		}
 		errs = append(errs, err)
@@ -157,7 +160,7 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb
 
 	for i, m := range mutations {
 		// Note the use of `forUpdateTS` here!
-		oldMeta, oldVal, err := store.checkPrewriteInDB(reqCtx, txn, items[i], forUpdateTS)
+		oldMeta, oldVal, err := store.checkConflictInDB(reqCtx, txn, items[i], forUpdateTS)
 		if err != nil {
 			anyError = true
 		}
@@ -197,15 +200,22 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 
 	regCtx.acquireLatches(hashVals)
 	defer regCtx.releaseLatches(hashVals)
+	lockBatch := newWriteLockBatch(reqCtx)
 
 	// Must check the LockStore first.
 	for _, m := range mutations {
-		duplicate, err := store.checkPrewriteInLockStore(reqCtx, m, startTS)
+		lock, err := store.checkConflictInLockStore(reqCtx, m, startTS)
 		if err != nil {
 			anyError = true
 		}
-		if duplicate {
-			return nil
+		if lock != nil {
+			if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
+				// lockstore doesn't support update for now, delete the lock first.
+				lockBatch.delete(m.Key)
+			} else {
+				// duplicated command.
+				return nil
+			}
 		}
 		errs = append(errs, err)
 	}
@@ -213,7 +223,6 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 		return errs
 	}
 
-	lockBatch := newWriteLockBatch(reqCtx)
 	// Check the DB.
 	txn := reqCtx.getDBReader().GetTxn()
 	keys := make([][]byte, len(mutations))
@@ -227,7 +236,7 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 	var buf []byte
 	var enc rowcodec.Encoder
 	for i, m := range mutations {
-		oldMeta, oldVal, err := store.checkPrewriteInDB(reqCtx, txn, items[i], startTS)
+		oldMeta, oldVal, err := store.checkConflictInDB(reqCtx, txn, items[i], startTS)
 		if err != nil {
 			anyError = true
 		}
@@ -274,22 +283,22 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 	return nil
 }
 
-func (store *MVCCStore) checkPrewriteInLockStore(
-	req *requestCtx, mutation *kvrpcpb.Mutation, startTS uint64) (duplicate bool, err error) {
+func (store *MVCCStore) checkConflictInLockStore(
+	req *requestCtx, mutation *kvrpcpb.Mutation, startTS uint64) (*mvcc.MvccLock, error) {
 	req.buf = mvcc.EncodeRollbackKey(req.buf, mutation.Key, startTS)
 	if len(store.rollbackStore.Get(req.buf, nil)) > 0 {
-		return false, ErrAlreadyRollback
+		return nil, ErrAlreadyRollback
 	}
 	req.buf = store.lockStore.Get(mutation.Key, req.buf)
 	if len(req.buf) == 0 {
-		return false, nil
+		return nil, nil
 	}
 	lock := mvcc.DecodeLock(req.buf)
 	if lock.StartTS == startTS {
 		// Same ts, no need to overwrite.
-		return true, nil
+		return &lock, nil
 	}
-	return false, &ErrLocked{
+	return nil, &ErrLocked{
 		Key:     mutation.Key,
 		StartTS: lock.StartTS,
 		Primary: lock.Primary,
@@ -299,7 +308,7 @@ func (store *MVCCStore) checkPrewriteInLockStore(
 
 // checkPrewrietInDB checks that there is no committed version greater than startTS or return write conflict error.
 // And it returns the old version if there is one.
-func (store *MVCCStore) checkPrewriteInDB(
+func (store *MVCCStore) checkConflictInDB(
 	req *requestCtx, txn *badger.Txn, item *badger.Item, startTS uint64) (userMeta mvcc.DBUserMeta, val []byte, err error) {
 	if item == nil {
 		return nil, nil, nil
