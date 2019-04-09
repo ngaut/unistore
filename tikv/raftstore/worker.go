@@ -53,8 +53,6 @@ type task struct {
 
 type regionTask struct {
 	regionId     uint64
-	kvSnapshot   Snapshot
-	raftSnapshot Snapshot
 	notifier     chan<- *eraftpb.Snapshot
 	status       *JobStatus
 	startKey     []byte
@@ -323,16 +321,16 @@ type snapContext struct {
 }
 
 // handleGen handles the task of generating snapshot of the Region. It calls `generateSnap` to do the actual work.
-func (snapCtx *snapContext) handleGen(regionId uint64, raftSnapshot, kvSnapshot Snapshot, notifier chan<- *eraftpb.Snapshot) {
-	if err := snapCtx.generateSnap(regionId, raftSnapshot, kvSnapshot, notifier); err != nil {
+func (snapCtx *snapContext) handleGen(regionId uint64, notifier chan<- *eraftpb.Snapshot) {
+	if err := snapCtx.generateSnap(regionId, notifier); err != nil {
 		log.Errorf("failed to generate snapshot!!!, [regionId: %d, err : %v]", regionId, err)
 	}
 }
 
 // generateSnap generates the snapshots of the Region
-func (snapCtx *snapContext) generateSnap(regionId uint64, raftSnapshot, kvSnapshot Snapshot, notifier chan<- *eraftpb.Snapshot) error {
+func (snapCtx *snapContext) generateSnap(regionId uint64, notifier chan<- *eraftpb.Snapshot) error {
 	// do we need to check leader here?
-	snap, err := doSnapshot(snapCtx.mgr, raftSnapshot, kvSnapshot, regionId)
+	snap, err := doSnapshot(snapCtx.engiens, snapCtx.mgr, regionId)
 	if err != nil {
 		return err
 	}
@@ -440,7 +438,7 @@ func (r *regionRunner) run(t task) {
 		// It is safe for now to handle generating and applying snapshot concurrently,
 		// but it may not when merge is implemented.
 		regionTask := t.data.(*regionTask)
-		r.ctx.handleGen(regionTask.regionId, regionTask.raftSnapshot, regionTask.kvSnapshot, regionTask.notifier)
+		r.ctx.handleGen(regionTask.regionId, regionTask.notifier)
 	case taskTypeRegionApply:
 		// To make sure applying snapshots in order.
 		r.pendingApplies = append(r.pendingApplies, t)

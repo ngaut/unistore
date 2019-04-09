@@ -916,7 +916,7 @@ func (p *PeerStorage) CheckApplyingSnap() bool {
 	return false
 }
 
-func doSnapshot(mgr *SnapManager, raftSnap, kvSnap Snapshot, regionId uint64) (*eraftpb.Snapshot, error) {
+func doSnapshot(engines *Engines, mgr *SnapManager, regionId uint64) (*eraftpb.Snapshot, error) {
 	// todo, currently it is a place holder
 	return nil, nil
 }
