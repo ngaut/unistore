@@ -406,7 +406,6 @@ type regionRunner struct {
 	// we may delay some apply tasks if level 0 files to write stall threshold,
 	// pending_applies records all delayed apply task, and will check again later
 	pendingApplies []task
-	wg             sync.WaitGroup
 }
 
 func newRegionRunner(engines *Engines, mgr *SnapManager, batchSize uint64, cleanStalePeerDelay time.Duration) *regionRunner {
@@ -435,19 +434,13 @@ func (r *regionRunner) handlePendingApplies() {
 	}
 }
 
-func (r *regionRunner) handleGen(regionTask *regionTask) {
-	go r.ctx.handleGen(regionTask.regionId, regionTask.raftSnapshot, regionTask.kvSnapshot, regionTask.notifier)
-	r.wg.Done()
-}
-
 func (r *regionRunner) run(t task) {
 	switch t.tp {
 	case taskTypeRegionGen:
 		// It is safe for now to handle generating and applying snapshot concurrently,
 		// but it may not when merge is implemented.
 		regionTask := t.data.(*regionTask)
-		r.handleGen(regionTask)
-		r.wg.Add(1)
+		r.ctx.handleGen(regionTask.regionId, regionTask.raftSnapshot, regionTask.kvSnapshot, regionTask.notifier)
 	case taskTypeRegionApply:
 		// To make sure applying snapshots in order.
 		r.pendingApplies = append(r.pendingApplies, t)
@@ -464,7 +457,7 @@ func (r *regionRunner) run(t task) {
 }
 
 func (r *regionRunner) shutdown() {
-	r.wg.Wait()
+	// todo, currently it is a a place holder.
 }
 
 type raftLogGCRunner struct {
