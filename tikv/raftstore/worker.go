@@ -338,25 +338,33 @@ func (snapCtx *snapContext) generateSnap(regionId uint64, notifier chan<- *eraft
 	return nil
 }
 
+type applySnapAbortError string
+
+func (e applySnapAbortError) Error() string {
+	return "abort"
+}
+
 // applySnap applies snapshot data of the Region.
-func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus) (int, error) {
+func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus) error {
 	// todo, currently, it is a place holder.
-	return 0, nil
+	return nil
 }
 
 // handleApply tries to apply the snapshot of the specified Region. It calls `applySnap` to do the actual work.
 func (snapCtx *snapContext) handleApply(regionId uint64, status *JobStatus) {
 	atomic.CompareAndSwapInt64(status, JobStatus_Pending, JobStatus_Running)
-	retCode, err := snapCtx.applySnap(regionId, status)
-	switch retCode {
-	case 0:
+	err := snapCtx.applySnap(regionId, status)
+	if err == nil {
 		atomic.SwapInt64(status, JobStatus_Finished)
-	case -1:
-		log.Warnf("applying snapshot is aborted. [regionId: %d]", regionId)
-		y.Assert(atomic.SwapInt64(status, JobStatus_Cancelled) == JobStatus_Cancelling)
-	case -2:
-		log.Errorf("failed to apply snap!!!. err: %v", err)
-		atomic.SwapInt64(status, JobStatus_Failed)
+	} else {
+		switch err.(type) {
+		case applySnapAbortError:
+			log.Warnf("applying snapshot is aborted. [regionId: %d]", regionId)
+			y.Assert(atomic.SwapInt64(status, JobStatus_Cancelled) == JobStatus_Cancelling)
+		default:
+			log.Errorf("failed to apply snap!!!. err: %v", err)
+			atomic.SwapInt64(status, JobStatus_Failed)
+		}
 	}
 }
 
