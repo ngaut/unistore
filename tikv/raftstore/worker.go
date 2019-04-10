@@ -2,7 +2,9 @@ package raftstore
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"github.com/coocood/badger/y"
 	"sync"
 	"sync/atomic"
@@ -288,7 +290,47 @@ type pendingDeleteRanges struct {
 }
 
 func (pendDelRanges *pendingDeleteRanges) insert(regionId uint64, startKey, endKey []byte, timeout time.Time) {
-	// todo, currently it is a place holder.
+	if len(pendDelRanges.findOverlapRanges(startKey, endKey)) == 0 {
+		panic(fmt.Sprintf("[region %d] register deleting data in [%v, %v) failed due to overlap", regionId, startKey, endKey))
+	}
+	peerInfo := &stalePeerInfo{
+		endKey:   endKey,
+		regionId: regionId,
+		timeout:  timeout,
+	}
+	pendDelRanges.ranges.Insert(startKey, peerInfo.serializeStalePeerInfo())
+}
+
+type stalePeerInfo struct {
+	regionId uint64
+	endKey   []byte
+	timeout  time.Time
+}
+
+func (peerInfo *stalePeerInfo) serializeStalePeerInfo() []byte {
+	if timeoutData, err := peerInfo.timeout.MarshalBinary(); err != nil {
+		log.Errorf("serialize stale Peer info failed, [regionId: %d, endKey: %v]", peerInfo.regionId, peerInfo.endKey)
+		return nil
+	} else {
+		buf := make([]byte, 8+4+4)
+		binary.LittleEndian.PutUint64(buf, peerInfo.regionId)
+		binary.LittleEndian.PutUint32(buf, uint32(len(peerInfo.endKey)))
+		binary.LittleEndian.PutUint32(buf, uint32(len(timeoutData)))
+		buf = append(buf, peerInfo.endKey...)
+		buf = append(buf, timeoutData...)
+		return buf
+	}
+}
+
+func deserializeStalePeerInfo(data []byte) *stalePeerInfo {
+	peerInfo := new(stalePeerInfo)
+	peerInfo.regionId = binary.LittleEndian.Uint64(data[:8])
+	endKeyLen := binary.LittleEndian.Uint32(data[8:12])
+	peerInfo.endKey = data[12 : 12+endKeyLen]
+	if err := peerInfo.timeout.UnmarshalBinary(data[12+endKeyLen:]); err != nil {
+		log.Errorf("deserialize stale peer info failed")
+	}
+	return peerInfo
 }
 
 type delRangeHolder struct {
@@ -298,9 +340,28 @@ type delRangeHolder struct {
 }
 
 // findOverlapRanges finds ranges that overlap with [start_key, end_key).
-func (pendDelRanges *pendingDeleteRanges) findOverlapRanges(startKey, endKey []byte) []delRangeHolder {
-	// todo, currently it is a a place holder.
-	return nil
+func (pendDelRanges *pendingDeleteRanges) findOverlapRanges(startKey, endKey []byte) (ranges []delRangeHolder) {
+	if exceedEndKey(startKey, endKey) {
+		return nil
+	}
+	ite := pendDelRanges.ranges.NewIterator()
+	// find the first range that may overlap with [start_key, end_key)
+	if ite.SeekForExclusivePrev(startKey); ite.Valid() {
+		peerInfo := deserializeStalePeerInfo(ite.Value())
+		if bytes.Compare(peerInfo.endKey, startKey) > 0 {
+			ranges = append(ranges, delRangeHolder{startKey: ite.Key(), endKey: peerInfo.endKey, regionId: peerInfo.regionId})
+		}
+	}
+	// Find the rest ranges that overlap with [start_key, end_key)
+	for ite.Next(); ite.Valid(); ite.Next() {
+		peerInfo := deserializeStalePeerInfo(ite.Value())
+		startKey := ite.Key()
+		if exceedEndKey(startKey, endKey) {
+			break
+		}
+		ranges = append(ranges, delRangeHolder{startKey: ite.Key(), endKey: peerInfo.endKey, regionId: peerInfo.regionId})
+	}
+	return
 }
 
 // drainOverlapRanges gets ranges that overlap with [start_key, end_key).
@@ -318,6 +379,7 @@ type snapContext struct {
 	mgr                 *SnapManager
 	cleanStalePeerDelay time.Duration
 	pendingDeleteRanges *pendingDeleteRanges
+	useDeleteRange      bool
 }
 
 // handleGen handles the task of generating snapshot of the Region. It calls `generateSnap` to do the actual work.
@@ -402,7 +464,20 @@ func (snapCtx *snapContext) insertPendingDeleteRange(regionId uint64, startKey, 
 
 // cleanUpRange cleans up the data within the range.
 func (snapCtx *snapContext) cleanUpRange(regionId uint64, startKey, endKey []byte, useDeleteFiles bool) {
-	// todo, currently it is a place holder.
+	if useDeleteFiles {
+		if err := deleteAllFilesInRange(snapCtx.engiens.kv, startKey, endKey); err != nil {
+			log.Errorf("failed to delete files in range, [regionId: %d, startKey: %s, endKey: %s, err: %v]", regionId,
+				hex.EncodeToString(startKey), hex.EncodeToString(endKey), err)
+			return
+		}
+	}
+	if err := deleteAllInRange(snapCtx.engiens.kv, startKey, endKey, snapCtx.useDeleteRange); err != nil {
+		log.Errorf("failed to delete data in range, [regionId: %d, startKey: %s, endKey: %s, err: %v]", regionId,
+			hex.EncodeToString(startKey), hex.EncodeToString(endKey), err)
+	} else {
+		log.Infof("succeed in deleting data in range. [regionId: %d, startKey: %s, endKey: %s]", regionId,
+			hex.EncodeToString(startKey), hex.EncodeToString(endKey))
+	}
 }
 
 type regionRunner struct {
