@@ -476,3 +476,8 @@ func CloneMsg(origin, cloned proto.Message) error {
 	}
 	return proto.Unmarshal(data, cloned)
 }
+
+func deleteAllInRange(db *DBBundle, startKey, endKey []byte, useDeleteRange bool) error {
+	// todo, currently, it is a place holder.
+	return nil
+}
