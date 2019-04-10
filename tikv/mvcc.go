@@ -206,6 +206,7 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 	regCtx.acquireLatches(hashVals)
 	defer regCtx.releaseLatches(hashVals)
 	lockBatch := newWriteLockBatch(reqCtx)
+	var hasPessimistic bool
 
 	// Must check the LockStore first.
 	for _, m := range mutations {
@@ -217,6 +218,7 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 			if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
 				// lockstore doesn't support update for now, delete the lock first.
 				lockBatch.delete(m.Key)
+				hasPessimistic = true
 			} else {
 				// duplicated command.
 				return nil
@@ -240,8 +242,12 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 	}
 	var buf []byte
 	var enc rowcodec.Encoder
+	checkConflictTS := startTS
+	if hasPessimistic {
+		checkConflictTS = math.MaxUint64
+	}
 	for i, m := range mutations {
-		oldMeta, oldVal, err := store.checkConflictInDB(reqCtx, txn, items[i], startTS)
+		oldMeta, oldVal, err := store.checkConflictInDB(reqCtx, txn, items[i], checkConflictTS)
 		if err != nil {
 			anyError = true
 		}
