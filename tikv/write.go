@@ -262,7 +262,6 @@ func (writer *dbWriter) Close() {
 func (writer *dbWriter) Write(batch mvcc.WriteBatch) error {
 	wb := batch.(*writeBatch)
 	if len(wb.dbBatch.entries) > 0 {
-		// We must delete lock after commit succeed, or there will be inconsistency.
 		wb.dbBatch.wg.Add(1)
 		writer.dbCh <- &wb.dbBatch
 		wb.dbBatch.wg.Wait()
@@ -272,6 +271,7 @@ func (writer *dbWriter) Write(batch mvcc.WriteBatch) error {
 		}
 	}
 	if len(wb.lockBatch.entries) > 0 {
+		// We must delete lock after commit succeed, or there will be inconsistency.
 		wb.lockBatch.wg.Add(1)
 		writer.lockCh <- &wb.lockBatch
 		wb.lockBatch.wg.Wait()
@@ -358,9 +358,6 @@ func (writer *dbWriter) collectRangeKeys(it *badger.Iterator, startKey, endKey [
 			break
 		}
 		keys = append(keys, key)
-		if len(keys) == delRangeBatchSize {
-			break
-		}
 	}
 	return keys
 }
