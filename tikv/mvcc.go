@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/ngaut/unistore/util/deadlock"
+
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
 	"github.com/cznic/mathutil"
@@ -35,6 +37,8 @@ type MVCCStore struct {
 
 	safePoint *SafePoint
 	gcLock    sync.Mutex
+
+	deadlockDetector *deadlock.Detector
 }
 
 // NewMVCCStore creates a new MVCCStore
@@ -43,12 +47,13 @@ func NewMVCCStore(db *badger.DB, dataDir string, safePoint *SafePoint) *MVCCStor
 	rollbackStore := lockstore.NewMemStore(256 << 10)
 	closeCh := make(chan struct{})
 	store := &MVCCStore{
-		db:            db,
-		dir:           dataDir,
-		lockStore:     ls,
-		rollbackStore: rollbackStore,
-		closeCh:       closeCh,
-		safePoint:     safePoint,
+		db:               db,
+		dir:              dataDir,
+		lockStore:        ls,
+		rollbackStore:    rollbackStore,
+		closeCh:          closeCh,
+		safePoint:        safePoint,
+		deadlockDetector: deadlock.NewDetector(),
 	}
 	store.writeLockWorker = &writeLockWorker{
 		batchCh: make(chan *writeLockBatch, batchChanSize),
@@ -298,6 +303,11 @@ func (store *MVCCStore) checkConflictInLockStore(
 		// Same ts, no need to overwrite.
 		return &lock, nil
 	}
+	if mutation.Op == kvrpcpb.Op_PessimisticLock {
+		if err := store.deadlockDetector.Detect(startTS, lock.StartTS); err != nil {
+			return nil, err
+		}
+	}
 	return nil, &ErrLocked{
 		Key:     mutation.Key,
 		StartTS: lock.StartTS,
@@ -339,6 +349,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 
 	var buf []byte
 	var tmpDiff int
+	var hasPessimisticLock bool
 	for _, key := range keys {
 		buf = store.lockStore.Get(key, buf)
 		if len(buf) == 0 {
@@ -350,6 +361,9 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 		if lock.StartTS != startTS {
 			return ErrReplaced
 		}
+		if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
+			hasPessimisticLock = true
+		}
 		if lock.Op == uint8(kvrpcpb.Op_Lock) {
 			continue
 		}
@@ -359,6 +373,9 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 			oldKey := mvcc.EncodeOldKey(key, lock.OldMeta.CommitTS())
 			dbBatch.set(oldKey, lock.OldVal, lock.OldMeta.ToOldUserMeta(commitTS))
 		}
+	}
+	if hasPessimisticLock {
+		store.deadlockDetector.CleanUp(startTS)
 	}
 	atomic.AddInt64(&regCtx.diff, int64(tmpDiff))
 	err := store.writeDB(dbBatch)
@@ -467,6 +484,9 @@ func (store *MVCCStore) rollbackKeyReadLock(batch *writeLockBatch, key []byte, s
 			// To prevent that we update it a rollback lock.
 			batch.rollback(rollbackKey)
 			batch.delete(key)
+			if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
+				store.deadlockDetector.CleanUp(startTS)
+			}
 			return rollbackStatusDone
 		}
 		// lock.startTS > startTS, go to DB to check if the key is committed.
@@ -630,6 +650,7 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 	var lockKeys [][]byte
 	var lockVals [][]byte
 	it := store.lockStore.NewIterator()
+	var hasPessimisticLock bool
 	for it.Seek(regCtx.startKey); it.Valid(); it.Next() {
 		if exceedEndKey(it.Key(), regCtx.endKey) {
 			break
@@ -638,12 +659,19 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 		if lock.StartTS != startTS {
 			continue
 		}
+		if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
+			hasPessimisticLock = true
+		}
 		lockKeys = append(lockKeys, safeCopy(it.Key()))
 		lockVals = append(lockVals, safeCopy(it.Value()))
 	}
 	if len(lockKeys) == 0 {
 		return nil
 	}
+	if hasPessimisticLock {
+		store.deadlockDetector.CleanUp(startTS)
+	}
+
 	hashVals := keysToHashVals(lockKeys...)
 	lockBatch := newWriteLockBatch(reqCtx)
 	var dbBatch *writeDBBatch

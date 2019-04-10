@@ -46,3 +46,9 @@ type ErrKeyAlreadyExists struct {
 func (e ErrKeyAlreadyExists) Error() string {
 	return "key already exists"
 }
+
+type ErrDeadlock uint64
+
+func (e ErrDeadlock) Error() string {
+	return "deadlock"
+}
