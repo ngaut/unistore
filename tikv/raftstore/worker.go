@@ -314,8 +314,8 @@ func (peerInfo *stalePeerInfo) serializeStalePeerInfo() []byte {
 	} else {
 		buf := make([]byte, 8+4+4)
 		binary.LittleEndian.PutUint64(buf, peerInfo.regionId)
-		binary.LittleEndian.PutUint32(buf, uint32(len(peerInfo.endKey)))
-		binary.LittleEndian.PutUint32(buf, uint32(len(timeoutData)))
+		binary.LittleEndian.PutUint32(buf[8:], uint32(len(peerInfo.endKey)))
+		binary.LittleEndian.PutUint32(buf[12:], uint32(len(timeoutData)))
 		buf = append(buf, peerInfo.endKey...)
 		buf = append(buf, timeoutData...)
 		return buf
@@ -326,8 +326,9 @@ func deserializeStalePeerInfo(data []byte) *stalePeerInfo {
 	peerInfo := new(stalePeerInfo)
 	peerInfo.regionId = binary.LittleEndian.Uint64(data[:8])
 	endKeyLen := binary.LittleEndian.Uint32(data[8:12])
-	peerInfo.endKey = data[12 : 12+endKeyLen]
-	if err := peerInfo.timeout.UnmarshalBinary(data[12+endKeyLen:]); err != nil {
+	timeoutLen := binary.LittleEndian.Uint32(data[12:16])
+	peerInfo.endKey = data[16 : 16+endKeyLen]
+	if err := peerInfo.timeout.UnmarshalBinary(data[16+endKeyLen : 16+endKeyLen+timeoutLen]); err != nil {
 		log.Errorf("deserialize stale peer info failed")
 	}
 	return peerInfo
@@ -456,7 +457,7 @@ func (snapCtx *snapContext) insertPendingDeleteRange(regionId uint64, startKey, 
 	}
 	snapCtx.cleanUpOverlapRanges(startKey, endKey)
 	log.Infof("register deleting data in range. [regionId: %d, startKey: %s, endKey: %s]", regionId,
-		regionId, hex.EncodeToString(startKey), hex.EncodeToString(endKey))
+		hex.EncodeToString(startKey), hex.EncodeToString(endKey))
 	timeout := time.Now().Add(snapCtx.cleanStalePeerDelay)
 	snapCtx.pendingDeleteRanges.insert(regionId, startKey, endKey, timeout)
 	return true
