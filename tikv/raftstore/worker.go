@@ -455,7 +455,7 @@ func (snapCtx *snapContext) insertPendingDeleteRange(regionId uint64, startKey, 
 	}
 	snapCtx.cleanUpOverlapRanges(startKey, endKey)
 	log.Infof("register deleting data in range. [regionId: %d, startKey: %s, endKey: %s]", regionId,
-		regionId, hex.EncodeToString(startKey), hex.EncodeToString(endKey))
+		hex.EncodeToString(startKey), hex.EncodeToString(endKey))
 	timeout := time.Now().Add(snapCtx.cleanStalePeerDelay)
 	snapCtx.pendingDeleteRanges.insert(regionId, startKey, endKey, timeout)
 	return true
