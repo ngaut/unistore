@@ -331,7 +331,7 @@ func (store *MVCCStore) checkConflictInDB(
 	}
 	userMeta = mvcc.DBUserMeta(item.UserMeta())
 	if userMeta.CommitTS() > startTS {
-		return nil, nil, ErrRetryable("write conflict")
+		return nil, nil, ErrRetryable("[write conflict]")
 	}
 	val, err = item.Value()
 	if err != nil {
