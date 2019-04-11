@@ -314,9 +314,11 @@ func (store *MVCCStore) checkConflictInLockStore(
 	}
 	if mutation.Op == kvrpcpb.Op_PessimisticLock {
 		if err := store.deadlockDetector.Detect(startTS, lock.StartTS); err != nil {
+			log.Errorf("%d deadlock for %d", startTS, lock.StartTS)
 			return nil, err
 		}
 	}
+	log.Infof("%d blocked by %d", startTS, lock.StartTS)
 	return nil, &ErrLocked{
 		Key:     mutation.Key,
 		StartTS: lock.StartTS,
@@ -432,6 +434,7 @@ const (
 )
 
 func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint64) error {
+	log.Warnf("%d rollback", startTS)
 	store.updateLatestTS(startTS)
 	keys = deduplicateKeys(keys)
 	hashVals := keysToHashVals(keys...)
