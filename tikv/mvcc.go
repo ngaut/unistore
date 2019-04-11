@@ -134,6 +134,7 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb
 	regCtx.acquireLatches(hashVals)
 	defer regCtx.releaseLatches(hashVals)
 
+	newMutations := mutations[:0]
 	// Must check the LockStore first.
 	for _, m := range mutations {
 		lock, err := store.checkConflictInLockStore(reqCtx, m, startTS)
@@ -143,13 +144,15 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb
 		if lock != nil {
 			// The lock already exists, it's a duplicate command, we can return directly.
 			y.Assert(lock.Op == uint8(kvrpcpb.Op_PessimisticLock))
-			return nil
+			continue
 		}
+		newMutations = append(newMutations, m)
 		errs = append(errs, err)
 	}
-	if anyError {
+	if anyError || len(newMutations) == 0 {
 		return errs
 	}
+	mutations = newMutations
 
 	lockBatch := newWriteLockBatch(reqCtx)
 	// Check the DB.
