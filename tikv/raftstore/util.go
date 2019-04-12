@@ -483,6 +483,6 @@ func deleteAllInRange(db *DBBundle, startKey, endKey []byte, useDeleteRange bool
 }
 
 func deleteAllFilesInRange(db *DBBundle, startKey, endKey []byte) error {
-	// todo, currently, it is a place holder.
+	// todo, needs badger to export api to support delete files.
 	return nil
 }

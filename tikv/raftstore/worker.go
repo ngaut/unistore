@@ -290,7 +290,7 @@ type pendingDeleteRanges struct {
 }
 
 func (pendDelRanges *pendingDeleteRanges) insert(regionId uint64, startKey, endKey []byte, timeout time.Time) {
-	if len(pendDelRanges.findOverlapRanges(startKey, endKey)) == 0 {
+	if len(pendDelRanges.findOverlapRanges(startKey, endKey)) != 0 {
 		panic(fmt.Sprintf("[region %d] register deleting data in [%v, %v) failed due to overlap", regionId, startKey, endKey))
 	}
 	peerInfo := &stalePeerInfo{
@@ -300,6 +300,34 @@ func (pendDelRanges *pendingDeleteRanges) insert(regionId uint64, startKey, endK
 	}
 	pendDelRanges.ranges.Insert(startKey, peerInfo.serializeStalePeerInfo())
 }
+
+// remove removes and returns the peer info with the `start_key`.
+func (pendDelRanges *pendingDeleteRanges) remove(startKey []byte) *stalePeerInfo {
+	value := pendDelRanges.ranges.Get(startKey, nil)
+	if value != nil {
+		pendDelRanges.ranges.Delete(startKey)
+		return deserializeStalePeerInfo(safeCopy(value))
+	}
+	return nil
+}
+
+// timeoutRanges returns all timeout ranges info.
+func (pendDelRanges *pendingDeleteRanges) timeoutRanges(now time.Time) (ranges []delRangeHolder) {
+	ite := pendDelRanges.ranges.NewIterator()
+	for ite.Next(); ite.Valid(); ite.Next() {
+		startKey := safeCopy(ite.Key())
+		peerInfo := deserializeStalePeerInfo(safeCopy(ite.Value()))
+		if peerInfo.timeout.Before(now) {
+			ranges = append(ranges, delRangeHolder{
+				startKey: startKey,
+				endKey:   peerInfo.endKey,
+				regionId: peerInfo.regionId,
+			})
+		}
+	}
+	return
+}
+
 
 type stalePeerInfo struct {
 	regionId uint64
@@ -348,19 +376,19 @@ func (pendDelRanges *pendingDeleteRanges) findOverlapRanges(startKey, endKey []b
 	ite := pendDelRanges.ranges.NewIterator()
 	// find the first range that may overlap with [start_key, end_key)
 	if ite.SeekForExclusivePrev(startKey); ite.Valid() {
-		peerInfo := deserializeStalePeerInfo(ite.Value())
+		peerInfo := deserializeStalePeerInfo(safeCopy(ite.Value()))
 		if bytes.Compare(peerInfo.endKey, startKey) > 0 {
-			ranges = append(ranges, delRangeHolder{startKey: ite.Key(), endKey: peerInfo.endKey, regionId: peerInfo.regionId})
+			ranges = append(ranges, delRangeHolder{startKey: safeCopy(ite.Key()), endKey: peerInfo.endKey, regionId: peerInfo.regionId})
 		}
 	}
 	// Find the rest ranges that overlap with [start_key, end_key)
 	for ite.Next(); ite.Valid(); ite.Next() {
-		peerInfo := deserializeStalePeerInfo(ite.Value())
-		startKey := ite.Key()
+		peerInfo := deserializeStalePeerInfo(safeCopy(ite.Value()))
+		startKey := safeCopy(ite.Key())
 		if exceedEndKey(startKey, endKey) {
 			break
 		}
-		ranges = append(ranges, delRangeHolder{startKey: ite.Key(), endKey: peerInfo.endKey, regionId: peerInfo.regionId})
+		ranges = append(ranges, delRangeHolder{startKey: startKey, endKey: peerInfo.endKey, regionId: peerInfo.regionId})
 	}
 	return
 }
