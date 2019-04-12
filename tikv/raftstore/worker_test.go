@@ -8,7 +8,7 @@ import (
 
 func TestGcRaftLog(t *testing.T) {
 	engines := newTestEngines(t)
-	defer cleanUpEngineData(engines)
+	defer cleanUpTestEngineData(engines)
 	raftDb := engines.raft
 	taskResCh := make(chan raftLogGcTaskRes, 1)
 	runner := raftLogGCRunner{taskResCh: taskResCh}

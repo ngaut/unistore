@@ -95,7 +95,7 @@ func cleanUpTestData(peerStore *PeerStorage) {
 	os.RemoveAll(peerStore.Engines.raftPath)
 }
 
-func cleanUpEngineData(engines *Engines) {
+func cleanUpTestEngineData(engines *Engines) {
 	os.RemoveAll(engines.kvPath)
 	os.RemoveAll(engines.raftPath)
 }
