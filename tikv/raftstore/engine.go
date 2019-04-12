@@ -203,6 +203,33 @@ func (wb *WriteBatch) WriteToRaft(db *badger.DB) error {
 	return nil
 }
 
+// writeToRaftWithCounter tries to write to raft db and returns how many entries it really writes,
+// even in situation where error occurs.
+func (wb *WriteBatch) writeToRaftWithCounter(db *badger.DB) (uint64, error) {
+	var i uint64 = 0
+	if len(wb.entries) > 0 {
+		err := db.Update(func(txn *badger.Txn) error {
+			var err1 error
+			for _, entry := range wb.entries {
+				if len(entry.Value) == 0 {
+					err1 = txn.Delete(entry.Key)
+				} else {
+					err1 = txn.SetEntry(entry)
+				}
+				if err1 != nil {
+					return err1
+				}
+				i ++
+			}
+			return nil
+		})
+		if err != nil {
+			return i, errors.WithStack(err)
+		}
+	}
+	return i, nil
+}
+
 func (wb *WriteBatch) MustWriteToKV(db *DBBundle) {
 	err := wb.WriteToKV(db)
 	if err != nil {

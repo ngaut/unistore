@@ -394,7 +394,7 @@ func (snapCtx *snapContext) insertPendingDeleteRange(regionId uint64, startKey, 
 	}
 	snapCtx.cleanUpOverlapRanges(startKey, endKey)
 	log.Infof("register deleting data in range. [regionId: %d, startKey: %s, endKey: %s]", regionId,
-		regionId, hex.EncodeToString(startKey), hex.EncodeToString(endKey))
+		hex.EncodeToString(startKey), hex.EncodeToString(endKey))
 	timeout := time.Now().Add(snapCtx.cleanStalePeerDelay)
 	snapCtx.pendingDeleteRanges.insert(regionId, startKey, endKey, timeout)
 	return true
@@ -464,11 +464,82 @@ func (r *regionRunner) shutdown() {
 	// todo, currently it is a a place holder.
 }
 
+type raftLogGcTaskRes uint64
+
 type raftLogGCRunner struct {
+	taskResCh chan<- raftLogGcTaskRes
+}
+
+// gcRaftLog does the GC job and returns the count of logs collected.
+func (r *raftLogGCRunner) gcRaftLog(raftDb *badger.DB, regionId, startIdx, endIdx uint64) (uint64, error) {
+
+	// Find the raft log idx range needed to be gc.
+	firstIdx := startIdx
+	if firstIdx == 0 {
+		firstIdx = endIdx
+		err := raftDb.View(func(txn *badger.Txn) error {
+			startKey := RaftLogKey(regionId, 0)
+			ite := txn.NewIterator(badger.DefaultIteratorOptions)
+			defer ite.Close()
+			if ite.Seek(startKey); ite.Valid() {
+				var err error
+				if firstIdx, err = RaftLogIndex(ite.Item().KeyCopy(nil)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	if firstIdx >= endIdx {
+		log.Infof("no need to gc, [regionId: %d]", regionId)
+		return 0, nil
+	}
+
+	var counter uint64 = 0
+	raftWb := WriteBatch{}
+	for idx := firstIdx; idx < endIdx; idx += 1 {
+		key := RaftLogKey(regionId, idx)
+		raftWb.Delete(key)
+		if raftWb.size >= MaxDeleteBatchSize {
+			// Avoid large write batch to reduce latency.
+			if c, err := raftWb.writeToRaftWithCounter(raftDb); err != nil {
+				return c + counter, err
+			} else {
+				counter += c
+			}
+			raftWb.Reset()
+		}
+	}
+	// todo, disable WAL here.
+	if raftWb.Len() != 0 {
+		if c, err := raftWb.writeToRaftWithCounter(raftDb); err != nil {
+			return c + counter, err
+		}
+	}
+	return endIdx - firstIdx, nil
+}
+
+func (r *raftLogGCRunner) reportCollected(collected uint64) {
+	if r.taskResCh == nil {
+		return
+	}
+	r.taskResCh<- raftLogGcTaskRes(collected)
 }
 
 func (r *raftLogGCRunner) run(t task) {
-	// TODO: stub
+	logGcTask := t.data.(*raftLogGCTask)
+	log.Debugf("execute gc log. [regionId: %d, endIndex: %d]", logGcTask.regionID, logGcTask.endIdx)
+	collected, err := r.gcRaftLog(logGcTask.raftEngine, logGcTask.regionID, logGcTask.startIdx, logGcTask.endIdx)
+	if err != nil {
+		log.Errorf("failed to gc. [regionId: %d, collected: %d, err: %v]", logGcTask.regionID, collected, err)
+	} else {
+		log.Debugf("collected log entries. [regionId: %d, entryCount: %d]", logGcTask.regionID, collected)
+	}
+	r.reportCollected(collected)
 }
 
 type compactRunner struct {
