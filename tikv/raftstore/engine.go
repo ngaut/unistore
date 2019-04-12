@@ -260,17 +260,7 @@ func deleteRange(db *DBBundle, startKey, endKey []byte) error {
 	lockIte := db.lockStore.NewIterator()
 	keys = keys[:0]
 	keys = collectLockOrRollbackRangeKeys(lockIte, startKey, endKey, keys)
-	keys = collectLockOrRollbackRangeKeys(lockIte, oldStartKey, oldEndKey, keys)
-	if err := deleteLocksInBatch(db, keys, delRangeBatchSize); err != nil {
-		return err
-	}
-
-	// Delete rollback
-	keys = keys[:0]
-	rollbackIte := db.rollbackStore.NewIterator()
-	keys = collectLockOrRollbackRangeKeys(rollbackIte, startKey, endKey, keys)
-	keys = collectLockOrRollbackRangeKeys(rollbackIte, oldStartKey, oldEndKey, keys)
-	return deleteRollbackInBatch(db, keys, delRangeBatchSize)
+	return deleteLocksInBatch(db, keys, delRangeBatchSize)
 }
 
 func collectRangeKeys(it *badger.Iterator, startKey, endKey []byte, keys [][]byte) [][]byte {

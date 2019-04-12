@@ -305,11 +305,11 @@ func getRegionLocalState(db *badger.DB, regionId uint64) (*rspb.RegionLocalState
 	return regionLocalState, nil
 }
 
-func getApplyState(db *badger.DB, regionId uint64) (*applyState, error) {
-	applyState := &applyState{}
+func getApplyState(db *badger.DB, regionId uint64) (applyState, error) {
+	applyState := applyState{}
 	val, err := getValue(db, ApplyStateKey(regionId))
 	if err != nil {
-		return nil, storageError(fmt.Sprintf("couldn't load raft state of region %d", regionId))
+		return applyState, storageError(fmt.Sprintf("couldn't load raft state of region %d", regionId))
 	}
 	applyState.Unmarshal(val)
 	return applyState, nil

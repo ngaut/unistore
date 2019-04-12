@@ -27,7 +27,9 @@ func newEnginesWithKVDb(t *testing.T, kv *DBBundle) *Engines {
 }
 
 func TestPendingApplies(t *testing.T) {
-	db := getTestDBForRegions(t, "/tmp/test_pending_applies", []uint64{1, 2, 3, 4, 5, 6})
+	kvPath, err := ioutil.TempDir("", "testPendingApplies")
+	require.Nil(t, err)
+	db := getTestDBForRegions(t, kvPath, []uint64{1, 2, 3, 4, 5, 6})
 	keys := []byte{1, 2, 3, 4, 5, 6}
 	for _, k := range keys {
 		require.Nil(t, db.db.Update(func(txn *badger.Txn) error {
