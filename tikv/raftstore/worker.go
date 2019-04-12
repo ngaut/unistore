@@ -578,7 +578,9 @@ func newRegionRunner(engines *Engines, mgr *SnapManager, batchSize uint64, clean
 			mgr:                 mgr,
 			batchSize:           batchSize,
 			cleanStalePeerDelay: cleanStalePeerDelay,
-			pendingDeleteRanges: &pendingDeleteRanges{},
+			pendingDeleteRanges: &pendingDeleteRanges{
+				ranges: lockstore.NewMemStore(4096),
+			},
 		},
 	}
 }
