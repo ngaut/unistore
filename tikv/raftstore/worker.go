@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/coocood/badger/y"
-	"github.com/pingcap/kvproto/pkg/raft_serverpb"
+	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -320,7 +320,6 @@ type snapContext struct {
 	mgr                 *SnapManager
 	cleanStalePeerDelay time.Duration
 	pendingDeleteRanges *pendingDeleteRanges
-	useDeleteRange      bool
 }
 
 // handleGen handles the task of generating snapshot of the Region. It calls `generateSnap` to do the actual work.
@@ -341,15 +340,15 @@ func (snapCtx *snapContext) generateSnap(regionId uint64, notifier chan<- *eraft
 	return nil
 }
 
-// clearUpOriginData clear up the region data before applying snapshot
-func (snapCtx *snapContext) clearUpOriginData(regionState *raft_serverpb.RegionLocalState, status *JobStatus) error {
+// cleanUpOriginData clear up the region data before applying snapshot
+func (snapCtx *snapContext) cleanUpOriginData(regionState *rspb.RegionLocalState, status *JobStatus) error {
 	startKey := EncStartKey(regionState.GetRegion())
 	endKey := EncEndKey(regionState.GetRegion())
 	if err := checkAbort(status); err != nil {
 		return err
 	}
 	snapCtx.cleanUpOverlapRanges(startKey, endKey)
-	if err := deleteAllInRange(snapCtx.engiens.kv, startKey, endKey, snapCtx.useDeleteRange); err != nil {
+	if err := deleteRange(snapCtx.engiens.kv, startKey, endKey); err != nil {
 		return err
 	}
 	if err := checkAbort(status); err != nil {
@@ -366,23 +365,21 @@ func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus) error 
 	}
 
 	regionKey := RegionStateKey(regionId)
-	regionState, err := getRegionLocalStateMsg(snapCtx.engiens.kv.db, regionId)
+	regionState, err := getRegionLocalState(snapCtx.engiens.kv.db, regionId)
 	if err != nil {
 		return errors.New(fmt.Sprintf("failed to get regionState from %v", regionKey))
 	}
 
-	// Clear up origin data
-	if err := snapCtx.clearUpOriginData(regionState, status); err != nil {
+	// Clean up origin data
+	if err := snapCtx.cleanUpOriginData(regionState, status); err != nil {
 		return err
 	}
 
-	applyState, err := getRaftApplyStateMsg(snapCtx.engiens.kv.db, regionId)
+	applyState, err := getApplyState(snapCtx.engiens.kv.db, regionId)
 	if err != nil {
 		return errors.New(fmt.Sprintf("failed to get raftState from %v", ApplyStateKey(regionId)))
 	}
-	term := applyState.GetTruncatedState().GetTerm()
-	idx := applyState.GetTruncatedState().GetIndex()
-	snapKey := SnapKey{RegionID: regionId, Index: idx, Term: term}
+	snapKey := SnapKey{RegionID: regionId, Index: applyState.truncatedIndex, Term: applyState.truncatedTerm}
 	snapCtx.mgr.Register(snapKey, SnapEntryApplying)
 	defer snapCtx.mgr.Deregister(snapKey, SnapEntryApplying)
 
@@ -398,7 +395,7 @@ func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus) error 
 	}
 
 	wb := new(WriteBatch)
-	regionState.State = raft_serverpb.PeerState_Normal
+	regionState.State = rspb.PeerState_Normal
 	if err := wb.SetMsg(regionKey, regionState); err != nil {
 		return err
 	}

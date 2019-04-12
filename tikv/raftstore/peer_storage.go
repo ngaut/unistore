@@ -297,7 +297,7 @@ func (e storageError) Error() string {
 	return string(e)
 }
 
-func getRegionLocalStateMsg(db *badger.DB, regionId uint64) (*rspb.RegionLocalState, error) {
+func getRegionLocalState(db *badger.DB, regionId uint64) (*rspb.RegionLocalState, error) {
 	regionLocalState := new(rspb.RegionLocalState)
 	if err := getMsg(db, RegionStateKey(regionId), regionLocalState); err != nil {
 		return nil, &ErrRegionNotFound{regionId}
@@ -305,16 +305,17 @@ func getRegionLocalStateMsg(db *badger.DB, regionId uint64) (*rspb.RegionLocalSt
 	return regionLocalState, nil
 }
 
-func getRaftApplyStateMsg(db *badger.DB, regionId uint64) (*rspb.RaftApplyState, error) {
-	applyState := new(rspb.RaftApplyState)
-	err := getMsg(db, ApplyStateKey(regionId), applyState)
+func getApplyState(db *badger.DB, regionId uint64) (*applyState, error) {
+	applyState := &applyState{}
+	val, err := getValue(db, ApplyStateKey(regionId))
 	if err != nil {
 		return nil, storageError(fmt.Sprintf("couldn't load raft state of region %d", regionId))
 	}
+	applyState.Unmarshal(val)
 	return applyState, nil
 }
 
-func getRaftEntryMsg(db *badger.DB, regionId, idx uint64) (*eraftpb.Entry, error) {
+func getRaftEntry(db *badger.DB, regionId, idx uint64) (*eraftpb.Entry, error) {
 	entry := new(eraftpb.Entry)
 	if err := getMsg(db, RaftLogKey(regionId, idx), entry); err != nil {
 		return nil, storageError(fmt.Sprintf("entry %d of %d not found", idx, regionId))
@@ -972,16 +973,16 @@ func createAndInitSnapshot(kv *DBBundle, idx, term uint64, key SnapKey, region *
 }
 
 func getAppliedIdxTermForSnapshot(raft, kv *badger.DB, regionId uint64) (uint64, uint64, error) {
-	applyState, err := getRaftApplyStateMsg(kv, regionId)
+	applyState, err := getApplyState(kv, regionId)
 	if err != nil {
 		return 0, 0, err
 	}
-	idx := applyState.GetAppliedIndex()
+	idx := applyState.appliedIndex
 	var term uint64
-	if idx == applyState.GetTruncatedState().GetIndex() {
-		term = applyState.GetTruncatedState().GetTerm()
+	if idx == applyState.truncatedIndex {
+		term = applyState.truncatedTerm
 	} else {
-		entry, err := getRaftEntryMsg(raft, regionId, idx)
+		entry, err := getRaftEntry(raft, regionId, idx)
 		if err != nil {
 			return 0, 0, err
 		} else {
@@ -998,7 +999,7 @@ func doSnapshot(engines *Engines, mgr *SnapManager, regionId uint64) (*eraftpb.S
 		return nil, err
 	}
 
-	regionLocalState, err := getRegionLocalStateMsg(engines.kv.db, regionId)
+	regionLocalState, err := getRegionLocalState(engines.kv.db, regionId)
 	if err != nil {
 		return nil, err
 	}
