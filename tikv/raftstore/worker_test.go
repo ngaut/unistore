@@ -6,6 +6,7 @@ import (
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/stretchr/testify/require"
 	"io/ioutil"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -42,7 +43,11 @@ func TestPendingApplies(t *testing.T) {
 	}
 
 	engines := newEnginesWithKVDb(t, db)
+	engines.kvPath = kvPath
+	defer cleanUpTestEngineData(engines)
+
 	snapPath, err := ioutil.TempDir("", "unistore_snap")
+	defer os.RemoveAll(snapPath)
 	require.Nil(t, err)
 	mgr := NewSnapManager(snapPath, nil)
 	wg := new(sync.WaitGroup)

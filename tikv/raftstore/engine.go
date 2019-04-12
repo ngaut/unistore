@@ -98,13 +98,6 @@ func (wb *WriteBatch) DeleteLock(key []byte) {
 	})
 }
 
-func (wb *WriteBatch) DeleteRollback(key []byte) {
-	wb.lockEntries = append(wb.lockEntries, &badger.Entry{
-		Key:      key,
-		UserMeta: mvcc.LockUserMetaRollbackGC,
-	})
-}
-
 func (wb *WriteBatch) Rollback(key []byte) {
 	wb.lockEntries = append(wb.lockEntries, &badger.Entry{
 		Key:      key,
@@ -259,7 +252,7 @@ func deleteRange(db *DBBundle, startKey, endKey []byte) error {
 	// Delete lock
 	lockIte := db.lockStore.NewIterator()
 	keys = keys[:0]
-	keys = collectLockOrRollbackRangeKeys(lockIte, startKey, endKey, keys)
+	keys = collectLockRangeKeys(lockIte, startKey, endKey, keys)
 	return deleteLocksInBatch(db, keys, delRangeBatchSize)
 }
 
@@ -278,7 +271,7 @@ func collectRangeKeys(it *badger.Iterator, startKey, endKey []byte, keys [][]byt
 	return keys
 }
 
-func collectLockOrRollbackRangeKeys(it *lockstore.Iterator, startKey, endKey []byte, keys [][]byte) [][]byte {
+func collectLockRangeKeys(it *lockstore.Iterator, startKey, endKey []byte, keys [][]byte) [][]byte {
 	if len(endKey) == 0 {
 		panic("invalid end key")
 	}
@@ -324,18 +317,3 @@ func deleteLocksInBatch(db *DBBundle, keys [][]byte, batchSize int) error {
 	return nil
 }
 
-func deleteRollbackInBatch(db *DBBundle, keys [][]byte, batchSize int) error {
-	for len(keys) > 0 {
-		batchSize := mathutil.Min(len(keys), batchSize)
-		batchKeys := keys[:batchSize]
-		keys = keys[batchSize:]
-		dbBatch := new(WriteBatch)
-		for _, key := range batchKeys {
-			dbBatch.DeleteRollback(key)
-		}
-		if err := dbBatch.WriteToKV(db); err != nil {
-			return err
-		}
-	}
-	return nil
-}
