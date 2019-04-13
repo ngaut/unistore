@@ -7,8 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/ngaut/unistore/util/deadlock"
-
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
 	"github.com/cznic/mathutil"
@@ -17,6 +15,8 @@ import (
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/rowcodec"
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/ngaut/unistore/util/deadlock"
+	"github.com/ngaut/unistore/util/lockwaiter"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/tidb/util/codec"
 )
@@ -38,7 +38,8 @@ type MVCCStore struct {
 	safePoint *SafePoint
 	gcLock    sync.Mutex
 
-	deadlockDetector *deadlock.Detector
+	deadlockDetector  *deadlock.Detector
+	lockWaiterManager *lockwaiter.Manager
 }
 
 // NewMVCCStore creates a new MVCCStore
@@ -47,13 +48,14 @@ func NewMVCCStore(db *badger.DB, dataDir string, safePoint *SafePoint) *MVCCStor
 	rollbackStore := lockstore.NewMemStore(256 << 10)
 	closeCh := make(chan struct{})
 	store := &MVCCStore{
-		db:               db,
-		dir:              dataDir,
-		lockStore:        ls,
-		rollbackStore:    rollbackStore,
-		closeCh:          closeCh,
-		safePoint:        safePoint,
-		deadlockDetector: deadlock.NewDetector(),
+		db:                db,
+		dir:               dataDir,
+		lockStore:         ls,
+		rollbackStore:     rollbackStore,
+		closeCh:           closeCh,
+		safePoint:         safePoint,
+		deadlockDetector:  deadlock.NewDetector(),
+		lockWaiterManager: lockwaiter.NewManager(),
 	}
 	store.writeLockWorker = &writeLockWorker{
 		batchCh: make(chan *writeLockBatch, batchChanSize),
@@ -125,34 +127,22 @@ func (store *MVCCStore) updateLatestTS(ts uint64) {
 	}
 }
 
-func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, primary []byte, startTS, forUpdateTS uint64, ttl uint64) []error {
+func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, primary []byte, startTS, forUpdateTS uint64, ttl uint64) error {
 	regCtx := reqCtx.regCtx
+	// check before acquire latch to avoid latch contention.
+	dup, err := store.checkPessimisticLock(reqCtx, mutations, startTS)
+	if dup || err != nil {
+		return err
+	}
 	hashVals := mutationsToHashVals(mutations)
-	errs := make([]error, 0, len(mutations))
-	anyError := false
-
 	regCtx.acquireLatches(hashVals)
 	defer regCtx.releaseLatches(hashVals)
 
-	newMutations := mutations[:0]
-	// Must check the LockStore first.
-	for _, m := range mutations {
-		lock, err := store.checkConflictInLockStore(reqCtx, m, startTS)
-		if err != nil {
-			anyError = true
-		}
-		if lock != nil {
-			// The lock already exists, it's a duplicate command, we can return directly.
-			y.Assert(lock.Op == uint8(kvrpcpb.Op_PessimisticLock))
-			continue
-		}
-		newMutations = append(newMutations, m)
-		errs = append(errs, err)
+	// check again after acquired latch.
+	dup, err = store.checkPessimisticLock(reqCtx, mutations, startTS)
+	if dup || err != nil {
+		return err
 	}
-	if anyError || len(newMutations) == 0 {
-		return errs
-	}
-	mutations = newMutations
 
 	lockBatch := newWriteLockBatch(reqCtx)
 	// Check the DB.
@@ -163,41 +153,46 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb
 	}
 	items, err := txn.MultiGet(keys)
 	if err != nil {
-		return []error{err}
+		return err
 	}
 
 	for i, m := range mutations {
 		// Note the use of `forUpdateTS` here!
 		oldMeta, oldVal, err := store.checkConflictInDB(reqCtx, txn, items[i], forUpdateTS)
 		if err != nil {
-			anyError = true
+			return err
 		}
-		errs[i] = err
-		if !anyError {
-			lock := mvcc.MvccLock{
-				MvccLockHdr: mvcc.MvccLockHdr{
-					StartTS:    startTS,
-					Op:         uint8(kvrpcpb.Op_PessimisticLock),
-					HasOldVer:  oldMeta != nil,
-					TTL:        uint32(ttl),
-					PrimaryLen: uint16(len(primary)),
-				},
-				Primary: primary,
-				Value:   m.Value,
-				OldMeta: oldMeta,
-				OldVal:  oldVal,
-			}
-			lockBatch.set(m.Key, lock.MarshalBinary())
+		lock := mvcc.MvccLock{
+			MvccLockHdr: mvcc.MvccLockHdr{
+				StartTS:    startTS,
+				Op:         uint8(kvrpcpb.Op_PessimisticLock),
+				HasOldVer:  oldMeta != nil,
+				TTL:        uint32(ttl),
+				PrimaryLen: uint16(len(primary)),
+			},
+			Primary: primary,
+			Value:   m.Value,
+			OldMeta: oldMeta,
+			OldVal:  oldVal,
+		}
+		lockBatch.set(m.Key, lock.MarshalBinary())
+	}
+	return store.writeLocks(lockBatch)
+}
+
+func (store *MVCCStore) checkPessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, startTS uint64) (dup bool, err error) {
+	for _, m := range mutations {
+		lock, err := store.checkConflictInLockStore(reqCtx, m, startTS)
+		if err != nil {
+			return false, err
+		}
+		if lock != nil {
+			// The lock already exists, it's a duplicate command, we can return directly.
+			y.Assert(lock.Op == uint8(kvrpcpb.Op_PessimisticLock))
+			return true, nil
 		}
 	}
-	if anyError {
-		return errs
-	}
-	err = store.writeLocks(lockBatch)
-	if err != nil {
-		return []error{err}
-	}
-	return nil
+	return false, nil
 }
 
 func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, primary []byte, startTS uint64, ttl uint64) []error {
@@ -336,7 +331,11 @@ func (store *MVCCStore) checkConflictInDB(
 	}
 	userMeta = mvcc.DBUserMeta(item.UserMeta())
 	if userMeta.CommitTS() > startTS {
-		return nil, nil, ErrRetryable("[write conflict]")
+		return nil, nil, &ErrConflict{
+			StartTS:    startTS,
+			ConflictTS: userMeta.CommitTS(),
+			Key:        item.KeyCopy(nil),
+		}
 	}
 	val, err = item.Value()
 	if err != nil {
@@ -399,6 +398,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 		lockBatch.delete(key)
 	}
 	err = store.writeLocks(lockBatch)
+	store.lockWaiterManager.WakeUp(startTS, commitTS)
 	return errors.Trace(err)
 }
 
@@ -458,6 +458,7 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 		}
 	}
 	err := store.writeLocks(lockBatch)
+	store.lockWaiterManager.WakeUp(startTS, 0)
 	return errors.Trace(err)
 }
 
@@ -627,7 +628,9 @@ func (store *MVCCStore) Cleanup(reqCtx *requestCtx, key []byte, startTS uint64) 
 			return err
 		}
 	}
-	return store.writeLocks(lockBatch)
+	err := store.writeLocks(lockBatch)
+	store.lockWaiterManager.WakeUp(startTS, 0)
+	return err
 }
 
 func (store *MVCCStore) ScanLock(reqCtx *requestCtx, maxSystemTS uint64) ([]*kvrpcpb.LockInfo, error) {
@@ -719,6 +722,7 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 		}
 	}
 	err := store.writeLocks(lockBatch)
+	store.lockWaiterManager.WakeUp(startTS, commitTS)
 	return errors.Trace(err)
 }
 

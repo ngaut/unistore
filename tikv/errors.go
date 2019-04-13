@@ -52,3 +52,13 @@ type ErrDeadlock uint64
 func (e ErrDeadlock) Error() string {
 	return "deadlock"
 }
+
+type ErrConflict struct {
+	StartTS    uint64
+	ConflictTS uint64
+	Key        []byte
+}
+
+func (e *ErrConflict) Error() string {
+	return "write conflict"
+}
