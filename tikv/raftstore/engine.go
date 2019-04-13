@@ -206,7 +206,7 @@ func (wb *WriteBatch) WriteToRaft(db *badger.DB) error {
 // writeToRaftWithCounter tries to write to raft db and returns how many entries it really writes,
 // even in situation where error occurs.
 func (wb *WriteBatch) writeToRaftWithCounter(db *badger.DB) (uint64, error) {
-	var i uint64 = 0
+	i := uint64(0)
 	if len(wb.entries) > 0 {
 		err := db.Update(func(txn *badger.Txn) error {
 			var err1 error
@@ -219,7 +219,7 @@ func (wb *WriteBatch) writeToRaftWithCounter(db *badger.DB) (uint64, error) {
 				if err1 != nil {
 					return err1
 				}
-				i ++
+				i++
 			}
 			return nil
 		})

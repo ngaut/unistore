@@ -499,7 +499,7 @@ func (r *raftLogGCRunner) gcRaftLog(raftDb *badger.DB, regionId, startIdx, endId
 		return 0, nil
 	}
 
-	var counter uint64 = 0
+	counter := uint64(0)
 	raftWb := WriteBatch{}
 	for idx := firstIdx; idx < endIdx; idx += 1 {
 		key := RaftLogKey(regionId, idx)
@@ -520,14 +520,14 @@ func (r *raftLogGCRunner) gcRaftLog(raftDb *badger.DB, regionId, startIdx, endId
 			return c + counter, err
 		}
 	}
-	return endIdx - firstIdx, nil
+	return counter, nil
 }
 
 func (r *raftLogGCRunner) reportCollected(collected uint64) {
 	if r.taskResCh == nil {
 		return
 	}
-	r.taskResCh<- raftLogGcTaskRes(collected)
+	r.taskResCh <- raftLogGcTaskRes(collected)
 }
 
 func (r *raftLogGCRunner) run(t task) {
