@@ -6,6 +6,9 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"github.com/dgryski/go-farm"
 
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
@@ -127,12 +130,12 @@ func (store *MVCCStore) updateLatestTS(ts uint64) {
 	}
 }
 
-func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, primary []byte, startTS, forUpdateTS uint64, ttl uint64) error {
+func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, primary []byte, startTS, forUpdateTS uint64, ttl uint64) (*lockwaiter.Waiter, error) {
 	regCtx := reqCtx.regCtx
 	// check before acquire latch to avoid latch contention.
 	dup, err := store.checkPessimisticLock(reqCtx, mutations, startTS)
 	if dup || err != nil {
-		return err
+		return store.handleCheckPessimisticErr(err)
 	}
 	hashVals := mutationsToHashVals(mutations)
 	regCtx.acquireLatches(hashVals)
@@ -141,7 +144,7 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb
 	// check again after acquired latch.
 	dup, err = store.checkPessimisticLock(reqCtx, mutations, startTS)
 	if dup || err != nil {
-		return err
+		return store.handleCheckPessimisticErr(err)
 	}
 
 	lockBatch := newWriteLockBatch(reqCtx)
@@ -153,14 +156,14 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb
 	}
 	items, err := txn.MultiGet(keys)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	for i, m := range mutations {
 		// Note the use of `forUpdateTS` here!
 		oldMeta, oldVal, err := store.checkConflictInDB(reqCtx, txn, items[i], forUpdateTS)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		lock := mvcc.MvccLock{
 			MvccLockHdr: mvcc.MvccLockHdr{
@@ -177,7 +180,14 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb
 		}
 		lockBatch.set(m.Key, lock.MarshalBinary())
 	}
-	return store.writeLocks(lockBatch)
+	return nil, store.writeLocks(lockBatch)
+}
+
+func (store *MVCCStore) handleCheckPessimisticErr(err error) (*lockwaiter.Waiter, error) {
+	if errLock, ok := err.(*ErrLocked); ok {
+		return store.lockWaiterManager.NewWaiter(errLock.StartTS, time.Second), err
+	}
+	return nil, err
 }
 
 func (store *MVCCStore) checkPessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, startTS uint64) (dup bool, err error) {
@@ -309,11 +319,11 @@ func (store *MVCCStore) checkConflictInLockStore(
 	}
 	if mutation.Op == kvrpcpb.Op_PessimisticLock {
 		if err := store.deadlockDetector.Detect(startTS, lock.StartTS); err != nil {
-			log.Errorf("%d deadlock for %d", startTS, lock.StartTS)
+			log.Errorf("%d deadlock for %d on key %d", startTS, lock.StartTS, farm.Fingerprint64(mutation.Key))
 			return nil, err
 		}
 	}
-	log.Infof("%d blocked by %d", startTS, lock.StartTS)
+	log.Infof("%d blocked by %d on key %d", startTS, lock.StartTS, farm.Fingerprint64(mutation.Key))
 	return nil, &ErrLocked{
 		Key:     mutation.Key,
 		StartTS: lock.StartTS,
@@ -431,13 +441,14 @@ const (
 	rollbackStatusDone    = 0
 	rollbackStatusNoLock  = 1
 	rollbackStatusNewLock = 2
+	rollbackPessimistic   = 3
 )
 
 func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint64) error {
-	log.Warnf("%d rollback", startTS)
 	store.updateLatestTS(startTS)
 	keys = deduplicateKeys(keys)
 	hashVals := keysToHashVals(keys...)
+	log.Warnf("%d rollback %v", startTS, hashVals)
 	regCtx := reqCtx.regCtx
 	lockBatch := newWriteLockBatch(reqCtx)
 
@@ -445,16 +456,23 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 	defer regCtx.releaseLatches(hashVals)
 
 	statuses := make([]int, len(keys))
+	var isPessimistic bool
 	for i, key := range keys {
 		statuses[i] = store.rollbackKeyReadLock(lockBatch, key, startTS)
-	}
-	for i, key := range keys {
-		if statuses[i] == rollbackStatusDone {
-			continue
+		if statuses[i] == rollbackPessimistic {
+			isPessimistic = true
 		}
-		err := store.rollbackKeyReadDB(reqCtx, lockBatch, key, startTS, statuses[i] == rollbackStatusNewLock)
-		if err != nil {
-			return err
+	}
+	// rollback pessimistic lock doesn't need to check DB.
+	if !isPessimistic {
+		for i, key := range keys {
+			if statuses[i] == rollbackStatusDone {
+				continue
+			}
+			err := store.rollbackKeyReadDB(reqCtx, lockBatch, key, startTS, statuses[i] == rollbackStatusNewLock)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	err := store.writeLocks(lockBatch)
@@ -499,6 +517,7 @@ func (store *MVCCStore) rollbackKeyReadLock(batch *writeLockBatch, key []byte, s
 			batch.delete(key)
 			if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
 				store.deadlockDetector.CleanUp(startTS)
+				return rollbackPessimistic
 			}
 			return rollbackStatusDone
 		}

@@ -197,23 +197,22 @@ func (srv *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 		return &kvrpcpb.PessimisticLockResponse{RegionError: reqCtx.regErr}, nil
 	}
 	for {
-		err := srv.mvccStore.PessimisticLock(reqCtx, req.Mutations, req.PrimaryLock, req.GetStartVersion(), req.GetForUpdateTs(), req.GetLockTtl())
-		if err != nil {
-			if errLock, ok := err.(*ErrLocked); ok {
-				waiter := srv.mvccStore.lockWaiterManager.NewWaiter(errLock.StartTS, time.Second)
-				unlocked, commitTS := waiter.Wait()
-				if unlocked {
-					if commitTS > req.GetForUpdateTs() {
-						err = &ErrConflict{
-							StartTS:    req.GetForUpdateTs(),
-							ConflictTS: commitTS,
-							Key:        errLock.Key,
-						}
-					} else {
-						continue
+		waiter, err := srv.mvccStore.PessimisticLock(reqCtx, req.Mutations, req.PrimaryLock, req.GetStartVersion(), req.GetForUpdateTs(), req.GetLockTtl())
+		if waiter != nil {
+			unlocked, commitTS := waiter.Wait()
+			if unlocked {
+				if commitTS > req.GetForUpdateTs() {
+					err = &ErrConflict{
+						StartTS:    req.GetForUpdateTs(),
+						ConflictTS: commitTS,
 					}
+				} else {
+					continue
 				}
 			}
+		}
+		if err == nil {
+			log.Info(req.GetStartVersion(), "lock", len(req.Mutations), "keys")
 		}
 		return &kvrpcpb.PessimisticLockResponse{
 			Errors: convertToKeyErrors([]error{err}),

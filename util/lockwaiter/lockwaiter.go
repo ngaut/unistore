@@ -3,6 +3,8 @@ package lockwaiter
 import (
 	"sync"
 	"time"
+
+	"github.com/ngaut/log"
 )
 
 type Manager struct {
@@ -66,5 +68,6 @@ func (lw *Manager) WakeUp(txn uint64, commitTS uint64) {
 		for _, ch := range q.waiters {
 			ch <- commitTS
 		}
+		log.Info("wakeup", len(q.waiters), "txns blocked by", txn)
 	}
 }
