@@ -294,12 +294,8 @@ func (pendDelRanges *pendingDeleteRanges) insert(regionId uint64, startKey, endK
 	if len(pendDelRanges.findOverlapRanges(startKey, endKey)) != 0 {
 		panic(fmt.Sprintf("[region %d] register deleting data in [%v, %v) failed due to overlap", regionId, startKey, endKey))
 	}
-	peerInfo := &stalePeerInfo{
-		endKey:   endKey,
-		regionId: regionId,
-		timeout:  timeout,
-	}
-	pendDelRanges.ranges.Insert(startKey, peerInfo.serializeStalePeerInfo())
+	peerInfo := newStalePeerInfo(regionId, endKey, timeout)
+	pendDelRanges.ranges.Insert(startKey, peerInfo.data)
 }
 
 // remove removes and returns the peer info with the `start_key`.
@@ -307,7 +303,7 @@ func (pendDelRanges *pendingDeleteRanges) remove(startKey []byte) *stalePeerInfo
 	value := pendDelRanges.ranges.Get(startKey, nil)
 	if value != nil {
 		pendDelRanges.ranges.Delete(startKey)
-		return deserializeStalePeerInfo(safeCopy(value))
+		return &stalePeerInfo{data: safeCopy(value)}
 	}
 	return nil
 }
@@ -317,12 +313,12 @@ func (pendDelRanges *pendingDeleteRanges) timeoutRanges(now time.Time) (ranges [
 	ite := pendDelRanges.ranges.NewIterator()
 	for ite.Next(); ite.Valid(); ite.Next() {
 		startKey := safeCopy(ite.Key())
-		peerInfo := deserializeStalePeerInfo(safeCopy(ite.Value()))
-		if peerInfo.timeout.Before(now) {
+		peerInfo := stalePeerInfo{data: safeCopy(ite.Value())}
+		if peerInfo.timeout().Before(now) {
 			ranges = append(ranges, delRangeHolder{
 				startKey: startKey,
-				endKey:   peerInfo.endKey,
-				regionId: peerInfo.regionId,
+				endKey:   peerInfo.endKey(),
+				regionId: peerInfo.regionId(),
 			})
 		}
 	}
@@ -330,36 +326,39 @@ func (pendDelRanges *pendingDeleteRanges) timeoutRanges(now time.Time) (ranges [
 }
 
 type stalePeerInfo struct {
-	regionId uint64
-	endKey   []byte
-	timeout  time.Time
+	data []byte
 }
 
-func (peerInfo *stalePeerInfo) serializeStalePeerInfo() []byte {
-	if timeoutData, err := peerInfo.timeout.MarshalBinary(); err != nil {
-		log.Errorf("serialize stale Peer info failed, [regionId: %d, endKey: %v]", peerInfo.regionId, peerInfo.endKey)
-		return nil
-	} else {
-		buf := make([]byte, 8+4+4)
-		binary.LittleEndian.PutUint64(buf, peerInfo.regionId)
-		binary.LittleEndian.PutUint32(buf[8:], uint32(len(peerInfo.endKey)))
-		binary.LittleEndian.PutUint32(buf[12:], uint32(len(timeoutData)))
-		buf = append(buf, peerInfo.endKey...)
-		buf = append(buf, timeoutData...)
-		return buf
-	}
+func newStalePeerInfo(regionId uint64, endKey []byte, timeout time.Time) stalePeerInfo {
+	s := stalePeerInfo{data: make([]byte, 16+len(endKey))}
+	s.setRegionId(regionId)
+	s.setTimeout(timeout)
+	s.setEndKey(endKey)
+	return s
 }
 
-func deserializeStalePeerInfo(data []byte) *stalePeerInfo {
-	peerInfo := new(stalePeerInfo)
-	peerInfo.regionId = binary.LittleEndian.Uint64(data[:8])
-	endKeyLen := binary.LittleEndian.Uint32(data[8:12])
-	timeoutLen := binary.LittleEndian.Uint32(data[12:16])
-	peerInfo.endKey = data[16 : 16+endKeyLen]
-	if err := peerInfo.timeout.UnmarshalBinary(data[16+endKeyLen : 16+endKeyLen+timeoutLen]); err != nil {
-		log.Errorf("deserialize stale peer info failed")
-	}
-	return peerInfo
+func (s stalePeerInfo) regionId() uint64 {
+	return binary.LittleEndian.Uint64(s.data[:8])
+}
+
+func (s stalePeerInfo) timeout() time.Time {
+	return time.Unix(0, int64(binary.LittleEndian.Uint64(s.data[8:16])))
+}
+
+func (s stalePeerInfo) endKey() []byte {
+	return s.data[16:]
+}
+
+func (s stalePeerInfo) setRegionId(regionId uint64) {
+	binary.LittleEndian.PutUint64(s.data[:8], regionId)
+}
+
+func (s stalePeerInfo) setTimeout(timeout time.Time) {
+	binary.LittleEndian.PutUint64(s.data[8:16], uint64(timeout.UnixNano()))
+}
+
+func (s stalePeerInfo) setEndKey(endKey []byte) {
+	copy(s.data[16:], endKey)
 }
 
 type delRangeHolder struct {
@@ -376,19 +375,19 @@ func (pendDelRanges *pendingDeleteRanges) findOverlapRanges(startKey, endKey []b
 	ite := pendDelRanges.ranges.NewIterator()
 	// find the first range that may overlap with [start_key, end_key)
 	if ite.SeekForExclusivePrev(startKey); ite.Valid() {
-		peerInfo := deserializeStalePeerInfo(safeCopy(ite.Value()))
-		if bytes.Compare(peerInfo.endKey, startKey) > 0 {
-			ranges = append(ranges, delRangeHolder{startKey: safeCopy(ite.Key()), endKey: peerInfo.endKey, regionId: peerInfo.regionId})
+		peerInfo := stalePeerInfo{data: safeCopy(ite.Value())}
+		if bytes.Compare(peerInfo.endKey(), startKey) > 0 {
+			ranges = append(ranges, delRangeHolder{startKey: safeCopy(ite.Key()), endKey: peerInfo.endKey(), regionId: peerInfo.regionId()})
 		}
 	}
 	// Find the rest ranges that overlap with [start_key, end_key)
 	for ite.Next(); ite.Valid(); ite.Next() {
-		peerInfo := deserializeStalePeerInfo(safeCopy(ite.Value()))
+		peerInfo := stalePeerInfo{data: safeCopy(ite.Value())}
 		startKey := safeCopy(ite.Key())
 		if exceedEndKey(startKey, endKey) {
 			break
 		}
-		ranges = append(ranges, delRangeHolder{startKey: startKey, endKey: peerInfo.endKey, regionId: peerInfo.regionId})
+		ranges = append(ranges, delRangeHolder{startKey: startKey, endKey: peerInfo.endKey(), regionId: peerInfo.regionId()})
 	}
 	return
 }

@@ -15,18 +15,23 @@ import (
 )
 
 func TestStalePeerInfo(t *testing.T) {
-	time := time.Now()
-	peerInfo := &stalePeerInfo{
-		regionId: 1,
-		endKey:   []byte{1, 2, 10},
-		timeout:  time,
-	}
-	data := peerInfo.serializeStalePeerInfo()
-	another := deserializeStalePeerInfo(data)
-	assert.Equal(t, another.regionId, peerInfo.regionId)
-	assert.Equal(t, another.endKey, peerInfo.endKey)
-	assert.Equal(t, another.regionId, peerInfo.regionId)
-	assert.True(t, peerInfo.timeout.Equal(another.timeout))
+	timeout := time.Now()
+	regionId := uint64(1)
+	endKey := []byte{1, 2, 10, 10, 101, 10, 1, 9}
+	peerInfo := newStalePeerInfo(regionId, endKey, timeout)
+	assert.Equal(t, peerInfo.regionId(), regionId)
+	assert.Equal(t, peerInfo.endKey(), endKey)
+	assert.True(t, peerInfo.timeout().Equal(timeout))
+
+	regionId = 101
+	endKey = []byte{102, 11, 98, 23, 45, 76, 14, 43}
+	timeout = time.Now().Add(time.Millisecond * 101)
+	peerInfo.setRegionId(regionId)
+	peerInfo.setEndKey(endKey)
+	peerInfo.setTimeout(timeout)
+	assert.Equal(t, peerInfo.regionId(), regionId)
+	assert.Equal(t, peerInfo.endKey(), endKey)
+	assert.True(t, peerInfo.timeout().Equal(timeout))
 }
 
 func insertRange(delRanges *pendingDeleteRanges, id uint64, s, e string, timeout time.Time) {
