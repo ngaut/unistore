@@ -647,7 +647,7 @@ func (r *raftLogGCRunner) gcRaftLog(raftDb *badger.DB, regionId, startIdx, endId
 			defer ite.Close()
 			if ite.Seek(startKey); ite.Valid() {
 				var err error
-				if firstIdx, err = RaftLogIndex(ite.Item().KeyCopy(nil)); err != nil {
+				if firstIdx, err = RaftLogIndex(ite.Item().Key()); err != nil {
 					return err
 				}
 			}
