@@ -477,6 +477,7 @@ func CloneMsg(origin, cloned proto.Message) error {
 	return proto.Unmarshal(data, cloned)
 }
 
-// In our tests, we found that if the batch size is too large, running deleteAllInRange will
-// reduce OLTP QPS by 30% ~ 60%. We found that 32K is a proper choice.
-const MaxDeleteBatchSize int = 32 * 1024
+func deleteAllFilesInRange(db *DBBundle, startKey, endKey []byte) error {
+	// todo, needs badger to export api to support delete files.
+	return nil
+}
