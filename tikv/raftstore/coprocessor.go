@@ -2,10 +2,8 @@ package raftstore
 
 import (
 	"bytes"
-
 	"github.com/coocood/badger"
 	"github.com/ngaut/log"
-	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
@@ -437,14 +435,23 @@ func (observer *tableSplitCheckObserver) stop() {}
 func lastKeyOfRegion(db *badger.DB, region *metapb.Region) []byte {
 	startKey := EncStartKey(region)
 	endKey := EncEndKey(region)
-	txn := db.NewTransaction(false)
-	reader := dbreader.NewDBReader(startKey, endKey, txn, 0)
-	defer reader.Close()
-	ite := reader.GetIter()
-	if ite.Seek(endKey); ite.Valid() {
-		return ite.Item().KeyCopy(nil)
-	}
-	return nil
+	var key []byte
+	db.View(func(txn *badger.Txn) error {
+		iteOps := badger.DefaultIteratorOptions
+		iteOps.PrefetchValues = false
+		iteOps.Reverse = true
+		iteOps.StartKey = startKey
+		iteOps.EndKey = endKey
+		ite := txn.NewIterator(iteOps)
+		defer ite.Close()
+		if ite.Seek(iteOps.EndKey); ite.Valid() {
+			key = ite.Item().KeyCopy(nil)
+		} else {
+			println("empty")
+		}
+		return nil
+	})
+	return key
 }
 
 func (observer *tableSplitCheckObserver) addChecker(obCtx *observerContext, host *splitCheckerHost, db *badger.DB,
@@ -529,6 +536,50 @@ func (host *splitCheckerHost) addChecker(checker splitChecker) {
 	host.checkers = append(host.checkers, checker)
 }
 
+type splitCheckConfig struct {
+
+	// When it is true, it will try to split a region with table prefix if
+	// that region crosses tables.
+	splitRegionOnTable bool
+
+	// For once split check, there are several splitKey produced for batch.
+	// batchSplitLimit limits the number of produced split-key for one batch.
+	batchSplitLimit uint64
+
+	// When region [a,e) size meets regionMaxSize, it will be split into
+	// several regions [a,b), [b,c), [c,d), [d,e). And the size of [a,b),
+	// [b,c), [c,d) will be regionSplitSize (maybe a little larger).
+	regionMaxSize   uint64
+	regionSplitSize uint64
+
+	// When the number of keys in region [a,e) meets the region_max_keys,
+	// it will be split into two several regions [a,b), [b,c), [c,d), [d,e).
+	// And the number of keys in [a,b), [b,c), [c,d) will be region_split_keys.
+	regionMaxKeys   uint64
+	regionSplitKeys uint64
+}
+
+const (
+	// Default region split size.
+	splitSizeMB uint64 = 96
+	// Default region split keys.
+	splitKeys uint64 = 960000
+	// Default batch split limit.
+	batchSplitLimit uint64 = 10
+)
+
+func newDefaultSplitCheckConfig() *splitCheckConfig {
+	splitSize := splitSizeMB * MB
+	return &splitCheckConfig{
+		splitRegionOnTable: true,
+		batchSplitLimit:    batchSplitLimit,
+		regionSplitSize:    splitSize,
+		regionMaxSize:      splitSize / 2 * 3,
+		regionSplitKeys:    splitKeys,
+		regionMaxKeys:      splitKeys / 2 * 3,
+	}
+}
+
 type registry struct {
 	splitCheckObservers []splitCheckObserver
 }
@@ -536,6 +587,27 @@ type registry struct {
 type CoprocessorHost struct {
 	// Todo: currently it is a place holder
 	registry registry
+}
+
+func newCoprocessorHost(config *splitCheckConfig, router *router) *CoprocessorHost {
+	host := &CoprocessorHost{}
+	// NOTE: the split check observer order is hard coded.
+	halfSplitCheckObserver := newHalfSplitCheckObserver(config.regionMaxSize)
+
+	sizeSplitCheckObserver := newSizeSplitCheckObserver(config.regionMaxSize, config.regionSplitSize,
+		config.batchSplitLimit, router)
+
+	keysSplitCheckObserver := newKeysSplitCheckObserver(config.regionMaxKeys, config.regionSplitKeys,
+		config.batchSplitLimit, router)
+
+	// TableCheckObserver has higher priority than SizeCheckObserver.
+	host.registry.splitCheckObservers = append(host.registry.splitCheckObservers, halfSplitCheckObserver,
+		sizeSplitCheckObserver, keysSplitCheckObserver)
+	if config.splitRegionOnTable {
+		host.registry.splitCheckObservers = append(host.registry.splitCheckObservers, &tableSplitCheckObserver{})
+	}
+
+	return host
 }
 
 func (c *CoprocessorHost) PrePropose(region *metapb.Region, req *raft_cmdpb.RaftCmdRequest) error {
