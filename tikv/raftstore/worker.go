@@ -663,30 +663,25 @@ func (r *raftLogGCRunner) gcRaftLog(raftDb *badger.DB, regionId, startIdx, endId
 		return 0, nil
 	}
 
-	counter := uint64(0)
 	raftWb := WriteBatch{}
 	for idx := firstIdx; idx < endIdx; idx += 1 {
 		key := RaftLogKey(regionId, idx)
 		raftWb.Delete(key)
 		if raftWb.size >= MaxDeleteBatchSize {
 			// Avoid large write batch to reduce latency.
-			if c, err := raftWb.writeToRaftWithCounter(raftDb); err != nil {
-				return c + counter, err
-			} else {
-				counter += c
+			if err := raftWb.WriteToRaft(raftDb); err != nil {
+				return 0, err
 			}
 			raftWb.Reset()
 		}
 	}
 	// todo, disable WAL here.
 	if raftWb.Len() != 0 {
-		if c, err := raftWb.writeToRaftWithCounter(raftDb); err != nil {
-			return c + counter, err
-		} else {
-			counter += c
+		if err := raftWb.WriteToRaft(raftDb); err != nil {
+			return 0, err
 		}
 	}
-	return counter, nil
+	return endIdx - startIdx, nil
 }
 
 func (r *raftLogGCRunner) reportCollected(collected uint64) {
