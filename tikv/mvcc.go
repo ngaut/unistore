@@ -8,11 +8,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dgryski/go-farm"
-
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
 	"github.com/cznic/mathutil"
+	"github.com/dgryski/go-farm"
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/lockstore"
@@ -132,19 +131,14 @@ func (store *MVCCStore) updateLatestTS(ts uint64) {
 
 func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, primary []byte, startTS, forUpdateTS uint64, ttl uint64) (*lockwaiter.Waiter, error) {
 	regCtx := reqCtx.regCtx
-	// check before acquire latch to avoid latch contention.
-	dup, err := store.checkPessimisticLock(reqCtx, mutations, startTS)
-	if dup || err != nil {
-		return store.handleCheckPessimisticErr(err)
-	}
 	hashVals := mutationsToHashVals(mutations)
 	regCtx.acquireLatches(hashVals)
 	defer regCtx.releaseLatches(hashVals)
 
 	// check again after acquired latch.
-	dup, err = store.checkPessimisticLock(reqCtx, mutations, startTS)
+	dup, err := store.checkPessimisticLock(reqCtx, mutations, startTS)
 	if dup || err != nil {
-		return store.handleCheckPessimisticErr(err)
+		return store.handleCheckPessimisticErr(startTS, err)
 	}
 
 	lockBatch := newWriteLockBatch(reqCtx)
@@ -180,12 +174,15 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb
 		}
 		lockBatch.set(m.Key, lock.MarshalBinary())
 	}
-	return nil, store.writeLocks(lockBatch)
+	err = store.writeLocks(lockBatch)
+	log.Info(startTS, "locked", hashVals)
+	return nil, err
 }
 
-func (store *MVCCStore) handleCheckPessimisticErr(err error) (*lockwaiter.Waiter, error) {
+func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error) (*lockwaiter.Waiter, error) {
 	if errLock, ok := err.(*ErrLocked); ok {
-		return store.lockWaiterManager.NewWaiter(errLock.StartTS, time.Second), err
+		waiter := store.lockWaiterManager.NewWaiter(startTS, errLock.StartTS, farm.Fingerprint64(errLock.Key), time.Second)
+		return waiter, err
 	}
 	return nil, err
 }
@@ -408,7 +405,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 		lockBatch.delete(key)
 	}
 	err = store.writeLocks(lockBatch)
-	store.lockWaiterManager.WakeUp(startTS, commitTS)
+	store.lockWaiterManager.WakeUp(startTS, commitTS, hashVals)
 	return errors.Trace(err)
 }
 
@@ -476,7 +473,7 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 		}
 	}
 	err := store.writeLocks(lockBatch)
-	store.lockWaiterManager.WakeUp(startTS, 0)
+	store.lockWaiterManager.WakeUp(startTS, 0, hashVals)
 	return errors.Trace(err)
 }
 
@@ -648,7 +645,7 @@ func (store *MVCCStore) Cleanup(reqCtx *requestCtx, key []byte, startTS uint64) 
 		}
 	}
 	err := store.writeLocks(lockBatch)
-	store.lockWaiterManager.WakeUp(startTS, 0)
+	store.lockWaiterManager.WakeUp(startTS, 0, hashVals)
 	return err
 }
 
@@ -741,7 +738,7 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 		}
 	}
 	err := store.writeLocks(lockBatch)
-	store.lockWaiterManager.WakeUp(startTS, commitTS)
+	store.lockWaiterManager.WakeUp(startTS, commitTS, hashVals)
 	return errors.Trace(err)
 }
 

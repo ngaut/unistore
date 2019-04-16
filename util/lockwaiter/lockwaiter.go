@@ -1,6 +1,7 @@
 package lockwaiter
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -19,55 +20,107 @@ func NewManager() *Manager {
 }
 
 type queue struct {
-	waiters []chan uint64
+	mu      sync.Mutex
+	waiters []*Waiter
+}
+
+func (q *queue) getReadyWaiters(keyHashes []uint64) (readyWaiters []*Waiter, remainSize int) {
+	readyWaiters = make([]*Waiter, 0, 8)
+	q.mu.Lock()
+	remainedWaiters := q.waiters[:0]
+	for _, w := range q.waiters {
+		if w.inKeys(keyHashes) {
+			readyWaiters = append(readyWaiters, w)
+		} else {
+			remainedWaiters = append(remainedWaiters, w)
+		}
+	}
+	remainSize = len(remainedWaiters)
+	q.waiters = remainedWaiters
+	q.mu.Unlock()
+	return
 }
 
 type Waiter struct {
 	timeout time.Duration
-	ch      chan uint64
+	ch      chan Result
+	startTS uint64
+	LockTS  uint64
+	keyHash uint64
 }
 
-func (w *Waiter) Wait() (unlocked bool, commitTS uint64) {
+type Position int
+
+type Result struct {
+	Position Position
+	CommitTS uint64
+}
+
+const WaitTimeout Position = -1
+
+func (w *Waiter) Wait() Result {
 	select {
 	case <-time.After(w.timeout):
-		return false, 0
-	case commitTS = <-w.ch:
-		return true, commitTS
+		return Result{Position: WaitTimeout}
+	case result := <-w.ch:
+		return result
 	}
 }
 
+func (w *Waiter) inKeys(keyHashes []uint64) bool {
+	idx := sort.Search(len(keyHashes), func(i int) bool {
+		return keyHashes[i] >= w.keyHash
+	})
+	if idx == len(keyHashes) {
+		return false
+	}
+	return keyHashes[idx] == w.keyHash
+}
+
 // Wait waits on a lock until waked by others or timeout.
-func (lw *Manager) NewWaiter(lockTS uint64, timeout time.Duration) *Waiter {
+func (lw *Manager) NewWaiter(startTS, lockTS, keyHash uint64, timeout time.Duration) *Waiter {
 	// allocate memory before hold the lock.
 	q := new(queue)
-	ch := make(chan uint64, 1)
-	q.waiters = make([]chan uint64, 0, 8)
-	q.waiters = append(q.waiters, ch)
+	q.waiters = make([]*Waiter, 0, 8)
+	waiter := &Waiter{
+		timeout: timeout,
+		ch:      make(chan Result, 1),
+		startTS: startTS,
+		LockTS:  lockTS,
+		keyHash: keyHash,
+	}
+	q.waiters = append(q.waiters, waiter)
 	lw.mu.Lock()
 	if old, ok := lw.waitingQueues[lockTS]; ok {
-		old.waiters = append(old.waiters, ch)
+		old.waiters = append(old.waiters, waiter)
 	} else {
 		lw.waitingQueues[lockTS] = q
 	}
 	lw.mu.Unlock()
-	return &Waiter{
-		timeout: timeout,
-		ch:      ch,
-	}
+	return waiter
 }
 
 // WakeUp wakes up waiters that waiting on the transaction.
-func (lw *Manager) WakeUp(txn uint64, commitTS uint64) {
+func (lw *Manager) WakeUp(txn, commitTS uint64, keyHashes []uint64) {
 	lw.mu.Lock()
 	q := lw.waitingQueues[txn]
-	if q != nil {
-		delete(lw.waitingQueues, txn)
-	}
 	lw.mu.Unlock()
 	if q != nil {
-		for _, ch := range q.waiters {
-			ch <- commitTS
+		sort.Slice(keyHashes, func(i, j int) bool {
+			return keyHashes[i] < keyHashes[j]
+		})
+		waiters, remainSize := q.getReadyWaiters(keyHashes)
+		if remainSize == 0 {
+			lw.mu.Lock()
+			delete(lw.waitingQueues, txn)
+			lw.mu.Unlock()
 		}
-		log.Info("wakeup", len(q.waiters), "txns blocked by", txn)
+		sort.Slice(waiters, func(i, j int) bool {
+			return waiters[i].startTS < waiters[j].startTS
+		})
+		for i, w := range waiters {
+			w.ch <- Result{Position: Position(i), CommitTS: commitTS}
+		}
+		log.Info("wakeup", len(waiters), "txns blocked by", txn, keyHashes)
 	}
 }

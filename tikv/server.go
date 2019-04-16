@@ -10,6 +10,7 @@ import (
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/rowcodec"
 	"github.com/ngaut/unistore/tikv/dbreader"
+	"github.com/ngaut/unistore/util/lockwaiter"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -196,28 +197,31 @@ func (srv *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.PessimisticLockResponse{RegionError: reqCtx.regErr}, nil
 	}
-	for {
-		waiter, err := srv.mvccStore.PessimisticLock(reqCtx, req.Mutations, req.PrimaryLock, req.GetStartVersion(), req.GetForUpdateTs(), req.GetLockTtl())
-		if waiter != nil {
-			unlocked, commitTS := waiter.Wait()
-			if unlocked {
-				if commitTS > req.GetForUpdateTs() {
-					err = &ErrConflict{
-						StartTS:    req.GetForUpdateTs(),
-						ConflictTS: commitTS,
-					}
-				} else {
-					continue
-				}
-			}
-		}
-		if err == nil {
-			log.Info(req.GetStartVersion(), "lock", len(req.Mutations), "keys")
-		}
-		return &kvrpcpb.PessimisticLockResponse{
-			Errors: convertToKeyErrors([]error{err}),
-		}, nil
+	waiter, err := srv.mvccStore.PessimisticLock(reqCtx, req.Mutations, req.PrimaryLock, req.GetStartVersion(), req.GetForUpdateTs(), req.GetLockTtl())
+	if waiter == nil {
+		return &kvrpcpb.PessimisticLockResponse{Errors: convertToKeyErrors([]error{err})}, nil
 	}
+	result := waiter.Wait()
+	if result.Position == lockwaiter.WaitTimeout {
+		return &kvrpcpb.PessimisticLockResponse{Errors: convertToKeyErrors([]error{err})}, nil
+	}
+	srv.mvccStore.deadlockDetector.CleanUpTarget(req.StartVersion, waiter.LockTS)
+	if result.Position > 0 {
+		// Sleep a little so the transaction in lower position will more likely get the lock.
+		time.Sleep(time.Millisecond * time.Duration(result.Position) * 10)
+	}
+	conflictTS := result.CommitTS
+	if conflictTS < req.GetForUpdateTs() {
+		// The key is rollbacked, we don't have the exact commitTS, but we can use the server's latest.
+		conflictTS = srv.mvccStore.getLatestTS()
+	}
+	err = &ErrConflict{
+		StartTS:    req.GetForUpdateTs(),
+		ConflictTS: conflictTS,
+	}
+	return &kvrpcpb.PessimisticLockResponse{
+		Errors: convertToKeyErrors([]error{err}),
+	}, nil
 }
 
 func (svr *Server) KvPrewrite(ctx context.Context, req *kvrpcpb.PrewriteRequest) (*kvrpcpb.PrewriteResponse, error) {

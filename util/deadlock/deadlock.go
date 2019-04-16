@@ -67,3 +67,18 @@ func (d *Detector) CleanUp(txn uint64) {
 	delete(d.txnMap, txn)
 	d.lock.Unlock()
 }
+
+func (d *Detector) CleanUpTarget(txn, target uint64) {
+	d.lock.Lock()
+	l := d.txnMap[txn]
+	if l != nil {
+		for i, tar := range l.txns {
+			if tar == target {
+				l.txns = append(l.txns[:i], l.txns[i+1:]...)
+				break
+			}
+		}
+	}
+	d.lock.Unlock()
+
+}
