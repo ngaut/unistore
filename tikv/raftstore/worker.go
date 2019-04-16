@@ -681,7 +681,7 @@ func (r *raftLogGCRunner) gcRaftLog(raftDb *badger.DB, regionId, startIdx, endId
 			return 0, err
 		}
 	}
-	return endIdx - startIdx, nil
+	return endIdx - firstIdx, nil
 }
 
 func (r *raftLogGCRunner) reportCollected(collected uint64) {
