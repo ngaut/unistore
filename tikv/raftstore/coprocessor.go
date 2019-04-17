@@ -446,8 +446,6 @@ func lastKeyOfRegion(db *badger.DB, region *metapb.Region) []byte {
 		defer ite.Close()
 		if ite.Seek(iteOps.EndKey); ite.Valid() {
 			key = ite.Item().KeyCopy(nil)
-		} else {
-			println("empty")
 		}
 		return nil
 	})
