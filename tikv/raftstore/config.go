@@ -116,6 +116,13 @@ type Config struct {
 
 	StoreMaxBatchSize uint64
 	StorePoolSize     uint64
+
+	ConcurrentSendSnapLimit uint64
+	ConcurrentRecvSnapLimit uint64
+
+	GrpcInitialWindowSize uint64
+	GrpcKeepAliveTime     time.Duration
+	GrpcKeepAliveTimeout  time.Duration
 }
 
 func NewDefaultConfig() *Config {
@@ -173,6 +180,11 @@ func NewDefaultConfig() *Config {
 		ApplyPoolSize:            2,
 		StoreMaxBatchSize:        1024,
 		StorePoolSize:            2,
+		ConcurrentSendSnapLimit:  32,
+		ConcurrentRecvSnapLimit:  32,
+		GrpcInitialWindowSize:    2 * 1024 * 1024,
+		GrpcKeepAliveTime:        3 * time.Second,
+		GrpcKeepAliveTimeout:     60 * time.Second,
 	}
 }
 
