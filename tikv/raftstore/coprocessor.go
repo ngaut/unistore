@@ -3,14 +3,13 @@ package raftstore
 import (
 	"bytes"
 	"github.com/coocood/badger"
-	"github.com/coocood/badger/y"
 	"github.com/ngaut/log"
+	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/zhangjinpeng1987/raft"
-	"math"
 )
 
 type RegionChangeEvent int
@@ -389,7 +388,8 @@ func isTableKey(encodedKey []byte) bool {
 }
 
 func isSameTable(leftKey, rightKey []byte) bool {
-	return bytes.Compare(leftKey[:tablecodec.TableSplitKeyLen], rightKey[:tablecodec.TableSplitKeyLen]) == 0
+	return isTableKey(leftKey) && isTableKey(rightKey) &&
+		bytes.Compare(leftKey[:tablecodec.TableSplitKeyLen], rightKey[:tablecodec.TableSplitKeyLen]) == 0
 }
 
 func extractTablePrefix(key []byte) []byte {
@@ -430,21 +430,14 @@ func (observer *tableSplitCheckObserver) start() {}
 func (observer *tableSplitCheckObserver) stop() {}
 
 func lastKeyOfRegion(db *badger.DB, region *metapb.Region) []byte {
-	var key []byte
-	db.View(func(txn *badger.Txn) error {
-		iteOps := badger.DefaultIteratorOptions
-		iteOps.PrefetchValues = false
-		iteOps.Reverse = true
-		iteOps.StartKey = y.KeyWithTs(region.StartKey, math.MaxUint64)
-		iteOps.EndKey = y.KeyWithTs(region.EndKey, math.MaxUint64)
-		ite := txn.NewIterator(iteOps)
-		defer ite.Close()
-		if ite.Seek(iteOps.EndKey); ite.Valid() {
-			key = ite.Item().KeyCopy(nil)
-		}
-		return nil
-	})
-	return key
+	txn := db.NewTransaction(false)
+	defer txn.Discard()
+	ite := dbreader.NewIterator(txn, true, region.GetStartKey(), region.GetEndKey())
+	defer ite.Close()
+	if ite.Seek(region.GetEndKey()); ite.Valid() {
+		return ite.Item().KeyCopy(nil)
+	}
+	return nil
 }
 
 func (observer *tableSplitCheckObserver) addChecker(obCtx *observerContext, host *splitCheckerHost, db *badger.DB,

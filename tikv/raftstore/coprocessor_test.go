@@ -40,7 +40,6 @@ func newSplitCheckFsm(cap int) (chan Msg, fsm) {
 }
 
 func newTestRouter() (*router, chan Msg) {
-
 	ctrlSender, ctrlFsm := newSplitCheckFsm(10)
 	normarlSender, normalFsm := newSplitCheckFsm(10)
 	ctrlBox := newMailbox(ctrlSender, ctrlFsm)
@@ -220,16 +219,6 @@ func TestTableSplitCheckObserver(t *testing.T) {
 	defer cleanUpTestEngineData(engines)
 
 	region := newTestSplitCheckRegion()
-
-	config := newDefaultSplitCheckConfig()
-	// Enable table split.
-	config.splitRegionOnTable = true
-	// Try to "disable" size split.
-	config.regionMaxSize = uint64(2 * 1024 * 1024 * 1024)
-	config.regionSplitSize = uint64(1024 * 1024 * 1024)
-	// Try to "disable" keys split
-	config.regionMaxKeys = uint64(2000000000)
-	config.regionSplitKeys = uint64(1000000000)
 
 	// only create table split observer and ignore approximate.
 	router, receiver := newTestRouter()
