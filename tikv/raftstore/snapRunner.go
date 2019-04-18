@@ -67,6 +67,9 @@ func (r *snapRunner) sendSnap(addr string, msg *raft_serverpb.RaftMessage) error
 	if err != nil {
 		return err
 	}
+	if !snap.Exists() {
+		return errors.Errorf("missing snap file: %v", snap.Path())
+	}
 
 	cc, err := grpc.Dial(addr, grpc.WithInsecure(),
 		grpc.WithInitialWindowSize(int32(r.config.GrpcInitialWindowSize)),
