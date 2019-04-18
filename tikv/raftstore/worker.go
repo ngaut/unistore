@@ -221,8 +221,8 @@ func (r *splitCheckRunner) run(t task) {
 	spCheckTask := t.data.(*splitCheckTask)
 	region := spCheckTask.region
 	regionId := region.Id
-	startKey := EncStartKey(region)
-	endKey := EncEndKey(region)
+	startKey := region.StartKey
+	endKey := region.EndKey
 	log.Debugf("executing split check task: [regionId: %d, startKey: %s, endKey: %s]", regionId,
 		hex.EncodeToString(startKey), hex.EncodeToString(endKey))
 	host := r.coprocessorHost.newSplitCheckerHost(region, r.engine, spCheckTask.autoSplit,

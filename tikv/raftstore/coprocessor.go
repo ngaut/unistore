@@ -3,12 +3,14 @@ package raftstore
 import (
 	"bytes"
 	"github.com/coocood/badger"
+	"github.com/coocood/badger/y"
 	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/zhangjinpeng1987/raft"
+	"math"
 )
 
 type RegionChangeEvent int
@@ -80,7 +82,7 @@ func (checker *sizeSplitChecker) onKv(obCtx *observerContext, spCheckKeyEntry sp
 	checker.currentSize += size
 	overLimit := uint64(len(checker.splitKeys)) >= checker.batchSplitLimit
 	if checker.currentSize > checker.splitSize && !overLimit {
-		checker.splitKeys = append(checker.splitKeys, OriginKey(safeCopy(spCheckKeyEntry.key)))
+		checker.splitKeys = append(checker.splitKeys, safeCopy(spCheckKeyEntry.key))
 		// If for previous onKv(), checker.current_size == checker.split_size,
 		// the split key would be pushed this time, but the entry size for this time should not be ignored.
 		if checker.currentSize-size == checker.splitSize {
@@ -173,7 +175,7 @@ func (observer *sizeSplitCheckObserver) addChecker(obCtx *observerContext, host 
 		}
 		host.addChecker(newSizeSplitChecker(observer.regionMaxSize, observer.splitSize, observer.splitLimit, policy))
 	} else {
-		log.Debugf("approximate size less than threshold, doesn't need to do split check. [regionId: %d, size : %d, threshold : %d",
+		log.Debugf("approximate size less than threshold, doesn't need to do split check. [regionId: %d, size : %d, threshold : %d]",
 			regionId, regionSize, observer.regionMaxSize)
 	}
 }
@@ -207,7 +209,7 @@ func (checker *halfSplitChecker) getSplitKeys() [][]byte {
 	dataKey := checker.buckets[mid]
 	checker.buckets[mid] = checker.buckets[bucketLen-1]
 	checker.buckets = checker.buckets[:bucketLen-1]
-	return [][]byte{OriginKey(dataKey)}
+	return [][]byte{dataKey}
 }
 
 func getRegionApproximateMiddle(db *badger.DB, region *metapb.Region) ([]byte, error) {
@@ -283,7 +285,7 @@ func (checker *keysSplitChecker) onKv(obCtx *observerContext, spCheckKeyEntry sp
 	checker.currentCount += 1
 	overLimit := uint64(len(checker.splitKeys)) >= checker.batchSplitLimit
 	if checker.currentCount > checker.splitThreshold && !overLimit {
-		checker.splitKeys = append(checker.splitKeys, OriginKey(safeCopy(spCheckKeyEntry.key)))
+		checker.splitKeys = append(checker.splitKeys, safeCopy(spCheckKeyEntry.key))
 		// If for previous onKv(), checker.currentCount == checker.splitThreshold
 		// the split key would be pushed this time, but the entry size for this time should not be ignored.
 		checker.currentCount = 1
@@ -399,13 +401,8 @@ func (checker *tableSplitChecker) onKv(obCtx *observerContext, spCheckKeyEntry s
 	if len(checker.splitKey) != 0 {
 		return true
 	}
-	currentEncodedKey := OriginKey(spCheckKeyEntry.key)
-	var splitKey []byte
-	if isTableKey(currentEncodedKey) {
-		splitKey = currentEncodedKey
-	}
-	if len(splitKey) != 0 {
-		splitKey = extractTablePrefix(splitKey)
+	if isTableKey(spCheckKeyEntry.key) {
+		checker.splitKey = extractTablePrefix(spCheckKeyEntry.key)
 		return true
 	}
 	return false
@@ -433,15 +430,13 @@ func (observer *tableSplitCheckObserver) start() {}
 func (observer *tableSplitCheckObserver) stop() {}
 
 func lastKeyOfRegion(db *badger.DB, region *metapb.Region) []byte {
-	startKey := EncStartKey(region)
-	endKey := EncEndKey(region)
 	var key []byte
 	db.View(func(txn *badger.Txn) error {
 		iteOps := badger.DefaultIteratorOptions
 		iteOps.PrefetchValues = false
 		iteOps.Reverse = true
-		iteOps.StartKey = startKey
-		iteOps.EndKey = endKey
+		iteOps.StartKey = y.KeyWithTs(region.StartKey, math.MaxUint64)
+		iteOps.EndKey = y.KeyWithTs(region.EndKey, math.MaxUint64)
 		ite := txn.NewIterator(iteOps)
 		defer ite.Close()
 		if ite.Seek(iteOps.EndKey); ite.Valid() {
@@ -463,16 +458,14 @@ func (observer *tableSplitCheckObserver) addChecker(obCtx *observerContext, host
 	if len(endKey) == 0 {
 		return
 	}
-	encodedStartKey := region.GetStartKey()
-	encodedEndKey := OriginKey(endKey)
-	if isSameTable(encodedStartKey, encodedEndKey) {
+	if isSameTable(region.GetStartKey(), endKey) {
 		// Same table
 		return
 	} else {
 		// Different tables.
-		// Note that table id does not grow by 1, so have to use encodedEndKey to extract a table prefix.
+		// Note that table id does not grow by 1, so have to use endKey to extract a table prefix.
 		// See more: https://github.com/pingcap/tidb/issues/4727.
-		splitKey := extractTablePrefix(encodedEndKey)
+		splitKey := extractTablePrefix(endKey)
 		host.addChecker(newTableSplitChecker(splitKey, policy))
 	}
 }

@@ -64,8 +64,8 @@ func newTestSplitCheckRegion() *metapb.Region {
 			ConfVer: 5,
 			Version: 2,
 		},
-		StartKey: codec.EncodeInt(tablecodec.TablePrefix(), int64(0)),
-		EndKey:   codec.EncodeInt(tablecodec.TablePrefix(), int64(0)),
+		StartKey: []byte{'t'},
+		EndKey:   []byte{'u'},
 	}
 	return region
 }
@@ -83,85 +83,37 @@ func runTestSplitCheckTask(runner *splitCheckRunner, autoSplit bool, region *met
 }
 
 func mustSplitAt(t *testing.T, rx <-chan Msg, expectRegion *metapb.Region, expectSplitKeys [][]byte) {
-	msg := <-rx
-	if msg.Type == MsgTypeRegionApproximateSize || msg.Type == MsgTypeRegionApproximateKeys {
-		assert.Equal(t, msg.RegionID, expectRegion.Id)
-	} else if msg.Type == MsgTypeSplitRegion {
-		assert.Equal(t, msg.RegionID, expectRegion.Id)
-		splitRegion := msg.Data.(*MsgSplitRegion)
-		assert.Equal(t, splitRegion.RegionEpoch, expectRegion.RegionEpoch)
-		assert.Equal(t, splitRegion.SplitKeys, expectSplitKeys)
-	} else {
-		panic(fmt.Sprintf("expect split check result. but got %v", msg))
+	for {
+		msg := <-rx
+		if msg.Type == MsgTypeRegionApproximateSize || msg.Type == MsgTypeRegionApproximateKeys {
+			assert.Equal(t, msg.RegionID, expectRegion.Id)
+		} else if msg.Type == MsgTypeSplitRegion {
+			assert.Equal(t, msg.RegionID, expectRegion.Id)
+			splitRegion := msg.Data.(*MsgSplitRegion)
+			assert.Equal(t, splitRegion.RegionEpoch, expectRegion.RegionEpoch)
+			assert.Equal(t, splitRegion.SplitKeys, expectSplitKeys)
+			break
+		} else {
+			panic(fmt.Sprintf("expect split check result. but got %v", msg))
+		}
 	}
 }
 
-func putData(db *DBBundle, startIdx, endIdx uint64) {
-	val := []byte("some value")
-	arr := [1024]byte{}
-	for startIdx < endIdx {
-		batchIdx := startIdx + 20
-		if batchIdx > endIdx {
-			batchIdx = endIdx
-		}
-		writeBatch := new(WriteBatch)
-		for i := startIdx; i < batchIdx; i++ {
-			key := DataKey(codec.EncodeBytes(nil, []byte(fmt.Sprintf("%04d", i))))
-			writeBatch.Set(key, val)
-			writeBatch.Set(key, arr[:])
-		}
-		// Flush to generate SST files, so that properties can be utilized.
-		writeBatch.WriteToKV(db)
-		startIdx = batchIdx
-	}
-}
+// Return a host but doesn't contains table split check observer.
+func newTestCoprocessorHost(config *splitCheckConfig, router *router) *CoprocessorHost {
+	host := &CoprocessorHost{}
 
-func TestKeysSplitCheck(t *testing.T) {
-	engines := newTestEngines(t)
-	defer cleanUpTestEngineData(engines)
+	halfSplitCheckObserver := newHalfSplitCheckObserver(config.regionMaxSize)
 
-	config := newDefaultSplitCheckConfig()
-	config.regionMaxKeys = 100
-	config.regionSplitKeys = 90
-	config.batchSplitLimit = 5
+	sizeSplitCheckObserver := newSizeSplitCheckObserver(config.regionMaxSize, config.regionSplitSize,
+		config.batchSplitLimit, router)
 
-	region := newTestSplitCheckRegion()
+	keysSplitCheckObserver := newKeysSplitCheckObserver(config.regionMaxKeys, config.regionSplitKeys,
+		config.batchSplitLimit, router)
 
-	router, receiver := newTestRouter()
-	host := newCoprocessorHost(config, router)
-	runner := newSplitCheckRunner(engines.kv.db, router, host)
-
-	// so split key will be z0080
-	putData(engines.kv, 0, 90)
-	runTestSplitCheckTask(runner, true, region, pdpb.CheckPolicy_SCAN)
-
-	// keys has not reached the maxKeys 100 yet.
-	msg := <-receiver
-	if msg.Type != MsgTypeRegionApproximateKeys && msg.Type != MsgTypeRegionApproximateSize {
-		panic(fmt.Sprintf("expect recv empty, but got %v", msg))
-	}
-	assert.Equal(t, msg.RegionID, region.GetId())
-
-	putData(engines.kv, 90, 160)
-	runTestSplitCheckTask(runner, true, region, pdpb.CheckPolicy_SCAN)
-	mustSplitAt(t, receiver, region, [][]byte{
-		[]byte("0080"),
-	})
-
-	putData(engines.kv, 160, 300)
-	runTestSplitCheckTask(runner, true, region, pdpb.CheckPolicy_SCAN)
-	mustSplitAt(t, receiver, region, [][]byte{
-		[]byte("0080"), []byte("0160"),
-		[]byte("0240"),
-	})
-
-	putData(engines.kv, 300, 500)
-	runTestSplitCheckTask(runner, true, region, pdpb.CheckPolicy_SCAN)
-	mustSplitAt(t, receiver, region, [][]byte{
-		[]byte("0080"), []byte("0160"),
-		[]byte("0240"), []byte("0320"),
-		[]byte("0400"),
-	})
+	host.registry.splitCheckObservers = append(host.registry.splitCheckObservers, halfSplitCheckObserver,
+		sizeSplitCheckObserver, keysSplitCheckObserver)
+	return host
 }
 
 func TestHalfSplitCheck(t *testing.T) {
@@ -174,61 +126,21 @@ func TestHalfSplitCheck(t *testing.T) {
 	config.regionMaxSize = BucketNumberLimit
 
 	router, receiver := newTestRouter()
-	host := newCoprocessorHost(config, router)
+	host := newTestCoprocessorHost(config, router)
 	runner := newSplitCheckRunner(engines.kv.db, router, host)
 
-	// so split key will be z0005
-	putData(engines.kv, 0, 11)
+	// so split key will be t0005
+	wb := new(WriteBatch)
+	for i := 0; i < 11; i++ {
+		key := []byte(fmt.Sprintf("t%04d", i))
+		wb.Set(key, key)
+	}
+	wb.WriteToKV(engines.kv)
 	runTestSplitCheckTask(runner, false, region, pdpb.CheckPolicy_SCAN)
-	splitKeys := []byte("0005")
+	splitKeys := []byte("t0005")
 	mustSplitAt(t, receiver, region, [][]byte{splitKeys})
 	runTestSplitCheckTask(runner, false, region, pdpb.CheckPolicy_APPROXIMATE)
 	mustSplitAt(t, receiver, region, [][]byte{splitKeys})
-}
-
-func TestSizeSplitCheck(t *testing.T) {
-	engines := newTestEngines(t)
-	defer cleanUpTestEngineData(engines)
-
-	region := newTestSplitCheckRegion()
-
-	config := newDefaultSplitCheckConfig()
-	config.regionMaxSize = 100
-	config.regionSplitSize = 60
-	config.batchSplitLimit = 5
-
-	router, receiver := newTestRouter()
-	host := newCoprocessorHost(config, router)
-	runner := newSplitCheckRunner(engines.kv.db, router, host)
-
-	// so split key will be [z0006]
-	putData(engines.kv, 0, 7)
-	runTestSplitCheckTask(runner, true, region, pdpb.CheckPolicy_SCAN)
-	// size has not reached the max_size 100 yet.
-	msg := <-receiver
-	if msg.Type != MsgTypeRegionApproximateKeys && msg.Type != MsgTypeRegionApproximateSize {
-		panic(fmt.Sprintf("expect recv empty, but got %v", msg))
-	}
-	assert.Equal(t, msg.RegionID, region.GetId())
-
-	putData(engines.kv, 7, 11)
-	runTestSplitCheckTask(runner, true, region, pdpb.CheckPolicy_SCAN)
-	mustSplitAt(t, receiver, region, [][]byte{[]byte("0006")})
-
-	// so split keys will be [z0006, z0012]
-	putData(engines.kv, 11, 19)
-	runTestSplitCheckTask(runner, true, region, pdpb.CheckPolicy_SCAN)
-	mustSplitAt(t, receiver, region, [][]byte{[]byte("0006"), []byte("0012")})
-
-	// for test batch_split_limit
-	// so split kets will be [z0006, z0012, z0018, z0024, z0030]
-	putData(engines.kv, 19, 50)
-	runTestSplitCheckTask(runner, true, region, pdpb.CheckPolicy_SCAN)
-	mustSplitAt(t, receiver, region, [][]byte{
-		[]byte("0006"), []byte("0012"),
-		[]byte("0018"), []byte("0024"),
-		[]byte("0030"),
-	})
 }
 
 func TestCheckerWithSameMaxAndSplitSize(t *testing.T) {
@@ -236,7 +148,7 @@ func TestCheckerWithSameMaxAndSplitSize(t *testing.T) {
 	region := new(metapb.Region)
 	ctx := observerContext{region: region}
 	for {
-		data := splitCheckKeyEntry{key: []byte("zxxxx"), valueSize: 4}
+		data := splitCheckKeyEntry{key: []byte("txxxx"), valueSize: 4}
 		if checker.onKv(&ctx, data) {
 			break
 		}
@@ -249,7 +161,7 @@ func TestCheckerWithMaxTwiceBiggerThanSplitSize(t *testing.T) {
 	region := new(metapb.Region)
 	ctx := observerContext{region: region}
 	for i := 0; i < 2; i++ {
-		data := splitCheckKeyEntry{key: []byte("zxxxx"), valueSize: 5}
+		data := splitCheckKeyEntry{key: []byte("txxxx"), valueSize: 5}
 		if checker.onKv(&ctx, data) {
 			break
 		}
@@ -274,7 +186,6 @@ func TestLastKeyOfRegion(t *testing.T) {
 	for i := 1; i < 3; i++ {
 		tableKey := codec.EncodeInt(tablecodec.TablePrefix(), int64(i))
 		key := append(tableKey, padding...)
-		key = DataKey(key)
 		writeBatch.Set(key, key)
 		dataKeys[i-1] = key
 	}
@@ -362,7 +273,6 @@ func TestTableSplitCheckObserver(t *testing.T) {
 			continue
 		}
 		key := append(generateTablePrefix(int64(i)), padding...)
-		key = DataKey(key)
 		wb.Set(key, key)
 	}
 	wb.WriteToKV(engines.kv)
@@ -381,7 +291,6 @@ func TestTableSplitCheckObserver(t *testing.T) {
 	for i := 1; i < 4; i++ {
 		key := append(generateTablePrefix(int64(3)), padding...)
 		key = append(key, byte(i))
-		key = DataKey(key)
 		wb.Set(key, key)
 	}
 	wb.WriteToKV(engines.kv)
