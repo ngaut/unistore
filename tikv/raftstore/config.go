@@ -123,6 +123,7 @@ type Config struct {
 	GrpcInitialWindowSize uint64
 	GrpcKeepAliveTime     time.Duration
 	GrpcKeepAliveTimeout  time.Duration
+	GrpcRaftConnNum       uint64
 }
 
 func NewDefaultConfig() *Config {
@@ -185,6 +186,7 @@ func NewDefaultConfig() *Config {
 		GrpcInitialWindowSize:    2 * 1024 * 1024,
 		GrpcKeepAliveTime:        3 * time.Second,
 		GrpcKeepAliveTimeout:     60 * time.Second,
+		GrpcRaftConnNum:          1,
 	}
 }
 
