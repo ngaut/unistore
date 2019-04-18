@@ -372,10 +372,6 @@ type tableSplitChecker struct {
 	checkPolicy pdpb.CheckPolicy
 }
 
-func newTableSplitCheckerByPolicy(policy pdpb.CheckPolicy) *tableSplitChecker {
-	return &tableSplitChecker{checkPolicy: policy}
-}
-
 func newTableSplitChecker(splitKey []byte, policy pdpb.CheckPolicy) *tableSplitChecker {
 	return &tableSplitChecker{
 		splitKey:    splitKey,
@@ -388,8 +384,7 @@ func isTableKey(encodedKey []byte) bool {
 }
 
 func isSameTable(leftKey, rightKey []byte) bool {
-	return isTableKey(leftKey) && isTableKey(rightKey) &&
-		bytes.Compare(leftKey[:tablecodec.TableSplitKeyLen], rightKey[:tablecodec.TableSplitKeyLen]) == 0
+	return bytes.Compare(leftKey[:tablecodec.TableSplitKeyLen], rightKey[:tablecodec.TableSplitKeyLen]) == 0
 }
 
 func extractTablePrefix(key []byte) []byte {
@@ -435,7 +430,17 @@ func lastKeyOfRegion(db *badger.DB, region *metapb.Region) []byte {
 	ite := dbreader.NewIterator(txn, true, region.GetStartKey(), region.GetEndKey())
 	defer ite.Close()
 	if ite.Seek(region.GetEndKey()); ite.Valid() {
-		return ite.Item().KeyCopy(nil)
+		item := ite.Item()
+		if bytes.Compare(item.Key(), region.GetEndKey()) == 0 {
+			if ite.Next(); ite.Valid() {
+				item = ite.Item()
+			} else {
+				return nil
+			}
+		}
+		if bytes.Compare(item.Key(), region.GetStartKey()) >= 0 {
+			return item.KeyCopy(nil)
+		}
 	}
 	return nil
 }
