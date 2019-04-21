@@ -39,6 +39,21 @@ func ParseWriteCFValue(data []byte) (wv WriteCFValue, err error) {
 	return
 }
 
+const shortValuePrefix = 'v'
+
+// TransferWriteCfToBytes accepts a write cf parameters and return the encoded bytes data.
+// Just like the tikv encoding form. See tikv/src/storage/mvcc/write.rs for more detail.
+func TransferWriteCfToBytes(t WriteType, startTs uint64, shortVal []byte) []byte {
+	data := make([]byte, 1)
+	data[0] = byte(t)
+	data = codec.EncodeUvarint(data, startTs)
+	if len(shortVal) != 0 {
+		data = append(data, byte(shortValuePrefix), byte(len(shortVal)))
+		return append(data, shortVal...)
+	}
+	return data
+}
+
 type LockType = byte
 
 const (

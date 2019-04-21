@@ -1053,10 +1053,7 @@ func (d *applyDelegate) createWriteCmdOps(requests []*raft_cmdpb.Request) (ops w
 }
 
 func (d *applyDelegate) execPrewrite(aCtx *applyContext, op prewriteOp) {
-	_, rawKey, err := codec.DecodeBytes(op.putLock.Key, nil)
-	if err != nil {
-		panic(op.putLock.Key)
-	}
+	rawKey := op.putLock.Key
 	lock, err := mvcc.ParseLockCFValue(op.putLock.Value)
 	if err != nil {
 		panic(op.putLock.Value)
@@ -1079,11 +1076,12 @@ func (d *applyDelegate) execPrewrite(aCtx *applyContext, op prewriteOp) {
 }
 
 func (d *applyDelegate) execCommit(aCtx *applyContext, op commitOp) {
-	remain, rawKey, err := codec.DecodeBytes(op.putWrite.Key, nil)
+	_, remain, err := codec.DecodeBytes(op.putWrite.Key, nil)
 	if err != nil {
 		panic(op.putWrite.Key)
 	}
-	_, commitTS, err := codec.DecodeUintDesc(remain)
+	rawKey := remain[:len(remain)-8]
+	_, commitTS, err := codec.DecodeUintDesc(remain[len(remain)-8:])
 	if err != nil {
 		panic(remain)
 	}
@@ -1100,11 +1098,12 @@ func (d *applyDelegate) execCommit(aCtx *applyContext, op commitOp) {
 }
 
 func (d *applyDelegate) execRollback(aCtx *applyContext, op rollbackOp) {
-	remain, rawKey, err := codec.DecodeBytes(op.putWrite.Key, nil)
+	_, remain, err := codec.DecodeBytes(op.putWrite.Key, nil)
 	if err != nil {
 		panic(op.putWrite.Key)
 	}
-	aCtx.wb.Rollback(append(rawKey, remain...))
+	rawKey := remain[:len(remain)-8]
+	aCtx.wb.Rollback(remain)
 	if op.delLock != nil {
 		aCtx.wb.DeleteLock(rawKey)
 	}
