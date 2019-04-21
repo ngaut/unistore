@@ -15,8 +15,10 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 	defer cleanUpTestEngineData(engines)
 	apply := new(applyDelegate)
 	applyCtx := newApplyContext("test", nil, engines, nil, notifier{}, NewDefaultConfig())
-	dBWriter := new(raftDBWriter)
-	wb := (dBWriter.NewWriteBatch(100, 0)).(*raftWriteBatch)
+	wb := &raftWriteBatch{
+		startTS:  100,
+		commitTS: 0,
+	}
 	// Testing PreWriter
 
 	values := [][]byte{
