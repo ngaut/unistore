@@ -21,14 +21,15 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 	}
 	// Testing PreWriter
 
+	longValue := [128]byte{101}
+
 	values := [][]byte{
 		[]byte("short value"),
-		[]byte("large value .........."),
-		[]byte("s"),
+		longValue[:],
+		[]byte(""),
 	}
 
 	for i := 0; i < 3; i++ {
-		expectKey := []byte(fmt.Sprintf("%08d", i))
 		primary := []byte(fmt.Sprintf("t%08d_r%08d", i, i))
 		expectLock := mvcc.MvccLock{
 			MvccLockHdr: mvcc.MvccLockHdr{
@@ -40,7 +41,7 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 			Primary: primary,
 			Value:   values[i],
 		}
-		wb.Prewrite(expectKey, &expectLock)
+		wb.Prewrite(primary, &expectLock)
 		apply.execWriteCmd(applyCtx, &rfpb.RaftCmdRequest{
 			Header:   new(rfpb.RaftRequestHeader),
 			Requests: wb.requests,
@@ -48,7 +49,7 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 		applyCtx.wb.WriteToKV(engines.kv)
 		applyCtx.wb.Reset()
 		wb.requests = nil
-		val := engines.kv.lockStore.Get(expectKey, nil)
+		val := engines.kv.lockStore.Get(primary, nil)
 		assert.NotNil(t, val)
 		lock := mvcc.DecodeLock(val)
 		assert.Equal(t, expectLock, lock)
@@ -60,7 +61,7 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 		commitTS: 200,
 	}
 	for i := 0; i < 3; i++ {
-		expectKey := []byte(fmt.Sprintf("%08d", i))
+		primary := []byte(fmt.Sprintf("t%08d_r%08d", i, i))
 		expectLock := &mvcc.MvccLock{
 			MvccLockHdr: mvcc.MvccLockHdr{
 				StartTS: 100,
@@ -69,7 +70,7 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 			},
 			Value: values[i],
 		}
-		wb.Commit(expectKey, expectLock)
+		wb.Commit(primary, expectLock)
 		apply.execWriteCmd(applyCtx, &rfpb.RaftCmdRequest{
 			Header:   new(rfpb.RaftRequestHeader),
 			Requests: wb.requests,
@@ -78,12 +79,16 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 		applyCtx.wb.Reset()
 		wb.requests = nil
 		engines.kv.db.View(func(txn *badger.Txn) error {
-			item, err := txn.Get(expectKey)
-			assert.Nil(t, err)
-			assert.NotNil(t, item)
-			userMeta := mvcc.DBUserMeta(item.UserMeta())
-			assert.Equal(t, userMeta.StartTS(), expectLock.StartTS)
-			assert.Equal(t, userMeta.CommitTS(), wb.commitTS)
+			item, err := txn.Get(primary)
+			if len(values[i]) != 0 {
+				assert.Nil(t, err)
+				assert.NotNil(t, item)
+				userMeta := mvcc.DBUserMeta(item.UserMeta())
+				assert.Equal(t, userMeta.StartTS(), expectLock.StartTS)
+				assert.Equal(t, userMeta.CommitTS(), wb.commitTS)
+			} else {
+				assert.NotNil(t, err)
+			}
 			return nil
 		})
 	}
@@ -97,13 +102,9 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 	dBWriter := new(raftDBWriter)
 	wb := (dBWriter.NewWriteBatch(100, 0)).(*raftWriteBatch)
 
-	values := [][]byte{
-		[]byte("large value .........."),
-		[]byte("large value .........."),
-	}
+	longValue := [128]byte{102}
 
 	for i := 0; i < 2; i++ {
-		expectKey := []byte(fmt.Sprintf("%08d", i))
 		primary := []byte(fmt.Sprintf("t%08d_r%08d", i, i))
 		expectLock := mvcc.MvccLock{
 			MvccLockHdr: mvcc.MvccLockHdr{
@@ -113,9 +114,9 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 				PrimaryLen: uint16(len(primary)),
 			},
 			Primary: primary,
-			Value:   values[i],
+			Value:   longValue[:],
 		}
-		wb.Prewrite(expectKey, &expectLock)
+		wb.Prewrite(primary, &expectLock)
 		apply.execWriteCmd(applyCtx, &rfpb.RaftCmdRequest{
 			Header:   new(rfpb.RaftRequestHeader),
 			Requests: wb.requests,
@@ -130,8 +131,8 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 		startTS:  150,
 		commitTS: 200,
 	}
-	expectKey := []byte(fmt.Sprintf("%08d", 0))
-	wb.Rollback(expectKey, false)
+	primary := []byte(fmt.Sprintf("t%08d_r%08d", 0, 0))
+	wb.Rollback(primary, false)
 	apply.execWriteCmd(applyCtx, &rfpb.RaftCmdRequest{
 		Header:   new(rfpb.RaftRequestHeader),
 		Requests: wb.requests,
@@ -143,8 +144,8 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 		startTS:  100,
 		commitTS: 200,
 	}
-	expectKey = []byte(fmt.Sprintf("%08d", 1))
-	wb.Rollback(expectKey, true)
+	primary = []byte(fmt.Sprintf("t%08d_r%08d", 1, 1))
+	wb.Rollback(primary, true)
 	apply.execWriteCmd(applyCtx, &rfpb.RaftCmdRequest{
 		Header:   new(rfpb.RaftRequestHeader),
 		Requests: wb.requests,
@@ -152,6 +153,6 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 	applyCtx.wb.WriteToKV(engines.kv)
 	applyCtx.wb.Reset()
 	// The lock should be deleted.
-	val := engines.kv.lockStore.Get(expectKey, nil)
+	val := engines.kv.lockStore.Get(primary, nil)
 	assert.Nil(t, val)
 }

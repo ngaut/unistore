@@ -1,10 +1,8 @@
 package raftstore
 
 import (
-	"errors"
 	"fmt"
 	"github.com/ngaut/unistore/tikv/mvcc"
-	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	rfpb "github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/tidb/util/codec"
 )
@@ -26,35 +24,9 @@ type raftWriteBatch struct {
 	commitTS uint64
 }
 
-// transferLockToValue decode the mvcc lock and returns putLock value and putDefault value if exists.
-func transferLockToValue(lock *mvcc.MvccLock) ([]byte, []byte, error) {
-	data := make([]byte, 1)
-	switch lock.Op {
-	case byte(kvrpcpb.Op_Put):
-		data[0] = mvcc.LockTypePut
-	case byte(kvrpcpb.Op_Del):
-		data[0] = mvcc.LockTypeDelete
-	case byte(kvrpcpb.Op_Lock):
-		data[0] = mvcc.LockTypeLock
-	default:
-		return nil, nil, errors.New("invalid lock op")
-	}
-	data = codec.EncodeUvarint(codec.EncodeCompactBytes(data, lock.Primary), lock.StartTS)
-	if lock.TTL != 0 {
-		data = codec.EncodeUvarint(data, uint64(lock.TTL))
-	}
-	if len(lock.Value) <= shortValueMaxLen {
-		if len(lock.Value) != 0 {
-			data = append(append(data, byte(len(lock.Value))), lock.Value...)
-		}
-		return data, nil, nil
-	} else {
-		return data, lock.Value, nil
-	}
-}
-
 func (wb *raftWriteBatch) Prewrite(key []byte, lock *mvcc.MvccLock) {
-	putLock, putDefault, err := transferLockToValue(lock)
+	key = codec.EncodeBytes(nil, key)
+	putLock, putDefault, err := mvcc.EncodeLockCFValue(lock)
 	if err != nil {
 		panic(fmt.Sprintf("Prewrite error when transfering lock. [key: %v, %v]", key, err))
 	}
@@ -64,7 +36,7 @@ func (wb *raftWriteBatch) Prewrite(key []byte, lock *mvcc.MvccLock) {
 			CmdType: rfpb.CmdType_Put,
 			Put: &rfpb.PutRequest{
 				Cf:    "",
-				Key:   codec.EncodeBytes(nil, codec.EncodeUintDesc(key, lock.StartTS)),
+				Key:   codec.EncodeUintDesc(key, lock.StartTS),
 				Value: putDefault,
 			},
 		}
@@ -91,12 +63,13 @@ func (wb *raftWriteBatch) Prewrite(key []byte, lock *mvcc.MvccLock) {
 }
 
 func (wb *raftWriteBatch) Commit(key []byte, lock *mvcc.MvccLock) {
+	key = codec.EncodeBytes(nil, key)
 	putWriteReq := &rfpb.Request{
 		CmdType: rfpb.CmdType_Put,
 		Put: &rfpb.PutRequest{
 			Cf:    CFWrite,
-			Key:   codec.EncodeBytes(nil, codec.EncodeUintDesc(key, wb.commitTS)),
-			Value: mvcc.TransferWriteCfToBytes(lock.Op, lock.StartTS, lock.Value),
+			Key:   codec.EncodeUintDesc(key, wb.commitTS),
+			Value: mvcc.EncodeWriteCFValue(lock.Op, lock.StartTS, lock.Value),
 		},
 	}
 	delLockReq := &rfpb.Request{
@@ -110,12 +83,13 @@ func (wb *raftWriteBatch) Commit(key []byte, lock *mvcc.MvccLock) {
 }
 
 func (wb *raftWriteBatch) Rollback(key []byte, deleteLock bool) {
+	key = codec.EncodeBytes(nil, key)
 	rollBackReq := &rfpb.Request{
 		CmdType: rfpb.CmdType_Put,
 		Put: &rfpb.PutRequest{
 			Cf:    CFWrite,
-			Key:   codec.EncodeBytes(nil, codec.EncodeUintDesc(key, wb.startTS)),
-			Value: mvcc.TransferWriteCfToBytes(mvcc.WriteTypeRollback, wb.startTS, nil),
+			Key:   codec.EncodeUintDesc(key, wb.startTS),
+			Value: mvcc.EncodeWriteCFValue(mvcc.WriteTypeRollback, wb.startTS, nil),
 		},
 	}
 	if deleteLock {

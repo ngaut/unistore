@@ -39,11 +39,14 @@ func ParseWriteCFValue(data []byte) (wv WriteCFValue, err error) {
 	return
 }
 
-const shortValuePrefix = 'v'
+const (
+	shortValuePrefix = 'v'
+	shortValueMaxLen = 64
+)
 
-// TransferWriteCfToBytes accepts a write cf parameters and return the encoded bytes data.
+// EncodeWriteCFValue accepts a write cf parameters and return the encoded bytes data.
 // Just like the tikv encoding form. See tikv/src/storage/mvcc/write.rs for more detail.
-func TransferWriteCfToBytes(t WriteType, startTs uint64, shortVal []byte) []byte {
+func EncodeWriteCFValue(t WriteType, startTs uint64, shortVal []byte) []byte {
 	data := make([]byte, 1)
 	data[0] = byte(t)
 	data = codec.EncodeUvarint(data, startTs)
@@ -52,6 +55,32 @@ func TransferWriteCfToBytes(t WriteType, startTs uint64, shortVal []byte) []byte
 		return append(data, shortVal...)
 	}
 	return data
+}
+
+// EncodeLockCFValue encodes the mvcc lock and returns putLock value and putDefault value if exists.
+func EncodeLockCFValue(lock *MvccLock) ([]byte, []byte, error) {
+	data := make([]byte, 1)
+	switch lock.Op {
+	case byte(kvrpcpb.Op_Put):
+		data[0] = LockTypePut
+	case byte(kvrpcpb.Op_Del):
+		data[0] = LockTypeDelete
+	case byte(kvrpcpb.Op_Lock):
+		data[0] = LockTypeLock
+	default:
+		return nil, nil, errors.New("invalid lock op")
+	}
+	data = codec.EncodeUvarint(codec.EncodeCompactBytes(data, lock.Primary), lock.StartTS)
+	data = codec.EncodeUvarint(data, uint64(lock.TTL))
+	if len(lock.Value) <= shortValueMaxLen {
+		if len(lock.Value) != 0 {
+			data = append(data, byte(len(lock.Value)))
+			data = append(data, lock.Value...)
+		}
+		return data, nil, nil
+	} else {
+		return data, lock.Value, nil
+	}
 }
 
 type LockType = byte
