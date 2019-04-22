@@ -2,12 +2,16 @@ package raftstore
 
 import (
 	"fmt"
+	"time"
+
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	rcpb "github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/tidb/util/codec"
 )
 
 type raftDBWriter struct {
+	router *router
 }
 
 func (writer *raftDBWriter) Open() {
@@ -19,6 +23,7 @@ func (writer *raftDBWriter) Close() {
 }
 
 type raftWriteBatch struct {
+	ctx      *kvrpcpb.Context
 	requests []*rcpb.Request
 	startTS  uint64
 	commitTS uint64
@@ -106,14 +111,36 @@ func (wb *raftWriteBatch) Rollback(key []byte, deleteLock bool) {
 	}
 }
 
-func (writer *raftDBWriter) NewWriteBatch(startTS, commitTS uint64) mvcc.WriteBatch {
+func (writer *raftDBWriter) NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Context) mvcc.WriteBatch {
 	return &raftWriteBatch{
+		ctx:      ctx,
 		startTS:  startTS,
 		commitTS: commitTS,
 	}
 }
 
 func (writer *raftDBWriter) Write(batch mvcc.WriteBatch) error {
+	b := batch.(*raftWriteBatch)
+	ctx := b.ctx
+	header := &rcpb.RaftRequestHeader{
+		RegionId:    ctx.RegionId,
+		Peer:        ctx.Peer,
+		RegionEpoch: ctx.RegionEpoch,
+		Term:        ctx.Term,
+	}
+	request := &rcpb.RaftCmdRequest{
+		Header:   header,
+		Requests: b.requests,
+	}
+	cmd := &MsgRaftCmd{
+		SendTime: time.Now(),
+		Request:  request,
+	}
+	err := writer.router.sendRaftCommand(cmd)
+	if err != nil {
+		return err
+	}
+
 	return nil // TODO
 }
 

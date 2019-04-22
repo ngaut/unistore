@@ -167,7 +167,7 @@ type sendSnapTask struct {
 }
 
 type recvSnapTask struct {
-	stream tikvpb.Tikv_SnapshotServer
+	stream   tikvpb.Tikv_SnapshotServer
 	callback func(error)
 }
 
