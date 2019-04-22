@@ -1,6 +1,7 @@
 package mvcc
 
 import (
+	"github.com/coocood/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/tidb/util/codec"
@@ -74,7 +75,7 @@ func EncodeLockCFValue(lock *MvccLock) ([]byte, []byte, error) {
 	data = codec.EncodeUvarint(data, uint64(lock.TTL))
 	if len(lock.Value) <= shortValueMaxLen {
 		if len(lock.Value) != 0 {
-			data = append(data, byte(len(lock.Value)))
+			data = append(data, byte(shortValuePrefix), byte(len(lock.Value)))
 			data = append(data, lock.Value...)
 		}
 		return data, nil, nil
@@ -125,7 +126,8 @@ func ParseLockCFValue(data []byte) (lock MvccLock, err error) {
 		return
 	}
 	shortValLen := int(data[0])
-	lock.Value = data[1:]
+	y.Assert(data[1] == shortValuePrefix)
+	lock.Value = data[2:]
 	if shortValLen != len(lock.Value) {
 		err = invalidLockCFValue
 	}

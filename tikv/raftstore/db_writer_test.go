@@ -46,7 +46,8 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 			Header:   new(rfpb.RaftRequestHeader),
 			Requests: wb.requests,
 		})
-		applyCtx.wb.WriteToKV(engines.kv)
+		err := applyCtx.wb.WriteToKV(engines.kv)
+		assert.Nil(t, err)
 		applyCtx.wb.Reset()
 		wb.requests = nil
 		val := engines.kv.lockStore.Get(primary, nil)
@@ -75,7 +76,8 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 			Header:   new(rfpb.RaftRequestHeader),
 			Requests: wb.requests,
 		})
-		applyCtx.wb.WriteToKV(engines.kv)
+		err := applyCtx.wb.WriteToKV(engines.kv)
+		assert.Nil(t, err)
 		applyCtx.wb.Reset()
 		wb.requests = nil
 		engines.kv.db.View(func(txn *badger.Txn) error {
@@ -121,7 +123,8 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 			Header:   new(rfpb.RaftRequestHeader),
 			Requests: wb.requests,
 		})
-		applyCtx.wb.WriteToKV(engines.kv)
+		err := applyCtx.wb.WriteToKV(engines.kv)
+		assert.Nil(t, err)
 		applyCtx.wb.Reset()
 		wb.requests = nil
 	}
@@ -137,7 +140,8 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 		Header:   new(rfpb.RaftRequestHeader),
 		Requests: wb.requests,
 	})
-	applyCtx.wb.WriteToKV(engines.kv)
+	err := applyCtx.wb.WriteToKV(engines.kv)
+	assert.Nil(t, err)
 	applyCtx.wb.Reset()
 
 	wb = &raftWriteBatch{
@@ -150,7 +154,8 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 		Header:   new(rfpb.RaftRequestHeader),
 		Requests: wb.requests,
 	})
-	applyCtx.wb.WriteToKV(engines.kv)
+	err = applyCtx.wb.WriteToKV(engines.kv)
+	assert.Nil(t, err)
 	applyCtx.wb.Reset()
 	// The lock should be deleted.
 	val := engines.kv.lockStore.Get(primary, nil)
