@@ -125,8 +125,8 @@ func ParseLockCFValue(data []byte) (lock MvccLock, err error) {
 	if err != nil || len(data) == 0 {
 		return
 	}
-	shortValLen := int(data[0])
-	y.Assert(data[1] == shortValuePrefix)
+	y.Assert(data[0] == shortValuePrefix)
+	shortValLen := int(data[1])
 	lock.Value = data[2:]
 	if shortValLen != len(lock.Value) {
 		err = invalidLockCFValue
