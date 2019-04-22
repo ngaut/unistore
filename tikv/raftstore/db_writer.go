@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/pingcap/errors"
+	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	rcpb "github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/tidb/util/codec"
@@ -135,13 +137,33 @@ func (writer *raftDBWriter) Write(batch mvcc.WriteBatch) error {
 	cmd := &MsgRaftCmd{
 		SendTime: time.Now(),
 		Request:  request,
+		Callback: NewCallback(),
 	}
 	err := writer.router.sendRaftCommand(cmd)
 	if err != nil {
 		return err
 	}
+	cmd.Callback.wg.Wait()
+	return writer.checkResponse(cmd.Callback.resp, len(b.requests))
+}
 
-	return nil // TODO
+type RaftError struct {
+	e *errorpb.Error
+}
+
+func (re *RaftError) Error() string {
+	return re.e.Message
+}
+
+func (writer *raftDBWriter) checkResponse(resp *rcpb.RaftCmdResponse, reqCount int) error {
+	if resp.Header.Error != nil {
+		return &RaftError{e: resp.Header.Error}
+	}
+	if len(resp.Responses) != reqCount {
+		return errors.Errorf("responses count %d is not equal to requests count %d",
+			len(resp.Responses), reqCount)
+	}
+	return nil
 }
 
 func (writer *raftDBWriter) DeleteRange(startKey, endKey []byte, latchHandle mvcc.LatchHandle) error {
