@@ -314,13 +314,14 @@ func (store *MVCCStore) checkConflictInLockStore(
 		// Same ts, no need to overwrite.
 		return &lock, nil
 	}
+	keyHash := farm.Fingerprint64(mutation.Key)
 	if mutation.Op == kvrpcpb.Op_PessimisticLock {
-		if err := store.deadlockDetector.Detect(startTS, lock.StartTS); err != nil {
-			log.Errorf("%d deadlock for %d on key %d", startTS, lock.StartTS, farm.Fingerprint64(mutation.Key))
+		if err := store.deadlockDetector.Detect(startTS, lock.StartTS, keyHash); err != nil {
+			log.Errorf("%d deadlock for %d on key %d", startTS, lock.StartTS, keyHash)
 			return nil, err
 		}
 	}
-	log.Infof("%d blocked by %d on key %d", startTS, lock.StartTS, farm.Fingerprint64(mutation.Key))
+	log.Infof("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
 	return nil, &ErrLocked{
 		Key:     mutation.Key,
 		StartTS: lock.StartTS,

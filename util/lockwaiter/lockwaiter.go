@@ -46,7 +46,7 @@ type Waiter struct {
 	ch      chan Result
 	startTS uint64
 	LockTS  uint64
-	keyHash uint64
+	KeyHash uint64
 }
 
 type Position int
@@ -69,12 +69,12 @@ func (w *Waiter) Wait() Result {
 
 func (w *Waiter) inKeys(keyHashes []uint64) bool {
 	idx := sort.Search(len(keyHashes), func(i int) bool {
-		return keyHashes[i] >= w.keyHash
+		return keyHashes[i] >= w.KeyHash
 	})
 	if idx == len(keyHashes) {
 		return false
 	}
-	return keyHashes[idx] == w.keyHash
+	return keyHashes[idx] == w.KeyHash
 }
 
 // Wait waits on a lock until waked by others or timeout.
@@ -87,7 +87,7 @@ func (lw *Manager) NewWaiter(startTS, lockTS, keyHash uint64, timeout time.Durat
 		ch:      make(chan Result, 1),
 		startTS: startTS,
 		LockTS:  lockTS,
-		keyHash: keyHash,
+		KeyHash: keyHash,
 	}
 	q.waiters = append(q.waiters, waiter)
 	lw.mu.Lock()

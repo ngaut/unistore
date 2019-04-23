@@ -205,7 +205,7 @@ func (srv *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 	if result.Position == lockwaiter.WaitTimeout {
 		return &kvrpcpb.PessimisticLockResponse{Errors: convertToKeyErrors([]error{err})}, nil
 	}
-	srv.mvccStore.deadlockDetector.CleanUpTarget(req.StartVersion, waiter.LockTS)
+	srv.mvccStore.deadlockDetector.CleanUpWaitFor(req.StartVersion, waiter.LockTS, waiter.KeyHash)
 	if result.Position > 0 {
 		// Sleep a little so the transaction in lower position will more likely get the lock.
 		time.Sleep(time.Millisecond * time.Duration(result.Position) * 10)
