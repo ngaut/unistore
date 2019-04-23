@@ -233,7 +233,7 @@ func (svr *Server) KvPrewrite(ctx context.Context, req *kvrpcpb.PrewriteRequest)
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.PrewriteResponse{RegionError: reqCtx.regErr}, nil
 	}
-	errs := svr.mvccStore.Prewrite(reqCtx, req.Mutations, req.PrimaryLock, req.GetStartVersion(), req.GetLockTtl())
+	errs := svr.mvccStore.Prewrite(reqCtx, req)
 	return &kvrpcpb.PrewriteResponse{
 		Errors: convertToKeyErrors(errs),
 	}, nil

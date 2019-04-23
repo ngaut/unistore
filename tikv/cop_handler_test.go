@@ -2,6 +2,11 @@ package tikv
 
 import (
 	"fmt"
+	"math"
+	"os"
+	"sync"
+	"testing"
+
 	"github.com/coocood/badger"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
@@ -10,20 +15,16 @@ import (
 	"github.com/pingcap/parser/mysql"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/sessionctx/stmtctx"
+	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/util/codec"
 	"golang.org/x/net/context"
-	"math"
 	// remember the tablecodec has two different versions,
 	// one is on the tibd/tablecodec/origin/tablecodec.go
 	// and another is on tidb/tablecodec/tablecodec.go,
 	// this must changes with the isShardingEnabled parameter.
-	"github.com/pingcap/tidb/tablecodec/origin"
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tipb/go-tipb"
 	"github.com/stretchr/testify/require"
-	"os"
-	"sync"
-	"testing"
 )
 
 const (
@@ -98,8 +99,13 @@ func (store *TestStore) InitTestData(encodedKVDatas []*EncodedTestKVData) []erro
 	for _, kvData := range encodedKVDatas {
 		mutation := makeATestMutaion(kvrpcpb.Op_Put, kvData.encodedRowKey,
 			kvData.encodedRowValue)
-		errors := store.mvccStore.Prewrite(&reqCtx, []*kvrpcpb.Mutation{mutation},
-			kvData.encodedRowKey, uint64(StartTs+i), TTL)
+		req := &kvrpcpb.PrewriteRequest{
+			Mutations:    []*kvrpcpb.Mutation{mutation},
+			PrimaryLock:  kvData.encodedRowKey,
+			StartVersion: uint64(StartTs + i),
+			LockTtl:      TTL,
+		}
+		errors := store.mvccStore.Prewrite(&reqCtx, req)
 		if errors != nil {
 			return errors
 		}

@@ -202,7 +202,11 @@ func (store *MVCCStore) checkPessimisticLock(reqCtx *requestCtx, mutations []*kv
 	return false, nil
 }
 
-func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, primary []byte, startTS uint64, ttl uint64) []error {
+func (store *MVCCStore) Prewrite(reqCtx *requestCtx, req *kvrpcpb.PrewriteRequest) []error {
+	mutations := req.Mutations
+	startTS := req.StartVersion
+	primary := req.PrimaryLock
+	ttl := req.LockTtl
 	regCtx := reqCtx.regCtx
 	hashVals := mutationsToHashVals(mutations)
 	errs := make([]error, 0, len(mutations))
@@ -211,23 +215,23 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 	regCtx.acquireLatches(hashVals)
 	defer regCtx.releaseLatches(hashVals)
 	lockBatch := newWriteLockBatch(reqCtx)
-	var hasPessimistic bool
-
+	hasPessimistic := len(req.PessimisticLockExist) > 0
 	// Must check the LockStore first.
-	for _, m := range mutations {
-		lock, err := store.checkConflictInLockStore(reqCtx, m, startTS)
+	for i, m := range mutations {
+		lock, err := store.checkConflictInLockStore(reqCtx, m, req.StartVersion)
 		if err != nil {
 			anyError = true
 		}
-		if lock != nil {
-			if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
+		if hasPessimistic && req.PessimisticLockExist[i] {
+			if lock != nil && lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
 				// lockstore doesn't support update for now, delete the lock first.
 				lockBatch.delete(m.Key)
-				hasPessimistic = true
 			} else {
-				// duplicated command.
-				return nil
+				return []error{errors.New("pessimistic lock not exists")}
 			}
+		} else if lock != nil {
+			// duplicated command.
+			return nil
 		}
 		errs = append(errs, err)
 	}
