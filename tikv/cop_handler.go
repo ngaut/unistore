@@ -5,6 +5,8 @@ import (
 	"io"
 	"time"
 
+	"github.com/pingcap/tidb/util/chunk"
+
 	"github.com/pingcap/tidb/tablecodec"
 
 	"github.com/golang/protobuf/proto"
@@ -247,6 +249,7 @@ func (svr *Server) buildSelection(ctx *dagContext, executor *tipb.Executor) (*se
 		conditions:        conds,
 		row:               make([]types.Datum, len(ctx.evalCtx.columnInfos)),
 		seCtx:             seCtx,
+		chkRow:            chunk.MutRowFromTypes(ctx.evalCtx.fieldTps),
 	}, nil
 }
 
@@ -296,6 +299,7 @@ func (svr *Server) buildHashAgg(ctx *dagContext, executor *tipb.Executor) (*hash
 		groupKeys:         make([][]byte, 0),
 		relatedColOffsets: relatedColOffsets,
 		row:               make([]types.Datum, len(ctx.evalCtx.columnInfos)),
+		chkRow:            chunk.MutRowFromTypes(ctx.evalCtx.fieldTps),
 	}, nil
 }
 
@@ -319,6 +323,7 @@ func (svr *Server) buildStreamAgg(ctx *dagContext, executor *tipb.Executor) (*st
 		currGroupByValues: make([][]byte, 0),
 		relatedColOffsets: relatedColOffsets,
 		row:               make([]types.Datum, len(ctx.evalCtx.columnInfos)),
+		chkRow:            chunk.MutRowFromTypes(ctx.evalCtx.fieldTps),
 	}
 	return e, nil
 }
@@ -359,6 +364,7 @@ func (svr *Server) buildTopN(ctx *dagContext, executor *tipb.Executor) (*topNExe
 		relatedColOffsets: relatedColOffsets,
 		orderByExprs:      conds,
 		row:               make([]types.Datum, len(ctx.evalCtx.columnInfos)),
+		chkRow:            chunk.MutRowFromTypes(ctx.evalCtx.fieldTps),
 	}, nil
 }
 

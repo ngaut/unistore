@@ -66,7 +66,9 @@ func main() {
 	store := tikv.NewMVCCStore(db, *dbPath, safePoint)
 	tikvServer := tikv.NewServer(rm, store)
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(
+		grpc.MaxRecvMsgSize(10 * 1024 * 1024),
+	)
 	tikvpb.RegisterTikvServer(grpcServer, tikvServer)
 	l, err := net.Listen("tcp", *storeAddr)
 	if err != nil {
