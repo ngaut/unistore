@@ -129,7 +129,12 @@ func (store *MVCCStore) updateLatestTS(ts uint64) {
 	}
 }
 
-func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, primary []byte, startTS, forUpdateTS uint64, ttl uint64) (*lockwaiter.Waiter, error) {
+func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.PessimisticLockRequest) (*lockwaiter.Waiter, error) {
+	mutations := req.Mutations
+	startTS := req.StartVersion
+	forUpdateTS := req.ForUpdateTs
+	primary := req.PrimaryLock
+	ttl := req.LockTtl
 	regCtx := reqCtx.regCtx
 	hashVals := mutationsToHashVals(mutations)
 	regCtx.acquireLatches(hashVals)
@@ -138,7 +143,7 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb
 	// check again after acquired latch.
 	dup, err := store.checkPessimisticLock(reqCtx, mutations, startTS)
 	if dup || err != nil {
-		return store.handleCheckPessimisticErr(startTS, err)
+		return store.handleCheckPessimisticErr(startTS, err, req.IsFirstLock)
 	}
 
 	lockBatch := newWriteLockBatch(reqCtx)
@@ -179,9 +184,17 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, mutations []*kvrpcpb
 	return nil, err
 }
 
-func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error) (*lockwaiter.Waiter, error) {
-	if errLock, ok := err.(*ErrLocked); ok {
-		waiter := store.lockWaiterManager.NewWaiter(startTS, errLock.StartTS, farm.Fingerprint64(errLock.Key), time.Second)
+func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isFirstLock bool) (*lockwaiter.Waiter, error) {
+	if lock, ok := err.(*ErrLocked); ok {
+		keyHash := farm.Fingerprint64(lock.Key)
+		if !isFirstLock { // No need to detect deadlock if it's first lock.
+			if err1 := store.deadlockDetector.Detect(startTS, lock.StartTS, keyHash); err1 != nil {
+				log.Errorf("%d deadlock for %d on key %d", startTS, lock.StartTS, keyHash)
+				return nil, err1
+			}
+		}
+		log.Infof("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
+		waiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, farm.Fingerprint64(lock.Key), time.Second)
 		return waiter, err
 	}
 	return nil, err
@@ -215,18 +228,19 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, req *kvrpcpb.PrewriteReques
 	regCtx.acquireLatches(hashVals)
 	defer regCtx.releaseLatches(hashVals)
 	lockBatch := newWriteLockBatch(reqCtx)
-	hasPessimistic := len(req.PessimisticLockExist) > 0
+	hasPessimistic := len(req.IsPessimisticLock) > 0
 	// Must check the LockStore first.
 	for i, m := range mutations {
 		lock, err := store.checkConflictInLockStore(reqCtx, m, req.StartVersion)
 		if err != nil {
 			anyError = true
 		}
-		if hasPessimistic && req.PessimisticLockExist[i] {
+		if hasPessimistic && req.IsPessimisticLock[i] {
 			if lock != nil && lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
 				// lockstore doesn't support update for now, delete the lock first.
 				lockBatch.delete(m.Key)
 			} else {
+				log.Error(startTS, "pessimistic lock not exists", farm.Fingerprint64(m.Key))
 				return []error{errors.New("pessimistic lock not exists")}
 			}
 		} else if lock != nil {
@@ -318,14 +332,6 @@ func (store *MVCCStore) checkConflictInLockStore(
 		// Same ts, no need to overwrite.
 		return &lock, nil
 	}
-	keyHash := farm.Fingerprint64(mutation.Key)
-	if mutation.Op == kvrpcpb.Op_PessimisticLock {
-		if err := store.deadlockDetector.Detect(startTS, lock.StartTS, keyHash); err != nil {
-			log.Errorf("%d deadlock for %d on key %d", startTS, lock.StartTS, keyHash)
-			return nil, err
-		}
-	}
-	log.Infof("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
 	return nil, &ErrLocked{
 		Key:     mutation.Key,
 		StartTS: lock.StartTS,

@@ -197,7 +197,7 @@ func (srv *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.PessimisticLockResponse{RegionError: reqCtx.regErr}, nil
 	}
-	waiter, err := srv.mvccStore.PessimisticLock(reqCtx, req.Mutations, req.PrimaryLock, req.GetStartVersion(), req.GetForUpdateTs(), req.GetLockTtl())
+	waiter, err := srv.mvccStore.PessimisticLock(reqCtx, req)
 	if waiter == nil {
 		return &kvrpcpb.PessimisticLockResponse{Errors: convertToKeyErrors([]error{err})}, nil
 	}
@@ -508,6 +508,11 @@ func (svr *Server) UnsafeDestroyRange(context.Context, *kvrpcpb.UnsafeDestroyRan
 func (svr *Server) BatchRaft(tikvpb.Tikv_BatchRaftServer) error {
 	// TODO
 	return nil
+}
+
+func (svr *Server) ReadIndex(context.Context, *kvrpcpb.ReadIndexRequest) (*kvrpcpb.ReadIndexResponse, error) {
+	// TODO
+	return nil, nil
 }
 
 func convertToKeyError(err error) *kvrpcpb.KeyError {
