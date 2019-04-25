@@ -2,6 +2,7 @@ package tikv
 
 import (
 	"fmt"
+	"github.com/pingcap/tidb/sessionctx/stmtctx"
 	"math"
 	"sort"
 
@@ -128,30 +129,12 @@ func (e *closureExecutor) initIdxScanCtx() {
 	}
 }
 
-func (svr *Server) isCountAgg(pbAgg *tipb.Aggregation) bool {
-	if len(pbAgg.AggFunc) == 1 && len(pbAgg.GroupBy) == 0 {
-		aggFunc := pbAgg.AggFunc[0]
-		if aggFunc.Tp == tipb.ExprType_Count && len(aggFunc.Children) == 1 {
-			return true
-		}
-	}
-	return false
-}
-
-func (svr *Server) tryBuildAggClosureExecutor(e *closureExecutor, executors []*tipb.Executor) (*closureExecutor, error) {
-	if len(executors) > 2 {
-		return nil, nil
-	}
-	agg := executors[1].Aggregation
-	if !svr.isCountAgg(agg) {
-		return nil, nil
-	}
-	child := agg.AggFunc[0].Children[0]
-	switch child.Tp {
+func (svr *Server) parseCountAggFunc(e *closureExecutor, aggExpr *tipb.Expr) (*closureExecutor, error) {
+	switch aggExpr.Tp {
 	case tipb.ExprType_ColumnRef:
-		_, idx, err := codec.DecodeInt(child.Val)
+		_, idx, err := codec.DecodeInt(aggExpr.Val)
 		if err != nil {
-			return nil, errors.Trace(err)
+			return e, errors.Trace(err)
 		}
 		e.aggCtx.colIdx = int(idx)
 		e.processFunc = &countColumnProcessor{closureExecutor: e}
@@ -160,6 +143,36 @@ func (svr *Server) tryBuildAggClosureExecutor(e *closureExecutor, executors []*t
 	}
 	e.finishFunc = e.countFinish
 	return e, nil
+}
+
+func (svr *Server) parseSumAggFunc(e *closureExecutor, aggExpr *tipb.Expr) (*closureExecutor, error) {
+	_, idx, err := codec.DecodeInt(aggExpr.Val)
+	if err != nil {
+		return e, errors.Trace(err)
+	}
+	e.aggCtx.colIdx = int(idx)
+	e.processFunc = &sumColumnProcessor{closureExecutor: e}
+	e.finishFunc = e.sumFinish
+	return e, nil
+}
+
+func (svr *Server) tryBuildAggClosureExecutor(e *closureExecutor, executors []*tipb.Executor) (*closureExecutor, error) {
+	if len(executors) > 2 {
+		return nil, nil
+	}
+	agg := executors[1].Aggregation
+	if len(agg.AggFunc) != 1 || len(agg.GroupBy) != 0 {
+		return nil, nil
+	}
+	aggFunc := agg.AggFunc[0]
+	var err error
+	switch aggFunc.Tp {
+	case tipb.ExprType_Sum:
+		e, err = svr.parseSumAggFunc(e, aggFunc.Children[0])
+	case tipb.ExprType_Count:
+		e, err = svr.parseCountAggFunc(e, aggFunc.Children[0])
+	}
+	return e, err
 }
 
 func (svr *Server) tryBuildTopNClosureExecutor(e *closureExecutor, executors []*tipb.Executor) (*closureExecutor, error) {
@@ -229,6 +242,47 @@ type idxScanCtx struct {
 
 type aggCtx struct {
 	colIdx int
+	res    types.Datum
+}
+
+// Take from tidb directly.
+// calculateSum adds v to sum.
+func calculateSum(sc *stmtctx.StatementContext, sum, v types.Datum) (data types.Datum, err error) {
+	// for avg and sum calculation
+	// avg and sum use decimal for integer and decimal type, use float for others
+	// see https://dev.mysql.com/doc/refman/5.7/en/group-by-functions.html
+	switch v.Kind() {
+	case types.KindNull:
+	case types.KindInt64, types.KindUint64:
+		var d *types.MyDecimal
+		d, err := v.ToDecimal(sc)
+		if err == nil {
+			data = types.NewDecimalDatum(d)
+		}
+	case types.KindMysqlDecimal:
+		data = types.CopyDatum(v)
+	default:
+		var f float64
+		f, err := v.ToFloat64(sc)
+		if err == nil {
+			data = types.NewFloat64Datum(f)
+		}
+	}
+
+	if err != nil {
+		return data, err
+	}
+	if data.IsNull() {
+		return sum, nil
+	}
+	switch sum.Kind() {
+	case types.KindNull:
+		return data, nil
+	case types.KindFloat64, types.KindMysqlDecimal:
+		return types.ComputePlus(sum, data)
+	default:
+		return data, errors.Errorf("invalid value %v for aggregate", sum.Kind())
+	}
 }
 
 type selectionCtx struct {
@@ -339,6 +393,37 @@ func (e *countColumnProcessor) Process(key, value []byte) error {
 			e.rowCount++
 		}
 	}
+	return nil
+}
+
+type sumColumnProcessor struct {
+	skipVal
+	*closureExecutor
+}
+
+func (e *sumColumnProcessor) Process(key, value []byte) error {
+	var err error
+	if e.idxScanCtx != nil {
+		err = e.indexScanProcessCore(key, value)
+	} else {
+		err = e.tableScanProcessCore(key, value)
+	}
+	if err != nil {
+		return err
+	}
+	row := e.scanCtx.chk.GetRow(e.scanCtx.chk.NumRows() - 1)
+	datum := row.GetDatum(e.aggCtx.colIdx, e.fieldTps[e.aggCtx.colIdx])
+	e.aggCtx.res, err = calculateSum(e.sc, e.aggCtx.res, datum)
+	return err
+}
+
+// sumFinish is used for `sum()`
+func (e *closureExecutor) sumFinish() error {
+	rowData, err := codec.EncodeValue(e.sc, nil, e.aggCtx.res)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	e.oldChunks = appendRow(e.oldChunks, rowData, 0)
 	return nil
 }
 
