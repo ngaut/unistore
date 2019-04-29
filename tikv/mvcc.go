@@ -238,17 +238,19 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, req *kvrpcpb.PrewriteReques
 		if err != nil {
 			anyError = true
 		}
-		if hasPessimistic && req.IsPessimisticLock[i] {
-			if lock != nil && lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
+		if lock != nil {
+			if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
 				// lockstore doesn't support update for now, delete the lock first.
 				lockBatch.delete(m.Key)
 			} else {
+				// duplicated command.
+				return nil
+			}
+		} else {
+			if hasPessimistic && req.IsPessimisticLock[i] {
 				log.Error(startTS, "pessimistic lock not exists", farm.Fingerprint64(m.Key))
 				return []error{errors.New("pessimistic lock not exists")}
 			}
-		} else if lock != nil {
-			// duplicated command.
-			return nil
 		}
 		errs = append(errs, err)
 	}
