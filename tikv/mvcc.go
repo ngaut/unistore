@@ -130,7 +130,7 @@ func (store *MVCCStore) updateLatestTS(ts uint64) {
 }
 
 func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.PessimisticLockRequest) (*lockwaiter.Waiter, error) {
-	mutations := req.Mutations
+	mutations := deduplicateMutationss(req.Mutations)
 	startTS := req.StartVersion
 	forUpdateTS := req.ForUpdateTs
 	primary := req.PrimaryLock
@@ -163,6 +163,9 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 		oldMeta, oldVal, err := store.checkConflictInDB(reqCtx, txn, items[i], forUpdateTS)
 		if err != nil {
 			return nil, err
+		}
+		if len(oldVal) > 0 && m.Assertion == kvrpcpb.Assertion_NotExist {
+			return nil, &ErrKeyAlreadyExists{Key: m.Key}
 		}
 		lock := mvcc.MvccLock{
 			MvccLockHdr: mvcc.MvccLockHdr{
@@ -216,7 +219,7 @@ func (store *MVCCStore) checkPessimisticLock(reqCtx *requestCtx, mutations []*kv
 }
 
 func (store *MVCCStore) Prewrite(reqCtx *requestCtx, req *kvrpcpb.PrewriteRequest) []error {
-	mutations := req.Mutations
+	mutations := deduplicateMutationss(req.Mutations)
 	startTS := req.StartVersion
 	primary := req.PrimaryLock
 	ttl := req.LockTtl
@@ -495,6 +498,18 @@ func deduplicateKeys(keys [][]byte) [][]byte {
 		if _, ok := m[string(key)]; !ok {
 			m[string(key)] = struct{}{}
 			deduped = append(deduped, key)
+		}
+	}
+	return deduped
+}
+
+func deduplicateMutationss(mutations []*kvrpcpb.Mutation) []*kvrpcpb.Mutation {
+	m := make(map[string]struct{})
+	deduped := make([]*kvrpcpb.Mutation, 0, len(mutations))
+	for _, mu := range mutations {
+		if _, ok := m[string(mu.Key)]; !ok {
+			m[string(mu.Key)] = struct{}{}
+			deduped = append(deduped, mu)
 		}
 	}
 	return deduped
