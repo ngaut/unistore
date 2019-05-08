@@ -20,6 +20,8 @@ type Config struct {
 	Prevote    bool
 	RaftdbPath string
 
+	SnapPath string
+
 	// store capacity. 0 means no limit.
 	Capacity uint64
 
@@ -132,6 +134,7 @@ func NewDefaultConfig() *Config {
 		SyncLog:                     true,
 		Prevote:                     true,
 		RaftdbPath:                  "",
+		SnapPath:                    "snap",
 		Capacity:                    0,
 		RaftBaseTickInterval:        1 * time.Second,
 		RaftHeartbeatTicks:          2,
