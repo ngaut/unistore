@@ -2,12 +2,13 @@ package raftstore
 
 import (
 	"fmt"
+	"testing"
+
 	"github.com/coocood/badger"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	rfpb "github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/stretchr/testify/assert"
-	"testing"
 )
 
 func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
@@ -102,7 +103,7 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 	apply := new(applyDelegate)
 	applyCtx := newApplyContext("test", nil, engines, nil, notifier{}, NewDefaultConfig())
 	dBWriter := new(raftDBWriter)
-	wb := (dBWriter.NewWriteBatch(100, 0)).(*raftWriteBatch)
+	wb := (dBWriter.NewWriteBatch(100, 0, nil)).(*raftWriteBatch)
 
 	longValue := [128]byte{102}
 
