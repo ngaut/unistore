@@ -126,6 +126,14 @@ type Config struct {
 	GrpcKeepAliveTime     time.Duration
 	GrpcKeepAliveTimeout  time.Duration
 	GrpcRaftConnNum       uint64
+
+	Addr          string
+	AdvertiseAddr string
+	Labels        []StoreLabel
+}
+
+type StoreLabel struct {
+	LabelKey, LabelValue string
 }
 
 func NewDefaultConfig() *Config {
@@ -190,6 +198,7 @@ func NewDefaultConfig() *Config {
 		GrpcKeepAliveTime:        3 * time.Second,
 		GrpcKeepAliveTimeout:     60 * time.Second,
 		GrpcRaftConnNum:          1,
+		Addr:                     "127.0.0.1:20160",
 	}
 }
 
