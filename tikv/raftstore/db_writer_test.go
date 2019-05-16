@@ -102,8 +102,10 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 	defer cleanUpTestEngineData(engines)
 	apply := new(applyDelegate)
 	applyCtx := newApplyContext("test", nil, engines, nil, notifier{}, NewDefaultConfig())
-	dBWriter := new(raftDBWriter)
-	wb := (dBWriter.NewWriteBatch(100, 0, nil)).(*raftWriteBatch)
+	wb := &raftWriteBatch{
+		startTS:  100,
+		commitTS: 0,
+	}
 
 	longValue := [128]byte{102}
 
