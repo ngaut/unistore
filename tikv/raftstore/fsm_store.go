@@ -406,6 +406,7 @@ type raftPollerBuilder struct {
 	pdClient             pd.Client
 	engines              *Engines
 	applyingSnapCount    *uint64
+	tickDriverCh         chan uint64
 }
 
 type senderPeerFsmPair struct {
@@ -562,6 +563,7 @@ func (b *raftPollerBuilder) build() pollHandler {
 		raftWB:               new(WriteBatch),
 		globalStats:          new(storeStats),
 		localStats:           new(storeStats),
+		tickDriverCh:         b.tickDriverCh,
 	}
 	return &raftPoller{
 		tag:             fmt.Sprintf("[store %d]", ctx.store.Id),
@@ -643,6 +645,7 @@ func (bs *raftBatchSystem) start(
 		storeMetaLock:        new(sync.RWMutex),
 		storeMeta:            newStoreMeta(),
 		applyingSnapCount:    new(uint64),
+		tickDriverCh:         bs.tickDriver.newRegionCh,
 	}
 	regionPeers, err := builder.init()
 	if err != nil {

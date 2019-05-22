@@ -428,7 +428,9 @@ func notifyRegionRemoved(regionID, peerID uint64, cmd pendingCmd) {
 }
 
 func notifyReqRegionRemoved(regionID uint64, cb *Callback) {
-	cb.Done(ErrRespRegionNotFound(regionID))
+	if cb != nil {
+		cb.Done(ErrRespRegionNotFound(regionID))
+	}
 }
 
 /// Calls the callback of `cmd` when it can not be processed further.

@@ -735,6 +735,12 @@ func (p *Peer) HandleRaftReadyAppend(ctx *PollContext) {
 	log.Debugf("%v handle raft ready", p.Tag)
 
 	ready := p.RaftGroup.ReadySince(p.LastApplyingIdx)
+	// TODO: workaround for:
+	//   in kvproto/eraftpb, we use *SnapshotMetadata
+	//   but in etcd, they use SnapshotMetadata
+	if ready.Snapshot.GetMetadata() == nil {
+		ready.Snapshot.Metadata = &eraftpb.SnapshotMetadata{}
+	}
 	p.OnRoleChanged(ctx, &ready)
 
 	// The leader can write to disk and replicate to the followers concurrently
