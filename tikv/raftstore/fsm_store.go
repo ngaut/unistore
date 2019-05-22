@@ -592,6 +592,7 @@ type raftBatchSystem struct {
 	applySystem *batchSystem
 	router      *router
 	workers     *workers
+	tickDriver  *tickDriver
 }
 
 func (bs *raftBatchSystem) start(
@@ -700,6 +701,7 @@ func (bs *raftBatchSystem) startSystem(
 	workers.snapWorker.start(snapRunner)
 	workers.computeHashWorker.start(&computeHashRunner{router: bs.router})
 	bs.workers = workers
+	go bs.tickDriver.run() // TODO: temp workaround.
 	return nil
 }
 
@@ -746,6 +748,7 @@ func createRaftBatchSystem(cfg *Config) (*router, *raftBatchSystem) {
 		applyRouter: applyRouter,
 		applySystem: applySystem,
 		router:      router,
+		tickDriver:  newTickDriver(cfg.RaftBaseTickInterval, router, storeFsm.ticker),
 	}
 	return router, raftBatchSystem
 }
@@ -952,6 +955,7 @@ func (d *storeFsmDelegate) storeHeartbeatPD() {
 		stats:    stats,
 		engine:   d.ctx.engine.kv.db,
 		capacity: d.ctx.cfg.Capacity,
+		path:     d.ctx.engine.kvPath,
 	}
 	d.ctx.pdScheduler <- task{tp: taskTypePDStoreHeartbeat, data: storeInfo}
 }
