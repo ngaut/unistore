@@ -439,6 +439,7 @@ func (b *raftPollerBuilder) init() ([]senderPeerFsmPair, error) {
 		opt.EndKey = endKey
 		opt.PrefetchValues = false
 		it := txn.NewIterator(opt)
+		defer it.Close()
 		for it.Seek(startKey); it.Valid(); it.Next() {
 			item := it.Item()
 			if bytes.Compare(item.Key(), endKey) >= 0 {

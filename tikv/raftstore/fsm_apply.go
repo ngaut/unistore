@@ -3,6 +3,8 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"time"
+
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
 	"github.com/ngaut/log"
@@ -14,7 +16,6 @@ import (
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/uber-go/atomic"
-	"time"
 )
 
 const (
@@ -1140,6 +1141,7 @@ func (d *applyDelegate) execDeleteRange(aCtx *applyContext, req *raft_cmdpb.Dele
 		}
 		aCtx.wb.Delete(item.KeyCopy(nil))
 	}
+	it.Close()
 	lockIt := aCtx.engines.kv.lockStore.NewIterator()
 	for lockIt.Seek(startKey); lockIt.Valid(); lockIt.Next() {
 		if bytes.Compare(lockIt.Key(), endKey) >= 0 {

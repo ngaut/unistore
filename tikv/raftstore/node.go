@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coocood/badger"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/pd"
 	"github.com/pingcap/errors"
@@ -78,6 +79,9 @@ func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, sna
 func (n *Node) checkStore(engines *Engines) (uint64, error) {
 	val, err := getValue(engines.kv.db, storeIdentKey)
 	if err != nil {
+		if err == badger.ErrKeyNotFound {
+			return 0, nil
+		}
 		return 0, err
 	}
 	if len(val) == 0 {
