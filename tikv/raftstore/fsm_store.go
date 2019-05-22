@@ -13,6 +13,7 @@ import (
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/rocksdb"
+	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
@@ -434,11 +435,7 @@ func (b *raftPollerBuilder) init() ([]senderPeerFsmPair, error) {
 	defer b.storeMetaLock.Unlock()
 	meta := b.storeMeta
 	err := kvEngine.View(func(txn *badger.Txn) error {
-		opt := badger.DefaultIteratorOptions
-		opt.StartKey = startKey
-		opt.EndKey = endKey
-		opt.PrefetchValues = false
-		it := txn.NewIterator(opt)
+		it := dbreader.NewIterator(txn, false, startKey, endKey)
 		defer it.Close()
 		for it.Seek(startKey); it.Valid(); it.Next() {
 			item := it.Item()

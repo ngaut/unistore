@@ -8,6 +8,7 @@ import (
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
 	"github.com/ngaut/log"
+	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -1116,11 +1117,7 @@ func (d *applyDelegate) execDeleteRange(aCtx *applyContext, req *raft_cmdpb.Dele
 		panic(req.EndKey)
 	}
 	txn := aCtx.getTxn()
-	var opt badger.IteratorOptions
-	opt.PrefetchValues = false
-	opt.StartKey = startKey
-	opt.EndKey = endKey
-	it := txn.NewIterator(opt)
+	it := dbreader.NewIterator(txn, false, startKey, endKey)
 	for it.Seek(startKey); it.Valid(); it.Next() {
 		item := it.Item()
 		if bytes.Compare(item.Key(), endKey) >= 0 {
@@ -1131,9 +1128,7 @@ func (d *applyDelegate) execDeleteRange(aCtx *applyContext, req *raft_cmdpb.Dele
 	it.Close()
 	oldStartKey := mvcc.EncodeOldKey(startKey, 0)
 	oldEndKey := mvcc.EncodeOldKey(endKey, 0)
-	opt.StartKey = oldStartKey
-	opt.EndKey = oldEndKey
-	it = txn.NewIterator(opt)
+	it = dbreader.NewIterator(txn, false, oldStartKey, oldEndKey)
 	for it.Seek(oldStartKey); it.Valid(); it.Next() {
 		item := it.Item()
 		if bytes.Compare(item.Key(), oldEndKey) >= 0 {
