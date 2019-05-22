@@ -46,6 +46,9 @@ func RunRaftServer(cfg *Config, pdClient pd.Client, engines *Engines, signalChan
 
 	<-signalChan
 
+	// TODO: Be graceful!
+	os.Exit(0)
+
 	err = server.Stop()
 	if err != nil {
 		log.Errorf("failed to stop server: %v", err)
