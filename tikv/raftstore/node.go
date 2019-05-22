@@ -2,12 +2,12 @@ package raftstore
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/coocood/badger"
+	"github.com/golang/protobuf/proto"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/pd"
 	"github.com/pingcap/errors"
@@ -89,7 +89,7 @@ func (n *Node) checkStore(engines *Engines) (uint64, error) {
 	}
 
 	var ident raft_serverpb.StoreIdent
-	err = json.Unmarshal(val, &ident)
+	err = proto.Unmarshal(val, &ident)
 	if err != nil {
 		return 0, err
 	}
