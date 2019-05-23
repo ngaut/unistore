@@ -76,9 +76,11 @@ func NotifyStaleReq(term uint64, cb *Callback) {
 }
 
 func NotifyReqRegionRemoved(regionId uint64, cb *Callback) {
-	regionNotFound := &ErrRegionNotFound{RegionId: regionId}
-	resp := ErrResp(regionNotFound)
-	cb.Done(resp)
+	if cb != nil {
+		regionNotFound := &ErrRegionNotFound{RegionId: regionId}
+		resp := ErrResp(regionNotFound)
+		cb.Done(resp)
+	}
 }
 
 func (r *ReadIndexQueue) NextId() uint64 {
@@ -1029,7 +1031,9 @@ func (p *Peer) ApplyReads(ctx *PollContext, ready *raft.Ready) {
 			}
 			for _, reqCb := range read.cmds {
 				resp, _ := p.handleRead(ctx, reqCb.Req, true)
-				reqCb.Cb.Done(resp)
+				if reqCb.Cb != nil {
+					reqCb.Cb.Done(resp)
+				}
 			}
 			read.cmds = nil
 			proposeTime = read.renewLeaseTime
@@ -1097,7 +1101,9 @@ func (p *Peer) PostApply(ctx *PollContext, applyState applyState, appliedIndexTe
 			}
 			for _, reqCb := range read.cmds {
 				resp, _ := p.handleRead(ctx, reqCb.Req, true)
-				reqCb.Cb.Done(resp)
+				if reqCb.Cb != nil {
+					reqCb.Cb.Done(resp)
+				}
 			}
 			read.cmds = read.cmds[:0]
 		}
@@ -1127,7 +1133,9 @@ func (p *Peer) Propose(ctx *PollContext, cb *Callback, req *raft_cmdpb.RaftCmdRe
 	policy, err := p.inspect(req)
 	if err != nil {
 		BindRespError(errResp, err)
-		cb.Done(errResp)
+		if cb != nil {
+			cb.Done(errResp)
+		}
 		return false
 	}
 	var idx uint64
@@ -1148,7 +1156,9 @@ func (p *Peer) Propose(ctx *PollContext, cb *Callback, req *raft_cmdpb.RaftCmdRe
 
 	if err != nil {
 		BindRespError(errResp, err)
-		cb.Done(errResp)
+		if cb != nil {
+			cb.Done(errResp)
+		}
 		return false
 	}
 
@@ -1305,7 +1315,9 @@ func (p *Peer) readyToTransferLeader(ctx *PollContext, peer *metapb.Peer) bool {
 
 func (p *Peer) readLocal(ctx *PollContext, req *raft_cmdpb.RaftCmdRequest, cb *Callback) {
 	resp, _ := p.handleRead(ctx, req, false)
-	cb.Done(resp)
+	if cb != nil {
+		cb.Done(resp)
+	}
 }
 
 func (p *Peer) preReadIndex() error {
@@ -1528,7 +1540,9 @@ func (p *Peer) ProposeTransferLeader(ctx *PollContext, req *raft_cmdpb.RaftCmdRe
 
 	// transfer leader command doesn't need to replicate log and apply, so we
 	// return immediately. Note that this command may fail, we can view it just as an advice
-	cb.Done(makeTransferLeaderResponse())
+	if cb != nil {
+		cb.Done(makeTransferLeaderResponse())
+	}
 
 	return transferred
 }

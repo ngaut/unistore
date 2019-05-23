@@ -81,7 +81,9 @@ func (pf *peerFsm) drop() {
 			default:
 				continue
 			}
-			cb.Done(ErrRespRegionNotFound(pf.regionID()))
+			if cb != nil {
+				cb.Done(ErrRespRegionNotFound(pf.regionID()))
+			}
 		default:
 			return
 		}
@@ -1019,11 +1021,15 @@ func (d *peerFsmDelegate) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) 
 func (d *peerFsmDelegate) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *Callback) {
 	resp, err := d.preProposeRaftCommand(msg)
 	if err != nil {
-		cb.Done(ErrResp(err))
+		if cb != nil {
+			cb.Done(ErrResp(err))
+		}
 		return
 	}
 	if resp != nil {
-		cb.Done(resp)
+		if cb != nil {
+			cb.Done(resp)
+		}
 		return
 	}
 
@@ -1034,7 +1040,9 @@ func (d *peerFsmDelegate) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb 
 
 	if err := d.checkMergeProposal(msg); err != nil {
 		log.Warnf("%s failed to process merge, message %s, err %v", d.tag(), msg, err)
-		cb.Done(ErrResp(err))
+		if cb != nil {
+			cb.Done(ErrResp(err))
+		}
 		return
 	}
 
@@ -1203,7 +1211,9 @@ func (d *peerFsmDelegate) onSplitRegionCheckTick() {
 
 func (d *peerFsmDelegate) onPrepareSplitRegion(regionEpoch *metapb.RegionEpoch, splitKeys [][]byte, cb *Callback) {
 	if err := d.validateSplitRegion(regionEpoch, splitKeys); err != nil {
-		cb.Done(ErrResp(err))
+		if cb != nil {
+			cb.Done(ErrResp(err))
+		}
 		return
 	}
 	region := d.region()
