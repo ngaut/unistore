@@ -443,7 +443,9 @@ func notifyStaleCommand(regionID, peerID, term uint64, cmd pendingCmd) {
 }
 
 func notifyStaleReq(term uint64, cb *Callback) {
-	cb.Done(ErrRespStaleCommand(term))
+	if cb != nil {
+		cb.Done(ErrRespStaleCommand(term))
+	}
 }
 
 /// Checks if a write is needed to be issued before handling the command.
