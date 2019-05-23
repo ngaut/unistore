@@ -718,7 +718,7 @@ func (bs *raftBatchSystem) scheduleApplySystem(regionPeers []senderPeerFsmPair) 
 			mailbox: newMailbox(sender, applyFsm),
 		})
 	}
-	bs.router.registerAll(mailboxes)
+	bs.applyRouter.registerAll(mailboxes)
 }
 
 func (bs *raftBatchSystem) shutDown() {
