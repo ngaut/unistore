@@ -364,6 +364,7 @@ func (ac *applyContext) writeToDB() {
 	for _, cb := range ac.cbs {
 		cb.invokeAll(ac.host)
 	}
+	ac.cbs = ac.cbs[:0]
 }
 
 /// Finishes `Apply`s for the delegate.
@@ -1496,6 +1497,7 @@ func (a *applyFsm) handleApply(aCtx *applyContext, apply *apply) {
 	a.metrics = applyMetrics{}
 	a.term = apply.term
 	a.handleRaftCommittedEntries(aCtx, apply.entries)
+	apply.entries = apply.entries[:0]
 	if a.waitMergeState != nil {
 		return
 	}
@@ -1631,7 +1633,7 @@ func (p *applyPoller) handleNormal(normal fsm) (pause bool, chLen int) {
 		p.msgBuf = append(p.msgBuf, <-applyFsm.receiver)
 	}
 	applyFsm.handleTasks(p.aCtx, p.msgBuf)
-	p.msgBuf = p.msgBuf[:0]
+	p.msgBuf = nil
 	if applyFsm.merged {
 		applyFsm.destroy(p.aCtx)
 	}

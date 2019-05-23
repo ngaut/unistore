@@ -37,14 +37,14 @@ func (r *RaftstoreRouter) SignificantSend(regionID uint64, msg Msg) error {
 }
 
 func (r *RaftstoreRouter) ReportUnreachable(regionID, toPeerID uint64) error {
-	return r.SignificantSend(regionID, NewMsg(MsgTypeSignificantMsg, MsgSignificant{
+	return r.SignificantSend(regionID, NewMsg(MsgTypeSignificantMsg, &MsgSignificant{
 		Type:     MsgSignificantTypeUnreachable,
 		ToPeerID: toPeerID,
 	}))
 }
 
 func (r *RaftstoreRouter) ReportSnapshotStatus(regionID uint64, toPeerID uint64, status raft.SnapshotStatus) error {
-	return r.SignificantSend(regionID, NewMsg(MsgTypeSignificantMsg, MsgSignificant{
+	return r.SignificantSend(regionID, NewMsg(MsgTypeSignificantMsg, &MsgSignificant{
 		Type:           MsgSignificantTypeStatus,
 		ToPeerID:       toPeerID,
 		SnapshotStatus: status,

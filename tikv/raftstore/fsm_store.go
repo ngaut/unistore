@@ -281,6 +281,7 @@ func (p *raftPoller) handleRaftReady(peers []fsm) {
 			msg := Msg{Type: MsgTypeApplyProposal, Data: proposal}
 			p.pollCtx.applyRouter.scheduleTask(proposal.RegionId, msg)
 		}
+		p.pendingProposals = nil
 	}
 	kvWB := p.pollCtx.kvWB
 	if len(kvWB.entries) > 0 {

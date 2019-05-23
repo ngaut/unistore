@@ -93,6 +93,7 @@ func (r *ReadIndexQueue) ClearUncommitted(term uint64) {
 		for _, reqCbPair := range read.cmds {
 			NotifyStaleReq(term, reqCbPair.Cb)
 		}
+		read.cmds = nil
 	}
 }
 
