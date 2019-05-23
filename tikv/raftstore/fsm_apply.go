@@ -176,8 +176,10 @@ type applyCallback struct {
 
 func (c *applyCallback) invokeAll(host *CoprocessorHost) {
 	for _, cb := range c.cbs {
-		host.postApply(c.region, cb.resp)
-		cb.wg.Done()
+		if cb != nil {
+			host.postApply(c.region, cb.resp)
+			cb.wg.Done()
+		}
 	}
 }
 
@@ -841,7 +843,7 @@ func (d *applyDelegate) newCtx(index, term uint64) *applyExecContext {
 func (d *applyDelegate) execRaftCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdRequest) (
 	resp *raft_cmdpb.RaftCmdResponse, result applyResult, err error) {
 	// Include region for epoch not match after merge may cause key not in range.
-	includeRegion := req.Header.RegionEpoch.Version >= d.lastMergeVersion
+	includeRegion := req.Header.GetRegionEpoch().GetVersion() >= d.lastMergeVersion
 	err = checkRegionEpoch(req, d.region, includeRegion)
 	if err != nil {
 		return
@@ -1627,6 +1629,7 @@ func (p *applyPoller) handleNormal(normal fsm) (pause bool, chLen int) {
 		p.msgBuf = append(p.msgBuf, <-applyFsm.receiver)
 	}
 	applyFsm.handleTasks(p.aCtx, p.msgBuf)
+	p.msgBuf = p.msgBuf[:0]
 	if applyFsm.merged {
 		applyFsm.destroy(p.aCtx)
 	}

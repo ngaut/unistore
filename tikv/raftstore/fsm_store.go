@@ -299,6 +299,7 @@ func (p *raftPoller) handleRaftReady(peers []fsm) {
 		raftWB.Reset()
 	}
 	readyRes := p.pollCtx.ReadyRes
+	p.pollCtx.ReadyRes = nil
 	if len(readyRes) > 0 {
 		batchPos := 0
 		for _, pair := range readyRes {
