@@ -16,6 +16,7 @@ func RunRaftServer(cfg *Config, pdClient pd.Client, engines *Engines, signalChan
 	var wg sync.WaitGroup
 	pdWorker := newWorker("pd-worker", &wg)
 	resolveWorker := newWorker("resolver", &wg)
+	resolveRunner := newResolverRunner(pdClient)
 	resolveSender := resolveWorker.scheduler
 
 	// TODO: create local reader
@@ -33,6 +34,8 @@ func RunRaftServer(cfg *Config, pdClient pd.Client, engines *Engines, signalChan
 	server := NewServer(cfg, raftRouter, resolveSender, snapManager)
 
 	coprocessorHost := newCoprocessorHost(cfg.splitCheck, router)
+
+	resolveWorker.start(resolveRunner)
 
 	err := node.Start(context.TODO(), engines, server.Trans(), snapManager, pdWorker, coprocessorHost)
 	if err != nil {
@@ -55,6 +58,8 @@ func RunRaftServer(cfg *Config, pdClient pd.Client, engines *Engines, signalChan
 	}
 
 	node.stop()
+
+	resolveWorker.stop()
 
 	wg.Wait()
 	return nil

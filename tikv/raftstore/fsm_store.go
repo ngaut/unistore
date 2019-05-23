@@ -579,7 +579,6 @@ func (b *raftPollerBuilder) build() pollHandler {
 
 type workers struct {
 	pdWorker          *worker
-	resolverWorker    *worker
 	snapWorker        *worker
 	raftLogGCWorker   *worker
 	computeHashWorker *worker
@@ -620,7 +619,6 @@ func (bs *raftBatchSystem) start(
 		raftLogGCWorker:   newWorker("raft-gc-worker", wg),
 		compactWorker:     newWorker("compact-worker", wg),
 		pdWorker:          pdWorker,
-		resolverWorker:    newWorker("resolver-woker", wg),
 		snapWorker:        newWorker("snap-worker", wg),
 		computeHashWorker: newWorker("compute-hash", wg),
 		coprocessorHost:   coprocessorHost,
@@ -636,7 +634,6 @@ func (bs *raftBatchSystem) start(
 		raftLogGCScheduler:   workers.raftLogGCWorker.scheduler,
 		compactScheduler:     workers.compactWorker.scheduler,
 		pdScheduler:          workers.pdWorker.scheduler,
-		resolverScheduler:    workers.resolverWorker.scheduler,
 		snapScheduler:        workers.snapWorker.scheduler,
 		computeHashScheduler: workers.computeHashWorker.scheduler,
 		applyRouter:          bs.applyRouter,
@@ -700,8 +697,6 @@ func (bs *raftBatchSystem) startSystem(
 	workers.compactWorker.start(&compactRunner{engine: engines.kv.db})
 	pdRunner := newPDRunner(store.Id, builder.pdClient, bs.router, engines.kv.db, workers.pdWorker.scheduler)
 	workers.pdWorker.start(pdRunner)
-	resolverRunner := newResolverRunner(builder.pdClient)
-	workers.resolverWorker.start(resolverRunner)
 	snapRunner := newSnapRunner(snapMgr, builder.cfg)
 	workers.snapWorker.start(snapRunner)
 	workers.computeHashWorker.start(&computeHashRunner{router: bs.router})
@@ -735,7 +730,6 @@ func (bs *raftBatchSystem) shutDown() {
 	workers.raftLogGCWorker.scheduler <- stopTask
 	workers.computeHashWorker.scheduler <- stopTask
 	workers.pdWorker.scheduler <- stopTask
-	workers.resolverWorker.scheduler <- stopTask
 	workers.snapWorker.scheduler <- stopTask
 	workers.compactWorker.scheduler <- stopTask
 	bs.applySystem.shutdown()
