@@ -43,6 +43,8 @@ type storeMeta struct {
 	/// later if there is no related lock.
 	/// source_region_id -> (version, BiLock).
 	mergeLocks map[uint64]*mergeLock
+	/// region_id -> reader
+	readers map[uint64]*readDelegate
 }
 
 func newStoreMeta() *storeMeta {
@@ -52,12 +54,14 @@ func newStoreMeta() *storeMeta {
 		pendingMergeTargets: map[uint64]map[uint64]*metapb.RegionEpoch{},
 		targetsMap:          map[uint64]uint64{},
 		mergeLocks:          map[uint64]*mergeLock{},
+		readers:             map[uint64]*readDelegate{},
 	}
 }
 
 func (m *storeMeta) setRegion(host *CoprocessorHost, region *metapb.Region, peer *Peer) {
 	m.regions[region.Id] = region
-	peer.SetRegion(host, region)
+	reader := m.readers[region.GetId()]
+	peer.SetRegion(host, reader, region)
 }
 
 type mergeLock struct {
@@ -606,6 +610,8 @@ func (bs *raftBatchSystem) start(
 	pdClinet pd.Client,
 	snapMgr *SnapManager,
 	pdWorker *worker,
+	storeMeta *storeMeta,
+	storeMetaLock *sync.RWMutex,
 	coprocessorHost *CoprocessorHost) error {
 	y.Assert(bs.workers == nil)
 	// TODO: we can get cluster meta regularly too later.
@@ -639,8 +645,8 @@ func (bs *raftBatchSystem) start(
 		pdClient:             pdClinet,
 		coprocessorHost:      coprocessorHost,
 		snapMgr:              snapMgr,
-		storeMetaLock:        new(sync.RWMutex),
-		storeMeta:            newStoreMeta(),
+		storeMetaLock:        storeMetaLock,
+		storeMeta:            storeMeta,
 		applyingSnapCount:    new(uint64),
 		tickDriverCh:         bs.tickDriver.newRegionCh,
 	}
@@ -660,6 +666,13 @@ func (bs *raftBatchSystem) startSystem(
 	}
 	applyPollerBuilder := newApplyPollerBuilder(builder, notifier{router: bs.router}, bs.applyRouter)
 	bs.scheduleApplySystem(regionPeers)
+
+	builder.storeMetaLock.Lock()
+	for _, peerFsm := range regionPeers {
+		peer := peerFsm.fsm.getPeer()
+		builder.storeMeta.readers[peer.regionId] = newReadDelegate(peer)
+	}
+	builder.storeMetaLock.Unlock()
 
 	store := builder.store
 	tag := fmt.Sprintf("raftstore-%d", store.Id)

@@ -467,14 +467,17 @@ func (p *Peer) Region() *metapb.Region {
 ///
 /// This will update the region of the peer, caller must ensure the region
 /// has been preserved in a durable device.
-func (p *Peer) SetRegion(host *CoprocessorHost, region *metapb.Region) {
+func (p *Peer) SetRegion(host *CoprocessorHost, reader *readDelegate, region *metapb.Region) {
 	if p.Region().GetRegionEpoch().GetVersion() < region.GetRegionEpoch().GetVersion() {
 		// Epoch version changed, disable read on the localreader for this region.
 		p.leaderLease.ExpireRemoteLease()
 	}
 	p.Store().SetRegion(region)
 
+	// Always update read delegate's region to avoid stale region info after a follower
+	// becoming a leader.
 	if !p.PendingRemove {
+		reader.region = region
 		host.OnRegionChanged(p.Region(), RegionChangeEvent_Update, p.GetRole())
 	}
 }
@@ -686,7 +689,22 @@ func (p *Peer) OnRoleChanged(ctx *PollContext, ready *raft.Ready) {
 	ss := ready.SoftState
 	if ss != nil {
 		if ss.RaftState == raft.StateLeader {
-			p.HeartbeatPd(ctx)
+			// The local read can only be performed after a new leader has applied
+			// the first empty entry on its term. After that the lease expiring time
+			// should be updated to
+			//   send_to_quorum_ts + max_lease
+			// as the comments in `Lease` explain.
+			// It is recommended to update the lease expiring time right after
+			// this peer becomes leader because it's more convenient to do it here and
+			// it has no impact on the correctness.
+			p.MaybeRenewLeaderLease(ctx, time.Now())
+			if !p.PendingRemove {
+				ctx.storeMetaLock.Lock()
+				ctx.storeMeta.readers[p.regionId].updateTerm(p.Term())
+				ctx.storeMetaLock.Unlock()
+			}
+		} else if ss.RaftState == raft.StateFollower {
+			p.leaderLease.Expire()
 		}
 		ctx.coprocessorHost.OnRoleChanged(p.Region(), ss.RaftState)
 	}
@@ -828,13 +846,16 @@ func (p *Peer) PostRaftReadyAppend(ctx *PollContext, ready *raft.Ready, invokeCt
 
 	if applySnapResult != nil {
 		p.Activate(ctx)
+		ctx.storeMetaLock.Lock()
+		ctx.storeMeta.readers[p.regionId] = newReadDelegate(p)
+		ctx.storeMetaLock.Unlock()
 	}
 
 	return applySnapResult
 }
 
 // Try to renew leader lease.
-func (p *Peer) MaybeRenewLeaderLease(ts time.Time) {
+func (p *Peer) MaybeRenewLeaderLease(ctx *PollContext, ts time.Time) {
 	// A non-leader peer should never has leader lease.
 	// A splitting leader should not renew its lease.
 	// Because we split regions asynchronous, the leader may read stale results
@@ -846,6 +867,12 @@ func (p *Peer) MaybeRenewLeaderLease(ts time.Time) {
 		return
 	}
 	p.leaderLease.Renew(ts)
+	remoteLease := p.leaderLease.MaybeNewRemoteLease(p.Term())
+	if !p.PendingRemove && remoteLease != nil {
+		ctx.storeMetaLock.Lock()
+		ctx.storeMeta.readers[p.regionId].updateLeaderLease(remoteLease)
+		ctx.storeMetaLock.Unlock()
+	}
 }
 
 func (p *Peer) MaybeCampaign(parentIsLeader bool) bool {
@@ -959,7 +986,7 @@ func (p *Peer) HandleRaftReadyApply(ctx *PollContext, ready *raft.Ready) {
 			if leaseToBeUpdated {
 				proposeTime := p.findProposeTime(entry.Index, entry.Term)
 				if proposeTime != nil {
-					p.MaybeRenewLeaderLease(*proposeTime)
+					p.MaybeRenewLeaderLease(ctx, *proposeTime)
 					leaseToBeUpdated = false
 				}
 			}
@@ -1062,7 +1089,7 @@ func (p *Peer) ApplyReads(ctx *PollContext, ready *raft.Ready) {
 		if p.leaderLease.Inspect(proposeTime) == LeaseState_Suspect {
 			return
 		}
-		p.MaybeRenewLeaderLease(*proposeTime)
+		p.MaybeRenewLeaderLease(ctx, *proposeTime)
 	}
 }
 
@@ -1076,6 +1103,7 @@ func (p *Peer) PostApply(ctx *PollContext, applyState applyState, appliedIndexTe
 		p.RaftGroup.AdvanceApply(applyState.appliedIndex)
 	}
 
+	progressToBeUpdated := p.Store().appliedIndexTerm != appliedIndexTerm
 	p.Store().applyState = applyState
 	p.Store().appliedIndexTerm = appliedIndexTerm
 
@@ -1108,6 +1136,14 @@ func (p *Peer) PostApply(ctx *PollContext, applyState applyState, appliedIndexTe
 			read.cmds = read.cmds[:0]
 		}
 		p.pendingReads.readyCnt = 0
+	}
+
+	// Only leaders need to update applied_index_term.
+	if progressToBeUpdated && p.IsLeader() && !p.PendingRemove {
+		ctx.storeMetaLock.Lock()
+		reader := ctx.storeMeta.readers[p.regionId]
+		reader.updateAppliedIndexTerm(appliedIndexTerm)
+		ctx.storeMetaLock.Unlock()
 	}
 
 	return hasReady
