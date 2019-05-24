@@ -84,7 +84,7 @@ func NewServer(config *Config, router *RaftstoreRouter, resovleSender chan<- tas
 		grpc.InitialConnWindowSize(2 * 1024 * 1024),
 		grpc.MaxConcurrentStreams(1024),
 		grpc.MaxRecvMsgSize(10 * 1024 * 1024),
-		grpc.MaxSendMsgSize(-1),
+		grpc.MaxSendMsgSize(1 << 32),
 	}
 	grpcServer := grpc.NewServer(grpcOpts...)
 	tikvpb.RegisterTikvServer(grpcServer, kvService)
