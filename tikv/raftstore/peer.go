@@ -227,6 +227,8 @@ type Peer struct {
 	applyProposals []*proposal
 	pendingReads   *ReadIndexQueue
 
+	peerCache map[uint64]*metapb.Peer
+
 	// Record the last instant of each peer's heartbeat response.
 	PeerHeartbeats map[uint64]time.Time
 
@@ -311,6 +313,7 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 		peerStorage:           ps,
 		proposals:             new(ProposalQueue),
 		pendingReads:          new(ReadIndexQueue),
+		peerCache:             make(map[uint64]*metapb.Peer),
 		PeerHeartbeats:        make(map[uint64]time.Time),
 		PeersStartPendingTime: make(map[uint64]time.Time),
 		RecentAddedPeer:       NewRecentAddedPeer(uint64(cfg.RaftRejectTransferLeaderDuration.Seconds())),
@@ -334,6 +337,27 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 	}
 
 	return p, nil
+}
+
+func (p *Peer) insertPeerCache(peer *metapb.Peer) {
+	p.peerCache[peer.GetId()] = peer
+}
+
+func (p *Peer) removePeerCache(peerID uint64) {
+	delete(p.peerCache, peerID)
+}
+
+func (p *Peer) getPeerFromCache(peerID uint64) *metapb.Peer {
+	if peer, ok := p.peerCache[peerID]; ok {
+		return peer
+	}
+	for _, peer := range p.peerStorage.Region().GetPeers() {
+		if peer.GetId() == peerID {
+			p.insertPeerCache(peer)
+			return peer
+		}
+	}
+	return nil
 }
 
 /// Register self to applyRouter so that the peer is then usable.
@@ -575,7 +599,7 @@ func (p *Peer) CollectPendingPeers() []*metapb.Peer {
 			continue
 		}
 		if progress.Match < truncatedIdx {
-			if peer := p.GetPeer(id); peer != nil {
+			if peer := p.getPeerFromCache(id); peer != nil {
 				pendingPeers = append(pendingPeers, peer)
 				if _, ok := p.PeersStartPendingTime[id]; !ok {
 					now := time.Now()
@@ -854,15 +878,6 @@ func (p *Peer) Stop() {
 	p.Store().CancelApplyingSnap()
 }
 
-func (p *Peer) GetPeer(peerId uint64) *metapb.Peer {
-	for _, peer := range p.Region().Peers {
-		if peer.Id == peerId {
-			return peer
-		}
-	}
-	return nil
-}
-
 func (p *Peer) HeartbeatPd(ctx *PollContext) {
 	ctx.pdScheduler <- task{
 		tp: taskTypePDHeartbeat,
@@ -889,7 +904,7 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	}
 
 	fromPeer := *p.Peer
-	toPeer := p.GetPeer(msg.To)
+	toPeer := p.getPeerFromCache(msg.To)
 	if toPeer == nil {
 		return fmt.Errorf("failed to lookup recipient peer %v in region %v", msg.To, p.regionId)
 	}
