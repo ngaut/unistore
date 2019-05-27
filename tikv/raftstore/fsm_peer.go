@@ -210,7 +210,7 @@ func (d *peerFsmDelegate) onTick() {
 	if d.stopped {
 		return
 	}
-
+	d.ticker.tickClock()
 	if d.ticker.isOnTick(PeerTickRaft) {
 		d.onRaftBaseTick()
 	}
@@ -229,7 +229,6 @@ func (d *peerFsmDelegate) onTick() {
 	if d.ticker.isOnTick(PeerTickPeerStaleState) {
 		d.onCheckPeerStaleStateTick()
 	}
-	d.ticker.tickClock()
 	d.ctx.tickDriverCh <- d.regionID()
 }
 
