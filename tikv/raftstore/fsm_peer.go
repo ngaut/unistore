@@ -22,6 +22,7 @@ type peerFsm struct {
 	hasReady bool
 	mailbox  *mailbox
 	receiver <-chan Msg
+	ticker   *ticker
 }
 
 // If we create the peer actively, like bootstrap/split/merge region, we should
@@ -42,6 +43,7 @@ func createPeerFsm(storeID uint64, cfg *Config, sched chan<- task,
 	return (chan<- Msg)(ch), &peerFsm{
 		peer:     peer,
 		receiver: ch,
+		ticker:   newTicker(region.GetId(), cfg),
 	}, nil
 }
 
@@ -64,6 +66,7 @@ func replicatePeerFsm(storeID uint64, cfg *Config, sched chan<- task,
 	return (chan<- Msg)(ch), &peerFsm{
 		peer:     peer,
 		receiver: ch,
+		ticker:   newTicker(region.GetId(), cfg),
 	}, nil
 }
 
@@ -137,15 +140,13 @@ func (pf *peerFsm) takeMailbox() *mailbox {
 
 type peerFsmDelegate struct {
 	*peerFsm
-	ctx    *PollContext
-	ticker *ticker
+	ctx *PollContext
 }
 
 func newPeerFsmDelegate(fsm *peerFsm, ctx *PollContext) *peerFsmDelegate {
 	return &peerFsmDelegate{
 		peerFsm: fsm,
 		ctx:     ctx,
-		ticker:  newTicker(fsm.regionID(), ctx.cfg),
 	}
 }
 
