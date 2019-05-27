@@ -559,6 +559,7 @@ func (b *raftPollerBuilder) build() pollHandler {
 		applyingSnapCount:    b.applyingSnapCount,
 		coprocessorHost:      b.coprocessorHost,
 		trans:                b.trans,
+		queuedSnaps:          make(map[uint64]struct{}),
 		pdClient:             b.pdClient,
 		engine:               b.engines,
 		kvWB:                 new(WriteBatch),
@@ -579,7 +580,6 @@ func (b *raftPollerBuilder) build() pollHandler {
 
 type workers struct {
 	pdWorker          *worker
-	snapWorker        *worker
 	raftLogGCWorker   *worker
 	computeHashWorker *worker
 	splitCheckWorker  *worker
@@ -619,7 +619,6 @@ func (bs *raftBatchSystem) start(
 		raftLogGCWorker:   newWorker("raft-gc-worker", wg),
 		compactWorker:     newWorker("compact-worker", wg),
 		pdWorker:          pdWorker,
-		snapWorker:        newWorker("snap-worker", wg),
 		computeHashWorker: newWorker("compute-hash", wg),
 		coprocessorHost:   coprocessorHost,
 		wg:                wg,
@@ -634,7 +633,6 @@ func (bs *raftBatchSystem) start(
 		raftLogGCScheduler:   workers.raftLogGCWorker.scheduler,
 		compactScheduler:     workers.compactWorker.scheduler,
 		pdScheduler:          workers.pdWorker.scheduler,
-		snapScheduler:        workers.snapWorker.scheduler,
 		computeHashScheduler: workers.computeHashWorker.scheduler,
 		applyRouter:          bs.applyRouter,
 		trans:                trans,
@@ -697,8 +695,6 @@ func (bs *raftBatchSystem) startSystem(
 	workers.compactWorker.start(&compactRunner{engine: engines.kv.db})
 	pdRunner := newPDRunner(store.Id, builder.pdClient, bs.router, engines.kv.db, workers.pdWorker.scheduler)
 	workers.pdWorker.start(pdRunner)
-	snapRunner := newSnapRunner(snapMgr, builder.cfg)
-	workers.snapWorker.start(snapRunner)
 	workers.computeHashWorker.start(&computeHashRunner{router: bs.router})
 	bs.workers = workers
 	go bs.tickDriver.run() // TODO: temp workaround.
@@ -730,7 +726,6 @@ func (bs *raftBatchSystem) shutDown() {
 	workers.raftLogGCWorker.scheduler <- stopTask
 	workers.computeHashWorker.scheduler <- stopTask
 	workers.pdWorker.scheduler <- stopTask
-	workers.snapWorker.scheduler <- stopTask
 	workers.compactWorker.scheduler <- stopTask
 	bs.applySystem.shutdown()
 	bs.system.shutdown()

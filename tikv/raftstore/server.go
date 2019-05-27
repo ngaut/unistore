@@ -103,7 +103,7 @@ func NewServer(config *Config, router *RaftstoreRouter, resovleSender chan<- tas
 }
 
 func (s *Server) Start() error {
-	snapRunner := newSnapRunner(s.snapManager, s.config)
+	snapRunner := newSnapRunner(s.snapManager, s.config, s.trans.raftRouter)
 	s.snapWorker.start(snapRunner)
 	lis, err := net.Listen("tcp", s.config.Addr)
 	if err != nil {
