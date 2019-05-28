@@ -42,7 +42,7 @@ const (
 type SnapState struct {
 	StateType SnapStateType
 	Status    *JobStatus
-	Receiver  chan<- *eraftpb.Snapshot
+	Receiver  chan *eraftpb.Snapshot
 }
 
 const (
@@ -50,6 +50,8 @@ const (
 	// so that we can force the follower peer to sync the snapshot first.
 	RaftInitLogTerm  = 5
 	RaftInitLogIndex = 5
+
+	MaxSnapRetryCnt = 5
 
 	raftLogMultiGetCnt = 8
 
@@ -238,14 +240,17 @@ var _ raft.Storage = new(PeerStorage)
 type PeerStorage struct {
 	Engines *Engines
 
+	peerID           uint64
 	region           *metapb.Region
 	raftState        raftState
 	applyState       applyState
 	appliedIndexTerm uint64
 	lastTerm         uint64
 
-	snapState   SnapState
-	regionSched chan<- task
+	snapState    SnapState
+	genSnapTask  *GenSnapTask
+	regionSched  chan<- task
+	snapTriedCnt int
 
 	cache *EntryCache
 	stats *CacheQueryStats
@@ -253,7 +258,7 @@ type PeerStorage struct {
 	Tag string
 }
 
-func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- task, tag string) (*PeerStorage, error) {
+func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- task, peerID uint64, tag string) (*PeerStorage, error) {
 	log.Debugf("%s creating storage for %s", tag, region.String())
 	raftState, err := initRaftState(engines.raft, region)
 	if err != nil {
@@ -273,6 +278,7 @@ func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- 
 	}
 	return &PeerStorage{
 		Engines:     engines,
+		peerID:      peerID,
 		region:      region,
 		Tag:         tag,
 		raftState:   raftState,
@@ -548,8 +554,62 @@ func firstIndex(applyState applyState) uint64 {
 	return applyState.truncatedIndex + 1
 }
 
+func (ps *PeerStorage) validateSnap(snap *eraftpb.Snapshot) bool {
+	idx := snap.GetMetadata().GetIndex()
+	if idx < ps.truncatedIndex() {
+		log.Infof("snapshot is stale, generate again, regionID: %d, peerID: %d, snapIndex: %d, truncatedIndex: %d", ps.region.GetId(), ps.peerID, idx, ps.truncatedIndex())
+		return false
+	}
+	var snapData rspb.RaftSnapshotData
+	if err := proto.UnmarshalMerge(snap.GetData(), &snapData); err != nil {
+		log.Errorf("failed to decode snapshot, it may be corrupted, regionID: %d, peerID: %d, err: %v", ps.region.GetId(), ps.peerID, err)
+		return false
+	}
+	snapEpoch := snapData.GetRegion().GetRegionEpoch()
+	latestEpoch := ps.region.GetRegionEpoch()
+	if snapEpoch.GetConfVer() < latestEpoch.GetConfVer() {
+		log.Infof("snapshot epoch is stale, regionID: %d, peerID: %d, snapEpoch: %s, latestEpoch: %s", ps.region.GetId(), ps.peerID, snapEpoch, latestEpoch)
+		return false
+	}
+	return true
+}
+
 func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
-	return eraftpb.Snapshot{}, raft.ErrSnapshotTemporarilyUnavailable
+	var snap eraftpb.Snapshot
+	if ps.snapState.StateType == SnapState_Generating {
+		select {
+		case s := <-ps.snapState.Receiver:
+			snap = *s
+		default:
+			return snap, raft.ErrSnapshotTemporarilyUnavailable
+		}
+		ps.snapState.StateType = SnapState_Relax
+		if snap.GetMetadata() != nil {
+			ps.snapTriedCnt = 0
+			if ps.validateSnap(&snap) {
+				return snap, nil
+			}
+		} else {
+			log.Warnf("failed to try generating snapshot, regionID: %d, peerID: %d, times: %d", ps.region.GetId(), ps.peerID, ps.snapTriedCnt)
+		}
+	}
+
+	if ps.snapTriedCnt >= MaxSnapRetryCnt {
+		err := errors.Errorf("failed to get snapshot after %d times", ps.snapTriedCnt)
+		ps.snapTriedCnt = 0
+		return snap, err
+	}
+
+	log.Infof("requesting snapshot, regionID: %d, peerID: %d", ps.region.GetId(), ps.peerID)
+	ps.snapTriedCnt++
+	ch := make(chan *eraftpb.Snapshot, 1)
+	ps.snapState = SnapState{
+		StateType: SnapState_Generating,
+		Receiver:  ch,
+	}
+	ps.genSnapTask = newGenSnapTask(ps.region.GetId(), ch)
+
+	return snap, raft.ErrSnapshotTemporarilyUnavailable
 }
 
 // Append the given entries to the raft log using previous last index or self.last_index.

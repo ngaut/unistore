@@ -658,7 +658,7 @@ func (bs *raftBatchSystem) startSystem(
 	if err != nil {
 		return err
 	}
-	applyPollerBuilder := newApplyPollerBuilder(builder, notifier{router: bs.router}, bs.applyRouter)
+	applyPollerBuilder := newApplyPollerBuilder(builder, notifier{router: bs.router}, bs.applyRouter, builder.regionScheduler)
 	bs.scheduleApplySystem(regionPeers)
 
 	store := builder.store
