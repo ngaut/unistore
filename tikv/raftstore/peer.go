@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -270,6 +272,7 @@ type Peer struct {
 	PendingMergeState            *rspb.MergeState
 	leaderMissingTime            *time.Time
 	leaderLease                  *Lease
+	leaseChecker                 leaseChecker
 
 	// If a snapshot is being applied asynchronously, messages should not be sent.
 	pendingMessages         []eraftpb.Message
@@ -392,6 +395,7 @@ func (p *Peer) MaybeDestroy() *DestroyPeerJob {
 		asyncRemove = initialized
 	}
 	p.PendingRemove = true
+	p.leaseChecker.invalid.Store(true)
 
 	return &DestroyPeerJob{
 		AsyncRemove: asyncRemove,
@@ -467,7 +471,7 @@ func (p *Peer) Region() *metapb.Region {
 ///
 /// This will update the region of the peer, caller must ensure the region
 /// has been preserved in a durable device.
-func (p *Peer) SetRegion(host *CoprocessorHost, reader *readDelegate, region *metapb.Region) {
+func (p *Peer) SetRegion(host *CoprocessorHost, region *metapb.Region) {
 	if p.Region().GetRegionEpoch().GetVersion() < region.GetRegionEpoch().GetVersion() {
 		// Epoch version changed, disable read on the localreader for this region.
 		p.leaderLease.ExpireRemoteLease()
@@ -477,7 +481,7 @@ func (p *Peer) SetRegion(host *CoprocessorHost, reader *readDelegate, region *me
 	// Always update read delegate's region to avoid stale region info after a follower
 	// becoming a leader.
 	if !p.PendingRemove {
-		reader.region = region
+		atomic.StorePointer(&p.leaseChecker.region, unsafe.Pointer(region))
 		host.OnRegionChanged(p.Region(), RegionChangeEvent_Update, p.GetRole())
 	}
 }
@@ -699,9 +703,7 @@ func (p *Peer) OnRoleChanged(ctx *PollContext, ready *raft.Ready) {
 			// it has no impact on the correctness.
 			p.MaybeRenewLeaderLease(ctx, time.Now())
 			if !p.PendingRemove {
-				ctx.storeMetaLock.Lock()
-				ctx.storeMeta.readers[p.regionId].updateTerm(p.Term())
-				ctx.storeMetaLock.Unlock()
+				p.leaseChecker.term.Store(p.Term())
 			}
 		} else if ss.RaftState == raft.StateFollower {
 			p.leaderLease.Expire()
@@ -846,9 +848,6 @@ func (p *Peer) PostRaftReadyAppend(ctx *PollContext, ready *raft.Ready, invokeCt
 
 	if applySnapResult != nil {
 		p.Activate(ctx)
-		ctx.storeMetaLock.Lock()
-		ctx.storeMeta.readers[p.regionId] = newReadDelegate(p)
-		ctx.storeMetaLock.Unlock()
 	}
 
 	return applySnapResult
@@ -869,9 +868,7 @@ func (p *Peer) MaybeRenewLeaderLease(ctx *PollContext, ts time.Time) {
 	p.leaderLease.Renew(ts)
 	remoteLease := p.leaderLease.MaybeNewRemoteLease(p.Term())
 	if !p.PendingRemove && remoteLease != nil {
-		ctx.storeMetaLock.Lock()
-		ctx.storeMeta.readers[p.regionId].updateLeaderLease(remoteLease)
-		ctx.storeMetaLock.Unlock()
+		atomic.StorePointer(&p.leaseChecker.leaderLease, unsafe.Pointer(remoteLease))
 	}
 }
 
@@ -1140,10 +1137,7 @@ func (p *Peer) PostApply(ctx *PollContext, applyState applyState, appliedIndexTe
 
 	// Only leaders need to update applied_index_term.
 	if progressToBeUpdated && p.IsLeader() && !p.PendingRemove {
-		ctx.storeMetaLock.Lock()
-		reader := ctx.storeMeta.readers[p.regionId]
-		reader.updateAppliedIndexTerm(appliedIndexTerm)
-		ctx.storeMetaLock.Unlock()
+		p.leaseChecker.appliedIndexTerm.Store(appliedIndexTerm)
 	}
 
 	return hasReady

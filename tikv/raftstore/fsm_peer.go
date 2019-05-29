@@ -201,6 +201,8 @@ func (d *peerFsmDelegate) handleMsgs(msgs []Msg) {
 			d.onClearRegionSize()
 		case MsgTypeStart:
 			d.start()
+		case MsgTypeGetLeaseChecker:
+			msg.Data.(chan LeaseChecker) <- &d.peer.leaseChecker
 		case MsgTypeNoop:
 		}
 	}
@@ -692,7 +694,6 @@ func (d *peerFsmDelegate) destroyPeer(mergeByTarget bool) {
 		}
 	}
 	delete(meta.mergeLocks, regionID)
-	delete(meta.readers, regionID)
 	isInitialized := d.peer.isInitialized()
 	if err := d.peer.Destroy(d.ctx, mergeByTarget); err != nil {
 		// If not panic here, the peer will be recreated in the next restart,
@@ -864,7 +865,6 @@ func (d *peerFsmDelegate) onReadySplitRegion(derived *metapb.Region, regions []*
 
 		newPeer.peer.Activate(d.ctx)
 		meta.regions[newRegionID] = newRegion
-		meta.readers[newRegionID] = newReadDelegate(newPeer.getPeer())
 		if lastRegionID == newRegionID {
 			// To prevent from big region, the right region needs run split
 			// check again after split.

@@ -1,98 +1,71 @@
 package raftstore
 
 import (
+	stdatomic "sync/atomic"
 	"time"
+	"unsafe"
 
-	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
+	"github.com/uber-go/atomic"
 )
 
-type readDelegate struct {
-	region           *metapb.Region
-	peerID           uint64
-	term             uint64
-	appliedIndexTerm uint64
-	leaderLease      *RemoteLease
-	lastValidTs      time.Time
+type LeaseChecker interface {
+	CheckLease(req *raft_cmdpb.RaftCmdRequest, snapTime time.Time) (bool, error)
 }
 
-func newReadDelegate(peer *Peer) *readDelegate {
-	return &readDelegate{
-		region:           peer.Region(),
-		peerID:           peer.PeerId(),
-		term:             peer.Term(),
-		appliedIndexTerm: peer.Store().appliedIndexTerm,
-		leaderLease:      nil,
+type leaseChecker struct {
+	invalid          atomic.Bool
+	peerID           atomic.Uint64
+	term             atomic.Uint64
+	appliedIndexTerm atomic.Uint64
+	leaderLease      unsafe.Pointer // *RemoteLease
+	region           unsafe.Pointer // *metapb.Region
+}
+
+func (c *leaseChecker) CheckLease(req *raft_cmdpb.RaftCmdRequest, snapTime time.Time) (bool, error) {
+	if c.invalid.Load() {
+		return false, nil
 	}
-}
 
-func (rd *readDelegate) updateRegion(region *metapb.Region) {
-	rd.region = region
-}
-
-func (rd *readDelegate) updateTerm(term uint64) {
-	rd.term = term
-}
-
-func (rd *readDelegate) updateAppliedIndexTerm(term uint64) {
-	rd.appliedIndexTerm = term
-}
-
-func (rd *readDelegate) updateLeaderLease(lease *RemoteLease) {
-	rd.leaderLease = lease
-}
-
-func (rd *readDelegate) canExecuteCmdLocally(req *raft_cmdpb.RaftCmdRequest, snapTime time.Time) (bool, error) {
-	if err := checkPeerID(req, rd.peerID); err != nil {
+	if err := checkPeerID(req, c.peerID.Load()); err != nil {
 		return false, err
 	}
 
-	if err := checkTerm(req, rd.term); err != nil {
+	if err := checkTerm(req, c.term.Load()); err != nil {
 		return false, err
 	}
 
-	if err := checkRegionEpoch(req, rd.region, false); err != nil {
+	region := (*metapb.Region)(stdatomic.LoadPointer(&c.region))
+	if err := checkRegionEpoch(req, region, false); err != nil {
 		return false, err
 	}
 
-	if req.GetAdminRequest() != nil {
-		return false, nil
+	inspector := leaseCheckerInspector{
+		checker:  c,
+		snapTime: &snapTime,
 	}
-
-	var hasRead, hasWrite bool
-	for _, r := range req.Requests {
-		switch r.CmdType {
-		case raft_cmdpb.CmdType_Get, raft_cmdpb.CmdType_Snap:
-			hasRead = true
-		case raft_cmdpb.CmdType_Delete, raft_cmdpb.CmdType_Put, raft_cmdpb.CmdType_DeleteRange, raft_cmdpb.CmdType_IngestSST:
-			hasWrite = true
-		case raft_cmdpb.CmdType_Prewrite, raft_cmdpb.CmdType_Invalid:
-			return false, errors.New("invalid cmd type, message maybe corrupted")
-		}
-
-		if hasRead && hasWrite {
-			return false, errors.New("read and write can't be mixed in one batch.")
-		}
+	policy, err := inspector.inspect(req)
+	if err != nil {
+		return false, err
 	}
-	if hasWrite || req.GetHeader().GetReadQuorum() {
-		return false, nil
-	}
+	return policy == RequestPolicy_ReadLocal, nil
+}
 
-	// If applied index's term is differ from current raft's term, leader transfer
-	// must happened, if read locally, we may read old value.
-	if rd.appliedIndexTerm != rd.term {
-		return false, nil
-	}
+type leaseCheckerInspector struct {
+	checker  *leaseChecker
+	snapTime *time.Time
+}
 
-	if rd.leaderLease == nil || rd.leaderLease.Term() != rd.term {
-		return false, nil
-	}
+func (i *leaseCheckerInspector) hasAppliedToCurrentTerm() bool {
+	return i.checker.appliedIndexTerm.Load() == i.checker.term.Load()
+}
 
-	if rd.lastValidTs.Equal(snapTime) || rd.leaderLease.Inspect(&snapTime) == LeaseState_Valid {
-		rd.lastValidTs = snapTime
-		return true, nil
-	}
+func (i *leaseCheckerInspector) inspectLease() LeaseState {
+	lease := (*RemoteLease)(stdatomic.LoadPointer(&i.checker.leaderLease))
+	return lease.Inspect(i.snapTime)
+}
 
-	return false, nil
+func (i *leaseCheckerInspector) inspect(req *raft_cmdpb.RaftCmdRequest) (RequestPolicy, error) {
+	return Inspect(i, req)
 }
