@@ -674,8 +674,10 @@ func (d *peerFsmDelegate) destroyPeer(mergeByTarget bool) {
 		// Trigger region change observer
 		d.ctx.coprocessorHost.OnRegionChanged(d.region(), RegionChangeEvent_Destroy, d.peer.GetRole())
 		d.ctx.pdScheduler <- task{
-			tp:   taskTypePDDestroyPeer,
-			data: regionID,
+			tp: taskTypePDDestroyPeer,
+			data: &pdDestroyPeerTask{
+				regionID: regionID,
+			},
 		}
 	}()
 	meta := d.ctx.storeMeta

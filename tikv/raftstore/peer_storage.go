@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/coocood/badger"
@@ -19,7 +20,7 @@ import (
 	"github.com/zhangjinpeng1987/raft"
 )
 
-type JobStatus = uint64
+type JobStatus = uint32
 
 const (
 	JobStatus_Pending JobStatus = 0 + iota
@@ -1002,7 +1003,19 @@ func (p *PeerStorage) CancelApplyingSnap() bool {
 
 // Check if the storage is applying a snapshot.
 func (p *PeerStorage) CheckApplyingSnap() bool {
-	// Todo: currently it is a place holder
+	switch p.snapState.StateType {
+	case SnapState_Applying:
+		switch atomic.LoadUint32(p.snapState.Status) {
+		case JobStatus_Finished:
+			p.snapState = SnapState{StateType: SnapState_Relax}
+		case JobStatus_Cancelled:
+			p.snapState = SnapState{StateType: SnapState_ApplyAborted}
+		case JobStatus_Failed:
+			panic(fmt.Sprintf("%v applying snapshot failed", p.Tag))
+		default:
+			return true
+		}
+	}
 	return false
 }
 
