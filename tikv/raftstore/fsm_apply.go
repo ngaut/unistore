@@ -1130,7 +1130,6 @@ func (d *applyDelegate) execCommit(aCtx *applyContext, op commitOp) {
 }
 
 func (d *applyDelegate) getLock(aCtx *applyContext, rawKey []byte) []byte {
-	log.Errorf("getLock for key %q, lockEntries: %v", rawKey, aCtx.wb.lockEntries)
 	if val := aCtx.engines.kv.lockStore.Get(rawKey, nil); len(val) > 0 {
 		return val
 	}
