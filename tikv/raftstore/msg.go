@@ -50,7 +50,7 @@ const (
 	MsgTypeApplyLogsUpToDate MsgType = 305
 	MsgTypeApplyDestroy      MsgType = 306
 
-	MsgTypeGetLeaseChecker MsgType = 401
+	MsgTypeGetLeaderChecker MsgType = 401
 
 	msgDefaultChanSize = 1024
 )

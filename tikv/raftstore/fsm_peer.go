@@ -201,8 +201,8 @@ func (d *peerFsmDelegate) handleMsgs(msgs []Msg) {
 			d.onClearRegionSize()
 		case MsgTypeStart:
 			d.start()
-		case MsgTypeGetLeaseChecker:
-			msg.Data.(chan LeaseChecker) <- &d.peer.leaseChecker
+		case MsgTypeGetLeaderChecker:
+			msg.Data.(chan LeaderChecker) <- &d.peer.leaseChecker
 		case MsgTypeNoop:
 		}
 	}

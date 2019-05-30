@@ -272,7 +272,7 @@ type Peer struct {
 	PendingMergeState            *rspb.MergeState
 	leaderMissingTime            *time.Time
 	leaderLease                  *Lease
-	leaseChecker                 leaseChecker
+	leaseChecker                 leaderChecker
 
 	// If a snapshot is being applied asynchronously, messages should not be sent.
 	pendingMessages         []eraftpb.Message
@@ -478,7 +478,7 @@ func (p *Peer) SetRegion(host *CoprocessorHost, region *metapb.Region) {
 	}
 	p.Store().SetRegion(region)
 
-	// Always update read delegate's region to avoid stale region info after a follower
+	// Always update leaderChecker's region to avoid stale region info after a follower
 	// becoming a leader.
 	if !p.PendingRemove {
 		atomic.StorePointer(&p.leaseChecker.region, unsafe.Pointer(region))
@@ -701,7 +701,7 @@ func (p *Peer) OnRoleChanged(ctx *PollContext, ready *raft.Ready) {
 			// It is recommended to update the lease expiring time right after
 			// this peer becomes leader because it's more convenient to do it here and
 			// it has no impact on the correctness.
-			p.MaybeRenewLeaderLease(ctx, time.Now())
+			p.MaybeRenewLeaderLease(time.Now())
 			if !p.PendingRemove {
 				p.leaseChecker.term.Store(p.Term())
 			}
@@ -854,7 +854,7 @@ func (p *Peer) PostRaftReadyAppend(ctx *PollContext, ready *raft.Ready, invokeCt
 }
 
 // Try to renew leader lease.
-func (p *Peer) MaybeRenewLeaderLease(ctx *PollContext, ts time.Time) {
+func (p *Peer) MaybeRenewLeaderLease(ts time.Time) {
 	// A non-leader peer should never has leader lease.
 	// A splitting leader should not renew its lease.
 	// Because we split regions asynchronous, the leader may read stale results
@@ -983,7 +983,7 @@ func (p *Peer) HandleRaftReadyApply(ctx *PollContext, ready *raft.Ready) {
 			if leaseToBeUpdated {
 				proposeTime := p.findProposeTime(entry.Index, entry.Term)
 				if proposeTime != nil {
-					p.MaybeRenewLeaderLease(ctx, *proposeTime)
+					p.MaybeRenewLeaderLease(*proposeTime)
 					leaseToBeUpdated = false
 				}
 			}
@@ -1086,7 +1086,7 @@ func (p *Peer) ApplyReads(ctx *PollContext, ready *raft.Ready) {
 		if p.leaderLease.Inspect(proposeTime) == LeaseState_Suspect {
 			return
 		}
-		p.MaybeRenewLeaderLease(ctx, *proposeTime)
+		p.MaybeRenewLeaderLease(*proposeTime)
 	}
 }
 
