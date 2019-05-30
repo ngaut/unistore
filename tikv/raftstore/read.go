@@ -58,6 +58,9 @@ func (c *leaderChecker) IsLeader(ctx *kvrpcpb.Context, router RaftstoreRouter) e
 
 	cb.wg.Wait()
 
+	if cb.resp.Header.Error != nil {
+		return &RaftError{e: cb.resp.Header.Error}
+	}
 	return nil
 }
 
