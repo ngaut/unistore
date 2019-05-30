@@ -1123,6 +1123,9 @@ func (d *applyDelegate) execCommit(aCtx *applyContext, op commitOp) {
 		oldKey := mvcc.EncodeOldKey(rawKey, lock.OldMeta.CommitTS())
 		aCtx.wb.SetWithUserMeta(oldKey, lock.OldVal, lock.OldMeta.ToOldUserMeta(commitTS))
 	}
+	if op.delLock != nil {
+		aCtx.wb.DeleteLock(rawKey)
+	}
 	return
 }
 
