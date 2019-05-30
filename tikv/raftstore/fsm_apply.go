@@ -1114,7 +1114,7 @@ func (d *applyDelegate) execCommit(aCtx *applyContext, op commitOp) {
 	if err != nil {
 		panic(remain)
 	}
-	val := aCtx.engines.kv.lockStore.Get(rawKey, nil)
+	val := d.getLock(aCtx, rawKey)
 	y.Assert(len(val) > 0)
 	lock := mvcc.DecodeLock(val)
 	userMeta := mvcc.NewDBUserMeta(lock.StartTS, commitTS)
@@ -1127,6 +1127,20 @@ func (d *applyDelegate) execCommit(aCtx *applyContext, op commitOp) {
 		aCtx.wb.DeleteLock(rawKey)
 	}
 	return
+}
+
+func (d *applyDelegate) getLock(aCtx *applyContext, rawKey []byte) []byte {
+	log.Errorf("getLock for key %q, lockEntries: %v", rawKey, aCtx.wb.lockEntries)
+	if val := aCtx.engines.kv.lockStore.Get(rawKey, nil); len(val) > 0 {
+		return val
+	}
+	lockEntries := aCtx.wb.lockEntries
+	for i := len(lockEntries) - 1; i >= 0; i-- {
+		if bytes.Equal(lockEntries[i].Key, rawKey) {
+			return lockEntries[i].Value
+		}
+	}
+	return nil
 }
 
 func (d *applyDelegate) execRollback(aCtx *applyContext, op rollbackOp) {
