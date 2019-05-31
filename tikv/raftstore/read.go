@@ -86,6 +86,7 @@ func (c *leaderChecker) isExpired(ctx *kvrpcpb.Context, snapTime *time.Time) (bo
 	if ctx.RegionEpoch == nil {
 		return false, errors.New("missing epoch")
 	}
+	// for get request, we don't care ConfVersion.
 	if ctx.RegionEpoch.Version != region.RegionEpoch.Version {
 		err := &ErrEpochNotMatch{}
 		err.Message = fmt.Sprintf("current epoch of region %d is %s, but you sent %s",
