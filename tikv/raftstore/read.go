@@ -18,8 +18,8 @@ type LeaderChecker interface {
 }
 
 type leaderChecker struct {
+	peerID           uint64
 	invalid          atomic.Bool
-	peerID           atomic.Uint64
 	term             atomic.Uint64
 	appliedIndexTerm atomic.Uint64
 	leaderLease      unsafe.Pointer // *RemoteLease
@@ -66,10 +66,10 @@ func (c *leaderChecker) IsLeader(ctx *kvrpcpb.Context, router RaftstoreRouter) e
 
 func (c *leaderChecker) isExpired(ctx *kvrpcpb.Context, snapTime *time.Time) (bool, error) {
 	if c.invalid.Load() {
-		return false, nil
+		return false, &ErrRegionNotFound{RegionId: ctx.RegionId}
 	}
 
-	peerID := c.peerID.Load()
+	peerID := c.peerID
 	term := c.term.Load()
 	region := (*metapb.Region)(stdatomic.LoadPointer(&c.region))
 	lease := (*RemoteLease)(stdatomic.LoadPointer(&c.leaderLease))
@@ -86,7 +86,7 @@ func (c *leaderChecker) isExpired(ctx *kvrpcpb.Context, snapTime *time.Time) (bo
 	if ctx.RegionEpoch == nil {
 		return false, errors.New("missing epoch")
 	}
-	if ctx.RegionEpoch != region.RegionEpoch {
+	if ctx.RegionEpoch.Version != region.RegionEpoch.Version {
 		err := &ErrEpochNotMatch{}
 		err.Message = fmt.Sprintf("current epoch of region %d is %s, but you sent %s",
 			region.Id, region.RegionEpoch, ctx.RegionEpoch)

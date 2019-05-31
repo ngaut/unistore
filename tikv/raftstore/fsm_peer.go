@@ -202,7 +202,7 @@ func (d *peerFsmDelegate) handleMsgs(msgs []Msg) {
 		case MsgTypeStart:
 			d.start()
 		case MsgTypeGetLeaderChecker:
-			msg.Data.(chan LeaderChecker) <- &d.peer.leaseChecker
+			msg.Data.(chan LeaderChecker) <- &d.peer.leaderChecker
 		case MsgTypeNoop:
 		}
 	}
