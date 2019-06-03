@@ -238,10 +238,10 @@ func readEntryFromPlainFile(data []byte) (key, value, remain []byte, err error) 
 	if len(key) == 0 {
 		return
 	}
-	key = key[1:]
-	if err != nil {
-		return
-	}
+	// key = key[1:]
+	// if err != nil {
+	// 	return
+	// }
 	data, value, err = codec.DecodeCompactBytes(data)
 	if err != nil {
 		return
