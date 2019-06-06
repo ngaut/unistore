@@ -96,6 +96,7 @@ type PollContext struct {
 	pdClient             pd.Client
 	globalStats          *storeStats
 	localStats           *storeStats
+	peerEventObserver    PeerEventObserver
 }
 
 type storeStats struct {
@@ -409,6 +410,7 @@ type raftPollerBuilder struct {
 	engines              *Engines
 	applyingSnapCount    *uint64
 	tickDriverCh         chan uint64
+	peerEventObserver    PeerEventObserver
 }
 
 type senderPeerFsmPair struct {
@@ -479,6 +481,9 @@ func (b *raftPollerBuilder) init() ([]senderPeerFsmPair, error) {
 			sender, peer, err := createPeerFsm(storeID, b.cfg, b.regionScheduler, b.engines, region)
 			if err != nil {
 				return err
+			}
+			if b.peerEventObserver != nil {
+				b.peerEventObserver.OnPeerCreate(peer.peer.getEventContext(), region)
 			}
 			if localState.State == rspb.PeerState_Merging {
 				log.Infof("region %d is merging", regionID)
@@ -567,6 +572,7 @@ func (b *raftPollerBuilder) build() pollHandler {
 		globalStats:          new(storeStats),
 		localStats:           new(storeStats),
 		tickDriverCh:         b.tickDriverCh,
+		peerEventObserver:    b.peerEventObserver,
 	}
 	return &raftPoller{
 		tag:             fmt.Sprintf("[store %d]", ctx.store.Id),

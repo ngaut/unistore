@@ -25,6 +25,22 @@ type peerFsm struct {
 	ticker   *ticker
 }
 
+type PeerEventContext struct {
+	LeaderChecker LeaderChecker
+	RegionId      uint64
+}
+
+type PeerEventObserver interface {
+	// OnPeerCreate will be invoked when there is a new peer created.
+	OnPeerCreate(ctx *PeerEventContext, region *metapb.Region)
+	// OnPeerApplySnap will be invoked when there is a replicate peer's snapshot applied.
+	OnPeerApplySnap(ctx *PeerEventContext, region *metapb.Region)
+	// OnPeerDestroy will be invoked when a peer is destroyed.
+	OnPeerDestroy(ctx *PeerEventContext)
+	// OnSplitRegion will be invoked when region split into new regions with corresponding peers.
+	OnSplitRegion(derived *metapb.Region, regions []*metapb.Region, peers []*PeerEventContext)
+}
+
 // If we create the peer actively, like bootstrap/split/merge region, we should
 // use this function to create the peer. The region must contain the peer info
 // for this store.
@@ -200,8 +216,6 @@ func (d *peerFsmDelegate) handleMsgs(msgs []Msg) {
 			d.onClearRegionSize()
 		case MsgTypeStart:
 			d.start()
-		case MsgTypeGetLeaderChecker:
-			msg.Data.(chan LeaderChecker) <- &d.peer.leaderChecker
 		case MsgTypeNoop:
 		}
 	}
@@ -711,6 +725,9 @@ func (d *peerFsmDelegate) destroyPeer(mergeByTarget bool) {
 		panic(d.tag() + " meta corruption detected")
 	}
 	delete(meta.regions, regionID)
+	if d.ctx.peerEventObserver != nil {
+		d.ctx.peerEventObserver.OnPeerDestroy(d.peer.getEventContext())
+	}
 }
 
 func (d *peerFsmDelegate) onReadyChangePeer(cp changePeer) {
@@ -815,6 +832,14 @@ func (d *peerFsmDelegate) onReadySplitRegion(derived *metapb.Region, regions []*
 	// It's not correct anymore, so set it to None to let split checker update it.
 	d.peer.ApproximateSize = nil
 	lastRegionID := lastRegion.Id
+
+	notifyEvent := d.ctx.peerEventObserver != nil
+
+	var newPeers []*PeerEventContext
+	if notifyEvent {
+		newPeers = make([]*PeerEventContext, 0, len(regions))
+	}
+
 	for _, newRegion := range regions {
 		newRegionID := newRegion.Id
 		notExist := meta.regionRanges.Insert(newRegion.EndKey, regionIDToBytes(newRegionID))
@@ -846,6 +871,9 @@ func (d *peerFsmDelegate) onReadySplitRegion(derived *metapb.Region, regions []*
 			panic(fmt.Sprintf("create new split region %s error %v", newRegion, err))
 		}
 		metaPeer := newPeer.peer.Peer
+		if notifyEvent {
+			newPeers = append(newPeers, newPeer.peer.getEventContext())
+		}
 
 		for _, p := range newRegion.GetPeers() {
 			newPeer.peer.insertPeerCache(p)
@@ -882,6 +910,10 @@ func (d *peerFsmDelegate) onReadySplitRegion(derived *metapb.Region, regions []*
 				}
 			}
 		}
+	}
+
+	if d.ctx.peerEventObserver != nil {
+		d.ctx.peerEventObserver.OnSplitRegion(derived, regions, newPeers)
 	}
 }
 
@@ -939,6 +971,9 @@ func (d *peerFsmDelegate) onReadyApplySnapshot(applyResult *ApplySnapResult) {
 		panic(fmt.Sprintf("%s unexpected old region %d", d.tag(), oldRegionID))
 	}
 	meta.regions[region.Id] = region
+	if d.ctx.peerEventObserver != nil {
+		d.ctx.peerEventObserver.OnPeerApplySnap(d.peer.getEventContext(), region)
+	}
 }
 
 func (d *peerFsmDelegate) onReadyResult(merged bool, execResults []execResult) (*uint32, []execResult) {
