@@ -27,7 +27,7 @@ func RunRaftServer(cfg *Config, pdClient pd.Client, engines *Engines, signalChan
 	router, batchSystem := createRaftBatchSystem(cfg)
 	raftRouter := NewRaftstoreRouter(router) // TODO: init with local reader
 	snapManager := NewSnapManager(cfg.SnapPath, router)
-	node := NewNode(batchSystem, cfg, pdClient)
+	node := NewNode(batchSystem, cfg, pdClient, nil) // TODO: Add PeerEventObserver
 
 	// TODO: create storage
 

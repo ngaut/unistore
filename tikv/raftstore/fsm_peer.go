@@ -725,9 +725,7 @@ func (d *peerFsmDelegate) destroyPeer(mergeByTarget bool) {
 		panic(d.tag() + " meta corruption detected")
 	}
 	delete(meta.regions, regionID)
-	if d.ctx.peerEventObserver != nil {
-		d.ctx.peerEventObserver.OnPeerDestroy(d.peer.getEventContext())
-	}
+	d.ctx.peerEventObserver.OnPeerDestroy(d.peer.getEventContext())
 }
 
 func (d *peerFsmDelegate) onReadyChangePeer(cp changePeer) {
@@ -833,13 +831,7 @@ func (d *peerFsmDelegate) onReadySplitRegion(derived *metapb.Region, regions []*
 	d.peer.ApproximateSize = nil
 	lastRegionID := lastRegion.Id
 
-	notifyEvent := d.ctx.peerEventObserver != nil
-
-	var newPeers []*PeerEventContext
-	if notifyEvent {
-		newPeers = make([]*PeerEventContext, 0, len(regions))
-	}
-
+	newPeers := make([]*PeerEventContext, 0, len(regions))
 	for _, newRegion := range regions {
 		newRegionID := newRegion.Id
 		notExist := meta.regionRanges.Insert(newRegion.EndKey, regionIDToBytes(newRegionID))
@@ -871,9 +863,7 @@ func (d *peerFsmDelegate) onReadySplitRegion(derived *metapb.Region, regions []*
 			panic(fmt.Sprintf("create new split region %s error %v", newRegion, err))
 		}
 		metaPeer := newPeer.peer.Peer
-		if notifyEvent {
-			newPeers = append(newPeers, newPeer.peer.getEventContext())
-		}
+		newPeers = append(newPeers, newPeer.peer.getEventContext())
 
 		for _, p := range newRegion.GetPeers() {
 			newPeer.peer.insertPeerCache(p)
@@ -912,9 +902,7 @@ func (d *peerFsmDelegate) onReadySplitRegion(derived *metapb.Region, regions []*
 		}
 	}
 
-	if d.ctx.peerEventObserver != nil {
-		d.ctx.peerEventObserver.OnSplitRegion(derived, regions, newPeers)
-	}
+	d.ctx.peerEventObserver.OnSplitRegion(derived, regions, newPeers)
 }
 
 func (d *peerFsmDelegate) validateMergePeer(targetRegion *metapb.Region) (bool, error) {
@@ -971,9 +959,7 @@ func (d *peerFsmDelegate) onReadyApplySnapshot(applyResult *ApplySnapResult) {
 		panic(fmt.Sprintf("%s unexpected old region %d", d.tag(), oldRegionID))
 	}
 	meta.regions[region.Id] = region
-	if d.ctx.peerEventObserver != nil {
-		d.ctx.peerEventObserver.OnPeerApplySnap(d.peer.getEventContext(), region)
-	}
+	d.ctx.peerEventObserver.OnPeerApplySnap(d.peer.getEventContext(), region)
 }
 
 func (d *peerFsmDelegate) onReadyResult(merged bool, execResults []execResult) (*uint32, []execResult) {
