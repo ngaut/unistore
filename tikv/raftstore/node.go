@@ -44,6 +44,7 @@ func NewNode(system *raftBatchSystem, cfg *Config, pdClient pd.Client, observer 
 		storeWg:   &sync.WaitGroup{},
 		system:    system,
 		pdClient:  pdClient,
+		observer:  observer,
 	}
 }
 
