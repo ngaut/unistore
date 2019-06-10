@@ -45,13 +45,16 @@ type regionCtx struct {
 
 	refCount sync.WaitGroup
 	parent   unsafe.Pointer // Parent is used to wait for all latches being released.
+
+	leaderChecker raftstore.LeaderChecker
 }
 
-func newRegionCtx(meta *metapb.Region, parent *regionCtx) *regionCtx {
+func newRegionCtx(meta *metapb.Region, parent *regionCtx, checker raftstore.LeaderChecker) *regionCtx {
 	regCtx := &regionCtx{
-		meta:    meta,
-		latches: make(map[uint64]*sync.WaitGroup),
-		parent:  unsafe.Pointer(parent),
+		meta:          meta,
+		latches:       make(map[uint64]*sync.WaitGroup),
+		parent:        unsafe.Pointer(parent),
+		leaderChecker: checker,
 	}
 	regCtx.startKey = regCtx.rawStartKey()
 	regCtx.endKey = regCtx.rawEndKey()
@@ -179,7 +182,6 @@ type RegionOptions struct {
 
 type RegionManager interface {
 	GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error)
-	CheckLeader(ctx *kvrpcpb.Context) *errorpb.Error
 	Close() error
 }
 
@@ -189,20 +191,13 @@ type regionManager struct {
 	regions   map[uint64]*regionCtx
 }
 
-func (rm *regionManager) checkContext(ctx *kvrpcpb.Context) *errorpb.Error {
+func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
 	ctxPeer := ctx.GetPeer()
 	if ctxPeer != nil && ctxPeer.GetStoreId() != rm.storeMeta.Id {
-		return &errorpb.Error{
+		return nil, &errorpb.Error{
 			Message:       "store not match",
 			StoreNotMatch: &errorpb.StoreNotMatch{},
 		}
-	}
-	return nil
-}
-
-func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
-	if err := rm.checkContext(ctx); err != nil {
-		return nil, err
 	}
 	rm.mu.RLock()
 	ri := rm.regions[ctx.RegionId]
@@ -239,13 +234,11 @@ func (rm *regionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
 type RaftRegionManager struct {
 	regionManager
 	router   raftstore.RaftstoreRouter
-	checkers map[uint64]raftstore.LeaderChecker
 }
 
 func NewRaftRegionManager(store *metapb.Store, router raftstore.RaftstoreRouter) RegionManager {
 	return &RaftRegionManager{
 		router:   router,
-		checkers: make(map[uint64]raftstore.LeaderChecker),
 		regionManager: regionManager{
 			storeMeta: store,
 			regions:   make(map[uint64]*regionCtx),
@@ -255,15 +248,13 @@ func NewRaftRegionManager(store *metapb.Store, router raftstore.RaftstoreRouter)
 
 func (rm *RaftRegionManager) OnPeerCreate(ctx *raftstore.PeerEventContext, region *metapb.Region) {
 	rm.mu.Lock()
-	rm.regions[ctx.RegionId] = newRegionCtx(region, nil)
-	rm.checkers[ctx.RegionId] = ctx.LeaderChecker
+	rm.regions[ctx.RegionId] = newRegionCtx(region, nil, ctx.LeaderChecker)
 	rm.mu.Unlock()
 }
 
 func (rm *RaftRegionManager) OnPeerApplySnap(ctx *raftstore.PeerEventContext, region *metapb.Region) {
 	rm.mu.Lock()
-	rm.regions[ctx.RegionId] = newRegionCtx(region, nil)
-	rm.checkers[ctx.RegionId] = ctx.LeaderChecker
+	rm.regions[ctx.RegionId] = newRegionCtx(region, nil, ctx.LeaderChecker)
 	rm.mu.Unlock()
 }
 
@@ -272,7 +263,6 @@ func (rm *RaftRegionManager) OnPeerDestroy(ctx *raftstore.PeerEventContext) {
 	region := rm.regions[ctx.RegionId]
 	region.waitParent()
 	delete(rm.regions, ctx.RegionId)
-	delete(rm.checkers, ctx.RegionId)
 	rm.mu.Unlock()
 	region.refCount.Done()
 }
@@ -282,34 +272,23 @@ func (rm *RaftRegionManager) OnSplitRegion(derived *metapb.Region, regions []*me
 	oldRegion := rm.regions[derived.Id]
 	oldRegion.waitParent()
 	for i, region := range regions {
-		rm.regions[region.Id] = newRegionCtx(region, oldRegion)
-		rm.checkers[region.Id] = peers[i].LeaderChecker
+		rm.regions[region.Id] = newRegionCtx(region, oldRegion, peers[i].LeaderChecker)
 	}
 	rm.mu.Unlock()
 	oldRegion.refCount.Done()
 }
 
-func (rm *RaftRegionManager) CheckLeader(ctx *kvrpcpb.Context) *errorpb.Error {
-	if err := rm.checkContext(ctx); err != nil {
-		return err
+func (rm *RaftRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
+	regionCtx, err := rm.regionManager.GetRegionFromCtx(ctx)
+	if err != nil {
+		return nil, err
 	}
-	rm.mu.RLock()
-	checker := rm.checkers[ctx.RegionId]
-	rm.mu.RUnlock()
-	if checker == nil {
-		return &errorpb.Error{
-			Message: "region not found",
-			RegionNotFound: &errorpb.RegionNotFound{
-				RegionId: ctx.GetRegionId(),
-			},
-		}
-	}
-	if err := checker.IsLeader(ctx, rm.router); err != nil {
-		return &errorpb.Error{
+	if err := regionCtx.leaderChecker.IsLeader(ctx, rm.router); err != nil {
+		return nil, &errorpb.Error{
 			Message: err.Error(),
 		}
 	}
-	return nil
+	return regionCtx, nil
 }
 
 func (rm *RaftRegionManager) Close() error {
@@ -324,10 +303,6 @@ type StandAloneRegionManager struct {
 	regionSize int64
 	closeCh    chan struct{}
 	wg         sync.WaitGroup
-}
-
-func (rm *StandAloneRegionManager) CheckLeader(ctx *kvrpcpb.Context) *errorpb.Error {
-	return nil
 }
 
 func NewStandAloneRegionManager(db *badger.DB, opts RegionOptions) RegionManager {
@@ -412,7 +387,7 @@ func (rm *StandAloneRegionManager) initStore(storeAddr string) error {
 		RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
 		Peers:       []*metapb.Peer{&metapb.Peer{Id: peerID, StoreId: storeID}},
 	}
-	rm.regions[rootRegion.Id] = newRegionCtx(rootRegion, nil)
+	rm.regions[rootRegion.Id] = newRegionCtx(rootRegion, nil, nil)
 	_, err = rm.pdc.Bootstrap(ctx, rm.storeMeta, rootRegion)
 	cancel()
 	if err != nil {
@@ -450,7 +425,7 @@ func (rm *StandAloneRegionManager) initStore(storeAddr string) error {
 func (rm *StandAloneRegionManager) initialSplit(root *metapb.Region) {
 	root.EndKey = codec.EncodeBytes(nil, []byte{'m'})
 	root.RegionEpoch.Version = 2
-	rm.regions[root.Id] = newRegionCtx(root, nil)
+	rm.regions[root.Id] = newRegionCtx(root, nil, nil)
 	preSplitStartKeys := [][]byte{{'m'}, {'n'}, {'t'}, {'u'}}
 	ids, err := rm.allocIDs(len(preSplitStartKeys) * 2)
 	if err != nil {
@@ -468,7 +443,7 @@ func (rm *StandAloneRegionManager) initialSplit(root *metapb.Region) {
 			StartKey:    codec.EncodeBytes(nil, startKey),
 			EndKey:      endKey,
 		}
-		rm.regions[newRegion.Id] = newRegionCtx(newRegion, nil)
+		rm.regions[newRegion.Id] = newRegionCtx(newRegion, nil, nil)
 	}
 }
 
@@ -659,7 +634,7 @@ func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey
 		},
 		Peers: oldRegion.Peers,
 	}
-	right := newRegionCtx(rightMeta, oldRegionCtx)
+	right := newRegionCtx(rightMeta, oldRegionCtx, nil)
 	right.approximateSize = oldSize - leftSize
 	id, err := rm.pdc.AllocID(context.Background())
 	if err != nil {
@@ -675,7 +650,7 @@ func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey
 		},
 		Peers: oldRegion.Peers,
 	}
-	left := newRegionCtx(leftMeta, oldRegionCtx)
+	left := newRegionCtx(leftMeta, oldRegionCtx, nil)
 	left.approximateSize = leftSize
 	err1 := rm.db.Update(func(txn *badger.Txn) error {
 		err := txn.Set(InternalRegionMetaKey(left.meta.Id), left.marshal())
