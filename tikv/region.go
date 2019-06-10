@@ -13,6 +13,7 @@ import (
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/pd"
+	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -176,10 +177,147 @@ type RegionOptions struct {
 	RegionSize int64
 }
 
-type RegionManager struct {
-	storeMeta  metapb.Store
-	mu         sync.RWMutex
-	regions    map[uint64]*regionCtx
+type RegionManager interface {
+	GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error)
+	CheckLeader(ctx *kvrpcpb.Context) *errorpb.Error
+	Close() error
+}
+
+type regionManager struct {
+	storeMeta *metapb.Store
+	mu        sync.RWMutex
+	regions   map[uint64]*regionCtx
+}
+
+func (rm *regionManager) checkContext(ctx *kvrpcpb.Context) *errorpb.Error {
+	ctxPeer := ctx.GetPeer()
+	if ctxPeer != nil && ctxPeer.GetStoreId() != rm.storeMeta.Id {
+		return &errorpb.Error{
+			Message:       "store not match",
+			StoreNotMatch: &errorpb.StoreNotMatch{},
+		}
+	}
+	return nil
+}
+
+func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
+	if err := rm.checkContext(ctx); err != nil {
+		return nil, err
+	}
+	rm.mu.RLock()
+	ri := rm.regions[ctx.RegionId]
+	if ri != nil {
+		ri.refCount.Add(1)
+	}
+	rm.mu.RUnlock()
+	if ri == nil {
+		return nil, &errorpb.Error{
+			Message: "region not found",
+			RegionNotFound: &errorpb.RegionNotFound{
+				RegionId: ctx.GetRegionId(),
+			},
+		}
+	}
+	// Region epoch does not match.
+	if rm.isEpochStale(ri.meta.GetRegionEpoch(), ctx.GetRegionEpoch()) {
+		ri.refCount.Done()
+		return nil, &errorpb.Error{
+			Message: "stale epoch",
+			EpochNotMatch: &errorpb.EpochNotMatch{
+				CurrentRegions: []*metapb.Region{ri.meta},
+			},
+		}
+	}
+	ri.waitParent()
+	return ri, nil
+}
+
+func (rm *regionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
+	return lhs.GetConfVer() != rhs.GetConfVer() || lhs.GetVersion() != rhs.GetVersion()
+}
+
+type RaftRegionManager struct {
+	regionManager
+	router   raftstore.RaftstoreRouter
+	checkers map[uint64]raftstore.LeaderChecker
+}
+
+func NewRaftRegionManager(store *metapb.Store, router raftstore.RaftstoreRouter) RegionManager {
+	return &RaftRegionManager{
+		router:   router,
+		checkers: make(map[uint64]raftstore.LeaderChecker),
+		regionManager: regionManager{
+			storeMeta: store,
+			regions:   make(map[uint64]*regionCtx),
+		},
+	}
+}
+
+func (rm *RaftRegionManager) OnPeerCreate(ctx *raftstore.PeerEventContext, region *metapb.Region) {
+	rm.mu.Lock()
+	rm.regions[ctx.RegionId] = newRegionCtx(region, nil)
+	rm.checkers[ctx.RegionId] = ctx.LeaderChecker
+	rm.mu.Unlock()
+}
+
+func (rm *RaftRegionManager) OnPeerApplySnap(ctx *raftstore.PeerEventContext, region *metapb.Region) {
+	rm.mu.Lock()
+	rm.regions[ctx.RegionId] = newRegionCtx(region, nil)
+	rm.checkers[ctx.RegionId] = ctx.LeaderChecker
+	rm.mu.Unlock()
+}
+
+func (rm *RaftRegionManager) OnPeerDestroy(ctx *raftstore.PeerEventContext) {
+	rm.mu.Lock()
+	region := rm.regions[ctx.RegionId]
+	region.waitParent()
+	delete(rm.regions, ctx.RegionId)
+	delete(rm.checkers, ctx.RegionId)
+	rm.mu.Unlock()
+	region.refCount.Done()
+}
+
+func (rm *RaftRegionManager) OnSplitRegion(derived *metapb.Region, regions []*metapb.Region, peers []*raftstore.PeerEventContext) {
+	rm.mu.Lock()
+	oldRegion := rm.regions[derived.Id]
+	oldRegion.waitParent()
+	for i, region := range regions {
+		rm.regions[region.Id] = newRegionCtx(region, oldRegion)
+		rm.checkers[region.Id] = peers[i].LeaderChecker
+	}
+	rm.mu.Unlock()
+	oldRegion.refCount.Done()
+}
+
+func (rm *RaftRegionManager) CheckLeader(ctx *kvrpcpb.Context) *errorpb.Error {
+	if err := rm.checkContext(ctx); err != nil {
+		return err
+	}
+	rm.mu.RLock()
+	checker := rm.checkers[ctx.RegionId]
+	rm.mu.RUnlock()
+	if checker == nil {
+		return &errorpb.Error{
+			Message: "region not found",
+			RegionNotFound: &errorpb.RegionNotFound{
+				RegionId: ctx.GetRegionId(),
+			},
+		}
+	}
+	if err := checker.IsLeader(ctx, rm.router); err != nil {
+		return &errorpb.Error{
+			Message: err.Error(),
+		}
+	}
+	return nil
+}
+
+func (rm *RaftRegionManager) Close() error {
+	return nil
+}
+
+type StandAloneRegionManager struct {
+	regionManager
 	db         *badger.DB
 	pdc        pd.Client
 	clusterID  uint64
@@ -188,20 +326,27 @@ type RegionManager struct {
 	wg         sync.WaitGroup
 }
 
-func NewRegionManager(db *badger.DB, opts RegionOptions) *RegionManager {
+func (rm *StandAloneRegionManager) CheckLeader(ctx *kvrpcpb.Context) *errorpb.Error {
+	return nil
+}
+
+func NewStandAloneRegionManager(db *badger.DB, opts RegionOptions) RegionManager {
 	pdc, err := pd.NewClient(opts.PDAddr, "")
 	if err != nil {
 		log.Fatal(err)
 	}
 	clusterID := pdc.GetClusterID(context.TODO())
 	log.Infof("cluster id %v", clusterID)
-	rm := &RegionManager{
+	rm := &StandAloneRegionManager{
 		db:         db,
 		pdc:        pdc,
 		clusterID:  clusterID,
-		regions:    make(map[uint64]*regionCtx),
 		regionSize: opts.RegionSize,
 		closeCh:    make(chan struct{}),
+		regionManager: regionManager{
+			regions:   make(map[uint64]*regionCtx),
+			storeMeta: new(metapb.Store),
+		},
 	}
 	err = rm.db.View(func(txn *badger.Txn) error {
 		item, err1 := txn.Get(InternalStoreMetaKey)
@@ -245,14 +390,14 @@ func NewRegionManager(db *badger.DB, opts RegionOptions) *RegionManager {
 		}
 	}
 	rm.storeMeta.Address = opts.StoreAddr
-	rm.pdc.PutStore(context.TODO(), &rm.storeMeta)
+	rm.pdc.PutStore(context.TODO(), rm.storeMeta)
 	rm.wg.Add(2)
 	go rm.runSplitWorker()
 	go rm.storeHeartBeatLoop()
 	return rm
 }
 
-func (rm *RegionManager) initStore(storeAddr string) error {
+func (rm *StandAloneRegionManager) initStore(storeAddr string) error {
 	log.Info("initializing store")
 	ids, err := rm.allocIDs(3)
 	if err != nil {
@@ -268,7 +413,7 @@ func (rm *RegionManager) initStore(storeAddr string) error {
 		Peers:       []*metapb.Peer{&metapb.Peer{Id: peerID, StoreId: storeID}},
 	}
 	rm.regions[rootRegion.Id] = newRegionCtx(rootRegion, nil)
-	_, err = rm.pdc.Bootstrap(ctx, &rm.storeMeta, rootRegion)
+	_, err = rm.pdc.Bootstrap(ctx, rm.storeMeta, rootRegion)
 	cancel()
 	if err != nil {
 		log.Fatal("Initialize failed: ", err)
@@ -302,7 +447,7 @@ func (rm *RegionManager) initStore(storeAddr string) error {
 }
 
 // initSplit splits the cluster into multiple regions.
-func (rm *RegionManager) initialSplit(root *metapb.Region) {
+func (rm *StandAloneRegionManager) initialSplit(root *metapb.Region) {
 	root.EndKey = codec.EncodeBytes(nil, []byte{'m'})
 	root.RegionEpoch.Version = 2
 	rm.regions[root.Id] = newRegionCtx(root, nil)
@@ -327,7 +472,7 @@ func (rm *RegionManager) initialSplit(root *metapb.Region) {
 	}
 }
 
-func (rm *RegionManager) allocIDs(n int) ([]uint64, error) {
+func (rm *StandAloneRegionManager) allocIDs(n int) ([]uint64, error) {
 	ids := make([]uint64, n)
 	for i := 0; i < n; i++ {
 		id, err := rm.pdc.AllocID(context.Background())
@@ -339,7 +484,7 @@ func (rm *RegionManager) allocIDs(n int) ([]uint64, error) {
 	return ids, nil
 }
 
-func (rm *RegionManager) storeHeartBeatLoop() {
+func (rm *StandAloneRegionManager) storeHeartBeatLoop() {
 	defer rm.wg.Done()
 	ticker := time.Tick(time.Second * 3)
 	for {
@@ -357,46 +502,6 @@ func (rm *RegionManager) storeHeartBeatLoop() {
 		storeStats.Capacity = 2048 * 1024 * 1024
 		rm.pdc.StoreHeartbeat(context.Background(), storeStats)
 	}
-}
-
-func (rm *RegionManager) getRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
-	ctxPeer := ctx.GetPeer()
-	if ctxPeer != nil && ctxPeer.GetStoreId() != rm.storeMeta.Id {
-		return nil, &errorpb.Error{
-			Message:       "store not match",
-			StoreNotMatch: &errorpb.StoreNotMatch{},
-		}
-	}
-	rm.mu.RLock()
-	ri := rm.regions[ctx.RegionId]
-	if ri != nil {
-		ri.refCount.Add(1)
-	}
-	rm.mu.RUnlock()
-	if ri == nil {
-		return nil, &errorpb.Error{
-			Message: "region not found",
-			RegionNotFound: &errorpb.RegionNotFound{
-				RegionId: ctx.GetRegionId(),
-			},
-		}
-	}
-	// Region epoch does not match.
-	if rm.isEpochStale(ri.meta.GetRegionEpoch(), ctx.GetRegionEpoch()) {
-		ri.refCount.Done()
-		return nil, &errorpb.Error{
-			Message: "stale epoch",
-			EpochNotMatch: &errorpb.EpochNotMatch{
-				CurrentRegions: []*metapb.Region{ri.meta},
-			},
-		}
-	}
-	ri.waitParent()
-	return ri, nil
-}
-
-func (rm *RegionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
-	return lhs.GetConfVer() != rhs.GetConfVer() || lhs.GetVersion() != rhs.GetVersion()
 }
 
 type keySample struct {
@@ -457,7 +562,7 @@ func (s *sampler) getSplitKeyAndSize() ([]byte, int64) {
 	return []byte{}, 0
 }
 
-func (rm *RegionManager) runSplitWorker() {
+func (rm *StandAloneRegionManager) runSplitWorker() {
 	defer rm.wg.Done()
 	ticker := time.NewTicker(time.Second * 5)
 	var regionsToCheck []*regionCtx
@@ -492,7 +597,7 @@ func (rm *RegionManager) runSplitWorker() {
 	}
 }
 
-func (rm *RegionManager) saveSize(regionsToSave []*regionCtx) {
+func (rm *StandAloneRegionManager) saveSize(regionsToSave []*regionCtx) {
 	err1 := rm.db.Update(func(txn *badger.Txn) error {
 		for _, ri := range regionsToSave {
 			ri.approximateSize += atomic.LoadInt64(&ri.diff)
@@ -508,7 +613,7 @@ func (rm *RegionManager) saveSize(regionsToSave []*regionCtx) {
 	}
 }
 
-func (rm *RegionManager) splitCheckRegion(region *regionCtx) error {
+func (rm *StandAloneRegionManager) splitCheckRegion(region *regionCtx) error {
 	s := newSampler()
 	err := rm.db.View(func(txn *badger.Txn) error {
 		iter := txn.NewIterator(badger.IteratorOptions{PrefetchValues: false})
@@ -541,7 +646,7 @@ func (rm *RegionManager) splitCheckRegion(region *regionCtx) error {
 	return errors.Trace(err)
 }
 
-func (rm *RegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey []byte, oldSize, leftSize int64) error {
+func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey []byte, oldSize, leftSize int64) error {
 	oldRegionCtx.waitParent()
 	oldRegion := oldRegionCtx.meta
 	rightMeta := &metapb.Region{
@@ -603,7 +708,7 @@ func (rm *RegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey []byte, o
 	return nil
 }
 
-func (rm *RegionManager) Close() error {
+func (rm *StandAloneRegionManager) Close() error {
 	close(rm.closeCh)
 	rm.wg.Wait()
 	return nil
