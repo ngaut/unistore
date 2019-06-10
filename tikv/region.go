@@ -233,12 +233,12 @@ func (rm *regionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
 
 type RaftRegionManager struct {
 	regionManager
-	router   raftstore.RaftstoreRouter
+	router raftstore.RaftstoreRouter
 }
 
 func NewRaftRegionManager(store *metapb.Store, router raftstore.RaftstoreRouter) RegionManager {
 	return &RaftRegionManager{
-		router:   router,
+		router: router,
 		regionManager: regionManager{
 			storeMeta: store,
 			regions:   make(map[uint64]*regionCtx),
@@ -268,9 +268,12 @@ func (rm *RaftRegionManager) OnPeerDestroy(ctx *raftstore.PeerEventContext) {
 }
 
 func (rm *RaftRegionManager) OnSplitRegion(derived *metapb.Region, regions []*metapb.Region, peers []*raftstore.PeerEventContext) {
-	rm.mu.Lock()
+	rm.mu.RLock()
 	oldRegion := rm.regions[derived.Id]
+	rm.mu.RUnlock()
 	oldRegion.waitParent()
+
+	rm.mu.Lock()
 	for i, region := range regions {
 		rm.regions[region.Id] = newRegionCtx(region, oldRegion, peers[i].LeaderChecker)
 	}
