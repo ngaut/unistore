@@ -23,7 +23,7 @@ type snapRunner struct {
 	receivingCount int64
 }
 
-func newSnapRunner(snapManager *SnapManager, config *Config, router RaftRouter) *snapRunner {
+func NewSnapRunner(snapManager *SnapManager, config *Config, router RaftRouter) *snapRunner {
 	return &snapRunner{
 		config:      config,
 		snapManager: snapManager,

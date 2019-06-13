@@ -131,7 +131,7 @@ type Config struct {
 	AdvertiseAddr string
 	Labels        []StoreLabel
 
-	splitCheck *splitCheckConfig
+	SplitCheck *splitCheckConfig
 }
 
 type StoreLabel struct {
@@ -201,7 +201,7 @@ func NewDefaultConfig() *Config {
 		GrpcKeepAliveTimeout:     60 * time.Second,
 		GrpcRaftConnNum:          1,
 		Addr:                     "127.0.0.1:20160",
-		splitCheck:               newDefaultSplitCheckConfig(),
+		SplitCheck:               newDefaultSplitCheckConfig(),
 	}
 }
 

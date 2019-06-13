@@ -138,9 +138,9 @@ func TestPendingApplies(t *testing.T) {
 	require.Nil(t, err)
 	mgr := NewSnapManager(snapPath, nil)
 	wg := new(sync.WaitGroup)
-	worker := newWorker("snap-manager", wg)
+	worker := NewWorker("snap-manager", wg)
 	regionRunner := newRegionRunner(engines, mgr, 0, time.Duration(time.Second*0))
-	worker.start(regionRunner)
+	worker.Start(regionRunner)
 	genAndApplySnap := func(regionId uint64) {
 		tx := make(chan *eraftpb.Snapshot, 1)
 		worker.scheduler <- task{

@@ -25,8 +25,7 @@ type Node struct {
 	observer  PeerEventObserver
 }
 
-func NewNode(system *raftBatchSystem, cfg *Config, pdClient pd.Client, observer PeerEventObserver) *Node {
-	var store metapb.Store
+func NewNode(system *raftBatchSystem, store *metapb.Store, cfg *Config, pdClient pd.Client, observer PeerEventObserver) *Node {
 	if cfg.AdvertiseAddr != "" {
 		store.Address = cfg.AdvertiseAddr
 	} else {
@@ -38,7 +37,7 @@ func NewNode(system *raftBatchSystem, cfg *Config, pdClient pd.Client, observer 
 	}
 	return &Node{
 		clusterID: pdClient.GetClusterID((context.TODO())),
-		store:     &store,
+		store:     store,
 		cfg:       cfg,
 		storeWg:   &sync.WaitGroup{},
 		system:    system,
@@ -47,7 +46,7 @@ func NewNode(system *raftBatchSystem, cfg *Config, pdClient pd.Client, observer 
 	}
 }
 
-func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, snapMgr *SnapManager, pdWorker *worker, copHost *CoprocessorHost) error {
+func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, snapMgr *SnapManager, pdWorker *Worker, copHost *CoprocessorHost) error {
 	storeID, err := n.checkStore(engines)
 	if err != nil {
 		return err
@@ -202,7 +201,7 @@ func (n *Node) BootstrapCluster(ctx context.Context, engines *Engines, firstRegi
 	return errors.New("bootstrap cluster failed")
 }
 
-func (n *Node) startNode(engines *Engines, trans Transport, snapMgr *SnapManager, pdWorker *worker, copHost *CoprocessorHost) error {
+func (n *Node) startNode(engines *Engines, trans Transport, snapMgr *SnapManager, pdWorker *Worker, copHost *CoprocessorHost) error {
 	log.Infof("start raft store node, storeID: %d", n.store.GetId())
 	return n.system.start(n.store, n.cfg, engines, trans, n.pdClient, snapMgr, pdWorker, copHost, n.observer)
 }
@@ -212,6 +211,6 @@ func (n *Node) stopNode(storeID uint64) {
 	n.system.shutDown()
 }
 
-func (n *Node) stop() {
+func (n *Node) Stop() {
 	n.stopNode(n.store.GetId())
 }

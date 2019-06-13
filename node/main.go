@@ -11,14 +11,15 @@ import (
 	"runtime"
 	"syscall"
 
-	"github.com/ngaut/unistore/tikv/raftstore"
-
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/options"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/lockstore"
+	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/tikv"
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/ngaut/unistore/tikv/raftstore"
+	"github.com/ngaut/unistore/tikv/server"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"google.golang.org/grpc"
 )
@@ -66,26 +67,38 @@ func main() {
 
 	safePoint := &tikv.SafePoint{}
 	db := createDB("kv", safePoint)
-
-	regionOpts := tikv.RegionOptions{
-		StoreAddr:  *storeAddr,
-		PDAddr:     *pdAddr,
-		RegionSize: *regionSize,
-	}
-	rm := tikv.NewStandAloneRegionManager(db, regionOpts)
 	bundle := &mvcc.DBBundle{
 		DB:            db,
 		LockStore:     lockstore.NewMemStore(8 << 20),
 		RollbackStore: lockstore.NewMemStore(256 << 10),
 	}
-	var dbWriter mvcc.DBWriter
+
+	var innerServer server.InnerServer
 	if *raft {
-		dbWriter = raftstore.NewDBWriter(bundle, raftstore.NewDefaultConfig())
+		innerServer = newRaftServerBuilder(bundle, safePoint)
 	} else {
-		dbWriter = tikv.NewDBWriter(bundle, safePoint)
+		innerServer = newStandAlongBuilder(bundle, safePoint)
 	}
-	store := tikv.NewMVCCStore(bundle, *dbPath, safePoint, dbWriter)
-	tikvServer := tikv.NewServer(rm, store)
+
+	pdClient, err := pd.NewClient(*pdAddr, "")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	builderCtx := server.Context{
+		PDClient: pdClient,
+	}
+
+	if err := innerServer.Setup(&builderCtx); err != nil {
+		log.Fatal(err)
+	}
+
+	store := tikv.NewMVCCStore(bundle, *dbPath, safePoint, innerServer.GetDBWriter())
+	tikvServer := tikv.NewServer(innerServer.GetRegionManager(), store)
+
+	if err := innerServer.Start(&builderCtx); err != nil {
+		log.Fatal(err)
+	}
 
 	grpcServer := grpc.NewServer(
 		grpc.InitialWindowSize(grpcInitialWindowSize),
@@ -111,16 +124,40 @@ func main() {
 	}
 	log.Info("Store closed.")
 
-	err = rm.Close()
+	err = innerServer.Stop()
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Info("RegionManager closed.")
-	err = db.Close()
-	if err != nil {
-		log.Fatal(err)
+}
+
+func newRaftServerBuilder(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint) server.InnerServer {
+	kvPath := filepath.Join(*dbPath, "kv")
+	raftPath := filepath.Join(*dbPath, "raft")
+	snapPath := filepath.Join(*dbPath, "snap")
+
+	os.MkdirAll(kvPath, os.ModePerm)
+	os.MkdirAll(raftPath, os.ModePerm)
+	os.Mkdir(snapPath, os.ModePerm)
+
+	config := raftstore.NewDefaultConfig()
+	config.Addr = *storeAddr
+	config.SnapPath = snapPath
+
+	raftDB := createDB("raft", safePoint)
+
+	engines := raftstore.NewEngines(bundle.DB, raftDB, kvPath, raftPath)
+
+	return server.NewRaftInnerServer(engines, snapPath, config)
+}
+
+func newStandAlongBuilder(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint) server.InnerServer {
+	regionOpts := tikv.RegionOptions{
+		StoreAddr:  *storeAddr,
+		PDAddr:     *pdAddr,
+		RegionSize: *regionSize,
 	}
-	log.Infof("DB closed.")
+
+	return server.NewStandAlongInnerServer(bundle, safePoint, regionOpts)
 }
 
 func createDB(subPath string, safePoint *tikv.SafePoint) *badger.DB {

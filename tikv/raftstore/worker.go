@@ -171,7 +171,7 @@ type recvSnapTask struct {
 	callback func(error)
 }
 
-type worker struct {
+type Worker struct {
 	name      string
 	scheduler chan<- task
 	receiver  <-chan task
@@ -187,7 +187,11 @@ type starter interface {
 	start()
 }
 
-func (w *worker) start(runner taskRunner) {
+func (w *Worker) GetScheduler() chan<- task {
+	return w.scheduler
+}
+
+func (w *Worker) Start(runner taskRunner) {
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
@@ -204,15 +208,15 @@ func (w *worker) start(runner taskRunner) {
 	}()
 }
 
-func (w *worker) stop() {
+func (w *Worker) Stop() {
 	w.scheduler <- task{tp: taskTypeStop}
 }
 
 const defaultWorkerCapacity = 128
 
-func newWorker(name string, wg *sync.WaitGroup) *worker {
+func NewWorker(name string, wg *sync.WaitGroup) *Worker {
 	ch := make(chan task, defaultWorkerCapacity)
-	return &worker{
+	return &Worker{
 		scheduler: (chan<- task)(ch),
 		receiver:  (<-chan task)(ch),
 		name:      name,

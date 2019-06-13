@@ -583,12 +583,12 @@ func (b *raftPollerBuilder) build() pollHandler {
 }
 
 type workers struct {
-	pdWorker          *worker
-	raftLogGCWorker   *worker
-	computeHashWorker *worker
-	splitCheckWorker  *worker
-	regionWorker      *worker
-	compactWorker     *worker
+	pdWorker          *Worker
+	raftLogGCWorker   *Worker
+	computeHashWorker *Worker
+	splitCheckWorker  *Worker
+	regionWorker      *Worker
+	compactWorker     *Worker
 	coprocessorHost   *CoprocessorHost
 	wg                *sync.WaitGroup
 }
@@ -609,7 +609,7 @@ func (bs *raftBatchSystem) start(
 	trans Transport,
 	pdClinet pd.Client,
 	snapMgr *SnapManager,
-	pdWorker *worker,
+	pdWorker *Worker,
 	coprocessorHost *CoprocessorHost,
 	observer PeerEventObserver) error {
 	y.Assert(bs.workers == nil)
@@ -619,12 +619,12 @@ func (bs *raftBatchSystem) start(
 	}
 	wg := new(sync.WaitGroup)
 	workers := &workers{
-		splitCheckWorker:  newWorker("split-check", wg),
-		regionWorker:      newWorker("snapshot-worker", wg),
-		raftLogGCWorker:   newWorker("raft-gc-worker", wg),
-		compactWorker:     newWorker("compact-worker", wg),
+		splitCheckWorker:  NewWorker("split-check", wg),
+		regionWorker:      NewWorker("snapshot-worker", wg),
+		raftLogGCWorker:   NewWorker("raft-gc-worker", wg),
+		compactWorker:     NewWorker("compact-worker", wg),
 		pdWorker:          pdWorker,
-		computeHashWorker: newWorker("compute-hash", wg),
+		computeHashWorker: NewWorker("compute-hash", wg),
 		coprocessorHost:   coprocessorHost,
 		wg:                wg,
 	}
@@ -690,18 +690,18 @@ func (bs *raftBatchSystem) startSystem(
 
 	bs.applySystem.start("apply", applyPollerBuilder)
 	engines := builder.engines
-	workers.splitCheckWorker.start(&splitCheckRunner{
+	workers.splitCheckWorker.Start(&splitCheckRunner{
 		engine:          engines.kv.db,
 		router:          bs.router,
 		coprocessorHost: workers.coprocessorHost,
 	})
 	cfg := builder.cfg
-	workers.regionWorker.start(newRegionRunner(engines, snapMgr, cfg.SnapApplyBatchSize, cfg.CleanStalePeerDelay))
-	workers.raftLogGCWorker.start(&raftLogGCRunner{})
-	workers.compactWorker.start(&compactRunner{engine: engines.kv.db})
+	workers.regionWorker.Start(newRegionRunner(engines, snapMgr, cfg.SnapApplyBatchSize, cfg.CleanStalePeerDelay))
+	workers.raftLogGCWorker.Start(&raftLogGCRunner{})
+	workers.compactWorker.Start(&compactRunner{engine: engines.kv.db})
 	pdRunner := newPDRunner(store.Id, builder.pdClient, bs.router, engines.kv.db, workers.pdWorker.scheduler)
-	workers.pdWorker.start(pdRunner)
-	workers.computeHashWorker.start(&computeHashRunner{router: bs.router})
+	workers.pdWorker.Start(pdRunner)
+	workers.computeHashWorker.Start(&computeHashRunner{router: bs.router})
 	bs.workers = workers
 	go bs.tickDriver.run() // TODO: temp workaround.
 	return nil
@@ -739,7 +739,7 @@ func (bs *raftBatchSystem) shutDown() {
 	bs.workers.coprocessorHost.shutdown()
 }
 
-func createRaftBatchSystem(cfg *Config) (*router, *raftBatchSystem) {
+func CreateRaftBatchSystem(cfg *Config) (*router, *raftBatchSystem) {
 	storeSender, storeFsm := newStoreFsm(cfg)
 	applyRouter, applySystem := createApplyBatchSystem(cfg)
 	router, system := createBatchSystem(int(cfg.StorePoolSize), int(cfg.StoreMaxBatchSize), storeSender, storeFsm)
