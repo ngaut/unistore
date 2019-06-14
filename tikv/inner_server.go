@@ -20,24 +20,24 @@ func NewStandAlongInnerServer() *StandAlongInnerServer {
 	return &StandAlongInnerServer{}
 }
 
-func (sb *StandAlongInnerServer) Raft(stream tikvpb.Tikv_RaftServer) error {
+func (is *StandAlongInnerServer) Raft(stream tikvpb.Tikv_RaftServer) error {
 	return nil
 }
 
-func (sb *StandAlongInnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
+func (is *StandAlongInnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
 	return nil
 }
 
-func (sb *StandAlongInnerServer) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
+func (is *StandAlongInnerServer) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
 	return nil
 }
 
-func (sb *StandAlongInnerServer) Setup(pdClient pd.Client) {}
+func (is *StandAlongInnerServer) Setup(pdClient pd.Client) {}
 
-func (sb *StandAlongInnerServer) Start(pdClient pd.Client) error {
+func (is *StandAlongInnerServer) Start(pdClient pd.Client) error {
 	return nil
 }
 
-func (sb *StandAlongInnerServer) Stop() error {
+func (is *StandAlongInnerServer) Stop() error {
 	return nil
 }

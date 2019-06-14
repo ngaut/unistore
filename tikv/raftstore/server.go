@@ -19,7 +19,7 @@ type RaftInnerServer struct {
 	storeMeta     metapb.Store
 	eventObserver PeerEventObserver
 
-	node            *Node
+	node *Node
 
 	snapManager     *SnapManager
 	coprocessorHost *CoprocessorHost
@@ -30,32 +30,32 @@ type RaftInnerServer struct {
 	snapWorker      *worker
 }
 
-func (sb *RaftInnerServer) Raft(stream tikvpb.Tikv_RaftServer) error {
+func (ris *RaftInnerServer) Raft(stream tikvpb.Tikv_RaftServer) error {
 	for {
 		msg, err := stream.Recv()
 		if err != nil {
 			return err
 		}
-		sb.raftRouter.SendRaftMessage(msg)
+		ris.raftRouter.SendRaftMessage(msg)
 	}
 }
 
-func (sb *RaftInnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
+func (ris *RaftInnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
 	for {
 		msgs, err := stream.Recv()
 		if err != nil {
 			return err
 		}
 		for _, msg := range msgs.GetMsgs() {
-			sb.raftRouter.SendRaftMessage(msg)
+			ris.raftRouter.SendRaftMessage(msg)
 		}
 	}
 }
 
-func (sb *RaftInnerServer) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
+func (ris *RaftInnerServer) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
 	var err error
 	done := make(chan struct{})
-	sb.snapWorker.scheduler <- task{
+	ris.snapWorker.scheduler <- task{
 		tp: taskTypeSnapRecv,
 		data: recvSnapTask{
 			stream: stream,
@@ -73,59 +73,62 @@ func NewRaftInnerServer(engines *Engines, raftConfig *Config) *RaftInnerServer {
 	return &RaftInnerServer{engines: engines, raftConfig: raftConfig}
 }
 
-func (sb *RaftInnerServer) Setup(pdClient pd.Client) {
+func (ris *RaftInnerServer) Setup(pdClient pd.Client) {
 	var wg sync.WaitGroup
-	sb.pdWorker = newWorker("pd-worker", &wg)
-	sb.resolveWorker = newWorker("resolver", &wg)
-	sb.snapWorker = newWorker("snap-worker", &wg)
+	ris.pdWorker = newWorker("pd-worker", &wg)
+	ris.resolveWorker = newWorker("resolver", &wg)
+	ris.snapWorker = newWorker("snap-worker", &wg)
 
 	// TODO: create local reader
 	// TODO: create storage read pool
 	// TODO: create cop read pool
 	// TODO: create cop endpoint
 
-	cfg := sb.raftConfig
+	cfg := ris.raftConfig
 	router, batchSystem := createRaftBatchSystem(cfg)
 
-	sb.raftRouter = NewRaftstoreRouter(router) // TODO: init with local reader
-	sb.snapManager = NewSnapManager(cfg.SnapPath, router)
-	sb.batchSystem = batchSystem
-	sb.coprocessorHost = newCoprocessorHost(cfg.splitCheck, router)
+	ris.raftRouter = NewRaftstoreRouter(router) // TODO: init with local reader
+	ris.snapManager = NewSnapManager(cfg.SnapPath, router)
+	ris.batchSystem = batchSystem
+	ris.coprocessorHost = newCoprocessorHost(cfg.splitCheck, router)
 }
 
-func (sb *RaftInnerServer) GetRaftstoreRouter() *RaftstoreRouter {
-	return sb.raftRouter
+func (ris *RaftInnerServer) GetRaftstoreRouter() *RaftstoreRouter {
+	return ris.raftRouter
 }
 
-func (sb *RaftInnerServer) GetStoreMeta() *metapb.Store {
-	return &sb.storeMeta
+func (ris *RaftInnerServer) GetStoreMeta() *metapb.Store {
+	return &ris.storeMeta
 }
 
-func (sb *RaftInnerServer) SetPeerEventObserver(ob PeerEventObserver) {
-	sb.eventObserver = ob
+func (ris *RaftInnerServer) SetPeerEventObserver(ob PeerEventObserver) {
+	ris.eventObserver = ob
 }
 
-func (sb *RaftInnerServer) Start(pdClient pd.Client) error {
-	sb.node = NewNode(sb.batchSystem, &sb.storeMeta, sb.raftConfig, pdClient, sb.eventObserver)
+func (ris *RaftInnerServer) Start(pdClient pd.Client) error {
+	ris.node = NewNode(ris.batchSystem, &ris.storeMeta, ris.raftConfig, pdClient, ris.eventObserver)
 
-	raftClient := newRaftClient(sb.raftConfig)
-	resolveSender := sb.resolveWorker.scheduler
-	trans := NewServerTransport(raftClient, sb.snapWorker.scheduler, sb.raftRouter, resolveSender)
+	raftClient := newRaftClient(ris.raftConfig)
+	resolveSender := ris.resolveWorker.scheduler
+	trans := NewServerTransport(raftClient, ris.snapWorker.scheduler, ris.raftRouter, resolveSender)
 
 	resolveRunner := newResolverRunner(pdClient)
-	sb.resolveWorker.start(resolveRunner)
-	err := sb.node.Start(context.TODO(), sb.engines, trans, sb.snapManager, sb.pdWorker, sb.coprocessorHost)
+	ris.resolveWorker.start(resolveRunner)
+	err := ris.node.Start(context.TODO(), ris.engines, trans, ris.snapManager, ris.pdWorker, ris.coprocessorHost)
 	if err != nil {
 		return err
 	}
-	snapRunner := newSnapRunner(sb.snapManager, sb.raftConfig, sb.raftRouter)
-	sb.snapWorker.start(snapRunner)
+	snapRunner := newSnapRunner(ris.snapManager, ris.raftConfig, ris.raftRouter)
+	ris.snapWorker.start(snapRunner)
 	return nil
 }
 
-func (sb *RaftInnerServer) Stop() error {
-	sb.snapWorker.stop()
-	sb.node.stop()
+func (ris *RaftInnerServer) Stop() error {
+	// TODO: Be graceful!
+	os.Exit(0)
+	ris.snapWorker.stop()
+	ris.node.stop()
+	ris.resolveWorker.stop()
 	return nil
 }
 
