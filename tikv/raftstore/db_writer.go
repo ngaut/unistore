@@ -170,6 +170,6 @@ func (writer *raftDBWriter) DeleteRange(startKey, endKey []byte, latchHandle mvc
 	return nil // TODO: stub
 }
 
-func NewDBWriter(router *router) mvcc.DBWriter {
-	return &raftDBWriter{router: router}
+func NewDBWriter(router *RaftstoreRouter) mvcc.DBWriter {
+	return &raftDBWriter{router: router.router}
 }

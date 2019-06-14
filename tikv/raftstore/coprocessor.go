@@ -583,7 +583,7 @@ type CoprocessorHost struct {
 	registry registry
 }
 
-func NewCoprocessorHost(config *splitCheckConfig, router *router) *CoprocessorHost {
+func newCoprocessorHost(config *splitCheckConfig, router *router) *CoprocessorHost {
 	host := &CoprocessorHost{}
 	// NOTE: the split check observer order is hard coded.
 	halfSplitCheckObserver := newHalfSplitCheckObserver(config.regionMaxSize)

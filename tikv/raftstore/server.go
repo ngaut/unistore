@@ -13,6 +13,122 @@ import (
 	"google.golang.org/grpc"
 )
 
+type RaftInnerServer struct {
+	engines       *Engines
+	raftConfig    *Config
+	storeMeta     metapb.Store
+	eventObserver PeerEventObserver
+
+	node            *Node
+
+	snapManager     *SnapManager
+	coprocessorHost *CoprocessorHost
+	raftRouter      *RaftstoreRouter
+	batchSystem     *raftBatchSystem
+	pdWorker        *worker
+	resolveWorker   *worker
+	snapWorker      *worker
+}
+
+func (sb *RaftInnerServer) Raft(stream tikvpb.Tikv_RaftServer) error {
+	for {
+		msg, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+		sb.raftRouter.SendRaftMessage(msg)
+	}
+}
+
+func (sb *RaftInnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
+	for {
+		msgs, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+		for _, msg := range msgs.GetMsgs() {
+			sb.raftRouter.SendRaftMessage(msg)
+		}
+	}
+}
+
+func (sb *RaftInnerServer) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
+	var err error
+	done := make(chan struct{})
+	sb.snapWorker.scheduler <- task{
+		tp: taskTypeSnapRecv,
+		data: recvSnapTask{
+			stream: stream,
+			callback: func(e error) {
+				err = e
+				close(done)
+			},
+		},
+	}
+	<-done
+	return err
+}
+
+func NewRaftInnerServer(engines *Engines, raftConfig *Config) *RaftInnerServer {
+	return &RaftInnerServer{engines: engines, raftConfig: raftConfig}
+}
+
+func (sb *RaftInnerServer) Setup(pdClient pd.Client) {
+	var wg sync.WaitGroup
+	sb.pdWorker = newWorker("pd-worker", &wg)
+	sb.resolveWorker = newWorker("resolver", &wg)
+	sb.snapWorker = newWorker("snap-worker", &wg)
+
+	// TODO: create local reader
+	// TODO: create storage read pool
+	// TODO: create cop read pool
+	// TODO: create cop endpoint
+
+	cfg := sb.raftConfig
+	router, batchSystem := createRaftBatchSystem(cfg)
+
+	sb.raftRouter = NewRaftstoreRouter(router) // TODO: init with local reader
+	sb.snapManager = NewSnapManager(cfg.SnapPath, router)
+	sb.batchSystem = batchSystem
+	sb.coprocessorHost = newCoprocessorHost(cfg.splitCheck, router)
+}
+
+func (sb *RaftInnerServer) GetRaftstoreRouter() *RaftstoreRouter {
+	return sb.raftRouter
+}
+
+func (sb *RaftInnerServer) GetStoreMeta() *metapb.Store {
+	return &sb.storeMeta
+}
+
+func (sb *RaftInnerServer) SetPeerEventObserver(ob PeerEventObserver) {
+	sb.eventObserver = ob
+}
+
+func (sb *RaftInnerServer) Start(pdClient pd.Client) error {
+	sb.node = NewNode(sb.batchSystem, &sb.storeMeta, sb.raftConfig, pdClient, sb.eventObserver)
+
+	raftClient := newRaftClient(sb.raftConfig)
+	resolveSender := sb.resolveWorker.scheduler
+	trans := NewServerTransport(raftClient, sb.snapWorker.scheduler, sb.raftRouter, resolveSender)
+
+	resolveRunner := newResolverRunner(pdClient)
+	sb.resolveWorker.start(resolveRunner)
+	err := sb.node.Start(context.TODO(), sb.engines, trans, sb.snapManager, sb.pdWorker, sb.coprocessorHost)
+	if err != nil {
+		return err
+	}
+	snapRunner := newSnapRunner(sb.snapManager, sb.raftConfig, sb.raftRouter)
+	sb.snapWorker.start(snapRunner)
+	return nil
+}
+
+func (sb *RaftInnerServer) Stop() error {
+	sb.snapWorker.stop()
+	sb.node.stop()
+	return nil
+}
+
 type dummyEventObserver struct {}
 
 func (*dummyEventObserver) OnPeerCreate(ctx *PeerEventContext, region *metapb.Region) {}
@@ -21,14 +137,13 @@ func (*dummyEventObserver) OnPeerApplySnap(ctx *PeerEventContext, region *metapb
 
 func (*dummyEventObserver) OnPeerDestroy(ctx *PeerEventContext) {}
 
-func (*dummyEventObserver) OnSplitRegion(derived *metapb.Region, regions []*metapb.Region, peers []*PeerEventContext) {
-}
+func (*dummyEventObserver) OnSplitRegion(derived *metapb.Region, regions []*metapb.Region, peers []*PeerEventContext) {}
 
 func RunRaftServer(cfg *Config, pdClient pd.Client, engines *Engines, signalChan <-chan os.Signal) error {
 	var wg sync.WaitGroup
-	pdWorker := NewWorker("pd-worker", &wg)
-	resolveWorker := NewWorker("resolver", &wg)
-	resolveRunner := NewResolverRunner(pdClient)
+	pdWorker := newWorker("pd-worker", &wg)
+	resolveWorker := newWorker("resolver", &wg)
+	resolveRunner := newResolverRunner(pdClient)
 	resolveSender := resolveWorker.scheduler
 
 	// TODO: create local reader
@@ -36,7 +151,7 @@ func RunRaftServer(cfg *Config, pdClient pd.Client, engines *Engines, signalChan
 	// TODO: create cop read pool
 	// TODO: create cop endpoint
 
-	router, batchSystem := CreateRaftBatchSystem(cfg)
+	router, batchSystem := createRaftBatchSystem(cfg)
 	raftRouter := NewRaftstoreRouter(router) // TODO: init with local reader
 	snapManager := NewSnapManager(cfg.SnapPath, router)
 	var store metapb.Store
@@ -46,9 +161,9 @@ func RunRaftServer(cfg *Config, pdClient pd.Client, engines *Engines, signalChan
 
 	server := NewServer(cfg, raftRouter, resolveSender, snapManager)
 
-	coprocessorHost := NewCoprocessorHost(cfg.SplitCheck, router)
+	coprocessorHost := newCoprocessorHost(cfg.splitCheck, router)
 
-	resolveWorker.Start(resolveRunner)
+	resolveWorker.start(resolveRunner)
 
 	err := node.Start(context.TODO(), engines, server.Trans(), snapManager, pdWorker, coprocessorHost)
 	if err != nil {
@@ -70,9 +185,9 @@ func RunRaftServer(cfg *Config, pdClient pd.Client, engines *Engines, signalChan
 		log.Errorf("failed to stop server: %v", err)
 	}
 
-	node.Stop()
+	node.stop()
 
-	resolveWorker.Stop()
+	resolveWorker.stop()
 
 	wg.Wait()
 	return nil
@@ -81,7 +196,7 @@ func RunRaftServer(cfg *Config, pdClient pd.Client, engines *Engines, signalChan
 type Server struct {
 	config      *Config
 	wg          *sync.WaitGroup
-	snapWorker  *Worker
+	snapWorker  *worker
 	grpcServer  *grpc.Server
 	trans       *ServerTransport
 	snapManager *SnapManager
@@ -90,7 +205,7 @@ type Server struct {
 
 func NewServer(config *Config, router *RaftstoreRouter, resovleSender chan<- task, snapManager *SnapManager) *Server {
 	var wg sync.WaitGroup
-	snapWorker := NewWorker("snap-worker", &wg)
+	snapWorker := newWorker("snap-worker", &wg)
 	kvService := NewKVService(router, snapWorker.scheduler)
 
 	grpcOpts := []grpc.ServerOption{
@@ -102,7 +217,7 @@ func NewServer(config *Config, router *RaftstoreRouter, resovleSender chan<- tas
 	grpcServer := grpc.NewServer(grpcOpts...)
 	tikvpb.RegisterTikvServer(grpcServer, kvService)
 
-	raftClient := NewRaftClient(config)
+	raftClient := newRaftClient(config)
 	trans := NewServerTransport(raftClient, snapWorker.scheduler, router, resovleSender)
 
 	return &Server{
@@ -116,8 +231,8 @@ func NewServer(config *Config, router *RaftstoreRouter, resovleSender chan<- tas
 }
 
 func (s *Server) Start() error {
-	snapRunner := NewSnapRunner(s.snapManager, s.config, s.trans.raftRouter)
-	s.snapWorker.Start(snapRunner)
+	snapRunner := newSnapRunner(s.snapManager, s.config, s.trans.raftRouter)
+	s.snapWorker.start(snapRunner)
 	lis, err := net.Listen("tcp", s.config.Addr)
 	if err != nil {
 		return err
@@ -133,7 +248,7 @@ func (s *Server) Trans() *ServerTransport {
 }
 
 func (s *Server) Stop() error {
-	s.snapWorker.Stop()
+	s.snapWorker.stop()
 	s.grpcServer.Stop()
 	return s.lis.Close()
 }

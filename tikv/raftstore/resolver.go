@@ -21,7 +21,7 @@ type resolverRunner struct {
 	storeAddrs map[uint64]storeAddr
 }
 
-func NewResolverRunner(pdClient pd.Client) *resolverRunner {
+func newResolverRunner(pdClient pd.Client) *resolverRunner {
 	return &resolverRunner{
 		pdClient:   pdClient,
 		storeAddrs: make(map[uint64]storeAddr),
