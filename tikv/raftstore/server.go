@@ -19,8 +19,7 @@ type RaftInnerServer struct {
 	storeMeta     metapb.Store
 	eventObserver PeerEventObserver
 
-	node *Node
-
+	node            *Node
 	snapManager     *SnapManager
 	coprocessorHost *CoprocessorHost
 	raftRouter      *RaftstoreRouter
@@ -132,7 +131,7 @@ func (ris *RaftInnerServer) Stop() error {
 	return nil
 }
 
-type dummyEventObserver struct {}
+type dummyEventObserver struct{}
 
 func (*dummyEventObserver) OnPeerCreate(ctx *PeerEventContext, region *metapb.Region) {}
 
@@ -140,7 +139,8 @@ func (*dummyEventObserver) OnPeerApplySnap(ctx *PeerEventContext, region *metapb
 
 func (*dummyEventObserver) OnPeerDestroy(ctx *PeerEventContext) {}
 
-func (*dummyEventObserver) OnSplitRegion(derived *metapb.Region, regions []*metapb.Region, peers []*PeerEventContext) {}
+func (*dummyEventObserver) OnSplitRegion(derived *metapb.Region, regions []*metapb.Region, peers []*PeerEventContext) {
+}
 
 func RunRaftServer(cfg *Config, pdClient pd.Client, engines *Engines, signalChan <-chan os.Signal) error {
 	var wg sync.WaitGroup
