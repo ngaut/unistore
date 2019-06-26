@@ -297,7 +297,7 @@ func (rm *RaftRegionManager) OnSplitRegion(derived *metapb.Region, regions []*me
 	oldRegion.refCount.Done()
 }
 
-func (rm *RaftRegionManager) OnRegionEpochChange(ctx *raftstore.PeerEventContext, epoch *metapb.RegionEpoch) {
+func (rm *RaftRegionManager) OnRegionConfChange(ctx *raftstore.PeerEventContext, epoch *metapb.RegionEpoch) {
 	rm.mu.RLock()
 	region := rm.regions[ctx.RegionId]
 	rm.mu.RUnlock()

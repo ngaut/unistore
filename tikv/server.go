@@ -201,17 +201,7 @@ func (svr *Server) KvPrewrite(ctx context.Context, req *kvrpcpb.PrewriteRequest)
 	errs := svr.mvccStore.Prewrite(reqCtx, req.Mutations, req.PrimaryLock, req.GetStartVersion(), req.GetLockTtl())
 
 	resp := new(kvrpcpb.PrewriteResponse)
-	var keyErrors []*kvrpcpb.KeyError
-	for _, err := range errs {
-		if err != nil {
-			if regErr := extractRegionError(err); regErr != nil {
-				resp.RegionError = regErr
-				return resp, nil
-			}
-			keyErrors = append(keyErrors, convertToKeyError(err))
-		}
-	}
-	resp.Errors = keyErrors
+	resp.Errors, resp.RegionError = convertToPBErrors(errs)
 	return resp, nil
 }
 
@@ -227,11 +217,7 @@ func (svr *Server) KvCommit(ctx context.Context, req *kvrpcpb.CommitRequest) (*k
 	resp := new(kvrpcpb.CommitResponse)
 	err = svr.mvccStore.Commit(reqCtx, req.Keys, req.GetStartVersion(), req.GetCommitVersion())
 	if err != nil {
-		if regErr := extractRegionError(err); regErr != nil {
-			resp.RegionError = regErr
-		} else {
-			resp.Error = convertToKeyError(err)
-		}
+		resp.Error, resp.RegionError = convertToPBError(err)
 	}
 	return resp, nil
 }
@@ -250,17 +236,13 @@ func (svr *Server) KvCleanup(ctx context.Context, req *kvrpcpb.CleanupRequest) (
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.CleanupResponse{RegionError: reqCtx.regErr}, nil
 	}
-	resp := new(kvrpcpb.CleanupResponse)
 	err = svr.mvccStore.Cleanup(reqCtx, req.Key, req.StartVersion)
+	resp := new(kvrpcpb.CleanupResponse)
 	if committed, ok := err.(ErrAlreadyCommitted); ok {
 		resp.CommitVersion = uint64(committed)
 	} else if err != nil {
 		log.Error(err)
-		if regErr := extractRegionError(err); regErr != nil {
-			resp.RegionError = regErr
-		} else {
-			resp.Error = convertToKeyError(err)
-		}
+		resp.Error, resp.RegionError = convertToPBError(err)
 	}
 	return resp, nil
 }
@@ -311,11 +293,7 @@ func (svr *Server) KvBatchRollback(ctx context.Context, req *kvrpcpb.BatchRollba
 	resp := new(kvrpcpb.BatchRollbackResponse)
 	err = svr.mvccStore.Rollback(reqCtx, req.Keys, req.StartVersion)
 	if err != nil {
-		if regErr := extractRegionError(err); regErr != nil {
-			resp.RegionError = regErr
-		} else {
-			resp.Error = convertToKeyError(err)
-		}
+		resp.Error, resp.RegionError = convertToPBError(err)
 	}
 	return &kvrpcpb.BatchRollbackResponse{}, nil
 }
@@ -355,11 +333,7 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 			log.Debugf("kv resolve lock region:%d txn:%v", reqCtx.regCtx.meta.Id, txnInfo.Txn)
 			err := svr.mvccStore.ResolveLock(reqCtx, txnInfo.Txn, txnInfo.Status)
 			if err != nil {
-				if regErr := extractRegionError(err); regErr != nil {
-					resp.RegionError = regErr
-				} else {
-					resp.Error = convertToKeyError(err)
-				}
+				resp.Error, resp.RegionError = convertToPBError(err)
 				break
 			}
 		}
@@ -367,11 +341,7 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 		log.Debugf("kv resolve lock region:%d txn:%v", reqCtx.regCtx.meta.Id, req.StartVersion)
 		err := svr.mvccStore.ResolveLock(reqCtx, req.StartVersion, req.CommitVersion)
 		if err != nil {
-			if regErr := extractRegionError(err); regErr != nil {
-				resp.RegionError = regErr
-			} else {
-				resp.Error = convertToKeyError(err)
-			}
+			resp.Error, resp.RegionError = convertToPBError(err)
 		}
 	}
 	return resp, nil
@@ -538,6 +508,26 @@ func convertToKeyError(err error) *kvrpcpb.KeyError {
 			Abort: err.Error(),
 		}
 	}
+}
+
+func convertToPBError(err error) (*kvrpcpb.KeyError, *errorpb.Error) {
+	if regErr := extractRegionError(err); regErr != nil  {
+		return nil, regErr
+	}
+	return convertToKeyError(err), nil
+}
+
+func convertToPBErrors(errs []error) ([]*kvrpcpb.KeyError, *errorpb.Error) {
+	var keyErrs []*kvrpcpb.KeyError
+	for _, err := range errs {
+		if err != nil {
+			if regErr := extractRegionError(err); regErr != nil {
+				return nil, regErr
+			}
+			keyErrs = append(keyErrs, convertToKeyError(err))
+		}
+	}
+	return keyErrs, nil
 }
 
 func extractRegionError(err error) *errorpb.Error {
