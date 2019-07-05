@@ -199,7 +199,7 @@ func (n *Node) prepareBootstrapCluster(ctx context.Context, engines *Engines, st
 	return PrepareBootstrap(engines, storeID, regionID, peerID)
 }
 
-func (n *Node) BootstrapCluster(ctx context.Context, engines *Engines, firstRegion *metapb.Region) (bool, error) {
+func (n *Node) BootstrapCluster(ctx context.Context, engines *Engines, firstRegion *metapb.Region) (newCluster bool, err error) {
 	regionID := firstRegion.GetId()
 	for retry := 0; retry < MaxCheckClusterBootstrappedRetryCount; retry++ {
 		if retry != 0 {
