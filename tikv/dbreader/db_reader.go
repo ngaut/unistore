@@ -53,6 +53,24 @@ func (r *DBReader) Get(key []byte, startTS uint64) ([]byte, error) {
 	return r.getOld(key, startTS)
 }
 
+func (r *DBReader) HasNewerDelete(key []byte, startTS uint64) bool {
+	oldKey := mvcc.EncodeOldKey(key, startTS)
+	iter := r.GetIter()
+	iter.Seek(oldKey)
+	if !iter.ValidForPrefix(oldKey[:len(oldKey)-8]) {
+		return false
+	}
+	item := iter.Item()
+	nextCommitTs := mvcc.OldUserMeta(item.UserMeta()).NextCommitTS()
+	if nextCommitTs < r.safePoint {
+		// This entry is eligible for GC. Normally we will not see this version.
+		// But when the latest version is DELETE and it is GCed first,
+		// we may end up here, so we should ignore the obsolete version.
+		return false
+	}
+	return nextCommitTs > startTS
+}
+
 func (r *DBReader) getOld(key []byte, startTS uint64) ([]byte, error) {
 	oldKey := mvcc.EncodeOldKey(key, startTS)
 	iter := r.GetIter()
@@ -156,7 +174,7 @@ func (r *DBReader) Scan(startKey, endKey []byte, limit int, startTS uint64, proc
 		}
 		var err error
 		if mvcc.DBUserMeta(item.UserMeta()).CommitTS() > startTS {
-			item, err = r.getOldItem(mvcc.EncodeOldKey(key, startTS))
+			item, err = r.getOldItem(key, startTS)
 			if err != nil {
 				continue
 			}
@@ -186,16 +204,23 @@ func (r *DBReader) Scan(startKey, endKey []byte, limit int, startTS uint64, proc
 	return nil
 }
 
-func (r *DBReader) getOldItem(oldKey []byte) (*badger.Item, error) {
+func (r *DBReader) getOldItem(key []byte, startTS uint64) (*badger.Item, error) {
+	oldKey := mvcc.EncodeOldKey(key, startTS)
 	oldIter := r.GetOldIter()
 	oldIter.Seek(oldKey)
 	if !oldIter.ValidForPrefix(oldKey[:len(oldKey)-8]) {
 		return nil, badger.ErrKeyNotFound
 	}
-	if mvcc.OldUserMeta(oldIter.Item().UserMeta()).NextCommitTS() < r.safePoint {
+	nextCommitTs := mvcc.OldUserMeta(oldIter.Item().UserMeta()).NextCommitTS()
+	if nextCommitTs < r.safePoint {
 		// Ignore the obsolete version.
 		return nil, badger.ErrKeyNotFound
 	}
+
+	if nextCommitTs <= startTS {
+		return nil, badger.ErrKeyNotFound
+	}
+
 	return oldIter.Item(), nil
 }
 
@@ -215,7 +240,7 @@ func (r *DBReader) ReverseScan(startKey, endKey []byte, limit int, startTS uint6
 		}
 		var err error
 		if mvcc.DBUserMeta(item.UserMeta()).CommitTS() > startTS {
-			item, err = r.getOldItem(mvcc.EncodeOldKey(key, startTS))
+			item, err = r.getOldItem(key, startTS)
 			if err != nil {
 				continue
 			}
