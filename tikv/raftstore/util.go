@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/ngaut/log"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -291,64 +290,6 @@ func CheckKeyInRegionInclusive(key []byte, region *metapb.Region) error {
 /// check whether epoch is staler than check_epoch.
 func IsEpochStale(epoch *metapb.RegionEpoch, checkEpoch *metapb.RegionEpoch) bool {
 	return epoch.Version < checkEpoch.Version || epoch.ConfVer < checkEpoch.ConfVer
-}
-
-func CheckRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, includeRegion bool) error {
-	checkVer, checkConfVer := false, false
-	if req.AdminRequest == nil {
-		checkVer = true
-	} else {
-		switch req.AdminRequest.CmdType {
-		case raft_cmdpb.AdminCmdType_CompactLog, raft_cmdpb.AdminCmdType_InvalidAdmin,
-			raft_cmdpb.AdminCmdType_ComputeHash, raft_cmdpb.AdminCmdType_VerifyHash:
-		case raft_cmdpb.AdminCmdType_ChangePeer:
-			checkConfVer = true
-		case raft_cmdpb.AdminCmdType_Split, raft_cmdpb.AdminCmdType_BatchSplit,
-			raft_cmdpb.AdminCmdType_PrepareMerge, raft_cmdpb.AdminCmdType_CommitMerge,
-			raft_cmdpb.AdminCmdType_RollbackMerge, raft_cmdpb.AdminCmdType_TransferLeader:
-			checkVer = true
-			checkConfVer = true
-		}
-	}
-
-	if !checkVer && !checkConfVer {
-		return nil
-	}
-
-	if req.Header == nil {
-		return fmt.Errorf("missing header!")
-	}
-
-	if req.Header.RegionEpoch == nil {
-		return fmt.Errorf("missing epoch!")
-	}
-
-	fromEpoch := req.Header.RegionEpoch
-	currentEpoch := region.RegionEpoch
-
-	// We must check epochs strictly to avoid key not in region error.
-	//
-	// A 3 nodes TiKV cluster with merge enabled, after commit merge, TiKV A
-	// tells TiDB with a epoch not match error contains the latest target Region
-	// info, TiDB updates its region cache and sends requests to TiKV B,
-	// and TiKV B has not applied commit merge yet, since the region epoch in
-	// request is higher than TiKV B, the request must be denied due to epoch
-	// not match, so it does not read on a stale snapshot, thus avoid the
-	// KeyNotInRegion error.
-	if (checkConfVer && fromEpoch.ConfVer != currentEpoch.ConfVer) ||
-		(checkVer && fromEpoch.Version != currentEpoch.Version) {
-		log.Debugf("epoch not match, region id %v, from epoch %v, current epoch %v",
-			region.Id, fromEpoch, currentEpoch)
-
-		regions := []*metapb.Region{}
-		if includeRegion {
-			regions = []*metapb.Region{region}
-		}
-		return &ErrEpochNotMatch{Message: fmt.Sprintf("current epoch of region %v is %v, but you sent %v",
-			region.Id, currentEpoch, fromEpoch), Regions: regions}
-	}
-
-	return nil
 }
 
 func findPeer(region *metapb.Region, storeID uint64) *metapb.Peer {

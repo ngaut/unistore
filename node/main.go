@@ -88,6 +88,8 @@ func main() {
 		innerServer, store, regionManager = setupStandAlongInnerServer(bundle, safePoint, pdClient)
 	}
 
+	safePoint.RM = regionManager
+
 	tikvServer := tikv.NewServer(regionManager, store, innerServer)
 
 	grpcServer := grpc.NewServer(
@@ -197,7 +199,7 @@ func createDB(subPath string, safePoint *tikv.SafePoint) *badger.DB {
 	opts.MaxTableSize = *maxTableSize
 	opts.NumMemtables = *numMemTables
 	opts.NumLevelZeroTables = *numL0Table
-	opts.NumLevelZeroTablesStall = opts.NumLevelZeroTables + 30
+	opts.NumLevelZeroTablesStall = opts.NumLevelZeroTables + 5
 	opts.SyncWrites = *syncWrites
 	opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
 	db, err := badger.Open(opts)
