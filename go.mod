@@ -2,6 +2,7 @@ module github.com/ngaut/unistore
 
 require (
 	github.com/coocood/badger v1.5.1-0.20190617061430-79d109a8fc71
+	github.com/coocood/rtutil v0.0.0-20190304133409-c84515f646f2 // indirect
 	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548
 	github.com/dgryski/go-farm v0.0.0-20190104051053-3adb47b1fb0f
 	github.com/golang/protobuf v1.3.0
@@ -11,12 +12,13 @@ require (
 	github.com/ngaut/log v0.0.0-20180314031856-b8e36e7ba5ac
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/pingcap/check v0.0.0-20190102082844-67f458068fc8
-	github.com/pingcap/errors v0.11.1
+	github.com/pingcap/errors v0.11.4
 	github.com/pingcap/kvproto v0.0.0-20190227013052-e71ca0165a5f
 	github.com/pingcap/parser v0.0.0-20190325012055-cc0fa08f99ca
 	github.com/pingcap/pd v2.1.0-rc.4+incompatible
 	github.com/pingcap/tidb v0.0.0-20190325083614-d6490c1cab3a
 	github.com/pingcap/tipb v0.0.0-20190107072121-abbec73437b7
+	github.com/remyoudompheng/bigfft v0.0.0-20190512091148-babf20351dd7 // indirect
 	github.com/shirou/gopsutil v2.18.10+incompatible
 	github.com/stretchr/testify v1.3.0
 	github.com/uber-go/atomic v1.3.2
@@ -30,4 +32,6 @@ require (
 
 replace go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.0.0-20190226085253-137eac022b64
 
-replace github.com/coocood/badger v1.5.1-0.20181229021924-c02c9aba9c41 => /Users/max/projects/src/github.com/coocood/badger
+replace github.com/coocood/badger v1.5.1-0.20190617061430-79d109a8fc71 => /Users/max/projects/src/github.com/coocood/badger
+
+go 1.13

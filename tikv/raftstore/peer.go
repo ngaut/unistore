@@ -1802,7 +1802,7 @@ func (r *ReadExecutor) DoGet(req *raft_cmdpb.Request, region *metapb.Region) (*r
 
 func (r *ReadExecutor) Execute(msg *raft_cmdpb.RaftCmdRequest, region *metapb.Region) (*raft_cmdpb.RaftCmdResponse, *DBSnapshot) {
 	if r.checkEpoch {
-		if err := CheckRegionEpoch(msg, region, true); err != nil {
+		if err := checkRegionEpoch(msg, region, true); err != nil {
 			log.Debugf("[region %v] epoch not match, err: %v", region.Id, err)
 			return ErrResp(err), nil
 		}

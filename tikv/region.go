@@ -649,8 +649,8 @@ func (rm *StandAloneRegionManager) splitCheckRegion(region *regionCtx) error {
 		return nil
 	}
 	splitKey, leftSize := s.getSplitKeyAndSize()
-	log.Infof("region:%d leftSize %d, rightSize %d", region.meta.Id, leftSize, s.totalSize-leftSize)
-	log.Info("splitKey", splitKey, err)
+	//log.Infof("region:%d leftSize %d, rightSize %d", region.meta.Id, leftSize, s.totalSize-leftSize)
+	//log.Info("splitKey", splitKey, err)
 	err = rm.splitRegion(region, splitKey, s.totalSize, leftSize)
 	if err != nil {
 		log.Error(err)
@@ -715,7 +715,7 @@ func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey
 		Leader:          left.meta.Peers[0],
 		ApproximateSize: uint64(left.approximateSize),
 	})
-	log.Infof("region %d split to left %d with size %d and right %d with size %d",
+	log.Debugf("region %d split to left %d with size %d and right %d with size %d",
 		oldRegion.Id, left.meta.Id, left.approximateSize, right.meta.Id, right.approximateSize)
 	return nil
 }
