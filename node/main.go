@@ -96,6 +96,8 @@ func main() {
 		grpc.InitialWindowSize(grpcInitialWindowSize),
 		grpc.InitialConnWindowSize(grpcInitialConnWindowSize),
 		grpc.MaxRecvMsgSize(10*1024*1024),
+		grpc.WriteBufferSize(10*1024*1024),
+		grpc.ReadBufferSize(10*1024*1024),
 	)
 	tikvpb.RegisterTikvServer(grpcServer, tikvServer)
 	l, err := net.Listen("tcp", *storeAddr)
@@ -180,7 +182,7 @@ func setupStandAlongInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint
 func createDB(subPath string, safePoint *tikv.SafePoint) *badger.DB {
 	opts := badger.DefaultOptions
 	opts.ValueThreshold = *valThreshold
-	opts.TableBuilderOptions.EnableHashIndex = false
+	opts.TableBuilderOptions.EnableHashIndex = true
 	opts.TableBuilderOptions.BytesPerSync = 4 * 1024 * 1024
 	opts.TableBuilderOptions.BytesPerSecond = 200 * 1024 * 1024
 	opts.TableBuilderOptions.WriteBufferSize = 8 * 1024 * 1024
