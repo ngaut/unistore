@@ -132,6 +132,8 @@ type Config struct {
 	Labels        []StoreLabel
 
 	splitCheck *splitCheckConfig
+
+	NewImpl bool
 }
 
 type StoreLabel struct {
@@ -193,7 +195,7 @@ func NewDefaultConfig() *Config {
 		ApplyMaxBatchSize:        1024,
 		ApplyPoolSize:            2,
 		StoreMaxBatchSize:        1024,
-		StorePoolSize:            2,
+		StorePoolSize:            1,
 		ConcurrentSendSnapLimit:  32,
 		ConcurrentRecvSnapLimit:  32,
 		GrpcInitialWindowSize:    2 * 1024 * 1024,
@@ -202,6 +204,7 @@ func NewDefaultConfig() *Config {
 		GrpcRaftConnNum:          1,
 		Addr:                     "127.0.0.1:20160",
 		splitCheck:               newDefaultSplitCheckConfig(),
+		NewImpl:                  true,
 	}
 }
 

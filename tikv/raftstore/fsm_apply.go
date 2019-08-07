@@ -259,9 +259,17 @@ func (t *GenSnapTask) generateAndScheduleSnapshot(regionSched chan<- task) {
 
 type applyRouter struct {
 	router
+
+	// Used to collect messages for new batch system.
+	msgs []Msg
 }
 
 func (r *applyRouter) scheduleTask(regionID uint64, msg Msg) {
+	if r.msgs != nil {
+		msg.RegionID = regionID
+		r.msgs = append(r.msgs, msg)
+		return
+	}
 	if err := r.send(regionID, msg); err == nil {
 		return
 	}
@@ -838,7 +846,9 @@ func (d *applyDelegate) applyRaftCmd(aCtx *applyContext, index, term uint64,
 
 func (d *applyDelegate) destroy(aCtx *applyContext) {
 	d.stopped = true
-	aCtx.router.close(d.region.Id)
+	if aCtx.router != nil {
+		aCtx.router.close(d.region.Id)
+	}
 	for _, cmd := range d.pendingCmds.normals {
 		notifyRegionRemoved(d.region.Id, d.id, cmd)
 	}

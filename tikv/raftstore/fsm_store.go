@@ -653,6 +653,9 @@ func (bs *raftBatchSystem) start(
 	if err != nil {
 		return err
 	}
+	if cfg.NewImpl {
+		return bs.startSystemNew(workers, regionPeers, builder)
+	}
 	return bs.startSystem(workers, regionPeers, builder)
 }
 
@@ -748,6 +751,9 @@ func createRaftBatchSystem(cfg *Config) (*router, *raftBatchSystem) {
 		applySystem: applySystem,
 		router:      router,
 		tickDriver:  newTickDriver(cfg.RaftBaseTickInterval, router, storeFsm.ticker),
+	}
+	if cfg.NewImpl {
+		router.pr = newPeerRouter(int(cfg.StorePoolSize), storeSender, storeFsm)
 	}
 	return router, raftBatchSystem
 }
@@ -986,7 +992,7 @@ func (d *storeFsmDelegate) handleSnapMgrGC() error {
 			if err != nil {
 				return err
 			}
-			keys = keys[:0]
+			keys = nil
 		}
 		lastRegionID = key.RegionID
 		keys = append(keys, pair)

@@ -170,6 +170,8 @@ type router struct {
 
 	controlScheduler fsmScheduler
 	normalScheduler  fsmScheduler
+
+	pr *peerRouter
 }
 
 func newRouter(controlBox *mailbox, controlScheduler, normalScheduler fsmScheduler) *router {
@@ -184,6 +186,11 @@ func newRouter(controlBox *mailbox, controlScheduler, normalScheduler fsmSchedul
 }
 
 func (r *router) register(addr uint64, mailbox *mailbox) {
+	if r.pr != nil {
+		fsm := mailbox.takeFsm()
+		r.pr.register(fsm.(*peerFsm))
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	old := r.normals[addr]
@@ -233,6 +240,10 @@ func (r *router) mailbox(addr uint64) *mailbox {
 var errMailboxNotFound = errors.New("mailbox not found")
 
 func (r *router) send(addr uint64, msg Msg) error {
+	if r.pr != nil {
+		msg.RegionID = addr
+		return r.pr.send(addr, msg)
+	}
 	mb := r.mailbox(addr)
 	if mb == nil {
 		return errMailboxNotFound
@@ -242,6 +253,10 @@ func (r *router) send(addr uint64, msg Msg) error {
 }
 
 func (r *router) sendControl(msg Msg) {
+	if r.pr != nil {
+		r.pr.sendStore(msg)
+		return
+	}
 	r.controlBox.send(msg, r.controlScheduler)
 }
 
@@ -260,6 +275,10 @@ func (r *router) broadcastShutdown() {
 }
 
 func (r *router) close(addr uint64) {
+	if r.pr != nil {
+		r.pr.close(addr)
+		return
+	}
 	log.Infof("region %d shutdown mailbox", addr)
 	delete(r.caches, addr)
 	r.mu.Lock()
