@@ -132,8 +132,6 @@ type Config struct {
 	Labels        []StoreLabel
 
 	splitCheck *splitCheckConfig
-
-	NewImpl bool
 }
 
 type StoreLabel struct {
@@ -204,7 +202,6 @@ func NewDefaultConfig() *Config {
 		GrpcRaftConnNum:          1,
 		Addr:                     "127.0.0.1:20160",
 		splitCheck:               newDefaultSplitCheckConfig(),
-		NewImpl:                  true,
 	}
 }
 

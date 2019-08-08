@@ -93,8 +93,7 @@ func (pr *peerRouter) get(regionID uint64) *peerState {
 func (pr *peerRouter) register(peer *peerFsm) {
 	id := peer.peer.regionId
 	idx := int(id) % len(pr.workerSenders)
-	_, afsm := newApplyFsmFromPeer(peer)
-	apply := afsm.(*applyFsm)
+	_, apply := newApplyFsmFromPeer(peer)
 	handle := &workerHandle{
 		taskCh: pr.workerSenders[idx],
 	}
@@ -143,15 +142,15 @@ type raftWorker struct {
 }
 
 func newRaftWorker(b *raftPollerBuilder, ch chan Msg, pm *peerRouter) *raftWorker {
-	poller := b.build().(*raftPoller)
+	pollCtx := b.build()
 	// Make one apply router for each apply context to collect apply Msgs.
-	poller.pollCtx.applyRouter = &applyRouter{msgs: []Msg{}}
+	pollCtx.applyMsgs = &applyMsgs{}
 	return &raftWorker{
 		raftCh:   ch,
-		raftCtx:  poller.pollCtx,
+		raftCtx:  pollCtx,
 		pr:       pm,
 		applyCh:  make(chan *applyBatch, 10),
-		applyCtx: newApplyContext("", b.coprocessorHost, b.regionScheduler, b.engines, nil, notifier{sender: ch}, b.cfg),
+		applyCtx: newApplyContext("", b.coprocessorHost, b.regionScheduler, b.engines, ch, b.cfg),
 	}
 }
 
@@ -187,9 +186,9 @@ func (rw *raftWorker) runRaft() {
 		if rw.raftCtx.hasReady {
 			rw.handleRaftReady(peerStateMap)
 		}
-		applyRouter := rw.raftCtx.applyRouter
-		batch.msgs = append(batch.msgs, applyRouter.msgs...)
-		applyRouter.msgs = applyRouter.msgs[:0]
+		applyMsgs := rw.raftCtx.applyMsgs
+		batch.msgs = append(batch.msgs, applyMsgs.msgs...)
+		applyMsgs.msgs = applyMsgs.msgs[:0]
 		rw.removeQueuedSnapshots()
 		rw.applyCh <- batch
 	}
@@ -208,7 +207,7 @@ func (rw *raftWorker) handleRaftReady(peers map[uint64]*peerState) {
 	if len(rw.pendingProposals) > 0 {
 		for _, proposal := range rw.pendingProposals {
 			msg := Msg{Type: MsgTypeApplyProposal, Data: proposal}
-			rw.raftCtx.applyRouter.scheduleTask(proposal.RegionId, msg)
+			rw.raftCtx.applyMsgs.appendMsg(proposal.RegionId, msg)
 		}
 		rw.pendingProposals = nil
 	}
@@ -270,7 +269,7 @@ func (rw *raftWorker) runApply() {
 				ps = rw.pr.get(msg.RegionID)
 				batch.peers[msg.RegionID] = ps
 			}
-			ps.apply.handleTasks(rw.applyCtx, []Msg{msg})
+			ps.apply.handleTask(rw.applyCtx, msg)
 		}
 		rw.applyCtx.flush()
 		for _, barrier := range batch.barriers {
@@ -288,49 +287,4 @@ func (sw *storeWorker) run() {
 		msg := <-sw.store.receiver
 		sw.store.handleMessages([]Msg{msg})
 	}
-}
-
-func (bs *raftBatchSystem) startSystemNew(
-	workers *workers, regionPeers []senderPeerFsmPair, builder *raftPollerBuilder) error {
-	snapMgr := builder.snapMgr
-	err := snapMgr.init()
-	if err != nil {
-		return err
-	}
-	pr := bs.router.pr
-	for _, pair := range regionPeers {
-		peerFsm := pair.fsm
-		pr.register(peerFsm)
-	}
-	for i := 0; i < bs.system.poolSize; i++ {
-		rw := newRaftWorker(builder, pr.workerSenders[i], pr)
-		go rw.runRaft()
-		go rw.runApply()
-	}
-	poller := builder.build().(*raftPoller)
-	sw := &storeWorker{
-		store: newStoreFsmDelegate(pr.storeFsm, poller.pollCtx),
-	}
-	go sw.run()
-	pr.sendStore(Msg{Type: MsgTypeStoreStart, Data: builder.store})
-	for i := 0; i < len(regionPeers); i++ {
-		regionID := regionPeers[i].fsm.peer.regionId
-		_ = pr.send(regionID, Msg{RegionID: regionID, Type: MsgTypeStart})
-	}
-	engines := builder.engines
-	workers.splitCheckWorker.start(&splitCheckRunner{
-		engine:          engines.kv.db,
-		router:          bs.router,
-		coprocessorHost: workers.coprocessorHost,
-	})
-	cfg := builder.cfg
-	workers.regionWorker.start(newRegionRunner(engines, snapMgr, cfg.SnapApplyBatchSize, cfg.CleanStalePeerDelay))
-	workers.raftLogGCWorker.start(&raftLogGCRunner{})
-	workers.compactWorker.start(&compactRunner{engine: engines.kv.db})
-	pdRunner := newPDRunner(builder.store.Id, builder.pdClient, bs.router, engines.kv.db, workers.pdWorker.scheduler)
-	workers.pdWorker.start(pdRunner)
-	workers.computeHashWorker.start(&computeHashRunner{router: bs.router})
-	bs.workers = workers
-	go bs.tickDriver.run() // TODO: temp workaround.
-	return nil
 }
