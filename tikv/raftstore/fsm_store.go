@@ -522,7 +522,7 @@ func (bs *raftBatchSystem) startSystem(
 	for _, peer := range regionPeers {
 		pr.register(peer)
 	}
-	for i := uint64(0); i < builder.cfg.StorePoolSize; i++ {
+	for i := uint64(0); i < builder.cfg.RaftWorkerCnt; i++ {
 		rw := newRaftWorker(builder, pr.workerSenders[i], pr)
 		go rw.runRaft()
 		go rw.runApply()
@@ -573,7 +573,7 @@ func (bs *raftBatchSystem) shutDown() {
 
 func createRaftBatchSystem(cfg *Config) (*router, *raftBatchSystem) {
 	storeSender, storeFsm := newStoreFsm(cfg)
-	router := newRouter(newPeerRouter(int(cfg.StorePoolSize), storeSender, storeFsm))
+	router := newRouter(newPeerRouter(int(cfg.RaftWorkerCnt), storeSender, storeFsm))
 	raftBatchSystem := &raftBatchSystem{
 		router:     router,
 		tickDriver: newTickDriver(cfg.RaftBaseTickInterval, router, storeFsm.ticker),
