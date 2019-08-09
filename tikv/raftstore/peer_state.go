@@ -7,21 +7,27 @@ import (
 	"unsafe"
 )
 
+// peerState contains the peer states that needs to run raft command and apply command.
+// It binds to a worker to make sure the commands are always executed on a same goroutine.
 type peerState struct {
 	handle unsafe.Pointer
 	peer   *peerFsm
 	apply  *applyFsm
 }
 
+// changeWorker changes the worker binding.
+// The workerHandle is immutable, when we need to update it, we create a new handle and do a CAS operation.
 func (np *peerState) changeWorker(workerCh chan Msg) {
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
 	newHandle := &workerHandle{
-		taskCh:  workerCh,
+		msgCh:   workerCh,
 		barrier: wg,
 	}
 	oldHandle := (*workerHandle)(atomic.SwapPointer(&np.handle, unsafe.Pointer(newHandle)))
-	oldHandle.taskCh <- Msg{Type: MsgTypeBarrier, Data: wg}
+	// Sleep a little to make sure the barrier message is the last one for the peer on the old worker.
+	time.Sleep(time.Millisecond)
+	oldHandle.msgCh <- Msg{Type: MsgTypeBarrier, Data: wg}
 }
 
 func (np *peerState) send(msg Msg) error {
@@ -31,7 +37,7 @@ func (np *peerState) send(msg Msg) error {
 			// Newly bound worker, need to wait for old worker to finish all messages.
 			handle.barrier.Wait()
 			newHandle := &workerHandle{
-				taskCh: handle.taskCh,
+				msgCh: handle.msgCh,
 			}
 			if !atomic.CompareAndSwapPointer(&np.handle, unsafe.Pointer(handle), unsafe.Pointer(newHandle)) {
 				continue
@@ -40,7 +46,7 @@ func (np *peerState) send(msg Msg) error {
 		if handle.closed {
 			return errMailboxNotFound
 		}
-		handle.taskCh <- msg
+		handle.msgCh <- msg
 		return nil
 	}
 }
@@ -50,8 +56,11 @@ func (np *peerState) close() {
 	atomic.StorePointer(&np.handle, unsafe.Pointer(closeHandle))
 }
 
+// workerHandle binds a peer to a worker.
 type workerHandle struct {
-	taskCh  chan Msg
+	msgCh chan Msg
+
+	// barrier is used to block new messages on the new worker until all old messages on the old worker are applied.
 	barrier *sync.WaitGroup
 	closed  bool
 }
@@ -62,6 +71,7 @@ type applyBatch struct {
 	barriers []*sync.WaitGroup
 }
 
+// peerRouter routes a message to a peer.
 type peerRouter struct {
 	mu            sync.RWMutex
 	peers         map[uint64]*peerState
@@ -95,7 +105,7 @@ func (pr *peerRouter) register(peer *peerFsm) {
 	idx := int(id) % len(pr.workerSenders)
 	_, apply := newApplyFsmFromPeer(peer)
 	handle := &workerHandle{
-		taskCh: pr.workerSenders[idx],
+		msgCh: pr.workerSenders[idx],
 	}
 	newPeer := &peerState{
 		handle: unsafe.Pointer(handle),
@@ -129,6 +139,7 @@ func (pr *peerRouter) sendStore(msg Msg) {
 	pr.storeSender <- msg
 }
 
+// raftWorker is responsible for run raft commands and apply raft logs.
 type raftWorker struct {
 	pr *peerRouter
 
@@ -149,11 +160,14 @@ func newRaftWorker(b *raftPollerBuilder, ch chan Msg, pm *peerRouter) *raftWorke
 		raftCh:   ch,
 		raftCtx:  pollCtx,
 		pr:       pm,
-		applyCh:  make(chan *applyBatch, 10),
+		applyCh:  make(chan *applyBatch, 1),
 		applyCtx: newApplyContext("", b.coprocessorHost, b.regionScheduler, b.engines, ch, b.cfg),
 	}
 }
 
+// runRaft runs raft commands.
+// On each loop, raft commands are batched by channel buffer.
+// After commands are handled, we collect apply messages by peers, make a applyBatch, send it to apply channel.
 func (rw *raftWorker) runRaft() {
 	var msgs []Msg
 	for {
@@ -260,6 +274,7 @@ func (rw *raftWorker) removeQueuedSnapshots() {
 	}
 }
 
+// runApply runs apply tasks, since it is already batched by raftCh, we don't need to batch it here.
 func (rw *raftWorker) runApply() {
 	for {
 		batch := <-rw.applyCh
@@ -278,6 +293,7 @@ func (rw *raftWorker) runApply() {
 	}
 }
 
+// storeWorker runs store commands.
 type storeWorker struct {
 	store *storeFsmDelegate
 }
