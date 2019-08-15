@@ -16,6 +16,9 @@ type peerState struct {
 	handle unsafe.Pointer
 	peer   *peerFsm
 	apply  *applyFsm
+
+	// redoIdx is the raft log index starts redo for lockstore.
+	redoIdx uint64
 }
 
 // changeWorker changes the worker binding.
@@ -296,6 +299,9 @@ func (rw *raftWorker) runApply(wg *sync.WaitGroup) {
 		if batch == nil {
 			wg.Done()
 			return
+		}
+		for _, peer := range batch.peers {
+			peer.apply.redoIndex = peer.apply.applyState.appliedIndex + 1
 		}
 		for _, msg := range batch.msgs {
 			ps := batch.peers[msg.RegionID]
