@@ -244,14 +244,8 @@ func (wb *WriteBatch) RollbackToSafePoint() {
 func (wb *WriteBatch) WriteToKV(bundle *DBBundle) error {
 	if len(wb.entries) > 0 {
 		err := bundle.db.Update(func(txn *badger.Txn) error {
-			var err1 error
 			for _, entry := range wb.entries {
-				if IsRaftStateKey(entry.Key) {
-					if err1 = txn.SetEntry(entry); err1 != nil {
-						return err1
-					}
-					continue
-				}
+				var err1 error
 				if len(entry.UserMeta) == 0 && len(entry.Value) == 0 {
 					err1 = txn.Delete(entry.Key)
 				} else {
