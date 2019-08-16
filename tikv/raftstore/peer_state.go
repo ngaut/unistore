@@ -16,9 +16,6 @@ type peerState struct {
 	handle unsafe.Pointer
 	peer   *peerFsm
 	apply  *applyFsm
-
-	// redoIdx is the raft log index starts redo for lockstore.
-	redoIdx uint64
 }
 
 // changeWorker changes the worker binding.

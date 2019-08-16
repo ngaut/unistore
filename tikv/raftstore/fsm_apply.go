@@ -553,7 +553,8 @@ type applyDelegate struct {
 	/// The term of the raft log at applied index.
 	appliedIndexTerm uint64
 
-	redoIndex uint64 // the log index that starts redo.
+	// redoIdx is the raft log index starts redo for lockStore.
+	redoIndex uint64
 
 	/// The local metrics, and it will be flushed periodically.
 	metrics applyMetrics
