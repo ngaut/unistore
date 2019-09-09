@@ -240,9 +240,7 @@ func (svr *Server) KVPessimisticRollback(ctx context.Context, req *kvrpcpb.Pessi
 	}
 	err = svr.mvccStore.PessimisticRollback(reqCtx, req)
 	resp := &kvrpcpb.PessimisticRollbackResponse{}
-	if err != nil {
-		resp.Errors, resp.RegionError = convertToPBErrors(err)
-	}
+	resp.Errors, resp.RegionError = convertToPBErrors(err)
 	return resp, nil
 }
 
@@ -257,9 +255,7 @@ func (svr *Server) KvPrewrite(ctx context.Context, req *kvrpcpb.PrewriteRequest)
 	}
 	err = svr.mvccStore.Prewrite(reqCtx, req)
 	resp := &kvrpcpb.PrewriteResponse{}
-	if err != nil {
-		resp.Errors, resp.RegionError = convertToPBErrors(err)
-	}
+	resp.Errors, resp.RegionError = convertToPBErrors(err)
 	return resp, nil
 }
 
@@ -350,10 +346,8 @@ func (svr *Server) KvBatchRollback(ctx context.Context, req *kvrpcpb.BatchRollba
 	}
 	resp := new(kvrpcpb.BatchRollbackResponse)
 	err = svr.mvccStore.Rollback(reqCtx, req.Keys, req.StartVersion)
-	if err != nil {
-		resp.Error, resp.RegionError = convertToPBError(err)
-	}
-	return &kvrpcpb.BatchRollbackResponse{}, nil
+	resp.Error, resp.RegionError = convertToPBError(err)
+	return resp, nil
 }
 
 func (svr *Server) KvScanLock(ctx context.Context, req *kvrpcpb.ScanLockRequest) (*kvrpcpb.ScanLockResponse, error) {
@@ -398,9 +392,7 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 	} else {
 		log.Debugf("kv resolve lock region:%d txn:%v", reqCtx.regCtx.meta.Id, req.StartVersion)
 		err := svr.mvccStore.ResolveLock(reqCtx, req.StartVersion, req.CommitVersion)
-		if err != nil {
-			resp.Error, resp.RegionError = convertToPBError(err)
-		}
+		resp.Error, resp.RegionError = convertToPBError(err)
 	}
 	return resp, nil
 }
