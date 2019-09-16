@@ -10,6 +10,7 @@ type Config struct {
 	Raft        bool   `toml:"raft"`         // Enable raft.
 	RaftWorkers int    `toml:"raft-workers"` // Number of raft workers.
 	Engine      Engine `toml:"engine"`       // Engine options.
+	Turbo       Turbo  `toml:"turbo"`
 }
 
 type Engine struct {
@@ -26,11 +27,15 @@ type Engine struct {
 	NumCompactors int  `toml:"num-compactors"`
 }
 
+type Turbo struct {
+	Concurrency int `toml:"concurrency"`
+}
+
 const MB = 1024 * 1024
 
 var DefaultConf = Config{
 	PDAddr:      "127.0.0.1:2379",
-	StoreAddr:   "127.0.0.1:9191",
+	StoreAddr:   "127.0.0.1:9191,127.0.0.1:9181",
 	HttpAddr:    "127.0.0.1:9291",
 	RegionSize:  64 * MB,
 	LogLevel:    "info",
@@ -48,4 +53,9 @@ var DefaultConf = Config{
 		SyncWrite:        true,
 		NumCompactors:    1,
 	},
+	Turbo: Turbo{
+		Concurrency: 2,
+	},
 }
+
+var Global = DefaultConf

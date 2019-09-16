@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ngaut/unistore/util"
 	"github.com/ngaut/log"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
@@ -72,8 +73,7 @@ func (r *snapRunner) sendSnap(addr string, msg *raft_serverpb.RaftMessage) error
 	if !snap.Exists() {
 		return errors.Errorf("missing snap file: %v", snap.Path())
 	}
-
-	cc, err := grpc.Dial(addr, grpc.WithInsecure(),
+	cc, err := grpc.Dial(util.GRPCAddr(addr), grpc.WithInsecure(),
 		grpc.WithInitialWindowSize(int32(r.config.GrpcInitialWindowSize)),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:    r.config.GrpcKeepAliveTime,

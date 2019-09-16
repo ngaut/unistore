@@ -23,6 +23,7 @@ import (
 	"github.com/ngaut/unistore/tikv"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore"
+	"github.com/ngaut/unistore/util"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"google.golang.org/grpc"
 )
@@ -80,6 +81,8 @@ func main() {
 	}
 
 	tikvServer := tikv.NewServer(regionManager, store, innerServer)
+	turboServer := tikv.NewTurboServer(regionManager, store, innerServer, conf.StoreAddr)
+	go turboServer.Run()
 
 	grpcServer := grpc.NewServer(
 		grpc.InitialWindowSize(grpcInitialWindowSize),
@@ -87,7 +90,7 @@ func main() {
 		grpc.MaxRecvMsgSize(10*1024*1024),
 	)
 	tikvpb.RegisterTikvServer(grpcServer, tikvServer)
-	l, err := net.Listen("tcp", conf.StoreAddr)
+	l, err := net.Listen("tcp", util.GRPCAddr(conf.StoreAddr))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -123,6 +126,7 @@ func loadConfig() *config.Config {
 			panic(err)
 		}
 	}
+	config.Global = conf
 	return &conf
 }
 
