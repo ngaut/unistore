@@ -509,7 +509,7 @@ func (svr *Server) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
 // Region commands.
 func (svr *Server) SplitRegion(ctx context.Context, req *kvrpcpb.SplitRegionRequest) (*kvrpcpb.SplitRegionResponse, error) {
 	// TODO
-	return &kvrpcpb.SplitRegionResponse{}, nil
+	return &kvrpcpb.SplitRegionResponse{RegionError: &errorpb.Error{Message: "not supported"}}, nil
 }
 
 func (svr *Server) ReadIndex(context.Context, *kvrpcpb.ReadIndexRequest) (*kvrpcpb.ReadIndexResponse, error) {

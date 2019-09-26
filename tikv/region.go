@@ -195,6 +195,7 @@ type RegionOptions struct {
 
 type RegionManager interface {
 	GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error)
+	GetRegionByReqHeader(reqHeader *RequestHeader) (*regionCtx, *errorpb.Error)
 	Close() error
 }
 
@@ -205,15 +206,32 @@ type regionManager struct {
 }
 
 func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
+	regionID := ctx.RegionId
+	storeID := rm.storeMeta.Id
 	ctxPeer := ctx.GetPeer()
-	if ctxPeer != nil && ctxPeer.GetStoreId() != rm.storeMeta.Id {
+	if ctxPeer != nil {
+		storeID = ctxPeer.StoreId
+	}
+	epoch := ctx.GetRegionEpoch()
+	version, confVersion := epoch.Version, epoch.ConfVer
+	return rm.getRegion(regionID, storeID, version, confVersion)
+}
+
+func (rm *regionManager) GetRegionByReqHeader(reqHeader *RequestHeader) (*regionCtx, *errorpb.Error) {
+	regionID, storeID := reqHeader.RegionID, uint64(reqHeader.StoreID)
+	version, confVersion := uint64(reqHeader.RegionVer), uint64(reqHeader.RegionConfVer)
+	return rm.getRegion(regionID, storeID, version, confVersion)
+}
+
+func (rm *regionManager) getRegion(regionID, storeID, version, confVersion uint64) (*regionCtx, *errorpb.Error) {
+	if storeID != rm.storeMeta.Id {
 		return nil, &errorpb.Error{
 			Message:       "store not match",
 			StoreNotMatch: &errorpb.StoreNotMatch{},
 		}
 	}
 	rm.mu.RLock()
-	ri := rm.regions[ctx.RegionId]
+	ri := rm.regions[regionID]
 	if ri != nil {
 		ri.refCount.Add(1)
 	}
@@ -222,12 +240,12 @@ func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *er
 		return nil, &errorpb.Error{
 			Message: "region not found",
 			RegionNotFound: &errorpb.RegionNotFound{
-				RegionId: ctx.GetRegionId(),
+				RegionId: regionID,
 			},
 		}
 	}
 	// Region epoch does not match.
-	if rm.isEpochStale(ri.getRegionEpoch(), ctx.GetRegionEpoch()) {
+	if rm.isEpochStale(ri.getRegionEpoch().Version, ri.getRegionEpoch().ConfVer, version, confVersion) {
 		ri.refCount.Done()
 		return nil, &errorpb.Error{
 			Message: "stale epoch",
@@ -246,8 +264,8 @@ func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *er
 	return ri, nil
 }
 
-func (rm *regionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
-	return lhs.GetConfVer() != rhs.GetConfVer() || lhs.GetVersion() != rhs.GetVersion()
+func (rm *regionManager) isEpochStale(lhsVer, lhsConfVer, rhsVer, rhsConfVer uint64) bool {
+	return lhsVer != rhsVer || lhsConfVer != rhsConfVer
 }
 
 type RaftRegionManager struct {

@@ -10,3 +10,6 @@ GOBUILD := $(GO) build $(BUILD_FLAG)
 
 default:
 	$(GOBUILD) -ldflags "-X main.gitHash=`git rev-parse HEAD`" -o node/node node/main.go
+
+linux:
+	GOOS=linux $(GOBUILD) -ldflags "-X main.gitHash=`git rev-parse HEAD`" -o node/node-linux node/main.go

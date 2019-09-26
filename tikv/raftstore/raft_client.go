@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 
+	"github.com/ngaut/unistore/util"
+
 	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
@@ -19,7 +21,7 @@ type raftConn struct {
 }
 
 func newRaftConn(addr string, cfg *Config) (*raftConn, error) {
-	cc, err := grpc.Dial(addr, grpc.WithInsecure(),
+	cc, err := grpc.Dial(util.GRPCAddr(addr), grpc.WithInsecure(),
 		grpc.WithInitialWindowSize(int32(cfg.GrpcInitialWindowSize)),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:    cfg.GrpcKeepAliveTime,
