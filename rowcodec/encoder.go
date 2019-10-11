@@ -327,27 +327,53 @@ func RowToOldRow(rowData, buf []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i, colID := range r.colIDs {
-		buf = append(buf, VarintFlag)
-		buf = codec.EncodeVarint(buf, int64(colID))
-		if i < int(r.numNotNullCols) {
-			val := r.getData(i)
-			switch r.valFlags[i] {
-			case BytesFlag:
-				buf = append(buf, CompactBytesFlag)
-				buf = codec.EncodeCompactBytes(buf, val)
-			case IntFlag:
-				buf = append(buf, VarintFlag)
-				buf = codec.EncodeVarint(buf, decodeInt(val))
-			case UintFlag:
-				buf = append(buf, VaruintFlag)
-				buf = codec.EncodeUvarint(buf, decodeUint(val))
-			default:
-				buf = append(buf, r.valFlags[i])
-				buf = append(buf, val...)
+	if !r.large {
+		for i, colID := range r.colIDs {
+			buf = append(buf, VarintFlag)
+			buf = codec.EncodeVarint(buf, int64(colID))
+			if i < int(r.numNotNullCols) {
+				val := r.getData(i)
+				switch r.valFlags[i] {
+				case BytesFlag:
+					buf = append(buf, CompactBytesFlag)
+					buf = codec.EncodeCompactBytes(buf, val)
+				case IntFlag:
+					buf = append(buf, VarintFlag)
+					buf = codec.EncodeVarint(buf, decodeInt(val))
+				case UintFlag:
+					buf = append(buf, VaruintFlag)
+					buf = codec.EncodeUvarint(buf, decodeUint(val))
+				default:
+					buf = append(buf, r.valFlags[i])
+					buf = append(buf, val...)
+				}
+			} else {
+				buf = append(buf, NilFlag)
 			}
-		} else {
-			buf = append(buf, NilFlag)
+		}
+	} else {
+		for i, colID := range r.colIDs32 {
+			buf = append(buf, VarintFlag)
+			buf = codec.EncodeVarint(buf, int64(colID))
+			if i < int(r.numNotNullCols) {
+				val := r.getData(i)
+				switch r.valFlags[i] {
+				case BytesFlag:
+					buf = append(buf, CompactBytesFlag)
+					buf = codec.EncodeCompactBytes(buf, val)
+				case IntFlag:
+					buf = append(buf, VarintFlag)
+					buf = codec.EncodeVarint(buf, decodeInt(val))
+				case UintFlag:
+					buf = append(buf, VaruintFlag)
+					buf = codec.EncodeUvarint(buf, decodeUint(val))
+				default:
+					buf = append(buf, r.valFlags[i])
+					buf = append(buf, val...)
+				}
+			} else {
+				buf = append(buf, NilFlag)
+			}
 		}
 	}
 	if len(buf) == 0 {
