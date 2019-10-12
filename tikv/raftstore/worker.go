@@ -638,7 +638,7 @@ func newRegionRunner(engines *Engines, mgr *SnapManager, batchSize uint64, clean
 }
 
 func (r *regionRunner) tempFile() (*os.File, error) {
-	return ioutil.TempFile("", "ingest_convert_*.sst")
+	return ioutil.TempFile(r.ctx.engiens.kvPath, "ingest_convert_*.sst")
 }
 
 func (r *regionRunner) resetBuilder() error {
