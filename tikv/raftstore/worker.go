@@ -412,7 +412,7 @@ func (r *splitCheckRunner) halfSplitCheck(startKey, endKey []byte, reader *dbrea
 		if exceedEndKey(key, endKey) {
 			break
 		}
-		if cnt%1024 == 0 {
+		if cnt%r.config.rowsPerSample == 0 {
 			sampleKeys = append(sampleKeys, safeCopy(key))
 		}
 	}

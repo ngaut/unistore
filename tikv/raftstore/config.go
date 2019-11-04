@@ -155,6 +155,9 @@ type splitCheckConfig struct {
 	// And the number of keys in [a,b), [b,c), [c,d) will be region_split_keys.
 	regionMaxKeys   uint64
 	regionSplitKeys uint64
+
+	// number of rows per sample key for half split.
+	rowsPerSample int
 }
 
 type StoreLabel struct {
@@ -246,6 +249,7 @@ func newDefaultSplitCheckConfig() *splitCheckConfig {
 		regionMaxSize:      splitSize / 2 * 3,
 		regionSplitKeys:    splitKeys,
 		regionMaxKeys:      splitKeys / 2 * 3,
+		rowsPerSample:      1024,
 	}
 }
 
