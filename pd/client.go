@@ -15,6 +15,7 @@ package pd
 
 import (
 	"context"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,7 +52,7 @@ type Client interface {
 
 const (
 	pdTimeout             = time.Second
-	reconnectInterval     = time.Second
+	retryInterval         = time.Second
 	maxInitClusterRetries = 100
 	maxRetryCount         = 10
 )
@@ -62,17 +63,16 @@ var (
 )
 
 type client struct {
-	url       []string
-	tag       string
+	urls      []string
 	clusterID uint64
+	tag       string
 
-	connMu        sync.RWMutex
-	clientConn    *grpc.ClientConn
-	members       *pdpb.GetMembersResponse
-	stream        pdpb.PD_RegionHeartbeatClient
-	streamCtx     context.Context
-	streamCancel  context.CancelFunc
-	lastReconnect time.Time
+	connMu struct {
+		sync.RWMutex
+		clientConns map[string]*grpc.ClientConn
+		leader      string
+	}
+	checkLeaderCh chan struct{}
 
 	receiveRegionHeartbeatCh chan *pdpb.RegionHeartbeatResponse
 	regionCh                 chan *pdpb.RegionHeartbeatRequest
@@ -90,146 +90,229 @@ func NewClient(pdAddrs []string, tag string) (Client, error) {
 	log.Infof("[%s][pd] create pd client with endpoints %v", tag, pdAddrs)
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &client{
-		url:                      pdAddrs,
+		urls:                     pdAddrs,
 		receiveRegionHeartbeatCh: make(chan *pdpb.RegionHeartbeatResponse, 1),
+		checkLeaderCh:            make(chan struct{}, 1),
 		ctx:                      ctx,
 		cancel:                   cancel,
 		tag:                      tag,
 		regionCh:                 make(chan *pdpb.RegionHeartbeatRequest, 64),
 	}
-	cc, members, err := connectToEndpoints(ctx, pdAddrs)
+	c.connMu.clientConns = make(map[string]*grpc.ClientConn)
+
+	var (
+		err     error
+		members *pdpb.GetMembersResponse
+	)
+	for i := 0; i < maxRetryCount; i++ {
+		if members, err = c.updateLeader(); err == nil {
+			break
+		}
+		time.Sleep(retryInterval)
+	}
 	if err != nil {
 		return nil, err
 	}
-	c.clusterID = members.Header.GetClusterId()
-	c.clientConn = cc
-	c.members = members
+
+	c.clusterID = members.GetHeader().GetClusterId()
 	log.Infof("[%s][pd] init cluster id %v", tag, c.clusterID)
-	c.wg.Add(1)
-	if err := c.createHeartbeatStream(); err != nil {
-		return nil, err
-	}
+	c.wg.Add(2)
+	go c.checkLeaderLoop()
 	go c.heartbeatStreamLoop()
 
 	return c, nil
 }
 
-func (c *client) reconnect() error {
-	c.connMu.Lock()
-	defer c.connMu.Unlock()
-	if time.Since(c.lastReconnect) < reconnectInterval {
-		// Avoid unnecessary updating.
+func (c *client) schedulerUpdateLeader() {
+	select {
+	case c.checkLeaderCh <- struct{}{}:
+	default:
+	}
+}
+
+func (c *client) checkLeaderLoop() {
+	defer c.wg.Done()
+
+	ctx, cancel := context.WithCancel(c.ctx)
+	defer cancel()
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.checkLeaderCh:
+		case <-ticker.C:
+		case <-ctx.Done():
+			return
+		}
+
+		if _, err := c.updateLeader(); err != nil {
+			log.Errorf("[pd] failed updateLeader, err: %s", err)
+		}
+	}
+}
+
+func (c *client) updateLeader() (*pdpb.GetMembersResponse, error) {
+	for _, u := range c.urls {
+		ctx, cancel := context.WithTimeout(c.ctx, pdTimeout)
+		members, err := c.getMembers(ctx, u)
+		cancel()
+		if err != nil || members.GetLeader() == nil || len(members.GetLeader().GetClientUrls()) == 0 {
+			select {
+			case <-c.ctx.Done():
+				return nil, err
+			default:
+				continue
+			}
+		}
+
+		c.updateURLs(members.GetMembers(), members.GetLeader())
+		return members, c.switchLeader(members.GetLeader().GetClientUrls())
+	}
+	return nil, errors.Errorf("failed to get leader from %v", c.urls)
+}
+
+func (c *client) updateURLs(members []*pdpb.Member, leader *pdpb.Member) {
+	urls := make([]string, 0, len(members))
+	for _, m := range members {
+		if m.GetMemberId() == leader.GetMemberId() {
+			continue
+		}
+		urls = append(urls, m.GetClientUrls()...)
+	}
+	c.urls = append(urls, leader.GetClientUrls()...)
+}
+
+func (c *client) switchLeader(addrs []string) error {
+	addr := addrs[0]
+
+	c.connMu.RLock()
+	oldLeader := c.connMu.leader
+	c.connMu.RUnlock()
+
+	if addr == oldLeader {
 		return nil
 	}
-	c.clientConn.Close()
 
-	cc, members, err := tryConnectLeader(c.ctx, c.members)
-	if err != nil {
+	log.Infof("[pd] switch leader, new-leader: %s, old-leader: %s", addr, oldLeader)
+	if _, err := c.getOrCreateConn(addr); err != nil {
 		return err
 	}
-	c.clientConn = cc
-	c.members = members
 
-	if err := c.createHeartbeatStream(); err != nil {
-		return err
-	}
-	c.lastReconnect = time.Now()
+	c.connMu.Lock()
+	c.connMu.leader = addr
+	c.connMu.Unlock()
 	return nil
+}
+
+func (c *client) getMembers(ctx context.Context, url string) (*pdpb.GetMembersResponse, error) {
+	cc, err := c.getOrCreateConn(url)
+	if err != nil {
+		return nil, err
+	}
+	return pdpb.NewPDClient(cc).GetMembers(ctx, new(pdpb.GetMembersRequest))
+}
+
+func (c *client) getOrCreateConn(addr string) (*grpc.ClientConn, error) {
+	c.connMu.RLock()
+	conn, ok := c.connMu.clientConns[addr]
+	c.connMu.RUnlock()
+	if ok {
+		return conn, nil
+	}
+
+	u, err := url.Parse(addr)
+	if err != nil {
+		return nil, err
+	}
+	cc, err := grpc.Dial(u.Host, grpc.WithInsecure())
+	if err != nil {
+		return nil, err
+	}
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	if old, ok := c.connMu.clientConns[addr]; ok {
+		cc.Close()
+		return old, nil
+	}
+	c.connMu.clientConns[addr] = cc
+	return cc, nil
+}
+
+func (c *client) leaderClient() pdpb.PDClient {
+	c.connMu.RLock()
+	defer c.connMu.RUnlock()
+
+	return pdpb.NewPDClient(c.connMu.clientConns[c.connMu.leader])
 }
 
 func (c *client) doRequest(ctx context.Context, f func(context.Context, pdpb.PDClient) error) error {
 	var err error
-	var retry int
-	for {
-		c.connMu.RLock()
+	for i := 0; i < maxRetryCount; i++ {
 		ctx, cancel := context.WithTimeout(ctx, pdTimeout)
-		err = f(ctx, pdpb.NewPDClient(c.clientConn))
-		c.connMu.RUnlock()
+		err = f(ctx, c.leaderClient())
 		cancel()
 		if err == nil {
 			return nil
 		}
-		
-		for {
-			if err := c.reconnect(); err == nil {
-				break
-			}
 
-			log.Warnf("reconnect failed, error: %s", err)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(reconnectInterval):
-				if retry >= maxRetryCount {
-					return errors.New("failed too many times")
-				}
-				retry++
-			}
+		c.schedulerUpdateLeader()
+		select {
+		case <-time.After(retryInterval):
+			continue
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
-}
-
-func (c *client) createHeartbeatStream() error {
-	var (
-		stream pdpb.PD_RegionHeartbeatClient
-		err    error
-		cancel context.CancelFunc
-		ctx    context.Context
-	)
-	ctx, cancel = context.WithCancel(c.ctx)
-	client := pdpb.NewPDClient(c.clientConn)
-	stream, err = client.RegionHeartbeat(ctx)
-	if err != nil {
-		cancel()
-		log.Errorf("[%s][pd] create region heartbeat stream error: %v", c.tag, err)
-		return err
-	}
-	log.Error("recreate heartbeat stream")
-	if c.stream != nil {
-		// Try to cancel an unused heartbeat sender.
-		c.streamCancel()
-	}
-	c.stream = stream
-	c.streamCtx = ctx
-	c.streamCancel = cancel
-	return nil
+	return errors.New("failed too many times")
 }
 
 func (c *client) heartbeatStreamLoop() {
 	defer c.wg.Done()
+
 	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+
+		ctx, cancel := context.WithCancel(c.ctx)
+		c.connMu.RLock()
+		stream, err := c.leaderClient().RegionHeartbeat(ctx)
+		c.connMu.RUnlock()
+		if err != nil {
+			cancel()
+			c.schedulerUpdateLeader()
+			time.Sleep(retryInterval)
+			continue
+		}
+
 		errCh := make(chan error, 1)
 		wg := &sync.WaitGroup{}
 		wg.Add(2)
-		go c.reportRegionHeartbeat(errCh, wg)
-		go c.receiveRegionHeartbeat(errCh, wg)
+
+		go c.reportRegionHeartbeat(ctx, stream, errCh, wg)
+		go c.receiveRegionHeartbeat(stream, errCh, wg)
 		select {
 		case err := <-errCh:
 			log.Warnf("[%s][pd] heartbeat stream get error: %s ", c.tag, err)
-			for {
-				select {
-				case <-c.ctx.Done():
-					return
-				case <-time.After(reconnectInterval):
-					if err := c.reconnect(); err == nil {
-						break
-					}
-				}
-			}
+			cancel()
+			c.schedulerUpdateLeader()
+			time.Sleep(retryInterval)
+			wg.Wait()
 		case <-c.ctx.Done():
 			log.Info("cancel heartbeat stream loop")
+			cancel()
 			return
 		}
-		wg.Wait()
 	}
 }
 
-func (c *client) receiveRegionHeartbeat(errCh chan error, wg *sync.WaitGroup) {
+func (c *client) receiveRegionHeartbeat(stream pdpb.PD_RegionHeartbeatClient, errCh chan error, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for {
-		c.connMu.RLock()
-		resp, err := c.stream.Recv()
-		c.connMu.RUnlock()
+		resp, err := stream.Recv()
 		if err != nil {
 			errCh <- err
 			return
@@ -241,47 +324,49 @@ func (c *client) receiveRegionHeartbeat(errCh chan error, wg *sync.WaitGroup) {
 	}
 }
 
-func (c *client) reportRegionHeartbeat(errCh chan error, wg *sync.WaitGroup) {
+func (c *client) reportRegionHeartbeat(ctx context.Context, stream pdpb.PD_RegionHeartbeatClient, errCh chan error, wg *sync.WaitGroup) {
 	defer wg.Done()
+	for {
+		request, ok := c.getNextHeartbeatRequest(ctx)
+		if !ok {
+			return
+		}
 
-	if c.pendingRequest != nil {
-		c.connMu.RLock()
-		err := c.stream.Send(c.pendingRequest)
-		c.connMu.RUnlock()
+		request.Header = c.requestHeader()
+		err := stream.Send(request)
 		if err != nil {
+			c.pendingRequest = request
 			errCh <- err
 			return
 		}
+	}
+}
+
+func (c *client) getNextHeartbeatRequest(ctx context.Context) (*pdpb.RegionHeartbeatRequest, bool) {
+	if c.pendingRequest != nil {
+		req := c.pendingRequest
 		c.pendingRequest = nil
+		return req, true
 	}
 
-	for {
-		select {
-		case <-c.streamCtx.Done():
-			return
-		case request, ok := <-c.regionCh:
-			if !ok {
-				return
-			}
-			request.Header = c.requestHeader()
-			c.connMu.RLock()
-			err := c.stream.Send(request)
-			c.connMu.RUnlock()
-			if err != nil {
-				c.pendingRequest = request
-				errCh <- err
-				return
-			}
+	select {
+	case <-ctx.Done():
+		return nil, false
+	case request, ok := <-c.regionCh:
+		if !ok {
+			return nil, false
 		}
+		return request, true
 	}
 }
 
 func (c *client) Close() {
 	c.cancel()
 	c.wg.Wait()
-
-	if err := c.clientConn.Close(); err != nil {
-		log.Errorf("[%s][pd] failed close grpc clientConn: %v", c.tag, err)
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	for _, cc := range c.connMu.clientConns {
+		cc.Close()
 	}
 }
 
