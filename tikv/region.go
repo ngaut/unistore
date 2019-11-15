@@ -20,6 +20,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/tidb/util/codec"
+	"github.com/zhangjinpeng1987/raft"
 	"golang.org/x/net/context"
 )
 
@@ -331,6 +332,26 @@ func (rm *RaftRegionManager) OnRegionConfChange(ctx *raftstore.PeerEventContext,
 	rm.eventCh <- &regionConfChangeEvent{
 		ctx:   ctx,
 		epoch: epoch,
+	}
+}
+
+func (rm *RaftRegionManager) OnRoleChange(regionId uint64, newState raft.StateType) {
+	rm.mu.RLock()
+	region, ok := rm.regions[regionId]
+	rm.mu.RUnlock()
+	if ok {
+		if bytes.Compare(region.startKey, []byte{}) == 0 {
+			newRole := Follower
+			if newState == raft.StateLeader {
+				newRole = Leader
+			}
+			log.Infof("first region role change newRole=%v", newRole)
+			rm.mvccStore.deadlockDetector.ChangeRole(int32(newRole))
+		}
+	} else {
+		// should not be here, current for debug panic
+		log.Errorf("region id=%v not found in map", regionId)
+		panic("region not found in rm.regions???")
 	}
 }
 

@@ -2,6 +2,7 @@ package tikv
 
 import (
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/ngaut/unistore/util/lockwaiter"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
+	deadlockPb "github.com/pingcap/kvproto/pkg/deadlock"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
@@ -560,6 +562,49 @@ func (svr *Server) MvccGetByStartTs(context.Context, *kvrpcpb.MvccGetByStartTsRe
 func (svr *Server) UnsafeDestroyRange(context.Context, *kvrpcpb.UnsafeDestroyRangeRequest) (*kvrpcpb.UnsafeDestroyRangeResponse, error) {
 	// TODO
 	return &kvrpcpb.UnsafeDestroyRangeResponse{}, nil
+}
+
+// deadlock detection related services
+// GetWaitForEntries tries to get the waitFor entries
+func (svr *Server) GetWaitForEntries(ctx context.Context,
+	req *deadlockPb.WaitForEntriesRequest) (*deadlockPb.WaitForEntriesResponse, error) {
+	// TODO
+	return &deadlockPb.WaitForEntriesResponse{}, nil
+}
+
+// Detect will handle detection rpc from other nodes
+func (svr *Server) Detect(stream deadlockPb.Deadlock_DetectServer) error {
+	for {
+		req, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+		if !svr.mvccStore.deadlockDetector.isLeader() {
+			log.Warnf("detection requests received on non leader node")
+			break
+		}
+		switch req.Tp {
+		case deadlockPb.DeadlockRequestType_Detect:
+			err := svr.mvccStore.deadlockDetector.Detect(req.Entry.Txn, req.Entry.WaitForTxn, req.Entry.KeyHash)
+			if err != nil {
+				resp := convertErrToResp(err.(*ErrDeadlock), req.Entry.Txn,
+					req.Entry.WaitForTxn, req.Entry.KeyHash)
+				sendErr := stream.Send(resp)
+				if sendErr != nil {
+					log.Errorf("send deadlock response failed, error=%v", sendErr)
+					break
+				}
+			}
+		case deadlockPb.DeadlockRequestType_CleanUpWaitFor:
+			svr.mvccStore.deadlockDetector.CleanUpWaitFor(req.Entry.Txn, req.Entry.WaitForTxn, req.Entry.KeyHash)
+		case deadlockPb.DeadlockRequestType_CleanUp:
+			svr.mvccStore.deadlockDetector.CleanUp(req.Entry.Txn)
+		}
+	}
+	return nil
 }
 
 func convertToKeyError(err error) *kvrpcpb.KeyError {
