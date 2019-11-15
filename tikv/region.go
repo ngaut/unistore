@@ -65,6 +65,13 @@ func newRegionCtx(meta *metapb.Region, parent *regionCtx, checker raftstore.Lead
 	return regCtx
 }
 
+func (ri *regionCtx) updateRegionMeta(meta *metapb.Region) {
+	ri.meta = meta
+	ri.startKey = ri.rawStartKey()
+	ri.endKey = ri.rawEndKey()
+	ri.updateRegionEpoch(meta.GetRegionEpoch())
+}
+
 func (ri *regionCtx) getRegionEpoch() *metapb.RegionEpoch {
 	return (*metapb.RegionEpoch)(atomic.LoadPointer(&ri.regionEpoch))
 }
@@ -278,7 +285,7 @@ func (rm *RaftRegionManager) OnPeerCreate(ctx *raftstore.PeerEventContext, regio
 
 func (rm *RaftRegionManager) OnPeerApplySnap(ctx *raftstore.PeerEventContext, region *metapb.Region) {
 	rm.mu.Lock()
-	rm.regions[ctx.RegionId] = newRegionCtx(region, nil, ctx.LeaderChecker)
+	rm.regions[ctx.RegionId].updateRegionMeta(region)
 	rm.mu.Unlock()
 }
 
