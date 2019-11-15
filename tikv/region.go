@@ -277,6 +277,9 @@ func (rm *RaftRegionManager) OnPeerCreate(ctx *raftstore.PeerEventContext, regio
 }
 
 func (rm *RaftRegionManager) OnPeerApplySnap(ctx *raftstore.PeerEventContext, region *metapb.Region) {
+	rm.mu.Lock()
+	rm.regions[ctx.RegionId] = newRegionCtx(region, nil, ctx.LeaderChecker)
+	rm.mu.Unlock()
 }
 
 func (rm *RaftRegionManager) OnPeerDestroy(ctx *raftstore.PeerEventContext) {
