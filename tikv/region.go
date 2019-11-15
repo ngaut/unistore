@@ -284,9 +284,19 @@ func (rm *RaftRegionManager) OnPeerCreate(ctx *raftstore.PeerEventContext, regio
 }
 
 func (rm *RaftRegionManager) OnPeerApplySnap(ctx *raftstore.PeerEventContext, region *metapb.Region) {
-	rm.mu.Lock()
-	rm.regions[ctx.RegionId].updateRegionMeta(region)
-	rm.mu.Unlock()
+	rm.mu.RLock()
+	oldRegion := rm.regions[ctx.RegionId]
+	rm.mu.RUnlock()
+	// The old region is about to be replaced, update the epoch to nil to prevent accept new requests.
+	oldRegion.updateRegionEpoch(nil)
+	// Run in another goroutine to avoid deadlock.
+	go func() {
+		oldRegion.waitParent()
+		rm.mu.Lock()
+		rm.regions[ctx.RegionId] = newRegionCtx(region, oldRegion, ctx.LeaderChecker)
+		rm.mu.Unlock()
+		oldRegion.refCount.Done()
+	}()
 }
 
 func (rm *RaftRegionManager) OnPeerDestroy(ctx *raftstore.PeerEventContext) {
