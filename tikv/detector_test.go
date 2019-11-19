@@ -77,7 +77,15 @@ func (s *testDeadlockSuite) TestDeadlock(c *C) {
 
 	// after 100ms, all entries expired, detect non exist edges
 	time.Sleep(100 * time.Millisecond)
-	err = detector.Detect(0, 0, 0)
+	err = detector.Detect(100, 200, 100)
+	c.Assert(err, IsNil)
+	c.Assert(detector.totalSize, Equals, uint64(1))
+	c.Assert(len(detector.waitForMap), Equals, 1)
+
+	// expired entry should not report deadlock, detect will remove this entry
+	// not dependent on expire check interval
+	time.Sleep(60 * time.Millisecond)
+	err = detector.Detect(200, 100, 200)
 	c.Assert(err, IsNil)
 	c.Assert(detector.totalSize, Equals, uint64(1))
 	c.Assert(len(detector.waitForMap), Equals, 1)

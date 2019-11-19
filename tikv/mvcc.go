@@ -41,7 +41,7 @@ type MVCCStore struct {
 
 	latestTS          uint64
 	lockWaiterManager *lockwaiter.Manager
-	deadlockDetector  *DeadlockDetector
+	DeadlockDetector  *DeadlockDetector
 }
 
 // NewMVCCStore creates a new MVCCStore
@@ -55,7 +55,7 @@ func NewMVCCStore(bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint, w
 		dbWriter:          writer,
 		lockWaiterManager: lockwaiter.NewManager(),
 	}
-	store.deadlockDetector = NewDeadlockDetector(store.lockWaiterManager)
+	store.DeadlockDetector = NewDeadlockDetector(store.lockWaiterManager)
 	store.loadSafePoint()
 	writer.Open()
 	return store
@@ -218,7 +218,7 @@ func (store *MVCCStore) PessimisticRollback(reqCtx *requestCtx, req *kvrpcpb.Pes
 		err = store.dbWriter.Write(batch)
 	}
 	store.lockWaiterManager.WakeUp(startTS, 0, hashVals)
-	store.deadlockDetector.CleanUp(startTS)
+	store.DeadlockDetector.CleanUp(startTS)
 	return err
 }
 
@@ -295,7 +295,7 @@ func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isF
 		keyHash := farm.Fingerprint64(lock.Key)
 		if !isFirstLock { // No need to detect deadlock if it's first lock.
 			deadlockWaiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, keyHash, 3*time.Second)
-			store.deadlockDetector.DetectRemote(startTS, lock.StartTS, keyHash)
+			store.DeadlockDetector.DetectRemote(startTS, lock.StartTS, keyHash)
 			waitRes := deadlockWaiter.Wait()
 			store.lockWaiterManager.CleanUp(deadlockWaiter)
 			if waitRes.DetectionResp != nil {
@@ -554,7 +554,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 	err := store.dbWriter.Write(batch)
 	store.lockWaiterManager.WakeUp(startTS, commitTS, hashVals)
 	if isPessimisticTxn {
-		store.deadlockDetector.CleanUp(startTS)
+		store.DeadlockDetector.CleanUp(startTS)
 	}
 	return err
 }
@@ -615,7 +615,7 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 			return err
 		}
 	}
-	store.deadlockDetector.CleanUp(startTS)
+	store.DeadlockDetector.CleanUp(startTS)
 	err := store.dbWriter.Write(batch)
 	return errors.Trace(err)
 }
@@ -869,12 +869,12 @@ func (store *MVCCStore) GC(reqCtx *requestCtx, safePoint uint64) error {
 func (store *MVCCStore) StartDeadlockDetection(ctx context.Context, pdClient pd.Client,
 	innerSrv InnerServer, isRaft bool) error {
 	if !isRaft {
-		store.deadlockDetector.ChangeRole(Leader)
+		store.DeadlockDetector.ChangeRole(Leader)
 	} else {
-		store.deadlockDetector.pdClient = pdClient
-		store.deadlockDetector.storeMeta = innerSrv.(*raftstore.RaftInnerServer).GetStoreMeta()
-		store.deadlockDetector.Start()
-		log.Infof("raft store startDeadlockDetection finished started as role=%v", store.deadlockDetector.role)
+		store.DeadlockDetector.pdClient = pdClient
+		store.DeadlockDetector.storeMeta = innerSrv.(*raftstore.RaftInnerServer).GetStoreMeta()
+		store.DeadlockDetector.Start()
+		log.Infof("raft store startDeadlockDetection finished started as role=%v", store.DeadlockDetector.role)
 	}
 	return nil
 }

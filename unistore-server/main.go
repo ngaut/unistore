@@ -184,7 +184,7 @@ func setupRaftInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdCl
 	router := innerServer.GetRaftstoreRouter()
 	storeMeta := innerServer.GetStoreMeta()
 	store := tikv.NewMVCCStore(bundle, dbPath, safePoint, raftstore.NewDBWriter(router))
-	rm := tikv.NewRaftRegionManager(storeMeta, router, store)
+	rm := tikv.NewRaftRegionManager(storeMeta, router, store.DeadlockDetector)
 	innerServer.SetPeerEventObserver(rm)
 
 	if err := innerServer.Start(pdClient); err != nil {

@@ -63,8 +63,9 @@ func NewDetector(ttl time.Duration, urgentSize uint64, expireInterval time.Durat
 // Detect detects deadlock for the sourceTxn on a locked key.
 func (d *Detector) Detect(sourceTxn, waitForTxn, keyHash uint64) *ErrDeadlock {
 	d.lock.Lock()
-	d.activeExpire()
-	err := d.doDetect(sourceTxn, waitForTxn)
+	nowTime := time.Now()
+	d.activeExpire(nowTime)
+	err := d.doDetect(nowTime, sourceTxn, waitForTxn)
 	if err == nil {
 		d.register(sourceTxn, waitForTxn, keyHash)
 	}
@@ -72,19 +73,30 @@ func (d *Detector) Detect(sourceTxn, waitForTxn, keyHash uint64) *ErrDeadlock {
 	return err
 }
 
-func (d *Detector) doDetect(sourceTxn, waitForTxn uint64) *ErrDeadlock {
+func (d *Detector) doDetect(nowTime time.Time, sourceTxn, waitForTxn uint64) *ErrDeadlock {
 	val := d.waitForMap[waitForTxn]
 	if val == nil {
 		return nil
 	}
-	for cur := val.txns.Front(); cur != nil; cur = cur.Next() {
+	var nextVal *list.Element
+	for cur := val.txns.Front(); cur != nil; cur = nextVal {
+		nextVal = cur.Next()
 		keyHashPair := cur.Value.(*txnKeyHashPair)
+		// check if this edge is expired
+		if keyHashPair.isExpired(d.entryTTL, nowTime) {
+			val.txns.Remove(cur)
+			d.totalSize--
+			continue
+		}
 		if keyHashPair.txn == sourceTxn {
 			return &ErrDeadlock{DeadlockKeyHash: keyHashPair.keyHash}
 		}
-		if err := d.doDetect(sourceTxn, keyHashPair.txn); err != nil {
+		if err := d.doDetect(nowTime, sourceTxn, keyHashPair.txn); err != nil {
 			return err
 		}
+	}
+	if val.txns.Len() == 0 {
+		delete(d.waitForMap, waitForTxn)
 	}
 	return nil
 }
@@ -143,8 +155,7 @@ func (d *Detector) CleanUpWaitFor(txn, waitForTxn, keyHash uint64) {
 }
 
 // activeExpire removes expired entries, should be called under d.lock protection
-func (d *Detector) activeExpire() {
-	nowTime := time.Now()
+func (d *Detector) activeExpire(nowTime time.Time) {
 	if nowTime.Sub(d.lastActiveExpire) > d.expireInterval ||
 		d.totalSize >= d.urgentSize {
 		log.Infof("detector will do activeExpire, current size=%v", d.totalSize)

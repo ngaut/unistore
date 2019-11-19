@@ -260,18 +260,20 @@ func (rm *regionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
 
 type RaftRegionManager struct {
 	regionManager
-	router  *raftstore.RaftstoreRouter
-	eventCh chan interface{}
+	router   *raftstore.RaftstoreRouter
+	eventCh  chan interface{}
+	detector *DeadlockDetector
 }
 
-func NewRaftRegionManager(store *metapb.Store, router *raftstore.RaftstoreRouter) *RaftRegionManager {
+func NewRaftRegionManager(store *metapb.Store, router *raftstore.RaftstoreRouter, detector *DeadlockDetector) *RaftRegionManager {
 	m := &RaftRegionManager{
 		router: router,
 		regionManager: regionManager{
 			storeMeta: store,
 			regions:   make(map[uint64]*regionCtx),
 		},
-		eventCh: make(chan interface{}, 1024),
+		eventCh:  make(chan interface{}, 1024),
+		detector: detector,
 	}
 	go m.runEventHandler()
 	return m
@@ -335,24 +337,13 @@ func (rm *RaftRegionManager) OnRegionConfChange(ctx *raftstore.PeerEventContext,
 	}
 }
 
+type regionRoleChangeEvent struct {
+	regionId uint64
+	newState raft.StateType
+}
+
 func (rm *RaftRegionManager) OnRoleChange(regionId uint64, newState raft.StateType) {
-	rm.mu.RLock()
-	region, ok := rm.regions[regionId]
-	rm.mu.RUnlock()
-	if ok {
-		if bytes.Compare(region.startKey, []byte{}) == 0 {
-			newRole := Follower
-			if newState == raft.StateLeader {
-				newRole = Leader
-			}
-			log.Infof("first region role change newRole=%v", newRole)
-			rm.mvccStore.deadlockDetector.ChangeRole(int32(newRole))
-		}
-	} else {
-		// should not be here, current for debug panic
-		log.Errorf("region id=%v not found in map", regionId)
-		panic("region not found in rm.regions???")
-	}
+	rm.eventCh <- &regionRoleChangeEvent{regionId: regionId, newState: newState}
 }
 
 func (rm *RaftRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
@@ -411,6 +402,18 @@ func (rm *RaftRegionManager) runEventHandler() {
 			rm.regions[x.region.Id] = newRegionCtx(x.region, oldRegion, x.ctx.LeaderChecker)
 			rm.mu.Unlock()
 			oldRegion.refCount.Done()
+		case *regionRoleChangeEvent:
+			rm.mu.RLock()
+			region := rm.regions[x.regionId]
+			rm.mu.RUnlock()
+			if bytes.Compare(region.startKey, []byte{}) == 0 {
+				newRole := Follower
+				if x.newState == raft.StateLeader {
+					newRole = Leader
+				}
+				log.Infof("first region role change to newRole=%v", newRole)
+				rm.detector.ChangeRole(int32(newRole))
+			}
 		}
 	}
 }
