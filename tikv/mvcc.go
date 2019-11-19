@@ -245,7 +245,7 @@ func (store *MVCCStore) TxnHeartBeat(reqCtx *requestCtx, req *kvrpcpb.TxnHeartBe
 }
 
 func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
-	req *kvrpcpb.CheckTxnStatusRequest) (ttl, commitTS uint64, err error) {
+	req *kvrpcpb.CheckTxnStatusRequest) (ttl, commitTS uint64, action kvrpcpb.Action, err error) {
 	hashVals := keysToHashVals(req.PrimaryKey)
 	regCtx := reqCtx.regCtx
 	regCtx.AcquireLatches(hashVals)
@@ -256,11 +256,12 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 		// If the lock has already outdated, clean up it.
 		if uint64(oracle.ExtractPhysical(lock.StartTS))+uint64(lock.TTL) < uint64(oracle.ExtractPhysical(req.CurrentTs)) {
 			batch.Rollback(req.PrimaryKey, true)
-			return 0, 0, store.dbWriter.Write(batch)
+			return 0, 0, kvrpcpb.Action_TTLExpireRollback, store.dbWriter.Write(batch)
 		}
 		// If this is a large transaction and the lock is active, push forward the minCommitTS.
 		// lock.minCommitTS == 0 may be a secondary lock, or not a large transaction.
 		if lock.MinCommitTS > 0 {
+			action = kvrpcpb.Action_MinCommitTSPushed
 			// We *must* guarantee the invariance lock.minCommitTS >= callerStartTS + 1
 			if lock.MinCommitTS < req.CallerStartTs+1 {
 				lock.MinCommitTS = req.CallerStartTs + 1
@@ -273,17 +274,19 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 				}
 				batch.PessimisticLock(req.PrimaryKey, lock)
 				if err = store.dbWriter.Write(batch); err != nil {
-					return 0, 0, err
+					return 0, 0, action, err
 				}
 			}
 		}
-		return uint64(lock.TTL), 0, nil
+		return uint64(lock.TTL), 0, action, nil
 	}
 	commitTS, err = store.checkCommitted(reqCtx.getDBReader(), req.PrimaryKey, req.LockTs)
 	if commitTS == 0 {
-		// TODO: this is temporary solution. we should be able to check the status without rollback.
-		batch.Rollback(req.PrimaryKey, false)
-		err = store.dbWriter.Write(batch)
+		if req.RollbackIfNotExist {
+			action = kvrpcpb.Action_LockNotExistRollback
+			batch.Rollback(req.PrimaryKey, false)
+			err = store.dbWriter.Write(batch)
+		}
 	}
 	return
 }

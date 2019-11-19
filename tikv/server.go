@@ -268,8 +268,8 @@ func (svr *Server) KvCheckTxnStatus(ctx context.Context, req *kvrpcpb.CheckTxnSt
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.CheckTxnStatusResponse{RegionError: reqCtx.regErr}, nil
 	}
-	lockTTL, commitTS, err := svr.mvccStore.CheckTxnStatus(reqCtx, req)
-	resp := &kvrpcpb.CheckTxnStatusResponse{LockTtl: lockTTL, CommitVersion: commitTS}
+	lockTTL, commitTS, action, err := svr.mvccStore.CheckTxnStatus(reqCtx, req)
+	resp := &kvrpcpb.CheckTxnStatusResponse{LockTtl: lockTTL, CommitVersion: commitTS, Action: action}
 	resp.Error, resp.RegionError = convertToPBError(err)
 	return resp, nil
 }
