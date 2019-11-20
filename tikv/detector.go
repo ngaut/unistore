@@ -156,7 +156,7 @@ func (d *Detector) CleanUpWaitFor(txn, waitForTxn, keyHash uint64) {
 
 // activeExpire removes expired entries, should be called under d.lock protection
 func (d *Detector) activeExpire(nowTime time.Time) {
-	if nowTime.Sub(d.lastActiveExpire) > d.expireInterval ||
+	if nowTime.Sub(d.lastActiveExpire) > d.expireInterval &&
 		d.totalSize >= d.urgentSize {
 		log.Infof("detector will do activeExpire, current size=%v", d.totalSize)
 		for txn, l := range d.waitForMap {
