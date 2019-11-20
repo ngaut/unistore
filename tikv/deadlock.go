@@ -10,7 +10,6 @@ import (
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/util/lockwaiter"
 	deadlockPb "github.com/pingcap/kvproto/pkg/deadlock"
-	"github.com/pingcap/kvproto/pkg/metapb"
 )
 
 // Follower will send detection rpc to Leader
@@ -23,7 +22,6 @@ const (
 type DeadlockDetector struct {
 	detector  *Detector
 	pdClient  pd.Client
-	storeMeta *metapb.Store
 	sendCh    chan *deadlockPb.DeadlockRequest
 	waitMgr   *lockwaiter.Manager
 	streamCli deadlockPb.Deadlock_DetectClient
@@ -32,9 +30,9 @@ type DeadlockDetector struct {
 	role int32
 }
 
-// refreshFirstRegionLeader will send request to pd to find out the
+// getLeaderAddr will send request to pd to find out the
 // current leader node for the first region
-func (dt *DeadlockDetector) refreshFirstRegionLeader() (string, error) {
+func (dt *DeadlockDetector) getLeaderAddr() (string, error) {
 	// find first region from pd, get the first region leader
 	ctx := context.Background()
 	_, leaderPeer, err := dt.pdClient.GetRegion(ctx, []byte{})
@@ -47,14 +45,14 @@ func (dt *DeadlockDetector) refreshFirstRegionLeader() (string, error) {
 		log.Errorf("get store=%d failed, err=%v", leaderPeer.GetStoreId(), err)
 		return "", err
 	}
-	log.Warnf("refreshFirstRegionLeader leader_peer=%v addr=%s", leaderPeer, leaderStoreMeta.GetAddress())
+	log.Warnf("getLeaderAddr leader_peer=%v addr=%s", leaderPeer, leaderStoreMeta.GetAddress())
 	return leaderStoreMeta.GetAddress(), nil
 }
 
 // rebuildStreamClient builds connection to the first region leader,
 // it's not thread safe and should be called only by `DeadlockDetector.Start` or `DeadlockDetector.SendReqLoop`
 func (dt *DeadlockDetector) rebuildStreamClient() (string, error) {
-	leaderArr, err := dt.refreshFirstRegionLeader()
+	leaderArr, err := dt.getLeaderAddr()
 	if err != nil {
 		return "", err
 	}

@@ -21,7 +21,6 @@ import (
 	"github.com/ngaut/unistore/rowcodec"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
-	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/ngaut/unistore/util/lockwaiter"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/tidb/store/tikv/oracle"
@@ -865,7 +864,6 @@ func (store *MVCCStore) StartDeadlockDetection(ctx context.Context, pdClient pd.
 		store.DeadlockDetector.ChangeRole(Leader)
 	} else {
 		store.DeadlockDetector.pdClient = pdClient
-		store.DeadlockDetector.storeMeta = innerSrv.(*raftstore.RaftInnerServer).GetStoreMeta()
 		store.DeadlockDetector.Start()
 		log.Infof("raft store startDeadlockDetection finished started as role=%v", store.DeadlockDetector.role)
 	}
