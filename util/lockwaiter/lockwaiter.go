@@ -146,6 +146,9 @@ func (lw *Manager) CleanUp(w *Waiter) {
 	q := lw.waitingQueues[w.LockTS]
 	if q != nil {
 		q.removeWaiter(w)
+		if len(q.waiters) == 0 {
+			delete(lw.waitingQueues, w.LockTS)
+		}
 	}
 	lw.mu.Unlock()
 }
