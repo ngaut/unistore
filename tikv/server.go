@@ -212,6 +212,16 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 	if result.Position == lockwaiter.WaitTimeout {
 		svr.mvccStore.lockWaiterManager.CleanUp(waiter)
 		return resp, nil
+	} else if result.DeadlockResp != nil {
+		log.Errorf("deadlock found for entry=%v", result.DeadlockResp.Entry)
+		errLocked := err.(*ErrLocked)
+		deadlockErr := &ErrDeadlock{
+			LockKey:         errLocked.Key,
+			LockTS:          errLocked.StartTS,
+			DeadlockKeyHash: result.DeadlockResp.DeadlockKeyHash,
+		}
+		resp.Errors, resp.RegionError = convertToPBErrors(deadlockErr)
+		return resp, nil
 	}
 	if result.Position > 0 {
 		// Sleep a little so the transaction in lower position will more likely get the lock.

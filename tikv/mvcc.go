@@ -293,22 +293,15 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isFirstLock bool) (*lockwaiter.Waiter, error) {
 	if lock, ok := err.(*ErrLocked); ok {
 		keyHash := farm.Fingerprint64(lock.Key)
+		waitTime := time.Second
 		if !isFirstLock { // No need to detect deadlock if it's first lock.
-			deadlockWaiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, keyHash, 3*time.Second)
-			store.DeadlockDetector.DetectRemote(startTS, lock.StartTS, keyHash)
-			waitRes := deadlockWaiter.Wait()
-			store.lockWaiterManager.CleanUp(deadlockWaiter)
-			if waitRes.DetectionResp != nil {
-				log.Errorf("deadlock found for entry=%v", waitRes.DetectionResp.Entry)
-				return nil, &ErrDeadlock{
-					LockKey:         lock.Key,
-					LockTS:          lock.StartTS,
-					DeadlockKeyHash: waitRes.DetectionResp.DeadlockKeyHash,
-				}
-			}
+			waitTime = 3 * time.Second
 		}
 		log.Infof("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
-		waiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, keyHash, time.Second)
+		waiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, keyHash, waitTime)
+		if !isFirstLock {
+			store.DeadlockDetector.DetectRemote(startTS, lock.StartTS, keyHash)
+		}
 		return waiter, err
 	}
 	return nil, err

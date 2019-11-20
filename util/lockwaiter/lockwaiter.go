@@ -64,9 +64,9 @@ type Waiter struct {
 type Position int
 
 type Result struct {
-	Position      Position
-	CommitTS      uint64
-	DetectionResp *deadlock.DeadlockResponse
+	Position     Position
+	CommitTS     uint64
+	DeadlockResp *deadlock.DeadlockResponse
 }
 
 const WaitTimeout Position = -1
@@ -148,20 +148,23 @@ func (lw *Manager) CleanUp(w *Waiter) {
 	}
 }
 
-// WakeUpDetection wakes up waiters waiting for deadlock detection by sending
-// rpc request to remote leader
+// WakeUpDetection wakes up waiters waiting for deadlock detection results
 func (lw *Manager) WakeUpForDeadlock(resp *deadlock.DeadlockResponse) {
 	lw.mu.Lock()
 	q := lw.waitingQueues[resp.Entry.WaitForTxn]
 	lw.mu.Unlock()
 	if q != nil {
-		for _, waiter := range q.waiters {
+		q.mu.Lock()
+		for i, waiter := range q.waiters {
 			// there should be no duplicated waiters
-			if waiter.LockTS == resp.Entry.WaitForTxn && waiter.KeyHash == resp.Entry.KeyHash {
+			if waiter.startTS == resp.Entry.Txn && waiter.KeyHash == resp.Entry.KeyHash {
 				log.Infof("deadlock detection response got for entry=%v", resp.Entry)
-				waiter.ch <- Result{DetectionResp: resp}
+				// remove this waiter
+				q.waiters = append(q.waiters[:i], q.waiters[i+1:]...)
+				waiter.ch <- Result{DeadlockResp: resp}
 				break
 			}
 		}
+		q.mu.Unlock()
 	}
 }
