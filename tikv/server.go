@@ -208,7 +208,7 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 		return resp, nil
 	}
 	result := waiter.Wait()
-	svr.mvccStore.DeadlockDetector.CleanUpWaitFor(req.StartVersion, waiter.LockTS, waiter.KeyHash)
+	svr.mvccStore.DeadlockDetectCli.CleanUpWaitFor(req.StartVersion, waiter.LockTS, waiter.KeyHash)
 	if result.Position == lockwaiter.WaitTimeout {
 		svr.mvccStore.lockWaiterManager.CleanUp(waiter)
 		return resp, nil
@@ -592,15 +592,15 @@ func (svr *Server) Detect(stream deadlockPb.Deadlock_DetectServer) error {
 			}
 			return err
 		}
-		if !svr.mvccStore.DeadlockDetector.isLeader() {
+		if !svr.mvccStore.DeadlockDetectSvr.IsLeader() {
 			log.Warnf("detection requests received on non leader node")
 			break
 		}
 		switch req.Tp {
 		case deadlockPb.DeadlockRequestType_Detect:
-			err := svr.mvccStore.DeadlockDetector.Detect(req.Entry.Txn, req.Entry.WaitForTxn, req.Entry.KeyHash)
+			err := svr.mvccStore.DeadlockDetectSvr.Detector.Detect(req.Entry.Txn, req.Entry.WaitForTxn, req.Entry.KeyHash)
 			if err != nil {
-				resp := convertErrToResp(err.(*ErrDeadlock), req.Entry.Txn,
+				resp := convertErrToResp(err, req.Entry.Txn,
 					req.Entry.WaitForTxn, req.Entry.KeyHash)
 				sendErr := stream.Send(resp)
 				if sendErr != nil {
@@ -609,9 +609,9 @@ func (svr *Server) Detect(stream deadlockPb.Deadlock_DetectServer) error {
 				}
 			}
 		case deadlockPb.DeadlockRequestType_CleanUpWaitFor:
-			svr.mvccStore.DeadlockDetector.CleanUpWaitFor(req.Entry.Txn, req.Entry.WaitForTxn, req.Entry.KeyHash)
+			svr.mvccStore.DeadlockDetectSvr.Detector.CleanUpWaitFor(req.Entry.Txn, req.Entry.WaitForTxn, req.Entry.KeyHash)
 		case deadlockPb.DeadlockRequestType_CleanUp:
-			svr.mvccStore.DeadlockDetector.CleanUp(req.Entry.Txn)
+			svr.mvccStore.DeadlockDetectSvr.Detector.CleanUp(req.Entry.Txn)
 		}
 	}
 	return nil

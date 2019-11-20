@@ -262,10 +262,10 @@ type RaftRegionManager struct {
 	regionManager
 	router   *raftstore.RaftstoreRouter
 	eventCh  chan interface{}
-	detector *DeadlockDetector
+	detector *DetectorServer
 }
 
-func NewRaftRegionManager(store *metapb.Store, router *raftstore.RaftstoreRouter, detector *DeadlockDetector) *RaftRegionManager {
+func NewRaftRegionManager(store *metapb.Store, router *raftstore.RaftstoreRouter, detector *DetectorServer) *RaftRegionManager {
 	m := &RaftRegionManager{
 		router: router,
 		regionManager: regionManager{

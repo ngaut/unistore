@@ -40,11 +40,13 @@ type MVCCStore struct {
 
 	latestTS          uint64
 	lockWaiterManager *lockwaiter.Manager
-	DeadlockDetector  *DeadlockDetector
+	DeadlockDetectCli *DetectorClient
+	DeadlockDetectSvr *DetectorServer
 }
 
 // NewMVCCStore creates a new MVCCStore
-func NewMVCCStore(bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint, writer mvcc.DBWriter) *MVCCStore {
+func NewMVCCStore(bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint,
+	writer mvcc.DBWriter, pdClinet pd.Client) *MVCCStore {
 	store := &MVCCStore{
 		db:                bundle.DB,
 		dir:               dataDir,
@@ -54,7 +56,8 @@ func NewMVCCStore(bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint, w
 		dbWriter:          writer,
 		lockWaiterManager: lockwaiter.NewManager(),
 	}
-	store.DeadlockDetector = NewDeadlockDetector(store.lockWaiterManager)
+	store.DeadlockDetectSvr = NewDetectorServer()
+	store.DeadlockDetectCli = NewDetectorClient(store.lockWaiterManager, pdClinet)
 	store.loadSafePoint()
 	writer.Open()
 	return store
@@ -217,7 +220,7 @@ func (store *MVCCStore) PessimisticRollback(reqCtx *requestCtx, req *kvrpcpb.Pes
 		err = store.dbWriter.Write(batch)
 	}
 	store.lockWaiterManager.WakeUp(startTS, 0, hashVals)
-	store.DeadlockDetector.CleanUp(startTS)
+	store.DeadlockDetectCli.CleanUp(startTS)
 	return err
 }
 
@@ -299,7 +302,7 @@ func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isF
 		log.Infof("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
 		waiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, keyHash, waitTime)
 		if !isFirstLock {
-			store.DeadlockDetector.DetectRemote(startTS, lock.StartTS, keyHash)
+			store.DeadlockDetectCli.Detect(startTS, lock.StartTS, keyHash)
 		}
 		return waiter, err
 	}
@@ -546,7 +549,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 	err := store.dbWriter.Write(batch)
 	store.lockWaiterManager.WakeUp(startTS, commitTS, hashVals)
 	if isPessimisticTxn {
-		store.DeadlockDetector.CleanUp(startTS)
+		store.DeadlockDetectCli.CleanUp(startTS)
 	}
 	return err
 }
@@ -607,7 +610,7 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 			return err
 		}
 	}
-	store.DeadlockDetector.CleanUp(startTS)
+	store.DeadlockDetectCli.CleanUp(startTS)
 	err := store.dbWriter.Write(batch)
 	return errors.Trace(err)
 }
@@ -860,13 +863,7 @@ func (store *MVCCStore) GC(reqCtx *requestCtx, safePoint uint64) error {
 
 func (store *MVCCStore) StartDeadlockDetection(ctx context.Context, pdClient pd.Client,
 	innerSrv InnerServer, isRaft bool) error {
-	if !isRaft {
-		store.DeadlockDetector.ChangeRole(Leader)
-	} else {
-		store.DeadlockDetector.pdClient = pdClient
-		store.DeadlockDetector.Start()
-		log.Infof("raft store startDeadlockDetection finished started as role=%v", store.DeadlockDetector.role)
-	}
+	store.DeadlockDetectCli.Start()
 	return nil
 }
 

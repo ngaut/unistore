@@ -18,21 +18,22 @@ const (
 	Leader
 )
 
-// DeadlockDetector is a util used for distributed deadlock detection
-type DeadlockDetector struct {
-	detector  *Detector
+type DetectorServer struct {
+	Detector *Detector
+	role     int32
+}
+
+// DetectorClient is a util used for distributed deadlock detection
+type DetectorClient struct {
 	pdClient  pd.Client
 	sendCh    chan *deadlockPb.DeadlockRequest
 	waitMgr   *lockwaiter.Manager
 	streamCli deadlockPb.Deadlock_DetectClient
-
-	// these fields used by multiple thread
-	role int32
 }
 
 // getLeaderAddr will send request to pd to find out the
 // current leader node for the first region
-func (dt *DeadlockDetector) getLeaderAddr() (string, error) {
+func (dt *DetectorClient) getLeaderAddr() (string, error) {
 	// find first region from pd, get the first region leader
 	ctx := context.Background()
 	_, leaderPeer, err := dt.pdClient.GetRegion(ctx, []byte{})
@@ -50,8 +51,8 @@ func (dt *DeadlockDetector) getLeaderAddr() (string, error) {
 }
 
 // rebuildStreamClient builds connection to the first region leader,
-// it's not thread safe and should be called only by `DeadlockDetector.Start` or `DeadlockDetector.SendReqLoop`
-func (dt *DeadlockDetector) rebuildStreamClient() error {
+// it's not thread safe and should be called only by `DetectorClient.Start` or `DetectorClient.SendReqLoop`
+func (dt *DetectorClient) rebuildStreamClient() error {
 	leaderArr, err := dt.getLeaderAddr()
 	if err != nil {
 		return err
@@ -75,27 +76,24 @@ func (dt *DeadlockDetector) rebuildStreamClient() error {
 // NewDeadlockDetector will create a new detector util, entryTTL is used for
 // recycling the lock wait edge in detector wait wap. chSize is the pending
 // detection sending task size(used on non leader node)
-func NewDeadlockDetector(waiterMgr *lockwaiter.Manager) *DeadlockDetector {
+func NewDetectorClient(waiterMgr *lockwaiter.Manager, pdClient pd.Client) *DetectorClient {
 	chSize := 10000
-	entryTTL := time.Duration(3 * time.Second)
-	urgentSize := uint64(100000)
-	exipreInterval := 3600 * time.Second
-	newDetector := &DeadlockDetector{
-		detector: NewDetector(entryTTL, urgentSize, exipreInterval),
+	newDetector := &DetectorClient{
 		sendCh:   make(chan *deadlockPb.DeadlockRequest, chSize),
 		waitMgr:  waiterMgr,
+		pdClient: pdClient,
 	}
 	return newDetector
 }
 
 // Start starts the detection `send`, `recv` and `entry recycle` loop
-func (dt *DeadlockDetector) Start() {
+func (dt *DetectorClient) Start() {
 	go dt.sendReqLoop()
 }
 
 // sendReqLoop will send detection request to leader, stream connection will be rebuilt and
 // a new recv goroutine using the same stream client will be created
-func (dt *DeadlockDetector) sendReqLoop() {
+func (dt *DetectorClient) sendReqLoop() {
 	var (
 		err        error
 		rebuildErr error
@@ -120,7 +118,7 @@ func (dt *DeadlockDetector) sendReqLoop() {
 }
 
 // recvLoop tries to recv response(current only deadlock error) from leader, break loop if errors happen
-func (dt *DeadlockDetector) recvLoop(streamCli deadlockPb.Deadlock_DetectClient) {
+func (dt *DetectorClient) recvLoop(streamCli deadlockPb.Deadlock_DetectClient) {
 	var (
 		err  error
 		resp *deadlockPb.DeadlockResponse
@@ -136,7 +134,7 @@ func (dt *DeadlockDetector) recvLoop(streamCli deadlockPb.Deadlock_DetectClient)
 	}
 }
 
-func (dt *DeadlockDetector) handleRemoteTask(requestType deadlockPb.DeadlockRequestType,
+func (dt *DetectorClient) handleRemoteTask(requestType deadlockPb.DeadlockRequestType,
 	txnTs uint64, waitForTxnTs uint64, keyHash uint64) {
 	detectReq := &deadlockPb.DeadlockRequest{}
 	detectReq.Tp = requestType
@@ -146,40 +144,21 @@ func (dt *DeadlockDetector) handleRemoteTask(requestType deadlockPb.DeadlockRequ
 	dt.sendCh <- detectReq
 }
 
-func (dt *DeadlockDetector) isLeader() bool {
-	return atomic.LoadInt32(&dt.role) == Leader
-}
-
-func (dt *DeadlockDetector) ChangeRole(newRole int32) {
-	atomic.StoreInt32(&dt.role, newRole)
-}
-
 // user interfaces
 // Cleanup processes cleaup task on local detector
-func (dt *DeadlockDetector) CleanUp(startTs uint64) {
-	if dt.isLeader() {
-		dt.detector.CleanUp(startTs)
-	} else {
-		dt.handleRemoteTask(deadlockPb.DeadlockRequestType_CleanUp, startTs, 0, 0)
-	}
+func (dt *DetectorClient) CleanUp(startTs uint64) {
+	dt.handleRemoteTask(deadlockPb.DeadlockRequestType_CleanUp, startTs, 0, 0)
 }
 
 // CleanUpWaitFor cleans up the specific wait edge in detector's wait map
-func (dt *DeadlockDetector) CleanUpWaitFor(txnTs, waitForTxn, keyHash uint64) {
-	if dt.isLeader() {
-		dt.detector.CleanUpWaitFor(txnTs, waitForTxn, keyHash)
-	} else {
-		dt.handleRemoteTask(deadlockPb.DeadlockRequestType_CleanUpWaitFor, txnTs, waitForTxn, keyHash)
-	}
+func (dt *DetectorClient) CleanUpWaitFor(txnTs, waitForTxn, keyHash uint64) {
+	dt.handleRemoteTask(deadlockPb.DeadlockRequestType_CleanUpWaitFor, txnTs, waitForTxn, keyHash)
 }
 
-// Detect will process the detection request on local detector
-func (dt *DeadlockDetector) Detect(txnTs uint64, waitForTxnTs uint64, keyHash uint64) error {
-	err := dt.detector.Detect(txnTs, waitForTxnTs, keyHash)
-	if err != nil {
-		return err
-	}
-	return nil
+// DetectRemote post the detection request to local deadlock detector or remote first region leader,
+// the caller should use `waiter.ch` to receive possible deadlock response
+func (dt *DetectorClient) Detect(txnTs uint64, waitForTxnTs uint64, keyHash uint64) {
+	dt.handleRemoteTask(deadlockPb.DeadlockRequestType_Detect, txnTs, waitForTxnTs, keyHash)
 }
 
 // convertErrToResp converts `ErrDeadlock` to `DeadlockResponse` proto type
@@ -194,16 +173,21 @@ func convertErrToResp(errDeadlock *ErrDeadlock, txnTs, waitForTxnTs, keyHash uin
 	return resp
 }
 
-// DetectRemote post the detection request to local deadlock detector or remote first region leader,
-// the caller should use `waiter.ch` to receive possible deadlock response
-func (dt *DeadlockDetector) DetectRemote(txnTs uint64, waitForTxnTs uint64, keyHash uint64) {
-	if dt.isLeader() {
-		err := dt.Detect(txnTs, waitForTxnTs, keyHash)
-		if err != nil {
-			resp := convertErrToResp(err.(*ErrDeadlock), txnTs, waitForTxnTs, keyHash)
-			dt.waitMgr.WakeUpForDeadlock(resp)
-		}
-	} else {
-		dt.handleRemoteTask(deadlockPb.DeadlockRequestType_Detect, txnTs, waitForTxnTs, keyHash)
+// NewDetectorServer creates local detector used by RPC detection handler
+func NewDetectorServer() *DetectorServer {
+	entryTTL := time.Duration(3 * time.Second)
+	urgentSize := uint64(100000)
+	exipreInterval := 3600 * time.Second
+	svr := &DetectorServer{
+		Detector: NewDetector(entryTTL, urgentSize, exipreInterval),
 	}
+	return svr
+}
+
+func (ds *DetectorServer) IsLeader() bool {
+	return atomic.LoadInt32(&ds.role) == Leader
+}
+
+func (ds *DetectorServer) ChangeRole(newRole int32) {
+	atomic.StoreInt32(&ds.role, newRole)
 }
