@@ -51,31 +51,32 @@ func (dt *DeadlockDetector) getLeaderAddr() (string, error) {
 
 // rebuildStreamClient builds connection to the first region leader,
 // it's not thread safe and should be called only by `DeadlockDetector.Start` or `DeadlockDetector.SendReqLoop`
-func (dt *DeadlockDetector) rebuildStreamClient() (string, error) {
+func (dt *DeadlockDetector) rebuildStreamClient() error {
 	leaderArr, err := dt.getLeaderAddr()
 	if err != nil {
-		return "", err
+		return err
 	}
 	cc, err := grpc.Dial(leaderArr, grpc.WithInsecure())
 	if err != nil {
-		return "", err
+		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	stream, err := deadlockPb.NewDeadlockClient(cc).Detect(ctx)
 	if err != nil {
 		cancel()
-		return "", err
+		return err
 	}
+	log.Infof("build stream client successfully, leaderAddr=%s", leaderArr)
 	dt.streamCli = stream
 	go dt.recvLoop(dt.streamCli)
-	return leaderArr, nil
+	return nil
 }
 
 // NewDeadlockDetector will create a new detector util, entryTTL is used for
 // recycling the lock wait edge in detector wait wap. chSize is the pending
 // detection sending task size(used on non leader node)
 func NewDeadlockDetector(waiterMgr *lockwaiter.Manager) *DeadlockDetector {
-	chSize := 1000
+	chSize := 10000
 	entryTTL := time.Duration(3 * time.Second)
 	urgentSize := uint64(100000)
 	exipreInterval := 3600 * time.Second
@@ -99,23 +100,20 @@ func (dt *DeadlockDetector) sendReqLoop() {
 		err        error
 		rebuildErr error
 		req        *deadlockPb.DeadlockRequest
-		leaderAddr string
 	)
 	for {
 		if dt.streamCli == nil {
-			leaderAddr, rebuildErr = dt.rebuildStreamClient()
+			rebuildErr = dt.rebuildStreamClient()
 			if rebuildErr != nil {
 				log.Errorf("rebuild connection to first region failed, err=%v", rebuildErr)
 				time.Sleep(3 * time.Second)
 				continue
 			}
-			log.Infof("rebuild stream connection to leader peer success, leaderAddr=%v", leaderAddr)
 		}
 		req = <-dt.sendCh
 		err = dt.streamCli.Send(req)
 		if err != nil {
-			log.Warnf("send req to addr=%v failed, err=%v, invalid current stream and try to rebuild connection",
-				leaderAddr, err)
+			log.Warnf("send err=%v, invalid current stream and try to rebuild connection", err)
 			dt.streamCli = nil
 		}
 	}
@@ -138,10 +136,6 @@ func (dt *DeadlockDetector) recvLoop(streamCli deadlockPb.Deadlock_DetectClient)
 	}
 }
 
-func (dt *DeadlockDetector) sendReqToLeader(req *deadlockPb.DeadlockRequest) {
-	dt.sendCh <- req
-}
-
 func (dt *DeadlockDetector) handleRemoteTask(requestType deadlockPb.DeadlockRequestType,
 	txnTs uint64, waitForTxnTs uint64, keyHash uint64) {
 	detectReq := &deadlockPb.DeadlockRequest{}
@@ -149,7 +143,7 @@ func (dt *DeadlockDetector) handleRemoteTask(requestType deadlockPb.DeadlockRequ
 	detectReq.Entry.Txn = txnTs
 	detectReq.Entry.WaitForTxn = waitForTxnTs
 	detectReq.Entry.KeyHash = keyHash
-	dt.sendReqToLeader(detectReq)
+	dt.sendCh <- detectReq
 }
 
 func (dt *DeadlockDetector) isLeader() bool {
