@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TODO not stable sometimes failed on line 94
 func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 	engines := newTestEngines(t)
 	defer cleanUpTestEngineData(engines)
