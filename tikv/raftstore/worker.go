@@ -706,7 +706,6 @@ type regionRunner struct {
 	// we may delay some apply tasks if level 0 files to write stall threshold,
 	// pending_applies records all delayed apply task, and will check again later
 	pendingApplies []task
-	leftTasks      []task
 
 	builderFile    *os.File
 	builder        *table.Builder
@@ -825,19 +824,16 @@ func (r *regionRunner) finishApply() error {
 
 // handlePendingApplies tries to apply pending tasks if there is some.
 func (r *regionRunner) handlePendingApplies() {
-	r.leftTasks = r.leftTasks[:0]
-	for idx, apply := range r.pendingApplies {
+	for len(r.pendingApplies) > 0 {
 		// Should not handle too many applies than the number of files that can be ingested.
 		// Check level 0 every time because we can not make sure how does the number of level 0 files change.
 		if r.ctx.ingestMaybeStall() {
 			log.Warnf("ingestMaybeStall break current pending applies")
-			r.leftTasks = append(r.leftTasks, r.pendingApplies[idx:]...)
 			break
 		}
-
+		apply := r.pendingApplies[0]
 		if err := r.resetBuilder(); err != nil {
 			log.Error(err)
-			r.leftTasks = append(r.leftTasks, apply)
 			continue
 		}
 
@@ -845,18 +841,18 @@ func (r *regionRunner) handlePendingApplies() {
 		result, err := r.ctx.handleApply(task.regionId, task.status, r.builder, r.oldBuilder)
 		if err != nil {
 			log.Error(err)
-			r.leftTasks = append(r.leftTasks, apply)
 			continue
 		}
-		if err := r.handleApplyResult(result); err != nil {
+		if err = r.handleApplyResult(result); err != nil {
 			log.Error(err)
-			r.leftTasks = append(r.leftTasks, apply)
+			continue
 		}
+		// Apply succeeded, remove this task from pending array
+		r.pendingApplies = r.pendingApplies[1:]
 	}
 	if err := r.finishApply(); err != nil {
 		log.Error(err)
 	}
-	r.pendingApplies = r.leftTasks
 }
 
 func (r *regionRunner) run(t task) {
