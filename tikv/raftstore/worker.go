@@ -828,7 +828,6 @@ func (r *regionRunner) handlePendingApplies() {
 		// Should not handle too many applies than the number of files that can be ingested.
 		// Check level 0 every time because we can not make sure how does the number of level 0 files change.
 		if r.ctx.ingestMaybeStall() {
-			log.Warnf("ingestMaybeStall break current pending applies")
 			break
 		}
 		// Try to apply task, if apply failed, throw away this task and let sender retry
