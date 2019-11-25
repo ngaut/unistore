@@ -831,7 +831,9 @@ func (r *regionRunner) handlePendingApplies() {
 			log.Warnf("ingestMaybeStall break current pending applies")
 			break
 		}
+		// Try to apply task, if apply failed, throw away this task and let sender retry
 		apply := r.pendingApplies[0]
+		r.pendingApplies = r.pendingApplies[1:]
 		if err := r.resetBuilder(); err != nil {
 			log.Error(err)
 			continue
@@ -845,10 +847,7 @@ func (r *regionRunner) handlePendingApplies() {
 		}
 		if err = r.handleApplyResult(result); err != nil {
 			log.Error(err)
-			continue
 		}
-		// Apply succeeded, remove this task from pending array
-		r.pendingApplies = r.pendingApplies[1:]
 	}
 	if err := r.finishApply(); err != nil {
 		log.Error(err)
