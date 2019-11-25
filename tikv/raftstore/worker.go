@@ -845,7 +845,7 @@ func (r *regionRunner) handlePendingApplies() {
 			log.Error(err)
 			continue
 		}
-		if err = r.handleApplyResult(result); err != nil {
+		if err := r.handleApplyResult(result); err != nil {
 			log.Error(err)
 		}
 	}
