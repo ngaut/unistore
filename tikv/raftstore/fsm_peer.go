@@ -93,16 +93,16 @@ func (pf *peerFsm) regionID() uint64 {
 	return pf.peer.regionId
 }
 
-func (d *peerFsm) region() *metapb.Region {
-	return d.peer.Store().region
+func (pf *peerFsm) region() *metapb.Region {
+	return pf.peer.Store().region
 }
 
 func (pf *peerFsm) getPeer() *Peer {
 	return pf.peer
 }
 
-func (d *peerFsm) storeID() uint64 {
-	return d.peer.Meta.StoreId
+func (pf *peerFsm) storeID() uint64 {
+	return pf.peer.Meta.StoreId
 }
 
 func (pf *peerFsm) peerID() uint64 {
@@ -217,7 +217,7 @@ func (d *peerMsgHandler) onTick() {
 	if d.ticker.isOnTick(PeerTickPeerStaleState) {
 		d.onCheckPeerStaleStateTick()
 	}
-	d.ctx.tickDriverCh <- d.regionID()
+	d.ctx.tickDriverSender <- d.regionID()
 }
 
 func (d *peerMsgHandler) startTicker() {
@@ -225,7 +225,7 @@ func (d *peerMsgHandler) startTicker() {
 		d.notifyPrepareMerge()
 	}
 	d.ticker = newTicker(d.regionID(), d.ctx.cfg)
-	d.ctx.tickDriverCh <- d.regionID()
+	d.ctx.tickDriverSender <- d.regionID()
 	d.ticker.schedule(PeerTickRaft)
 	d.ticker.schedule(PeerTickRaftLogGC)
 	d.ticker.schedule(PeerTickSplitRegionCheck)
@@ -320,7 +320,7 @@ func (d *peerMsgHandler) HandleRaftReadyAppend(proposals []*regionProposal) []*r
 		d.ctx.ReadyRes = append(d.ctx.ReadyRes, readyRes)
 		ss := readyRes.Ready.SoftState
 		if ss != nil && ss.RaftState == raft.StateLeader {
-			d.peer.HeartbeatPd(d.ctx.pdScheduler)
+			d.peer.HeartbeatPd(d.ctx.pdTaskSender)
 		}
 	}
 	return proposals
@@ -434,7 +434,7 @@ func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
 		return err
 	}
 	if d.peer.AnyNewPeerCatchUp(msg.FromPeer.Id) {
-		d.peer.HeartbeatPd(d.ctx.pdScheduler)
+		d.peer.HeartbeatPd(d.ctx.pdTaskSender)
 	}
 	d.hasReady = true
 	return nil
@@ -681,7 +681,7 @@ func (d *peerMsgHandler) destroyPeer(mergeByTarget bool) {
 		d.ctx.storeMetaLock.Unlock()
 		// send messages out of store meta lock.
 		d.ctx.applyMsgs.appendMsg(regionID, NewPeerMsg(MsgTypeApplyDestroy, regionID, nil))
-		d.ctx.pdScheduler <- task{
+		d.ctx.pdTaskSender <- task{
 			tp: taskTypePDDestroyPeer,
 			data: &pdDestroyPeerTask{
 				regionID: regionID,
@@ -768,7 +768,7 @@ func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
 	if d.peer.IsLeader() {
 		// Notify pd immediately.
 		log.Infof("%s notify pd with change peer region %s", d.tag(), d.region())
-		d.peer.HeartbeatPd(d.ctx.pdScheduler)
+		d.peer.HeartbeatPd(d.ctx.pdTaskSender)
 	}
 	myPeerID := d.peerID()
 
@@ -795,7 +795,7 @@ func (d *peerMsgHandler) onReadyCompactLog(firstIndex uint64, truncatedIndex uin
 	}
 	d.peer.LastCompactedIdx = raftLogGCTask.endIdx
 	d.peer.Store().CompactTo(raftLogGCTask.endIdx)
-	d.ctx.raftLogGCScheduler <- task{
+	d.ctx.raftLogGCTaskSender <- task{
 		tp:   taskTypeRaftLogGC,
 		data: raftLogGCTask,
 	}
@@ -810,12 +810,12 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 	d.peer.PostSplit()
 	isLeader := d.peer.IsLeader()
 	if isLeader {
-		d.peer.HeartbeatPd(d.ctx.pdScheduler)
+		d.peer.HeartbeatPd(d.ctx.pdTaskSender)
 		// Notify pd immediately to let it update the region meta.
 		log.Infof("%s notify pd with split count %d", d.tag(), len(regions))
 		// Now pd only uses ReportBatchSplit for history operation show,
 		// so we send it independently here.
-		d.ctx.pdScheduler <- task{
+		d.ctx.pdTaskSender <- task{
 			tp:   taskTypePDReportBatchSplit,
 			data: &pdReportBatchSplitTask{regions: regions},
 		}
@@ -855,7 +855,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 			d.ctx.router.close(newRegionID)
 		}
 
-		newPeer, err := createPeerFsm(d.ctx.store.Id, d.ctx.cfg, d.ctx.regionScheduler, d.ctx.engine, newRegion)
+		newPeer, err := createPeerFsm(d.ctx.store.Id, d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, newRegion)
 		if err != nil {
 			// peer information is already written into db, can't recover.
 			// there is probably a bug.
@@ -877,7 +877,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 		if isLeader {
 			// The new peer is likely to become leader, send a heartbeat immediately to reduce
 			// client query miss.
-			newPeer.peer.HeartbeatPd(d.ctx.pdScheduler)
+			newPeer.peer.HeartbeatPd(d.ctx.pdTaskSender)
 		}
 
 		newPeer.peer.Activate(d.ctx.applyMsgs)
@@ -1193,7 +1193,7 @@ func (d *peerMsgHandler) onSplitRegionCheckTick() {
 	d.ticker.schedule(PeerTickSplitRegionCheck)
 	// To avoid frequent scan, we only add new scan tasks if all previous tasks
 	// have finished.
-	if len(d.ctx.splitCheckScheduler) > 0 {
+	if len(d.ctx.splitCheckTaskSender) > 0 {
 		return
 	}
 
@@ -1203,7 +1203,7 @@ func (d *peerMsgHandler) onSplitRegionCheckTick() {
 	if d.peer.SizeDiffHint < d.ctx.cfg.RegionSplitCheckDiff {
 		return
 	}
-	d.ctx.splitCheckScheduler <- task{
+	d.ctx.splitCheckTaskSender <- task{
 		tp: taskTypeSplitCheck,
 		data: &splitCheckTask{
 			region: d.region(),
@@ -1231,7 +1231,7 @@ func (d *peerMsgHandler) onPrepareSplitRegion(regionEpoch *metapb.RegionEpoch, s
 		return
 	}
 	region := d.region()
-	d.ctx.pdScheduler <- task{
+	d.ctx.pdTaskSender <- task{
 		tp: taskTypePDAskBatchSplit,
 		data: &pdAskBatchSplitTask{
 			region:      region,
@@ -1304,7 +1304,7 @@ func (d *peerMsgHandler) onScheduleHalfSplitRegion(regionEpoch *metapb.RegionEpo
 		log.Warnf("%s receive a stale halfsplit message", d.tag())
 		return
 	}
-	d.ctx.splitCheckScheduler <- task{
+	d.ctx.splitCheckTaskSender <- task{
 		tp: taskTypeHalfSplitCheck,
 		data: &splitCheckTask{
 			region: region,
@@ -1319,7 +1319,7 @@ func (d *peerMsgHandler) onPDHeartbeatTick() {
 	if !d.peer.IsLeader() {
 		return
 	}
-	d.peer.HeartbeatPd(d.ctx.pdScheduler)
+	d.peer.HeartbeatPd(d.ctx.pdTaskSender)
 }
 
 func (d *peerMsgHandler) onCheckPeerStaleStateTick() {
@@ -1357,7 +1357,7 @@ func (d *peerMsgHandler) onCheckPeerStaleStateTick() {
 		// for peer B in case 1 above
 		log.Warnf("%s leader missing longer than max_leader_missing_duration %v. To check with pd whether it's still valid",
 			d.tag(), d.ctx.cfg.AbnormalLeaderMissingDuration)
-		d.ctx.pdScheduler <- task{
+		d.ctx.pdTaskSender <- task{
 			tp: taskTypePDValidatePeer,
 			data: &pdValidatePeerTask{
 				region: d.region(),
@@ -1370,7 +1370,7 @@ func (d *peerMsgHandler) onCheckPeerStaleStateTick() {
 func (d *peerMsgHandler) onReadyComputeHash(region *metapb.Region, index uint64, snap *mvcc.DBSnapshot) {
 	d.peer.ConsistencyState.LastCheckTime = time.Now()
 	log.Infof("%s schedule compute hash task", d.tag())
-	d.ctx.computeHashScheduler <- task{
+	d.ctx.computeHashTaskSender <- task{
 		tp: taskTypeComputeHash,
 		data: &computeHashTask{
 			region: region,
