@@ -86,7 +86,6 @@ func (s *testMvccSuite) TestBasicOptimistic(c *C) {
 		svr: store.Svr,
 	}
 
-	// Prewrite key1 with smaller lock ttl
 	key1 := []byte("key1")
 	val1 := []byte("val1")
 	prewriteMut := &kvrpcpb.Mutation{
