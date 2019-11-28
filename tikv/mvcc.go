@@ -248,7 +248,7 @@ func (store *MVCCStore) TxnHeartBeat(reqCtx *requestCtx, req *kvrpcpb.TxnHeartBe
 	return 0, errors.New("lock doesn't exists")
 }
 
-// CheckTxnStatus returns the txn status based request primary key
+// CheckTxnStatus returns the txn status based on request primary key txn info
 func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	req *kvrpcpb.CheckTxnStatusRequest) (ttl, commitTS uint64, action kvrpcpb.Action, err error) {
 	hashVals := keysToHashVals(req.PrimaryKey)
