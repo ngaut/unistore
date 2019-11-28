@@ -659,6 +659,15 @@ func convertToKeyError(err error) *kvrpcpb.KeyError {
 				DeadlockKeyHash: x.DeadlockKeyHash,
 			},
 		}
+	case *ErrCommitExpire:
+		return &kvrpcpb.KeyError{
+			CommitTsExpired: &kvrpcpb.CommitTsExpired{
+				StartTs:           x.StartTs,
+				AttemptedCommitTs: x.CommitTs,
+				Key:               x.Key,
+				MinCommitTs:       x.MinCommitTs,
+			},
+		}
 	default:
 		return &kvrpcpb.KeyError{
 			Abort: err.Error(),

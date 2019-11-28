@@ -275,6 +275,7 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 				if lock.MinCommitTS < req.CurrentTs {
 					lock.MinCommitTS = req.CurrentTs
 				}
+				batch.PessimisticRollback(req.PrimaryKey)
 				batch.PessimisticLock(req.PrimaryKey, lock)
 				if err = store.dbWriter.Write(batch); err != nil {
 					return 0, 0, err
@@ -451,9 +452,10 @@ func (store *MVCCStore) buildPrewriteLock(reqCtx *requestCtx, m *kvrpcpb.Mutatio
 	req *kvrpcpb.PrewriteRequest) (*mvcc.MvccLock, error) {
 	lock := &mvcc.MvccLock{
 		MvccLockHdr: mvcc.MvccLockHdr{
-			StartTS:    req.StartVersion,
-			TTL:        uint32(req.LockTtl),
-			PrimaryLen: uint16(len(req.PrimaryLock)),
+			StartTS:     req.StartVersion,
+			TTL:         uint32(req.LockTtl),
+			PrimaryLen:  uint16(len(req.PrimaryLock)),
+			MinCommitTS: req.MinCommitTs,
 		},
 		Primary: req.PrimaryLock,
 		Value:   m.Value,
@@ -544,6 +546,16 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 		lock := mvcc.DecodeLock(buf)
 		if lock.StartTS != startTS {
 			return ErrReplaced
+		}
+		if commitTS < lock.MinCommitTS {
+			log.Infof("trying to commit with smaller commitTs=%v than minCommitTs=%v, key=%v",
+				commitTS, lock.MinCommitTS, key)
+			return &ErrCommitExpire{
+				StartTs:     startTS,
+				CommitTs:    commitTS,
+				MinCommitTs: lock.MinCommitTS,
+				Key:         key,
+			}
 		}
 		isPessimisticTxn = lock.ForUpdateTS > 0
 		tmpDiff += len(key) + len(lock.Value)
