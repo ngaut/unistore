@@ -80,3 +80,13 @@ type ErrCommitExpire struct {
 func (e *ErrCommitExpire) Error() string {
 	return "commit expired"
 }
+
+// ErrTxnNotFound is returned if the required txn info not found on storage
+type ErrTxnNotFound struct {
+	StartTS    uint64
+	PrimaryKey []byte
+}
+
+func (e *ErrTxnNotFound) Error() string {
+	return "txn not found"
+}

@@ -184,7 +184,7 @@ func RollBackKey(key []byte, startTs uint64, store *TestStore) error {
 }
 
 func CheckTxnStatus(pk []byte, lockTs uint64, callerStartTs uint64,
-	currentTs uint64, store *TestStore) (uint64, uint64, error) {
+	currentTs uint64, rollbackIfNotExists bool, store *TestStore) (uint64, uint64, kvrpcpb.Action, error) {
 	reqCtx := &requestCtx{
 		regCtx: &regionCtx{
 			latches: make(map[uint64]*sync.WaitGroup),
@@ -192,13 +192,14 @@ func CheckTxnStatus(pk []byte, lockTs uint64, callerStartTs uint64,
 		svr: store.Svr,
 	}
 	req := &kvrpcpb.CheckTxnStatusRequest{
-		PrimaryKey:    pk,
-		LockTs:        lockTs,
-		CallerStartTs: callerStartTs,
-		CurrentTs:     currentTs,
+		PrimaryKey:         pk,
+		LockTs:             lockTs,
+		CallerStartTs:      callerStartTs,
+		CurrentTs:          currentTs,
+		RollbackIfNotExist: rollbackIfNotExists,
 	}
-	resTTL, resCommitTs, err := store.MvccStore.CheckTxnStatus(reqCtx, req)
-	return resTTL, resCommitTs, err
+	resTTL, resCommitTs, action, err := store.MvccStore.CheckTxnStatus(reqCtx, req)
+	return resTTL, resCommitTs, action, err
 }
 
 func MustPrewriteOptimistic(pk []byte, key []byte, value []byte, startTs uint64, lockTTL uint64,
@@ -369,15 +370,17 @@ func (s *testMvccSuite) TestCheckTxnStatus(c *C) {
 	defer CleanTestStore(store)
 
 	var resTTL, resCommitTs uint64
+	var action kvrpcpb.Action
 	pk := []byte("pk")
 	startTs := uint64(1)
 	callerStartTs := uint64(3)
 	currentTs := uint64(5)
 
 	// Try to check a not exist thing.
-	resTTL, resCommitTs, err = CheckTxnStatus(pk, startTs, callerStartTs, currentTs, store)
+	resTTL, resCommitTs, action, err = CheckTxnStatus(pk, startTs, callerStartTs, currentTs, true, store)
 	c.Assert(resTTL, Equals, uint64(0))
 	c.Assert(resCommitTs, Equals, uint64(0))
+	c.Assert(action, Equals, kvrpcpb.Action_LockNotExistRollback)
 	c.Assert(err, IsNil)
 
 	// Using same startTs, prewrite will fail, since checkTxnStatus has rollbacked the key
@@ -390,17 +393,19 @@ func (s *testMvccSuite) TestCheckTxnStatus(c *C) {
 	// Prewrite a large txn
 	startTs = 2
 	MustPrewriteOptimistic(pk, pk, val, startTs, lockTTL, minCommitTs, store, c)
-	resTTL, resCommitTs, err = CheckTxnStatus(pk, startTs, callerStartTs, currentTs, store)
+	resTTL, resCommitTs, action, err = CheckTxnStatus(pk, startTs, callerStartTs, currentTs, true, store)
 	c.Assert(resTTL, Equals, lockTTL)
 	c.Assert(resCommitTs, Equals, uint64(0))
 	c.Assert(err, IsNil)
+	c.Assert(action, Equals, kvrpcpb.Action_MinCommitTSPushed)
 
 	// Update min_commit_ts to current_ts. minCommitTs 20 -> 25
 	newCallerTs := uint64(25)
-	resTTL, resCommitTs, err = CheckTxnStatus(pk, startTs, newCallerTs, newCallerTs, store)
+	resTTL, resCommitTs, action, err = CheckTxnStatus(pk, startTs, newCallerTs, newCallerTs, true, store)
 	c.Assert(resTTL, Equals, lockTTL)
 	c.Assert(resCommitTs, Equals, uint64(0))
 	c.Assert(err, IsNil)
+	c.Assert(action, Equals, kvrpcpb.Action_MinCommitTSPushed)
 	reqCtx := &requestCtx{
 		regCtx: &regionCtx{
 			latches: make(map[uint64]*sync.WaitGroup),
@@ -413,10 +418,11 @@ func (s *testMvccSuite) TestCheckTxnStatus(c *C) {
 	c.Assert(lock.MinCommitTS, Equals, newCallerTs+1)
 
 	// When caller_start_ts < lock.min_commit_ts, here 25 < 26, no need to update it.
-	resTTL, resCommitTs, err = CheckTxnStatus(pk, startTs, newCallerTs, newCallerTs, store)
+	resTTL, resCommitTs, action, err = CheckTxnStatus(pk, startTs, newCallerTs, newCallerTs, true, store)
 	c.Assert(resTTL, Equals, lockTTL)
 	c.Assert(resCommitTs, Equals, uint64(0))
 	c.Assert(err, IsNil)
+	c.Assert(action, Equals, kvrpcpb.Action_MinCommitTSPushed)
 	reqCtx.buf = nil
 	lock = store.MvccStore.getLock(reqCtx, pk)
 	c.Assert(lock.StartTS, Equals, startTs)
@@ -426,10 +432,11 @@ func (s *testMvccSuite) TestCheckTxnStatus(c *C) {
 	// current_ts(25) < lock.min_commit_ts(26) < caller_start_ts(35)
 	currentTs = uint64(25)
 	newCallerTs = 35
-	resTTL, resCommitTs, err = CheckTxnStatus(pk, startTs, newCallerTs, currentTs, store)
+	resTTL, resCommitTs, action, err = CheckTxnStatus(pk, startTs, newCallerTs, currentTs, true, store)
 	c.Assert(resTTL, Equals, lockTTL)
 	c.Assert(resCommitTs, Equals, uint64(0))
 	c.Assert(err, IsNil)
+	c.Assert(action, Equals, kvrpcpb.Action_MinCommitTSPushed)
 	reqCtx.buf = nil
 	lock = store.MvccStore.getLock(reqCtx, pk)
 	c.Assert(lock.StartTS, Equals, startTs)
@@ -438,10 +445,11 @@ func (s *testMvccSuite) TestCheckTxnStatus(c *C) {
 
 	// current_ts is max value 40, but no effect since caller_start_ts is smaller than minCommitTs
 	currentTs = uint64(40)
-	resTTL, resCommitTs, err = CheckTxnStatus(pk, startTs, newCallerTs, currentTs, store)
+	resTTL, resCommitTs, action, err = CheckTxnStatus(pk, startTs, newCallerTs, currentTs, true, store)
 	c.Assert(resTTL, Equals, lockTTL)
 	c.Assert(resCommitTs, Equals, uint64(0))
 	c.Assert(err, IsNil)
+	c.Assert(action, Equals, kvrpcpb.Action_MinCommitTSPushed)
 	reqCtx.buf = nil
 	lock = store.MvccStore.getLock(reqCtx, pk)
 	c.Assert(lock.StartTS, Equals, startTs)
@@ -460,8 +468,9 @@ func (s *testMvccSuite) TestCheckTxnStatus(c *C) {
 	// check committed txn status
 	currentTs = uint64(42)
 	newCallerTs = uint64(42)
-	resTTL, resCommitTs, err = CheckTxnStatus(pk, startTs, newCallerTs, currentTs, store)
+	resTTL, resCommitTs, action, err = CheckTxnStatus(pk, startTs, newCallerTs, currentTs, true, store)
 	c.Assert(resTTL, Equals, uint64(0))
 	c.Assert(resCommitTs, Equals, uint64(41))
 	c.Assert(err, IsNil)
+	c.Assert(action, Equals, kvrpcpb.Action_NoAction)
 }
