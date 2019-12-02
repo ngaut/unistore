@@ -250,6 +250,7 @@ func MustRollbackKey(key []byte, startTs uint64, store *TestStore, c *C) {
 func TestMvcc(t *testing.T) {
 	TestingT(t)
 }
+
 func (s *testMvccSuite) TestBasicOptimistic(c *C) {
 	var err error
 	store, err := NewTestStore("basic_optimistic_db", "basic_optimistic_log")
@@ -510,19 +511,26 @@ func (s *testMvccSuite) TestMvccGetByKey(c *C) {
 	c.Assert(len(res.Writes), Equals, 2)
 	c.Assert(len(res.Values), Equals, 2)
 
-	// put empty value
+	// prewrite and then rollback
+	// Add a Rollback whose start ts is 1.
 	startTs3 := uint64(5)
-	commitTs3 := uint64(6)
+	rollbackVal := []byte("rollbackVal")
+	MustPrewriteOptimistic(pk, pk, rollbackVal, startTs3, lockTTL, 0, store, c)
+	MustRollbackKey(pk, startTs3, store, c)
+
+	// put empty value
+	startTs4 := uint64(7)
+	commitTs4 := uint64(8)
 	emptyVal := []byte("")
-	MustPrewriteOptimistic(pk, pk, emptyVal, startTs3, lockTTL, 0, store, c)
-	MustCommitKey(pk, emptyVal, startTs3, commitTs3, store, c)
+	MustPrewriteOptimistic(pk, pk, emptyVal, startTs4, lockTTL, 0, store, c)
+	MustCommitKey(pk, emptyVal, startTs4, commitTs4, store, c)
 
 	// read using mvcc
 	reqCtx.reader = nil
 	res, err = store.MvccStore.MvccGetByKey(reqCtx, pk)
 	c.Assert(err, IsNil)
-	c.Assert(len(res.Writes), Equals, 3)
-	c.Assert(len(res.Values), Equals, 3)
+	c.Assert(len(res.Writes), Equals, 4)
+	c.Assert(len(res.Values), Equals, 4)
 	c.Assert(res.Writes[2].StartTs, Equals, startTs1)
 	c.Assert(res.Writes[2].CommitTs, Equals, commitTs1)
 	c.Assert(bytes.Compare(res.Writes[2].ShortValue, pkVal), Equals, 0)
@@ -535,9 +543,13 @@ func (s *testMvccSuite) TestMvccGetByKey(c *C) {
 	c.Assert(res.Values[1].StartTs, Equals, startTs2)
 	c.Assert(bytes.Compare(res.Values[1].Value, newVal), Equals, 0)
 
-	c.Assert(res.Writes[0].StartTs, Equals, startTs3)
-	c.Assert(res.Writes[0].CommitTs, Equals, commitTs3)
+	c.Assert(res.Writes[0].StartTs, Equals, startTs4)
+	c.Assert(res.Writes[0].CommitTs, Equals, commitTs4)
 	c.Assert(bytes.Compare(res.Writes[0].ShortValue, emptyVal), Equals, 0)
-	c.Assert(res.Values[0].StartTs, Equals, startTs3)
+	c.Assert(res.Values[0].StartTs, Equals, startTs4)
 	c.Assert(bytes.Compare(res.Values[0].Value, emptyVal), Equals, 0)
+
+	c.Assert(res.Writes[3].StartTs, Equals, startTs3)
+	c.Assert(res.Writes[3].CommitTs, Equals, startTs3)
+	c.Assert(bytes.Compare(res.Writes[3].ShortValue, []byte{0}), Equals, 0)
 }

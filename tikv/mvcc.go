@@ -916,36 +916,30 @@ func (store *MVCCStore) MvccGetByKey(reqCtx *requestCtx, key []byte) (*kvrpcpb.M
 			ShortValue: lock.Value,
 		}
 	}
-	startTs := uint64(math.MaxUint64)
 	reader := reqCtx.getDBReader()
 	isRowKey := rowcodec.IsRowKey(key)
-	for {
-		res, err := reader.GetWithMeta(key, startTs)
-		if err != nil {
-			return nil, err
+	// Get commit writes from db
+	err := reader.GetMvccInfoByKey(key, isRowKey, mvccInfo)
+	if err != nil {
+		return nil, err
+	}
+	// Get rollback writes from rollback store
+	it := store.rollbackStore.NewIterator()
+	rbStartKey := mvcc.EncodeRollbackKey(reqCtx.buf, key, uint64(math.MaxUint64))
+	for it.Seek(rbStartKey); it.Valid() && bytes.HasPrefix(it.Key(), key); it.Next() {
+		rollbackTs := mvcc.DecodeRollbackTS(it.Key())
+		curRecord := &kvrpcpb.MvccWrite{
+			Type:       kvrpcpb.Op_Rollback,
+			StartTs:    rollbackTs,
+			CommitTs:   rollbackTs,
+			ShortValue: it.Value(),
 		}
-		if res == nil {
-			break
+		curVal := &kvrpcpb.MvccValue{
+			StartTs: rollbackTs,
+			Value:   it.Value(),
 		}
-		val := res.Value
-		if isRowKey {
-			val, err = rowcodec.RowToOldRow(res.Value, nil)
-			if err != nil {
-				return nil, err
-			}
-		}
-		newWrite := &kvrpcpb.MvccWrite{}
-		newWrite.StartTs = res.StartTs
-		newWrite.CommitTs = res.CommitTs
-		if len(res.Value) <= mvcc.ShortValueMaxLen {
-			newWrite.ShortValue = val
-		}
-		mvccInfo.Writes = append(mvccInfo.Writes, newWrite)
-		newValue := &kvrpcpb.MvccValue{}
-		newValue.StartTs = res.StartTs
-		newValue.Value = val
-		mvccInfo.Values = append(mvccInfo.Values, newValue)
-		startTs = res.CommitTs - 1
+		mvccInfo.Writes = append(mvccInfo.Writes, curRecord)
+		mvccInfo.Values = append(mvccInfo.Values, curVal)
 	}
 	return mvccInfo, nil
 }
