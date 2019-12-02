@@ -905,6 +905,51 @@ func (store *MVCCStore) StartDeadlockDetection(ctx context.Context, pdClient pd.
 	return nil
 }
 
+func (store *MVCCStore) MvccGetByKey(reqCtx *requestCtx, key []byte) (*kvrpcpb.MvccInfo, error) {
+	mvccInfo := &kvrpcpb.MvccInfo{}
+	lock := store.getLock(reqCtx, key)
+	if lock != nil {
+		mvccInfo.Lock = &kvrpcpb.MvccLock{
+			Type:       kvrpcpb.Op(lock.Op),
+			StartTs:    lock.StartTS,
+			Primary:    lock.Primary,
+			ShortValue: lock.Value,
+		}
+	}
+	startTs := uint64(math.MaxUint64)
+	reader := reqCtx.getDBReader()
+	isRowKey := rowcodec.IsRowKey(key)
+	for {
+		res, err := reader.GetWithMeta(key, startTs)
+		if err != nil {
+			return nil, err
+		}
+		if res == nil {
+			break
+		}
+		val := res.Value
+		if isRowKey {
+			val, err = rowcodec.RowToOldRow(res.Value, nil)
+			if err != nil {
+				return nil, err
+			}
+		}
+		newWrite := &kvrpcpb.MvccWrite{}
+		newWrite.StartTs = res.StartTs
+		newWrite.CommitTs = res.CommitTs
+		if len(res.Value) <= mvcc.ShortValueMaxLen {
+			newWrite.ShortValue = val
+		}
+		mvccInfo.Writes = append(mvccInfo.Writes, newWrite)
+		newValue := &kvrpcpb.MvccValue{}
+		newValue.StartTs = res.StartTs
+		newValue.Value = val
+		mvccInfo.Values = append(mvccInfo.Values, newValue)
+		startTs = res.CommitTs - 1
+	}
+	return mvccInfo, nil
+}
+
 type SafePoint struct {
 	timestamp uint64
 }

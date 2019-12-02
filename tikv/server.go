@@ -559,9 +559,22 @@ func (svr *Server) ReadIndex(context.Context, *kvrpcpb.ReadIndexRequest) (*kvrpc
 }
 
 // transaction debugger commands.
-func (svr *Server) MvccGetByKey(context.Context, *kvrpcpb.MvccGetByKeyRequest) (*kvrpcpb.MvccGetByKeyResponse, error) {
-	// TODO
-	return nil, nil
+func (svr *Server) MvccGetByKey(ctx context.Context, req *kvrpcpb.MvccGetByKeyRequest) (*kvrpcpb.MvccGetByKeyResponse, error) {
+	reqCtx, err := newRequestCtx(svr, req.Context, "MvccGetByKey")
+	if err != nil {
+		return &kvrpcpb.MvccGetByKeyResponse{Error: err.Error()}, nil
+	}
+	defer reqCtx.finish()
+	if reqCtx.regErr != nil {
+		return &kvrpcpb.MvccGetByKeyResponse{RegionError: reqCtx.regErr}, nil
+	}
+	resp := new(kvrpcpb.MvccGetByKeyResponse)
+	mvccInfo, err := svr.mvccStore.MvccGetByKey(reqCtx, req.GetKey())
+	if err != nil {
+		resp.Error = err.Error()
+	}
+	resp.Info = mvccInfo
+	return resp, nil
 }
 
 func (svr *Server) MvccGetByStartTs(context.Context, *kvrpcpb.MvccGetByStartTsRequest) (*kvrpcpb.MvccGetByStartTsResponse, error) {

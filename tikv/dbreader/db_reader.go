@@ -22,8 +22,12 @@ func NewDBReader(startKey, endKey []byte, txn *badger.Txn, safePoint uint64) *DB
 func NewIterator(txn *badger.Txn, reverse bool, startKey, endKey []byte) *badger.Iterator {
 	opts := badger.DefaultIteratorOptions
 	opts.Reverse = reverse
-	opts.StartKey = y.KeyWithTs(startKey, math.MaxUint64)
-	opts.EndKey = y.KeyWithTs(endKey, math.MaxUint64)
+	if len(startKey) > 0 {
+		opts.StartKey = y.KeyWithTs(startKey, math.MaxUint64)
+	}
+	if len(endKey) > 0 {
+		opts.EndKey = y.KeyWithTs(endKey, math.MaxUint64)
+	}
 	return txn.NewIterator(opts)
 }
 
@@ -36,6 +40,72 @@ type DBReader struct {
 	revIter   *badger.Iterator
 	oldIter   *badger.Iterator
 	safePoint uint64
+}
+
+type RecordWithMeta struct {
+	StartTs  uint64
+	CommitTs uint64
+	Value    []byte
+}
+
+func (r *DBReader) GetWithMeta(key []byte, startTs uint64) (*RecordWithMeta, error) {
+	item, err := r.txn.Get(key)
+	if err != nil && err != badger.ErrKeyNotFound {
+		return nil, errors.Trace(err)
+	}
+	if err == badger.ErrKeyNotFound {
+		return nil, nil
+	}
+	dbUsrMeta := mvcc.DBUserMeta(item.UserMeta())
+	if dbUsrMeta.CommitTS() <= startTs {
+		val, err := item.Value()
+		if err != nil {
+			return nil, err
+		}
+		res := &RecordWithMeta{
+			StartTs:  dbUsrMeta.StartTS(),
+			CommitTs: dbUsrMeta.CommitTS(),
+			Value:    val,
+		}
+		return res, nil
+	}
+	return r.GetOldWithMeta(key, startTs)
+}
+
+func (r *DBReader) GetOldWithMeta(key []byte, startTs uint64) (*RecordWithMeta, error) {
+	oldKey := mvcc.EncodeOldKey(key, startTs)
+	iter := r.GetIter()
+	iter.Seek(oldKey)
+	if !iter.ValidForPrefix(oldKey[:len(oldKey)-8]) {
+		return nil, nil
+	}
+	item := iter.Item()
+	oldUsrMeta := mvcc.OldUserMeta(item.UserMeta())
+	nextCommitTs := oldUsrMeta.NextCommitTS()
+	if nextCommitTs < r.safePoint {
+		// This entry is eligible for GC. Normally we will not see this version.
+		// But when the latest version is DELETE and it is GCed first,
+		// we may end up here, so we should ignore the obsolete version.
+		return nil, nil
+	}
+	if nextCommitTs <= startTs {
+		// There should be a newer entry for this key, so ignore this entry.
+		return nil, nil
+	}
+	commitTs, err := mvcc.DecodeOldKeyCommitTs(item.Key())
+	if err != nil {
+		return nil, err
+	}
+	val, err := item.Value()
+	if err != nil {
+		return nil, err
+	}
+	res := &RecordWithMeta{
+		StartTs:  oldUsrMeta.StartTS(),
+		CommitTs: commitTs,
+		Value:    val,
+	}
+	return res, nil
 }
 
 func (r *DBReader) Get(key []byte, startTS uint64) ([]byte, error) {
