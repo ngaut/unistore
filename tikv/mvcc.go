@@ -932,14 +932,9 @@ func (store *MVCCStore) MvccGetByKey(reqCtx *requestCtx, key []byte) (*kvrpcpb.M
 			Type:       kvrpcpb.Op_Rollback,
 			StartTs:    rollbackTs,
 			CommitTs:   rollbackTs,
-			ShortValue: it.Value(),
-		}
-		curVal := &kvrpcpb.MvccValue{
-			StartTs: rollbackTs,
-			Value:   it.Value(),
+			ShortValue: safeCopy(it.Value()),
 		}
 		mvccInfo.Writes = append(mvccInfo.Writes, curRecord)
-		mvccInfo.Values = append(mvccInfo.Values, curVal)
 	}
 	return mvccInfo, nil
 }

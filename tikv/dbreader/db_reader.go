@@ -81,16 +81,12 @@ func (r *DBReader) getKeyWithMeta(key []byte, isRowKey bool, startTs uint64, mvc
 			}
 		}
 		curRecord := &kvrpcpb.MvccWrite{
-			Type:     kvrpcpb.Op_Put,
-			StartTs:  dbUsrMeta.StartTS(),
-			CommitTs: dbUsrMeta.CommitTS(),
-		}
-		curVal := &kvrpcpb.MvccValue{StartTs: curRecord.StartTs, Value: val}
-		if len(curRecord.ShortValue) <= mvcc.ShortValueMaxLen {
-			curRecord.ShortValue = val
+			Type:       kvrpcpb.Op_Put,
+			StartTs:    dbUsrMeta.StartTS(),
+			CommitTs:   dbUsrMeta.CommitTS(),
+			ShortValue: val,
 		}
 		mvccInfo.Writes = append(mvccInfo.Writes, curRecord)
-		mvccInfo.Values = append(mvccInfo.Values, curVal)
 	}
 	return nil
 }
@@ -117,16 +113,12 @@ func (r *DBReader) getOldKeysWithMeta(key []byte, startTs uint64, isRowKey bool,
 			}
 		}
 		curRecord := &kvrpcpb.MvccWrite{
-			Type:     kvrpcpb.Op_Put,
-			StartTs:  oldUsrMeta.StartTS(),
-			CommitTs: commitTs,
-		}
-		valueItem := &kvrpcpb.MvccValue{StartTs: curRecord.StartTs, Value: val}
-		if len(curRecord.ShortValue) <= mvcc.ShortValueMaxLen {
-			curRecord.ShortValue = val
+			Type:       kvrpcpb.Op_Put,
+			StartTs:    oldUsrMeta.StartTS(),
+			CommitTs:   commitTs,
+			ShortValue: val,
 		}
 		mvccInfo.Writes = append(mvccInfo.Writes, curRecord)
-		mvccInfo.Values = append(mvccInfo.Values, valueItem)
 	}
 
 	return nil

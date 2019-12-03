@@ -509,7 +509,6 @@ func (s *testMvccSuite) TestMvccGetByKey(c *C) {
 	res, err = store.MvccStore.MvccGetByKey(reqCtx, pk)
 	c.Assert(err, IsNil)
 	c.Assert(len(res.Writes), Equals, 2)
-	c.Assert(len(res.Values), Equals, 2)
 
 	// prewrite and then rollback
 	// Add a Rollback whose start ts is 5.
@@ -530,24 +529,17 @@ func (s *testMvccSuite) TestMvccGetByKey(c *C) {
 	res, err = store.MvccStore.MvccGetByKey(reqCtx, pk)
 	c.Assert(err, IsNil)
 	c.Assert(len(res.Writes), Equals, 4)
-	c.Assert(len(res.Values), Equals, 4)
 	c.Assert(res.Writes[2].StartTs, Equals, startTs1)
 	c.Assert(res.Writes[2].CommitTs, Equals, commitTs1)
 	c.Assert(bytes.Compare(res.Writes[2].ShortValue, pkVal), Equals, 0)
-	c.Assert(res.Values[2].StartTs, Equals, startTs1)
-	c.Assert(bytes.Compare(res.Values[2].Value, pkVal), Equals, 0)
 
 	c.Assert(res.Writes[1].StartTs, Equals, startTs2)
 	c.Assert(res.Writes[1].CommitTs, Equals, commitTs2)
 	c.Assert(bytes.Compare(res.Writes[1].ShortValue, newVal), Equals, 0)
-	c.Assert(res.Values[1].StartTs, Equals, startTs2)
-	c.Assert(bytes.Compare(res.Values[1].Value, newVal), Equals, 0)
 
 	c.Assert(res.Writes[0].StartTs, Equals, startTs4)
 	c.Assert(res.Writes[0].CommitTs, Equals, commitTs4)
 	c.Assert(bytes.Compare(res.Writes[0].ShortValue, emptyVal), Equals, 0)
-	c.Assert(res.Values[0].StartTs, Equals, startTs4)
-	c.Assert(bytes.Compare(res.Values[0].Value, emptyVal), Equals, 0)
 
 	c.Assert(res.Writes[3].StartTs, Equals, startTs3)
 	c.Assert(res.Writes[3].CommitTs, Equals, startTs3)
