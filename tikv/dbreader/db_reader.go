@@ -70,7 +70,7 @@ func (r *DBReader) getKeyWithMeta(key []byte, isRowKey bool, startTs uint64, mvc
 	}
 	dbUsrMeta := mvcc.DBUserMeta(item.UserMeta())
 	if dbUsrMeta.CommitTS() <= startTs {
-		val, err := item.Value()
+		val, err := item.ValueCopy(nil)
 		if err != nil {
 			return err
 		}
