@@ -106,7 +106,7 @@ func (r *DBReader) getOldKeysWithMeta(key []byte, startTs uint64, isRowKey bool,
 		if err != nil {
 			return err
 		}
-		val, err := item.Value()
+		val, err := item.ValueCopy(nil)
 		if err != nil {
 			return err
 		}
