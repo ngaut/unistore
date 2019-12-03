@@ -512,7 +512,7 @@ func (s *testMvccSuite) TestMvccGetByKey(c *C) {
 	c.Assert(len(res.Values), Equals, 2)
 
 	// prewrite and then rollback
-	// Add a Rollback whose start ts is 1.
+	// Add a Rollback whose start ts is 5.
 	startTs3 := uint64(5)
 	rollbackVal := []byte("rollbackVal")
 	MustPrewriteOptimistic(pk, pk, rollbackVal, startTs3, lockTTL, 0, store, c)
