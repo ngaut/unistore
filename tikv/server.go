@@ -134,6 +134,8 @@ func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb
 	}
 	if rowcodec.IsRowKey(req.Key) {
 		val, err = rowcodec.RowToOldRow(val, nil)
+	} else {
+		val = safeCopy(val)
 	}
 	return &kvrpcpb.GetResponse{
 		Value: val,

@@ -70,12 +70,18 @@ func (r *DBReader) getKeyWithMeta(key []byte, isRowKey bool, startTs uint64, mvc
 	}
 	dbUsrMeta := mvcc.DBUserMeta(item.UserMeta())
 	if dbUsrMeta.CommitTS() <= startTs {
-		val, err := item.ValueCopy(nil)
-		if err != nil {
-			return err
-		}
+		var val []byte
 		if isRowKey {
+			val, err = item.Value()
+			if err != nil {
+				return err
+			}
 			val, err = rowcodec.RowToOldRow(val, nil)
+			if err != nil {
+				return err
+			}
+		} else {
+			val, err = item.ValueCopy(nil)
 			if err != nil {
 				return err
 			}
@@ -102,12 +108,18 @@ func (r *DBReader) getOldKeysWithMeta(key []byte, startTs uint64, isRowKey bool,
 		if err != nil {
 			return err
 		}
-		val, err := item.ValueCopy(nil)
-		if err != nil {
-			return err
-		}
+		var val []byte
 		if isRowKey {
+			val, err = item.Value()
+			if err != nil {
+				return err
+			}
 			val, err = rowcodec.RowToOldRow(val, nil)
+			if err != nil {
+				return err
+			}
+		} else {
+			val, err = item.ValueCopy(nil)
 			if err != nil {
 				return err
 			}
