@@ -6,7 +6,6 @@ import (
 	"io/ioutil"
 	"os"
 	"sync"
-	"testing"
 
 	"github.com/coocood/badger"
 	"github.com/ngaut/unistore/lockstore"
@@ -179,10 +178,6 @@ func MustRollbackKey(key []byte, startTs uint64, store *TestStore, c *C) {
 	rollbackKey := mvcc.EncodeRollbackKey(nil, key, startTs)
 	res := store.MvccStore.rollbackStore.Get(rollbackKey, nil)
 	c.Assert(bytes.Compare(res, []byte{0}), Equals, 0)
-}
-
-func TestMvcc(t *testing.T) {
-	TestingT(t)
 }
 
 func (s *testMvccSuite) TestBasicOptimistic(c *C) {
@@ -490,4 +485,17 @@ func (s *testMvccSuite) TestPrimaryKeyOpLock(c *C) {
 
 	_, commitTS, _, _ = CheckTxnStatus(pk(), 120, 130, 130, false, store)
 	c.Assert(commitTS, Equals, uint64(121))
+
+	getVal, err := store.newReqCtx().getDBReader().Get(pk(), 90)
+	c.Assert(err, IsNil)
+	c.Assert(getVal, IsNil)
+	getVal, err = store.newReqCtx().getDBReader().Get(pk(), 110)
+	c.Assert(err, IsNil)
+	c.Assert(getVal, IsNil)
+	getVal, err = store.newReqCtx().getDBReader().Get(pk(), 111)
+	c.Assert(err, IsNil)
+	c.Assert(getVal, DeepEquals, []byte("val"))
+	getVal, err = store.newReqCtx().getDBReader().Get(pk(), 130)
+	c.Assert(err, IsNil)
+	c.Assert(getVal, DeepEquals, []byte("val"))
 }
