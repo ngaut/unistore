@@ -51,10 +51,20 @@ func (r *DBReader) GetMvccInfoByKey(key []byte, isRowKey bool, mvccInfo *kvrpcpb
 		return err
 	}
 	if len(mvccInfo.Writes) > 0 {
-		err = r.getOldKeysWithMeta(key, mvccInfo.Writes[0].CommitTs, isRowKey, mvccInfo)
+		oldKey := mvcc.EncodeOldKey(key, mvccInfo.Writes[0].CommitTs)
+		err = r.getOldKeysWithMeta(oldKey, isRowKey, mvccInfo)
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// GetMvccInfoByOldKey fills MvccInfo reading old keys from db
+func (r *DBReader) GetMvccInfoByOldKey(oldKey []byte, isRowKey bool, mvccInfo *kvrpcpb.MvccInfo) error {
+	err := r.getOldKeysWithMeta(oldKey, isRowKey, mvccInfo)
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -98,11 +108,11 @@ func (r *DBReader) getKeyWithMeta(key []byte, isRowKey bool, startTs uint64, mvc
 }
 
 // getOldKeysWithMeta will try to fill mvccInfo with all the historical committed records
-func (r *DBReader) getOldKeysWithMeta(key []byte, startTs uint64, isRowKey bool, mvccInfo *kvrpcpb.MvccInfo) error {
-	oldKey := mvcc.EncodeOldKey(key, startTs)
-	iter := r.GetIter()
-	for iter.Seek(oldKey); iter.ValidForPrefix(oldKey[:len(oldKey)-8]); iter.Next() {
-		item := iter.Item()
+// the oldKey should be in old-key encoded format
+func (r *DBReader) getOldKeysWithMeta(oldKey []byte, isRowKey bool, mvccInfo *kvrpcpb.MvccInfo) error {
+	oldIter := r.GetOldIter()
+	for oldIter.Seek(oldKey); oldIter.ValidForPrefix(oldKey[:len(oldKey)-8]); oldIter.Next() {
+		item := oldIter.Item()
 		oldUsrMeta := mvcc.OldUserMeta(item.UserMeta())
 		commitTs, err := mvcc.DecodeOldKeyCommitTs(item.Key())
 		if err != nil {
@@ -171,9 +181,13 @@ func (r *DBReader) getReverseIter() *badger.Iterator {
 func (r *DBReader) GetOldIter() *badger.Iterator {
 	if r.oldIter == nil {
 		oldStartKey := append([]byte{}, r.startKey...)
-		oldStartKey[0]++
+		if len(oldStartKey) > 0 {
+			oldStartKey[0]++
+		}
 		oldEndKey := append([]byte{}, r.endKey...)
-		oldEndKey[0]++
+		if len(oldEndKey) > 0 {
+			oldEndKey[0]++
+		}
 		r.oldIter = NewIterator(r.txn, false, oldStartKey, oldEndKey)
 	}
 	return r.oldIter
