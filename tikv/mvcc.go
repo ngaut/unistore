@@ -953,42 +953,72 @@ func (store *MVCCStore) getRollbackMvcc(rawkey []byte, ts uint64,
 
 func (store *MVCCStore) MvccGetByStartTs(reqCtx *requestCtx, startTs uint64) (*kvrpcpb.MvccInfo, []byte, error) {
 	reader := reqCtx.getDBReader()
-	// try to find correspond txn with input startTs using oltIter
 	var item *badger.Item
-	oldIter := reader.GetOldIter()
-	for oldIter.Rewind(); oldIter.Valid(); oldIter.Next() {
-		curItem := oldIter.Item()
-		if len(curItem.UserMeta()) > 0 {
-			meta := mvcc.DBUserMeta(curItem.UserMeta())
-			if meta.StartTS() == startTs {
-				item = curItem
-				break
-			}
+	// try to find using iter
+	startKey := reqCtx.regCtx.startKey
+	endKey := reqCtx.regCtx.endKey
+	iter := reader.GetIter()
+	for iter.Seek(startKey); iter.Valid(); iter.Next() {
+		curItem := iter.Item()
+		curKey := curItem.Key()
+		if bytes.Compare(curKey, endKey) > 0 {
+			break
+		}
+		meta := mvcc.DBUserMeta(curItem.UserMeta())
+		if meta.StartTS() == startTs {
+			item = curItem
+			break
 		}
 	}
 	if item != nil {
-		key := item.Key()
-		if IsCurDataKey(key) {
-			res, err := store.MvccGetByKey(reqCtx, key)
-			if err != nil {
-				return nil, nil, err
-			}
-			return res, key, nil
+		resKey := item.KeyCopy(nil)
+		res, err := store.MvccGetByKey(reqCtx, resKey)
+		if err != nil {
+			return nil, nil, err
 		}
-		if IsOldDataKey(key) {
-			mvccInfo := &kvrpcpb.MvccInfo{}
-			rawKey, _, err := mvcc.DecodeOldKey(key)
-			isRowKey := rowcodec.IsRowKey(rawKey)
-			err = reader.GetMvccInfoByOldKey(key, isRowKey, mvccInfo)
-			if err != nil {
-				return nil, nil, err
-			}
-			err = store.getRollbackMvcc(rawKey, startTs, reqCtx, mvccInfo)
-			if err != nil {
-				return nil, nil, err
-			}
-			return mvccInfo, rawKey, nil
+		return res, resKey, nil
+	}
+	// try to find correspond txn with input startTs using oltIter
+	// startKey = "t" and oldKey = "u" cannot be mapped using EncodeOldKey directly
+	var oldStartKey []byte
+	var oldEndKey []byte
+	if IsRecordKey(startKey) {
+		oldStartKey = mvcc.EncodeOldKey(startKey, startTs)
+	} else {
+		oldStartKey = []byte("u")
+	}
+	if IsRecordKey(endKey) {
+		oldEndKey = mvcc.EncodeOldKey(endKey, startTs)
+	} else {
+		oldEndKey = []byte("v")
+	}
+	oldIter := reader.GetOldIter()
+	for oldIter.Seek(oldStartKey); oldIter.Valid(); oldIter.Next() {
+		curItem := oldIter.Item()
+		curKey := curItem.Key()
+		if bytes.Compare(curKey, oldEndKey) > 0 {
+			break
 		}
+		oldMeta := mvcc.OldUserMeta(curItem.UserMeta())
+		if oldMeta.StartTS() == startTs {
+			item = curItem
+			break
+		}
+	}
+	if item != nil {
+		oldKey := item.KeyCopy(nil)
+		mvccInfo := &kvrpcpb.MvccInfo{}
+		rawKey, _, err := mvcc.DecodeOldKey(oldKey)
+		isRowKey := rowcodec.IsRowKey(rawKey)
+		err = reader.GetMvccInfoByOldKey(oldKey, isRowKey, mvccInfo)
+		if err != nil {
+			return nil, nil, err
+		}
+		err = store.getRollbackMvcc(rawKey, startTs, reqCtx, mvccInfo)
+		if err != nil {
+			return nil, nil, err
+		}
+		return mvccInfo, rawKey, nil
 	}
 	return nil, nil, nil
 }
@@ -1073,17 +1103,9 @@ func (f *GCCompactionFilter) Guards() []badger.Guard {
 	}
 }
 
-// IsCurDataKey returns current key type, true if it's current key
-func IsCurDataKey(key []byte) bool {
-	if len(key) > 0 && key[0] == tablePrefix {
-		return true
-	}
-	return false
-}
-
-// IsOldDataKey returns if the key is old key
-func IsOldDataKey(key []byte) bool {
-	if len(key) > 0 && key[0] == tableOldPrefix {
+// IsRecordKey returns current key type, true if it's record type
+func IsRecordKey(key []byte) bool {
+	if len(key) > 1 && key[0] == tablePrefix {
 		return true
 	}
 	return false
