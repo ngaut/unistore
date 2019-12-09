@@ -287,7 +287,7 @@ func (r *DBReader) GetKeyByStartTs(startKey, endKey []byte, startTs uint64) ([]b
 	for iter.Seek(startKey); iter.Valid(); iter.Next() {
 		curItem := iter.Item()
 		curKey := curItem.Key()
-		if bytes.Compare(curKey, endKey) > 0 {
+		if bytes.Compare(curKey, endKey) >= 0 {
 			break
 		}
 		meta := mvcc.DBUserMeta(curItem.UserMeta())
@@ -303,7 +303,7 @@ func (r *DBReader) GetKeyByStartTs(startKey, endKey []byte, startTs uint64) ([]b
 	for oldIter.Seek(oldStartKey); oldIter.Valid(); oldIter.Next() {
 		curItem := oldIter.Item()
 		oldKey := curItem.Key()
-		if bytes.Compare(oldKey, oldEndKey) > 0 {
+		if bytes.Compare(oldKey, oldEndKey) >= 0 {
 			break
 		}
 		oldMeta := mvcc.OldUserMeta(curItem.UserMeta())
