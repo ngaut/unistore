@@ -60,15 +60,6 @@ func (r *DBReader) GetMvccInfoByKey(key []byte, isRowKey bool, mvccInfo *kvrpcpb
 	return nil
 }
 
-// GetMvccInfoByOldKey fills MvccInfo reading old keys from db
-func (r *DBReader) GetMvccInfoByOldKey(oldKey []byte, isRowKey bool, mvccInfo *kvrpcpb.MvccInfo) error {
-	err := r.getOldKeysWithMeta(oldKey, isRowKey, mvccInfo)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
 // getKeyWithMeta will try to get current key without looking for historical version
 func (r *DBReader) getKeyWithMeta(key []byte, isRowKey bool, startTs uint64, mvccInfo *kvrpcpb.MvccInfo) error {
 	item, err := r.txn.Get(key)
