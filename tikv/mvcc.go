@@ -1048,11 +1048,3 @@ func (f *GCCompactionFilter) Guards() []badger.Guard {
 		baseGuard, raftGuard, metaGuard, metaOldGuard, tableIndexGuard, tableIndexOldGuard,
 	}
 }
-
-// IsRecordKey returns current key type, true if it's record type
-func IsRecordKey(key []byte) bool {
-	if len(key) > 1 && key[0] == tablePrefix {
-		return true
-	}
-	return false
-}
