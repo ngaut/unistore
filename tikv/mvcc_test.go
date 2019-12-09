@@ -488,33 +488,23 @@ func (s *testMvccSuite) TestMvccGet(c *C) {
 	c.Assert(res3, IsNil)
 
 	// read using old startTs
-	st := []byte("t1_r0") // using t1_r1 as startKey, seek to start will fail?
-	ed := []byte("t1_r2")
-	res4, resKey, err := store.MvccStore.MvccGetByStartTs(store.newReqCtxWithKeys(st, ed), startTs2)
+	res4, resKey, err := store.MvccStore.MvccGetByStartTs(store.newReqCtx(), startTs2)
 	c.Assert(err, IsNil)
 	c.Assert(res4, NotNil)
 	c.Assert(bytes.Compare(resKey, pk), Equals, 0)
-	c.Assert(len(res4.Writes), Equals, 2)
-	c.Assert(res4.Writes[1].StartTs, Equals, startTs1)
-	c.Assert(res4.Writes[1].CommitTs, Equals, commitTs1)
-	c.Assert(bytes.Compare(res4.Writes[1].ShortValue, pkVal), Equals, 0)
+	c.Assert(len(res4.Writes), Equals, 4)
+	c.Assert(res4.Writes[3].StartTs, Equals, startTs3)
+	c.Assert(res4.Writes[3].CommitTs, Equals, startTs3)
+	c.Assert(bytes.Compare(res4.Writes[3].ShortValue, []byte{0}), Equals, 0)
 
-	c.Assert(res4.Writes[0].StartTs, Equals, startTs2)
-	c.Assert(res4.Writes[0].CommitTs, Equals, commitTs2)
-	c.Assert(bytes.Compare(res4.Writes[0].ShortValue, newVal), Equals, 0)
-
-	res4, resKey, err = store.MvccStore.MvccGetByStartTs(store.newReqCtx(), startTs2)
+	res4, resKey, err = store.MvccStore.MvccGetByStartTs(store.newReqCtxWithKeys([]byte("t1_r1"), []byte("t1_r2")), startTs2)
 	c.Assert(err, IsNil)
 	c.Assert(res4, NotNil)
 	c.Assert(bytes.Compare(resKey, pk), Equals, 0)
-	c.Assert(len(res4.Writes), Equals, 2)
-	c.Assert(res4.Writes[1].StartTs, Equals, startTs1)
-	c.Assert(res4.Writes[1].CommitTs, Equals, commitTs1)
-	c.Assert(bytes.Compare(res4.Writes[1].ShortValue, pkVal), Equals, 0)
-
-	c.Assert(res4.Writes[0].StartTs, Equals, startTs2)
-	c.Assert(res4.Writes[0].CommitTs, Equals, commitTs2)
-	c.Assert(bytes.Compare(res4.Writes[0].ShortValue, newVal), Equals, 0)
+	c.Assert(len(res4.Writes), Equals, 4)
+	c.Assert(res4.Writes[3].StartTs, Equals, startTs3)
+	c.Assert(res4.Writes[3].CommitTs, Equals, startTs3)
+	c.Assert(bytes.Compare(res4.Writes[3].ShortValue, []byte{0}), Equals, 0)
 }
 
 func (s *testMvccSuite) TestPrimaryKeyOpLock(c *C) {

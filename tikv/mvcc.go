@@ -953,74 +953,20 @@ func (store *MVCCStore) getRollbackMvcc(rawkey []byte, ts uint64,
 
 func (store *MVCCStore) MvccGetByStartTs(reqCtx *requestCtx, startTs uint64) (*kvrpcpb.MvccInfo, []byte, error) {
 	reader := reqCtx.getDBReader()
-	var item *badger.Item
-	// try to find using iter
 	startKey := reqCtx.regCtx.startKey
 	endKey := reqCtx.regCtx.endKey
-	iter := reader.GetIter()
-	for iter.Seek(startKey); iter.Valid(); iter.Next() {
-		curItem := iter.Item()
-		curKey := curItem.Key()
-		if bytes.Compare(curKey, endKey) > 0 {
-			break
-		}
-		meta := mvcc.DBUserMeta(curItem.UserMeta())
-		if meta.StartTS() == startTs {
-			item = curItem
-			break
-		}
+	rawKey, err := reader.GetKeyByStartTs(startKey, endKey, startTs)
+	if err != nil {
+		return nil, nil, err
 	}
-	if item != nil {
-		resKey := item.KeyCopy(nil)
-		res, err := store.MvccGetByKey(reqCtx, resKey)
-		if err != nil {
-			return nil, nil, err
-		}
-		return res, resKey, nil
+	if rawKey == nil {
+		return nil, nil, nil
 	}
-	// try to find correspond txn with input startTs using oltIter
-	// startKey = "t" and oldKey = "u" cannot be mapped using EncodeOldKey directly
-	var oldStartKey []byte
-	var oldEndKey []byte
-	if IsRecordKey(startKey) {
-		oldStartKey = mvcc.EncodeOldKey(startKey, startTs)
-	} else {
-		oldStartKey = []byte("u")
+	res, err := store.MvccGetByKey(reqCtx, rawKey)
+	if err != nil {
+		return nil, nil, err
 	}
-	if IsRecordKey(endKey) {
-		oldEndKey = mvcc.EncodeOldKey(endKey, startTs)
-	} else {
-		oldEndKey = []byte("v")
-	}
-	oldIter := reader.GetOldIter()
-	for oldIter.Seek(oldStartKey); oldIter.Valid(); oldIter.Next() {
-		curItem := oldIter.Item()
-		curKey := curItem.Key()
-		if bytes.Compare(curKey, oldEndKey) > 0 {
-			break
-		}
-		oldMeta := mvcc.OldUserMeta(curItem.UserMeta())
-		if oldMeta.StartTS() == startTs {
-			item = curItem
-			break
-		}
-	}
-	if item != nil {
-		oldKey := item.KeyCopy(nil)
-		mvccInfo := &kvrpcpb.MvccInfo{}
-		rawKey, _, err := mvcc.DecodeOldKey(oldKey)
-		isRowKey := rowcodec.IsRowKey(rawKey)
-		err = reader.GetMvccInfoByOldKey(oldKey, isRowKey, mvccInfo)
-		if err != nil {
-			return nil, nil, err
-		}
-		err = store.getRollbackMvcc(rawKey, startTs, reqCtx, mvccInfo)
-		if err != nil {
-			return nil, nil, err
-		}
-		return mvccInfo, rawKey, nil
-	}
-	return nil, nil, nil
+	return res, rawKey, nil
 }
 
 type SafePoint struct {

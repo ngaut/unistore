@@ -282,6 +282,42 @@ func (r *DBReader) Scan(startKey, endKey []byte, limit int, startTS uint64, proc
 	return nil
 }
 
+func (r *DBReader) GetKeyByStartTs(startKey, endKey []byte, startTs uint64) ([]byte, error) {
+	iter := r.GetIter()
+	for iter.Seek(startKey); iter.Valid(); iter.Next() {
+		curItem := iter.Item()
+		curKey := curItem.Key()
+		if bytes.Compare(curKey, endKey) > 0 {
+			break
+		}
+		meta := mvcc.DBUserMeta(curItem.UserMeta())
+		if meta.StartTS() == startTs {
+			return curItem.KeyCopy(nil), nil
+		}
+	}
+	oldIter := r.GetOldIter()
+	oldStartKey := append([]byte{}, startKey...)
+	oldStartKey[0]++
+	oldEndKey := append([]byte{}, endKey...)
+	oldEndKey[0]++
+	for oldIter.Seek(oldStartKey); oldIter.Valid(); oldIter.Next() {
+		curItem := oldIter.Item()
+		oldKey := curItem.Key()
+		if bytes.Compare(oldKey, oldEndKey) > 0 {
+			break
+		}
+		oldMeta := mvcc.OldUserMeta(curItem.UserMeta())
+		if oldMeta.StartTS() == startTs {
+			rawKey, _, err := mvcc.DecodeOldKey(oldKey)
+			if err != nil {
+				return nil, err
+			}
+			return rawKey, nil
+		}
+	}
+	return nil, nil
+}
+
 func (r *DBReader) getOldItem(key []byte, startTS uint64) *badger.Item {
 	oldKey := mvcc.EncodeOldKey(key, startTS)
 	oldIter := r.GetOldIter()
