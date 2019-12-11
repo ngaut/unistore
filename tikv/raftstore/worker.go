@@ -305,15 +305,9 @@ func exceedEndKey(current, endKey []byte) bool {
 	return bytes.Compare(current, endKey) >= 0
 }
 
-/// SplitCheck gets the split keys by scanning the range.
-func (r *splitCheckHandler) splitCheck(startKey, endKey []byte, reader *dbreader.DBReader) [][]byte {
-	ite := reader.GetIter()
-	splitKeys := r.tryTableSplit(startKey, endKey, ite)
-	if len(splitKeys) > 0 {
-		return splitKeys
-	}
+// doCheck checks kvs using every checker
+func (r *splitCheckHandler) doCheck(startKey, endKey []byte, ite *badger.Iterator) {
 	r.newCheckers()
-	abort := false
 	for ite.Seek(startKey); ite.Valid(); ite.Next() {
 		item := ite.Item()
 		key := item.Key()
@@ -322,14 +316,20 @@ func (r *splitCheckHandler) splitCheck(startKey, endKey []byte, reader *dbreader
 		}
 		for _, checker := range r.checkers {
 			if checker.onKv(key, item) {
-				abort = true
-				break
+				return
 			}
 		}
-		if abort {
-			break
-		}
 	}
+}
+
+/// SplitCheck gets the split keys by scanning the range.
+func (r *splitCheckHandler) splitCheck(startKey, endKey []byte, reader *dbreader.DBReader) [][]byte {
+	ite := reader.GetIter()
+	splitKeys := r.tryTableSplit(startKey, endKey, ite)
+	if len(splitKeys) > 0 {
+		return splitKeys
+	}
+	r.doCheck(startKey, endKey, ite)
 	for _, checker := range r.checkers {
 		keys := checker.getSplitKeys()
 		if len(keys) > 0 {
