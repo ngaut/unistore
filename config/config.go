@@ -59,9 +59,9 @@ var DefaultConf = Config{
 	},
 	RaftStore: RaftStore{
 		RaftWorkers:              2,
-		PdHeartbeatTickInterval:  20,
-		RaftStoreMaxLeaderLease:  9,
-		RaftBaseTickInterval:     1,
+		PdHeartbeatTickInterval:  20,   // 20s
+		RaftStoreMaxLeaderLease:  9000, // 9s
+		RaftBaseTickInterval:     1000, // 1s
 		RaftHeartbeatTicks:       2,
 		RaftElectionTimeoutTicks: 10,
 	},
