@@ -1,8 +1,9 @@
 package config
 
 import (
-	"github.com/ngaut/log"
 	"time"
+
+	"github.com/ngaut/log"
 )
 
 type Config struct {
