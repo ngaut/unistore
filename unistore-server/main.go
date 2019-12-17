@@ -161,9 +161,10 @@ func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	raftConf.RaftWorkerCnt = conf.RaftStore.RaftWorkers
 
 	// raftstore block
-	raftConf.PdHeartbeatTickInterval = time.Duration(conf.RaftStore.PdHeartbeatTickInterval) * time.Second
-	raftConf.RaftStoreMaxLeaderLease = time.Duration(conf.RaftStore.RaftStoreMaxLeaderLease) * time.Millisecond
-	raftConf.RaftBaseTickInterval = time.Duration(conf.RaftStore.RaftBaseTickInterval) * time.Millisecond
+	raftConf.PdHeartbeatTickInterval = config.ParseDuration(conf.RaftStore.PdHeartbeatTickInterval)
+	raftConf.RaftStoreMaxLeaderLease = config.ParseDuration(conf.RaftStore.RaftStoreMaxLeaderLease)
+	raftConf.RaftBaseTickInterval = config.ParseDuration(conf.RaftStore.RaftBaseTickInterval)
+	log.Infof("[for debug] RaftBaseTickInterval=%v", raftConf.RaftBaseTickInterval)
 	raftConf.RaftHeartbeatTicks = conf.RaftStore.RaftHeartbeatTicks
 	raftConf.RaftElectionTimeoutTicks = conf.RaftStore.RaftElectionTimeoutTicks
 

@@ -1,5 +1,10 @@
 package config
 
+import (
+	"github.com/ngaut/log"
+	"time"
+)
+
 type Config struct {
 	Server      Server      `toml:"server"`      // Unistore server options
 	Engine      Engine      `toml:"engine"`      // Engine options.
@@ -18,12 +23,12 @@ type Server struct {
 }
 
 type RaftStore struct {
-	RaftWorkers              int `toml:"raft-workers"`                // Number of raft workers.
-	PdHeartbeatTickInterval  int `toml:"pd-heartbeat-tick-interval"`  // pd-heartbeat-tick-interval in seconds
-	RaftStoreMaxLeaderLease  int `toml:"raft-store-max-leader-lease"` // raft-store-max-leader-lease in milliseconds
-	RaftBaseTickInterval     int `toml:"raft-base-tick-interval"`     // raft-base-tick-interval in milliseconds
-	RaftHeartbeatTicks       int `toml:"raft-heartbeat-ticks"`        // raft-heartbeat-ticks times
-	RaftElectionTimeoutTicks int `toml:"raft-election-timeout-ticks"` // raft-election-timeout-ticks times
+	RaftWorkers              int    `toml:"raft-workers"`                // Number of raft workers.
+	PdHeartbeatTickInterval  string `toml:"pd-heartbeat-tick-interval"`  // pd-heartbeat-tick-interval in seconds
+	RaftStoreMaxLeaderLease  string `toml:"raft-store-max-leader-lease"` // raft-store-max-leader-lease in milliseconds
+	RaftBaseTickInterval     string `toml:"raft-base-tick-interval"`     // raft-base-tick-interval in milliseconds
+	RaftHeartbeatTicks       int    `toml:"raft-heartbeat-ticks"`        // raft-heartbeat-ticks times
+	RaftElectionTimeoutTicks int    `toml:"raft-election-timeout-ticks"` // raft-election-timeout-ticks times
 }
 
 type Coprocessor struct {
@@ -59,9 +64,9 @@ var DefaultConf = Config{
 	},
 	RaftStore: RaftStore{
 		RaftWorkers:              2,
-		PdHeartbeatTickInterval:  20,   // 20s
-		RaftStoreMaxLeaderLease:  9000, // 9s
-		RaftBaseTickInterval:     1000, // 1s
+		PdHeartbeatTickInterval:  "20s",
+		RaftStoreMaxLeaderLease:  "9s",
+		RaftBaseTickInterval:     "1s",
 		RaftHeartbeatTicks:       2,
 		RaftElectionTimeoutTicks: 10,
 	},
@@ -76,4 +81,16 @@ var DefaultConf = Config{
 		SyncWrite:        true,
 		NumCompactors:    1,
 	},
+}
+
+// parseDuration parses duration argument string.
+func ParseDuration(durationStr string) time.Duration {
+	dur, err := time.ParseDuration(durationStr)
+	if err != nil {
+		dur, err = time.ParseDuration(durationStr + "s")
+	}
+	if err != nil || dur < 0 {
+		log.Fatalf("invalid duration=%v", durationStr)
+	}
+	return dur
 }
