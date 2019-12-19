@@ -146,7 +146,13 @@ func (r *DBReader) Get(key []byte, startTS uint64) ([]byte, error) {
 		return nil, nil
 	}
 	if mvcc.DBUserMeta(item.UserMeta()).CommitTS() <= startTS {
-		return item.Value()
+		val, err := item.Value()
+		// the Op_Lock commit apply will put nil as badger entry value
+		// here the Value returned maybe slice with len 0
+		if len(val) == 0 {
+			val = nil
+		}
+		return val, err
 	}
 	item = r.getOldItem(key, startTS)
 	if item != nil && !item.IsEmpty() {
