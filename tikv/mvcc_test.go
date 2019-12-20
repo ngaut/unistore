@@ -249,7 +249,7 @@ func MustRollbackKey(key []byte, startTs uint64, store *TestStore) {
 
 func MustGetNone(key []byte, startTs uint64, store *TestStore) {
 	val := MustGet(key, startTs, store)
-	store.c.Assert(val, IsNil)
+	store.c.Assert(len(val), Equals, 0)
 }
 
 func MustGetVal(key, val []byte, startTs uint64, store *TestStore) {
