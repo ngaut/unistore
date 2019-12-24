@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"flag"
-	"google.golang.org/grpc/keepalive"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/coocood/badger"
-	"github.com/coocood/badger/options"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/lockstore"
@@ -29,6 +27,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/deadlock"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
 var (
@@ -64,6 +63,7 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 	safePoint := &tikv.SafePoint{}
 	log.Infof("conf %v", conf)
+	config.SetGlobalConf(conf)
 	db := createDB(subPathKV, safePoint, &conf.Engine)
 	bundle := &mvcc.DBBundle{
 		DB:            db,
@@ -248,14 +248,17 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) *b
 	opts.ValueLogWriteOptions.WriteBufferSize = 4 * 1024 * 1024
 	opts.Dir = filepath.Join(conf.DBPath, subPath)
 	opts.ValueDir = opts.Dir
-	opts.TableLoadingMode = options.MemoryMap
 	opts.ValueLogFileSize = conf.VlogFileSize
-	opts.ValueLogLoadingMode = options.FileIO
 	opts.MaxTableSize = conf.MaxTableSize
 	opts.NumMemtables = conf.NumMemTables
 	opts.NumLevelZeroTables = conf.NumL0Tables
 	opts.NumLevelZeroTablesStall = conf.NumL0TablesStall
 	opts.SyncWrites = conf.SyncWrite
+	for i := range opts.TableBuilderOptions.CompressionPerLevel {
+		opts.TableBuilderOptions.CompressionPerLevel[i] = config.ParseCompression(conf.Compression[i])
+	}
+	opts.MaxCacheSize = conf.BlockCacheSize
+	opts.TableBuilderOptions.SuRFStartLevel = conf.SurfStartLevel
 	if safePoint != nil {
 		opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
 	}
