@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/coocood/badger"
-	"github.com/coocood/badger/options"
 	"github.com/coocood/badger/table"
 	"github.com/coocood/badger/y"
 	"github.com/ngaut/log"
@@ -811,8 +810,9 @@ func (r *regionTaskHandler) resetBuilder() error {
 	if r.builderFile, err = r.tempFile(); err != nil {
 		return err
 	}
+	compressionType := config.ParseCompression(config.GetGlobalConf().Engine.IngestCompression)
 	if r.builder == nil {
-		r.builder = r.ctx.engiens.kv.DB.NewExternalTableBuilder(r.builderFile, options.None, r.ctx.mgr.limiter)
+		r.builder = r.ctx.engiens.kv.DB.NewExternalTableBuilder(r.builderFile, compressionType, r.ctx.mgr.limiter)
 	} else {
 		r.builder.Reset(r.builderFile)
 	}
@@ -821,7 +821,7 @@ func (r *regionTaskHandler) resetBuilder() error {
 		return err
 	}
 	if r.oldBuilder == nil {
-		r.oldBuilder = r.ctx.engiens.kv.DB.NewExternalTableBuilder(r.oldBuilderFile, options.None, r.ctx.mgr.limiter)
+		r.oldBuilder = r.ctx.engiens.kv.DB.NewExternalTableBuilder(r.oldBuilderFile, compressionType, r.ctx.mgr.limiter)
 	} else {
 		r.oldBuilder.Reset(r.oldBuilderFile)
 	}
