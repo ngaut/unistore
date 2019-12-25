@@ -17,6 +17,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/coocood/badger"
+	"github.com/coocood/badger/options"
 	"github.com/coocood/badger/y"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/config"
@@ -256,9 +257,11 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) *b
 	opts.NumLevelZeroTables = conf.NumL0Tables
 	opts.NumLevelZeroTablesStall = conf.NumL0TablesStall
 	opts.SyncWrites = conf.SyncWrite
+	compressionPerLevel := make([]options.CompressionType, len(conf.Compression))
 	for i := range opts.TableBuilderOptions.CompressionPerLevel {
-		opts.TableBuilderOptions.CompressionPerLevel[i] = config.ParseCompression(conf.Compression[i])
+		compressionPerLevel[i] = config.ParseCompression(conf.Compression[i])
 	}
+	opts.TableBuilderOptions.CompressionPerLevel = compressionPerLevel
 	opts.MaxCacheSize = conf.BlockCacheSize
 	opts.TableBuilderOptions.SuRFStartLevel = conf.SurfStartLevel
 	if safePoint != nil {
