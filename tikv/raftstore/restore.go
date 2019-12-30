@@ -102,7 +102,17 @@ func restoreCommit(op commitOp, lockStore *lockstore.MemStore) {
 }
 
 func restoreRollback(op rollbackOp, rollbackStore *lockstore.MemStore) {
-	remain, rawKey, err := codec.DecodeBytes(op.putWrite.Key, nil)
+	// Pessimistic lock rollback will have only `delLock` operation
+	var destKey []byte
+	if op.putWrite != nil {
+		destKey = op.putWrite.Key
+	} else if op.delLock != nil {
+		destKey = op.delLock.Key
+	} else {
+		log.Errorf("invalid rollback operation=%v", op)
+		panic("invalid rollback record")
+	}
+	remain, rawKey, err := codec.DecodeBytes(destKey, nil)
 	if err != nil {
 		panic(err)
 	}
