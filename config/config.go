@@ -15,13 +15,14 @@ type Config struct {
 }
 
 type Server struct {
-	PDAddr     string `toml:"pd-addr"`
-	StoreAddr  string `toml:"store-addr"`
-	StatusAddr string `toml:"status-addr"`
-	LogLevel   string `toml:"log-level"`
-	RegionSize int64  `toml:"region-size"` // Average region size.
-	MaxProcs   int    `toml:"max-procs"`   // Max CPU cores to use, set 0 to use all CPU cores in the machine.
-	Raft       bool   `toml:"raft"`        // Enable raft.
+	PDAddr      string `toml:"pd-addr"`
+	StoreAddr   string `toml:"store-addr"`
+	StatusAddr  string `toml:"status-addr"`
+	LogLevel    string `toml:"log-level"`
+	RegionSize  int64  `toml:"region-size"` // Average region size.
+	MaxProcs    int    `toml:"max-procs"`   // Max CPU cores to use, set 0 to use all CPU cores in the machine.
+	Raft        bool   `toml:"raft"`        // Enable raft.
+	LogfilePath string `toml:"log-file"`    // Log file path for unistore server
 }
 
 type RaftStore struct {
@@ -71,13 +72,14 @@ const MB = 1024 * 1024
 
 var DefaultConf = Config{
 	Server: Server{
-		PDAddr:     "127.0.0.1:2379",
-		StoreAddr:  "127.0.0.1:9191",
-		StatusAddr: "127.0.0.1:9291",
-		RegionSize: 64 * MB,
-		LogLevel:   "info",
-		MaxProcs:   0,
-		Raft:       true,
+		PDAddr:      "127.0.0.1:2379",
+		StoreAddr:   "127.0.0.1:9191",
+		StatusAddr:  "127.0.0.1:9291",
+		RegionSize:  64 * MB,
+		LogLevel:    "info",
+		MaxProcs:    0,
+		Raft:        true,
+		LogfilePath: "",
 	},
 	RaftStore: RaftStore{
 		RaftWorkers:              2,

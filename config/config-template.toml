@@ -29,6 +29,8 @@ max-procs = 0
 ## Raft store enabled or not
 raft = true
 
+## Log file path for unistore server, empty string print out to stdout
+log-file = ""
 
 [raftstore]
 ## Raft worker threads
