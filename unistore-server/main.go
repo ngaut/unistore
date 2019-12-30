@@ -33,9 +33,13 @@ import (
 )
 
 var (
-	configPath = flag.String("config", "", "config file path")
-	pdAddr     = flag.String("pd", "", "pd address")
-	storeAddr  = flag.String("addr", "", "store address")
+	configPath    = flag.String("config", "", "config file path")
+	pdAddr        = flag.String("pd", "", "pd address")
+	storeAddr     = flag.String("addr", "", "store address")
+	advertiseAddr = flag.String("advertise-addr", "", "advertise address")
+	statusAddr    = flag.String("status-addr", "", "status address")
+	dataDir       = flag.String("data-dir", "", "data directory")
+	logFile       = flag.String("log-file", "", "log file")
 )
 
 var (
@@ -50,16 +54,40 @@ const (
 	subPathKV   = "kv"
 )
 
-func main() {
-	flag.Parse()
-	conf := loadConfig()
+// loadCmdConf will overwrite configurations using command line arguments
+func loadCmdConf(conf *config.Config) {
 	if *pdAddr != "" {
 		conf.Server.PDAddr = *pdAddr
 	}
 	if *storeAddr != "" {
 		conf.Server.StoreAddr = *storeAddr
 	}
+	if *advertiseAddr != "" {
+		conf.Server.StoreAddr = *advertiseAddr
+	}
+	if *statusAddr != "" {
+		conf.Server.StatusAddr = *statusAddr
+	}
+	if *dataDir != "" {
+		conf.Engine.DBPath = *dataDir
+	}
+	if *logFile != "" {
+		conf.Server.LogfilePath = *logFile
+	}
+
+}
+
+func main() {
+	flag.Parse()
+	conf := loadConfig()
+	loadCmdConf(conf)
 	runtime.GOMAXPROCS(conf.Server.MaxProcs)
+	if conf.Server.LogfilePath != "" {
+		err := log.SetOutputByName(conf.Server.LogfilePath)
+		if err != nil {
+			panic(err)
+		}
+	}
 	log.Info("gitHash:", gitHash)
 	log.SetLevelByString(conf.Server.LogLevel)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
