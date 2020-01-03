@@ -7,7 +7,6 @@ import (
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
 	"github.com/juju/errors"
-	"github.com/ngaut/unistore/rowcodec"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 )
@@ -77,10 +76,6 @@ func (r *DBReader) getKeyWithMeta(key []byte, isRowKey bool, startTs uint64, mvc
 			if err != nil {
 				return err
 			}
-			val, err = rowcodec.RowToOldRow(val, nil)
-			if err != nil {
-				return err
-			}
 		} else {
 			val, err = item.ValueCopy(nil)
 			if err != nil {
@@ -112,10 +107,6 @@ func (r *DBReader) getOldKeysWithMeta(oldKey []byte, isRowKey bool, mvccInfo *kv
 		var val []byte
 		if isRowKey {
 			val, err = item.Value()
-			if err != nil {
-				return err
-			}
-			val, err = rowcodec.RowToOldRow(val, nil)
 			if err != nil {
 				return err
 			}

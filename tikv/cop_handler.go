@@ -6,7 +6,6 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/juju/errors"
-	"github.com/ngaut/unistore/rowcodec"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/parser/mysql"
@@ -17,6 +16,9 @@ import (
 	"github.com/pingcap/tidb/sessionctx/stmtctx"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/types"
+	"github.com/pingcap/tidb/util/chunk"
+	"github.com/pingcap/tidb/util/codec"
+	"github.com/pingcap/tidb/util/rowcodec"
 	"github.com/pingcap/tipb/go-tipb"
 )
 
@@ -136,38 +138,42 @@ func (e *evalContext) setColumnInfo(cols []*tipb.ColumnInfo) {
 	}
 }
 
-func (e *evalContext) newRowDecoder() (*rowcodec.Decoder, error) {
-	colIDs := make([]int64, len(e.columnInfos))
-	defaultVals := make([][]byte, len(e.columnInfos))
-	var handleColID int64
-	for i, colInfo := range e.columnInfos {
-		colIDs[i] = colInfo.ColumnId
-		defaultVals[i] = colInfo.DefaultVal
-		if colInfo.PkHandle {
-			handleColID = colInfo.ColumnId
-		}
-	}
-	return rowcodec.NewDecoder(colIDs, handleColID, e.fieldTps, defaultVals, e.sc.TimeZone)
-}
-
-func (e *evalContext) newRowDecoderForOffsets(colOffsets []int) (*rowcodec.Decoder, error) {
+func (e *evalContext) newRowDecoder() (*rowcodec.ChunkDecoder, error) {
 	var (
 		handleColID int64
-		colIDs      = make([]int64, len(colOffsets))
-		defaultVals = make([][]byte, len(colOffsets))
-		fieldsTps   = make([]*types.FieldType, len(colOffsets))
+		cols        = make([]rowcodec.ColInfo, 0, len(e.columnInfos))
 	)
-	for i, off := range colOffsets {
-		info := e.columnInfos[off]
-		colIDs[i] = info.ColumnId
-		defaultVals[i] = info.DefaultVal
-		fieldsTps[i] = e.fieldTps[off]
+	for i := range e.columnInfos {
+		info := e.columnInfos[i]
+		ft := e.fieldTps[i]
+		col := rowcodec.ColInfo{
+			ID:         info.ColumnId,
+			Tp:         int32(ft.Tp),
+			Flag:       int32(ft.Flag),
+			IsPKHandle: info.PkHandle,
+			Flen:       ft.Flen,
+			Decimal:    ft.Decimal,
+			Elems:      ft.Elems,
+		}
+		cols = append(cols, col)
 		if info.PkHandle {
 			handleColID = info.ColumnId
 		}
 	}
-
-	return rowcodec.NewDecoder(colIDs, handleColID, fieldsTps, defaultVals, e.sc.TimeZone)
+	def := func(i int, chk *chunk.Chunk) error {
+		info := e.columnInfos[i]
+		if info.PkHandle || len(info.DefaultVal) == 0 {
+			chk.AppendNull(i)
+			return nil
+		}
+		decoder := codec.NewDecoder(chk, e.sc.TimeZone)
+		_, err := decoder.DecodeOne(info.DefaultVal, i, e.fieldTps[i])
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	return rowcodec.NewChunkDecoder(cols, handleColID, def, e.sc.TimeZone), nil
 }
 
 // decodeRelatedColumnVals decodes data to Datum slice according to the row information.
@@ -191,17 +197,13 @@ const (
 	// This flag only matters if FlagIgnoreTruncate is not set, in strict sql mode, truncate error should
 	// be returned as error, in non-strict sql mode, truncate error should be saved as warning.
 	FlagTruncateAsWarning uint64 = 1 << 1
-
-	// FlagPadCharToFullLength indicates if sql_mode 'PAD_CHAR_TO_FULL_LENGTH' is set.
-	FlagPadCharToFullLength uint64 = 1 << 2
 )
 
 // flagsToStatementContext creates a StatementContext from a `tipb.SelectRequest.Flags`.
 func flagsToStatementContext(flags uint64) *stmtctx.StatementContext {
 	sc := &stmtctx.StatementContext{
-		IgnoreTruncate:      (flags & FlagIgnoreTruncate) > 0,
-		TruncateAsWarning:   (flags & FlagTruncateAsWarning) > 0,
-		PadCharToFullLength: (flags & FlagPadCharToFullLength) > 0,
+		IgnoreTruncate:    (flags & FlagIgnoreTruncate) > 0,
+		TruncateAsWarning: (flags & FlagTruncateAsWarning) > 0,
 	}
 	return sc
 }

@@ -18,13 +18,15 @@ import (
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
-	"github.com/ngaut/unistore/rowcodec"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/util/lockwaiter"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/tidb/sessionctx/stmtctx"
 	"github.com/pingcap/tidb/store/tikv/oracle"
+	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/codec"
+	"github.com/pingcap/tidb/util/rowcodec"
 )
 
 // MVCCStore is a wrapper of badger.DB to provide MVCC functions.
@@ -473,6 +475,30 @@ func (store *MVCCStore) prewritePessimistic(reqCtx *requestCtx, mutations []*kvr
 	return store.dbWriter.Write(batch)
 }
 
+func encodeFromOldRow(oldRow, buf []byte) ([]byte, error) {
+	var (
+		colIDs []int64
+		datums []types.Datum
+	)
+	for len(oldRow) > 1 {
+		var d types.Datum
+		var err error
+		oldRow, d, err = codec.DecodeOne(oldRow)
+		if err != nil {
+			return nil, err
+		}
+		colID := d.GetInt64()
+		oldRow, d, err = codec.DecodeOne(oldRow)
+		if err != nil {
+			return nil, err
+		}
+		colIDs = append(colIDs, colID)
+		datums = append(datums, d)
+	}
+	var encoder rowcodec.Encoder
+	return encoder.Encode(&stmtctx.StatementContext{}, colIDs, datums, buf)
+}
+
 func (store *MVCCStore) buildPrewriteLock(reqCtx *requestCtx, m *kvrpcpb.Mutation, item *badger.Item,
 	req *kvrpcpb.PrewriteRequest) (*mvcc.MvccLock, error) {
 	lock := &mvcc.MvccLock{
@@ -504,11 +530,14 @@ func (store *MVCCStore) buildPrewriteLock(reqCtx *requestCtx, m *kvrpcpb.Mutatio
 		lock.Op = uint8(kvrpcpb.Op_Put)
 	}
 	if rowcodec.IsRowKey(m.Key) && lock.Op == uint8(kvrpcpb.Op_Put) {
-		var enc rowcodec.Encoder
-		reqCtx.buf, err = enc.EncodeFromOldRow(m.Value, reqCtx.buf)
-		if err != nil {
-			log.Errorf("err:%v m.Value:%v m.Key:%q m.Op:%d", err, m.Value, m.Key, m.Op)
-			return nil, err
+		if rowcodec.IsNewFormat(m.Value) {
+			reqCtx.buf = m.Value
+		} else {
+			reqCtx.buf, err = encodeFromOldRow(m.Value, reqCtx.buf)
+			if err != nil {
+				log.Errorf("err:%v m.Value:%v m.Key:%q m.Op:%d", err, m.Value, m.Key, m.Op)
+				return nil, err
+			}
 		}
 		lock.Value = reqCtx.buf
 	}
