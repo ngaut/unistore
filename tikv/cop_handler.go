@@ -2,6 +2,7 @@ package tikv
 
 import (
 	"bytes"
+	"github.com/pingcap/tidb/util/codec"
 	"time"
 
 	"github.com/golang/protobuf/proto"
@@ -165,42 +166,11 @@ func (e *evalContext) newRowDecoder() (*rowcodec.ChunkDecoder, error) {
 			chk.AppendNull(i)
 			return nil
 		}
-		chk.AppendBytes(i, info.DefaultVal)
-		return nil
-	}
-	return rowcodec.NewChunkDecoder(cols, handleColID, def, e.sc.TimeZone), nil
-}
-
-func (e *evalContext) newRowDecoderForOffsets(colOffsets []int) (*rowcodec.ChunkDecoder, error) {
-	var (
-		handleColID int64
-		cols        = make([]rowcodec.ColInfo, 0, len(colOffsets))
-	)
-	for _, off := range colOffsets {
-		info := e.columnInfos[off]
-		ft := e.fieldTps[off]
-		col := rowcodec.ColInfo{
-			ID:         info.ColumnId,
-			Tp:         int32(ft.Tp),
-			Flag:       int32(ft.Flag),
-			IsPKHandle: info.PkHandle,
-			Flen:       ft.Flen,
-			Decimal:    ft.Decimal,
-			Elems:      ft.Elems,
+		decoder := codec.NewDecoder(chk, e.sc.TimeZone)
+		_, err := decoder.DecodeOne(info.DefaultVal, i, e.fieldTps[i])
+		if err != nil {
+			return err
 		}
-		cols = append(cols, col)
-		if info.PkHandle {
-			handleColID = info.ColumnId
-		}
-	}
-	def := func(i int, chk *chunk.Chunk) error {
-		off := colOffsets[i]
-		info := e.columnInfos[off]
-		if info.PkHandle || len(info.DefaultVal) == 0 {
-			chk.AppendNull(i)
-			return nil
-		}
-		chk.AppendBytes(i, info.DefaultVal)
 		return nil
 	}
 	return rowcodec.NewChunkDecoder(cols, handleColID, def, e.sc.TimeZone), nil
