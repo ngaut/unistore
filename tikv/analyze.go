@@ -7,7 +7,6 @@ import (
 	"github.com/coocood/badger/y"
 	"github.com/golang/protobuf/proto"
 	"github.com/juju/errors"
-	"github.com/ngaut/unistore/rowcodec"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
 	"github.com/pingcap/parser/ast"
@@ -19,7 +18,7 @@ import (
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/chunk"
-	"github.com/pingcap/tidb/util/codec"
+	"github.com/pingcap/tidb/util/rowcodec"
 	"github.com/pingcap/tipb/go-tipb"
 	"golang.org/x/net/context"
 )
@@ -119,7 +118,7 @@ type analyzeColumnsExec struct {
 	startTS uint64
 
 	chk     *chunk.Chunk
-	decoder *rowcodec.Decoder
+	decoder *rowcodec.ChunkDecoder
 	req     *chunk.Chunk
 	evalCtx *evalContext
 	fields  []*ast.ResultField
@@ -215,14 +214,14 @@ func (e *analyzeColumnsExec) Process(key, value []byte) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	err = e.decoder.Decode(value, handle, e.chk)
+	err = e.decoder.DecodeToChunk(value, handle, e.chk)
 	if err != nil {
 		return errors.Trace(err)
 	}
 	row := e.chk.GetRow(0)
 	for i, tp := range e.evalCtx.fieldTps {
 		d := row.GetDatum(i, tp)
-		value, err := codec.EncodeValue(e.evalCtx.sc, nil, d)
+		value, err := tablecodec.EncodeValue(e.evalCtx.sc, nil, d)
 		if err != nil {
 			return err
 		}

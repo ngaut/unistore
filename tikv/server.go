@@ -10,7 +10,6 @@ import (
 
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
-	"github.com/ngaut/unistore/rowcodec"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/ngaut/unistore/util/lockwaiter"
@@ -132,11 +131,7 @@ func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb
 			Error: convertToKeyError(err),
 		}, nil
 	}
-	if rowcodec.IsRowKey(req.Key) {
-		val, err = rowcodec.RowToOldRow(val, nil)
-	} else {
-		val = safeCopy(val)
-	}
+	val = safeCopy(val)
 	return &kvrpcpb.GetResponse{
 		Value: val,
 	}, nil
@@ -180,13 +175,6 @@ type kvScanProcessor struct {
 }
 
 func (p *kvScanProcessor) Process(key, value []byte) (err error) {
-	if rowcodec.IsRowKey(key) {
-		p.buf, err = rowcodec.RowToOldRow(value, p.buf)
-		if err != nil {
-			return err
-		}
-		value = p.buf
-	}
 	p.pairs = append(p.pairs, &kvrpcpb.KvPair{
 		Key:   safeCopy(key),
 		Value: safeCopy(value),
@@ -359,13 +347,8 @@ func (svr *Server) KvBatchGet(ctx context.Context, req *kvrpcpb.BatchGetRequest)
 		return &kvrpcpb.BatchGetResponse{Pairs: []*kvrpcpb.KvPair{{Error: convertToKeyError(err)}}}, nil
 	}
 	pairs := make([]*kvrpcpb.KvPair, 0, len(req.Keys))
-	var buf []byte
 	batchGetFunc := func(key, value []byte, err error) {
 		if len(value) != 0 {
-			if rowcodec.IsRowKey(key) && err == nil {
-				buf, err = rowcodec.RowToOldRow(value, buf)
-				value = buf
-			}
 			pairs = append(pairs, &kvrpcpb.KvPair{
 				Key:   safeCopy(key),
 				Value: safeCopy(value),

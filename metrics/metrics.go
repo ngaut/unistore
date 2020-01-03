@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
@@ -96,5 +97,5 @@ func init() {
 	prometheus.MustRegister(LockUpdate)
 	prometheus.MustRegister(RaftBatchSize)
 	prometheus.MustRegister(LatchWait)
-	http.Handle("/metrics", prometheus.Handler())
+	http.Handle("/metrics", promhttp.Handler())
 }

@@ -7,7 +7,6 @@ import (
 	"sort"
 
 	"github.com/juju/errors"
-	"github.com/ngaut/unistore/rowcodec"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/pingcap/parser/model"
 	"github.com/pingcap/parser/mysql"
@@ -21,6 +20,7 @@ import (
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/codec"
 	mockpkg "github.com/pingcap/tidb/util/mock"
+	"github.com/pingcap/tidb/util/rowcodec"
 	"github.com/pingcap/tipb/go-tipb"
 )
 
@@ -269,7 +269,7 @@ type scanCtx struct {
 	limit   int
 	chk     *chunk.Chunk
 	desc    bool
-	decoder *rowcodec.Decoder
+	decoder *rowcodec.ChunkDecoder
 }
 
 type idxScanCtx struct {
@@ -468,7 +468,7 @@ func (e *closureExecutor) tableScanProcessCore(key, value []byte) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	err = e.scanCtx.decoder.Decode(value, handle, e.scanCtx.chk)
+	err = e.scanCtx.decoder.DecodeToChunk(value, handle, e.scanCtx.chk)
 	if err != nil {
 		return errors.Trace(err)
 	}
