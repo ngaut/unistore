@@ -17,13 +17,13 @@ func TestMemStore(t *testing.T) {
 	val := ls.Get([]byte("a"), nil)
 	require.Len(t, val, 0)
 
-	insertMemStore(ls, prefix, n)
+	insertMemStore(ls, prefix, "", n)
 	numBlocks := len(ls.getArena().blocks)
-	checkMemStore(t, ls, prefix, n)
+	checkMemStore(t, ls, prefix, "", n)
 	deleteMemStore(t, ls, prefix, n)
 	require.Equal(t, len(ls.getArena().blocks), numBlocks)
 	time.Sleep(reuseSafeDuration)
-	insertMemStore(ls, prefix, n)
+	insertMemStore(ls, prefix, "", n)
 	// Because the height is random, we insert again, the block number may be different.
 	diff := len(ls.getArena().blocks) - numBlocks
 	require.True(t, diff < numBlocks/100)
@@ -33,21 +33,24 @@ func TestMemStore(t *testing.T) {
 
 const keyFormat = "%s%020d"
 
-func insertMemStore(ls *MemStore, prefix string, n int) *MemStore {
+func insertMemStore(ls *MemStore, prefix, valPrefix string, n int) *MemStore {
 	perms := rand.Perm(n)
 	for _, v := range perms {
-		key := []byte(fmt.Sprintf(keyFormat, prefix, v))
-		ls.Insert(key, key)
+		keyStr := fmt.Sprintf(keyFormat, prefix, v)
+		key := []byte(keyStr)
+		val := []byte(valPrefix + keyStr)
+		ls.Put(key, val)
 	}
 	return ls
 }
 
-func checkMemStore(t *testing.T, ls *MemStore, prefix string, n int) {
+func checkMemStore(t *testing.T, ls *MemStore, prefix, valPrefix string, n int) {
 	perms := rand.Perm(n)
 	for _, v := range perms {
 		key := []byte(fmt.Sprintf(keyFormat, prefix, v))
 		val := ls.Get(key, nil)
-		require.True(t, bytes.Equal(key, val))
+		require.True(t, bytes.Equal(val[:len(valPrefix)], []byte(valPrefix)))
+		require.True(t, bytes.Equal(key, val[len(valPrefix):]))
 	}
 }
 
@@ -63,7 +66,7 @@ func TestIterator(t *testing.T) {
 	ls := NewMemStore(1 << 10)
 	for i := 10; i < 1000; i += 10 {
 		key := []byte(fmt.Sprintf(keyFormat, "ls", i))
-		ls.Insert(key, bytes.Repeat(key, 10))
+		ls.Put(key, bytes.Repeat(key, 10))
 	}
 	require.Len(t, ls.getArena().blocks, 33)
 	it := ls.NewIterator()
@@ -108,6 +111,16 @@ func numToKey(n int) []byte {
 	return []byte(fmt.Sprintf(keyFormat, "ls", n))
 }
 
+func TestReplace(t *testing.T) {
+	prefix := "ls"
+	n := 30000
+	ls := NewMemStore(1 << 10)
+	insertMemStore(ls, prefix, "old", n)
+	checkMemStore(t, ls, prefix, "old", n)
+	insertMemStore(ls, prefix, "new", n)
+	checkMemStore(t, ls, prefix, "new", n)
+}
+
 func TestConcurrent(t *testing.T) {
 	keyRange := 10
 	concurrentKeys := make([][]byte, keyRange)
@@ -130,7 +143,7 @@ func TestConcurrent(t *testing.T) {
 		}
 		n := ran.Intn(keyRange)
 		key := concurrentKeys[n]
-		if ls.Insert(key, key) {
+		if ls.Put(key, key) {
 			totalInsert++
 		}
 		n = ran.Intn(keyRange)
@@ -172,7 +185,7 @@ func BenchmarkMemStoreDeleteInsertGet(b *testing.B) {
 	keys := make([][]byte, 10000)
 	for i := 0; i < 10000; i++ {
 		keys[i] = numToKey(i)
-		ls.Insert(keys[i], keys[i])
+		ls.Put(keys[i], keys[i])
 	}
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	buf := make([]byte, 100)
@@ -180,7 +193,7 @@ func BenchmarkMemStoreDeleteInsertGet(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		n := r.Intn(10000)
 		ls.Delete(keys[n])
-		ls.Insert(keys[n], keys[n])
+		ls.Put(keys[n], keys[n])
 		ls.Get(keys[n], buf)
 	}
 }
@@ -190,7 +203,7 @@ func BenchmarkMemStoreIterate(b *testing.B) {
 	keys := make([][]byte, 10000)
 	for i := 0; i < 10000; i++ {
 		keys[i] = numToKey(i)
-		ls.Insert(keys[i], keys[i])
+		ls.Put(keys[i], keys[i])
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

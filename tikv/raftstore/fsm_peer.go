@@ -832,7 +832,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 	newPeers := make([]*PeerEventContext, 0, len(regions))
 	for _, newRegion := range regions {
 		newRegionID := newRegion.Id
-		notExist := meta.regionRanges.Insert(newRegion.EndKey, regionIDToBytes(newRegionID))
+		notExist := meta.regionRanges.Put(newRegion.EndKey, regionIDToBytes(newRegionID))
 		y.Assert(notExist)
 		if newRegionID == regionID {
 			newPeers = append(newPeers, d.peer.getEventContext())
@@ -952,7 +952,7 @@ func (d *peerMsgHandler) onReadyApplySnapshot(applyResult *ApplySnapResult) {
 		log.Infof("%s region changed from %s -> %s after applying snapshot", d.tag(), prevRegion, region)
 		meta.regionRanges.Delete(prevRegion.EndKey)
 	}
-	if !meta.regionRanges.Insert(region.EndKey, regionIDToBytes(region.Id)) {
+	if !meta.regionRanges.Put(region.EndKey, regionIDToBytes(region.Id)) {
 		oldRegionID := regionIDFromBytes(meta.regionRanges.Get(region.EndKey, nil))
 		panic(fmt.Sprintf("%s unexpected old region %d", d.tag(), oldRegionID))
 	}

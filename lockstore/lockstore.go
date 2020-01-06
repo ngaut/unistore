@@ -7,13 +7,10 @@ import (
 	"sync/atomic"
 	"time"
 	"unsafe"
-
-	"github.com/ngaut/log"
 )
 
 // MemStore is a skiplist variant used to store lock.
-// Compares to normal skip list, it only supports Insert and Delete operation.
-// and only support single thread write.
+// Compares to normal skip list, it only supports single thread write.
 // But it can reuse the memory, so that the memory usage doesn't keep growing.
 type MemStore struct {
 	height   int32 // Current height. 1 <= height <= maxHeight.
@@ -240,22 +237,25 @@ func (ls *MemStore) getNode(arena *arena, addr arenaAddr) *node {
 	return (*node)(unsafe.Pointer(&data[0]))
 }
 
-// Put inserts the key-value pair.
-func (ls *MemStore) Insert(key []byte, v []byte) bool {
+// Put puts the key-value pair, returns true if the key doesn't exist.
+func (ls *MemStore) Put(key []byte, v []byte) bool {
 	arena := ls.getArena()
 	lsHeight := ls.getHeight()
 	var prev [maxHeight + 1]*node
 	var next [maxHeight + 1]*node
 	prev[lsHeight] = ls.head
+	var old *node
 	for i := int(lsHeight) - 1; i >= 0; i-- {
 		// Use higher level to speed up for current level.
 		var exists bool
 		prev[i], next[i], exists = ls.findSpliceForLevel(ls.getArena(), key, prev[i+1], i)
 		if exists {
-			// The save key already exists.
-			log.Error("the save key already exists key=%v", key)
-			return false
+			old = next[i]
 		}
+	}
+	if old != nil {
+		ls.replace(key, v, prev[:], old)
+		return false
 	}
 	height := ls.randomHeight()
 	x := ls.newNode(arena, key, v, height)
@@ -278,6 +278,15 @@ func (ls *MemStore) Insert(key []byte, v []byte) bool {
 	}
 	ls.length += 1
 	return true
+}
+
+func (ls *MemStore) replace(key, v []byte, prev []*node, old *node) {
+	x := ls.newNode(ls.getArena(), key, v, int(old.height))
+	for i := 0; i < int(old.height); i++ {
+		x.nexts[i] = atomic.LoadUint64(&old.nexts[i])
+		prev[i].setNextAddr(i, x.addr)
+	}
+	ls.getArena().free(old.addr)
 }
 
 func (ls *MemStore) newNode(arena *arena, key []byte, v []byte, height int) *node {

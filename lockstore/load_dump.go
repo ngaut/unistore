@@ -38,7 +38,7 @@ func (ls *MemStore) LoadFromFile(fileName string) (meta []byte, err error) {
 			return nil, errors.Trace(err)
 		}
 		cnt++
-		ls.Insert(keyBuf, valBuf)
+		ls.Put(keyBuf, valBuf)
 	}
 	log.Infof("loaded lockstore with %d entries", cnt)
 	return meta, nil

@@ -272,7 +272,7 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 				mergingCount++
 				peer.setPendingMergeState(localState.MergeState)
 			}
-			meta.regionRanges.Insert(region.EndKey, regionIDToBytes(regionID))
+			meta.regionRanges.Put(region.EndKey, regionIDToBytes(regionID))
 			meta.regions[regionID] = region
 			// No need to check duplicated here, because we use region id as the key
 			// in DB.
@@ -298,7 +298,7 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 			return nil, err
 		}
 		peer.scheduleApplyingSnapshot()
-		meta.regionRanges.Insert(region.EndKey, regionIDToBytes(region.Id))
+		meta.regionRanges.Put(region.EndKey, regionIDToBytes(region.Id))
 		meta.regions[region.Id] = region
 		regionPeers = append(regionPeers, peer)
 	}
