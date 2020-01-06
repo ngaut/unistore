@@ -82,6 +82,7 @@ func main() {
 	conf := loadConfig()
 	loadCmdConf(conf)
 	runtime.GOMAXPROCS(conf.Server.MaxProcs)
+	runtime.SetMutexProfileFraction(10)
 	if conf.Server.LogfilePath != "" {
 		err := log.SetOutputByName(conf.Server.LogfilePath)
 		if err != nil {

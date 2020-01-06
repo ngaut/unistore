@@ -165,7 +165,7 @@ func fillDBBundleData(t *testing.T, dbBundle *mvcc.DBBundle) {
 		OldVal:  make([]byte, 32),
 		OldMeta: mvcc.NewDBUserMeta(150, 200),
 	}
-	dbBundle.LockStore.Insert(snapTestKey, lockVal.MarshalBinary())
+	dbBundle.LockStore.Put(snapTestKey, lockVal.MarshalBinary())
 }
 
 func TestSnapGenMeta(t *testing.T) {

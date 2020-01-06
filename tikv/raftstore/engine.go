@@ -78,7 +78,7 @@ func (en *Engines) newRegionSnapshot(regionId, redoIdx uint64) (snap *regionSnap
 	iter := en.kv.LockStore.NewIterator()
 	start, end := rawDataStartKey(oldRegionState.Region.StartKey), rawRegionKey(oldRegionState.Region.EndKey)
 	for iter.Seek(start); iter.Valid() && (len(end) == 0 || bytes.Compare(iter.Key(), end) < 0); iter.Next() {
-		lockSnap.Insert(iter.Key(), iter.Value())
+		lockSnap.Put(iter.Key(), iter.Value())
 	}
 
 	txn := en.kv.DB.NewTransaction(false)
@@ -245,7 +245,7 @@ func (wb *WriteBatch) WriteToKV(bundle *mvcc.DBBundle) error {
 		for _, entry := range wb.lockEntries {
 			switch entry.UserMeta[0] {
 			case mvcc.LockUserMetaRollbackByte:
-				bundle.RollbackStore.Insert(entry.Key, []byte{0})
+				bundle.RollbackStore.Put(entry.Key, []byte{0})
 			case mvcc.LockUserMetaDeleteByte:
 				if !bundle.LockStore.Delete(entry.Key) {
 					panic("failed to delete key")
@@ -253,9 +253,7 @@ func (wb *WriteBatch) WriteToKV(bundle *mvcc.DBBundle) error {
 			case mvcc.LockUserMetaRollbackGCByte:
 				bundle.RollbackStore.Delete(entry.Key)
 			default:
-				// For a pessimistic transaction, the lock will be updated.
-				bundle.LockStore.Delete(entry.Key)
-				bundle.LockStore.Insert(entry.Key, entry.Value)
+				bundle.LockStore.Put(entry.Key, entry.Value)
 			}
 		}
 		bundle.MemStoreMu.Unlock()

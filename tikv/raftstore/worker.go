@@ -504,7 +504,7 @@ func (pendDelRanges *pendingDeleteRanges) insert(regionId uint64, startKey, endK
 		panic(fmt.Sprintf("[region %d] register deleting data in [%v, %v) failed due to overlap", regionId, startKey, endKey))
 	}
 	peerInfo := newStalePeerInfo(regionId, endKey, timeout)
-	pendDelRanges.ranges.Insert(startKey, peerInfo.data)
+	pendDelRanges.ranges.Put(startKey, peerInfo.data)
 }
 
 // remove removes and returns the peer info with the `start_key`.

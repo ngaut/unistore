@@ -156,7 +156,7 @@ func (w writeLockWorker) run() {
 			for _, entry := range batch.entries {
 				switch entry.UserMeta[0] {
 				case mvcc.LockUserMetaRollbackByte:
-					rollbackStore.Insert(entry.Key, []byte{0})
+					rollbackStore.Put(entry.Key, []byte{0})
 				case mvcc.LockUserMetaDeleteByte:
 					delCnt++
 					if !ls.Delete(entry.Key) {
@@ -166,7 +166,7 @@ func (w writeLockWorker) run() {
 					rollbackStore.Delete(entry.Key)
 				default:
 					insertCnt++
-					if !ls.Insert(entry.Key, entry.Value) {
+					if !ls.Put(entry.Key, entry.Value) {
 						panic("failed to insert key")
 					}
 				}

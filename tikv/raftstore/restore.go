@@ -90,7 +90,7 @@ func restoreAppliedEntry(entry *eraftpb.Entry, txn *badger.Txn, lockStore, rollb
 
 func restorePrewrite(op prewriteOp, txn *badger.Txn, lockStore *lockstore.MemStore) {
 	key, value := convertPrewriteToLock(op, txn)
-	lockStore.Insert(key, value)
+	lockStore.Put(key, value)
 }
 
 func restoreCommit(op commitOp, lockStore *lockstore.MemStore) {
@@ -116,7 +116,7 @@ func restoreRollback(op rollbackOp, rollbackStore *lockstore.MemStore) {
 	if err != nil {
 		panic(err)
 	}
-	rollbackStore.Insert(append(rawKey, remain...), []byte{0})
+	rollbackStore.Put(append(rawKey, remain...), []byte{0})
 }
 
 func isRaftLogKey(key []byte) bool {

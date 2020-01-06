@@ -760,9 +760,9 @@ func (s *Snap) Apply(opts ApplyOptions) (ApplyResult, error) {
 				UserMeta: item.userMeta,
 			})
 		case applySnapTypeLock:
-			opts.DBBundle.LockStore.Insert(item.key, item.val)
+			opts.DBBundle.LockStore.Put(item.key, item.val)
 		case applySnapTypeRollback:
-			opts.DBBundle.RollbackStore.Insert(item.key, item.val)
+			opts.DBBundle.RollbackStore.Put(item.key, item.val)
 		}
 	}
 

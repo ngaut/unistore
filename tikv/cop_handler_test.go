@@ -16,6 +16,7 @@ import (
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/codec"
+	"github.com/pingcap/tidb/util/rowcodec"
 	"github.com/pingcap/tipb/go-tipb"
 	"github.com/stretchr/testify/require"
 )
@@ -102,7 +103,7 @@ func prepareTestTableData(t *testing.T, keyNumber int, tableId int64) *data {
 	for i := 0; i < keyNumber; i++ {
 		datum := types.MakeDatums(i, "abc", 10.0)
 		rows[int64(i)] = datum
-		rowEncodedData, err := tablecodec.EncodeRow(stmtCtx, datum, colIds, nil, nil)
+		rowEncodedData, err := tablecodec.EncodeRow(stmtCtx, datum, colIds, nil, nil, &rowcodec.Encoder{})
 		require.Nil(t, err)
 		rowKeyEncodedData := tablecodec.EncodeRowKeyWithHandle(tableId, int64(i))
 		encodedTestKVDatas[i] = &encodedTestKVData{encodedRowKey: rowKeyEncodedData, encodedRowValue: rowEncodedData}
