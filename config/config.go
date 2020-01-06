@@ -103,6 +103,10 @@ var DefaultConf = Config{
 		Compression:      make([]string, 7),
 		BlockCacheSize:   1 << 30,
 	},
+	Coprocessor: Coprocessor{
+		RegionMaxKeys:   1440000,
+		RegionSplitKeys: 960000,
+	},
 }
 
 // parseDuration parses duration argument string.
