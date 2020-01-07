@@ -182,7 +182,6 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 				return nil, nil
 			}
 			// Single statement rollback key, we can overwrite it.
-			batch.PessimisticRollback(m.Key)
 		}
 	}
 	items, err := store.getDBItems(reqCtx, mutations)
@@ -282,7 +281,6 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 				if lock.MinCommitTS < req.CurrentTs {
 					lock.MinCommitTS = req.CurrentTs
 				}
-				batch.PessimisticRollback(req.PrimaryKey)
 				batch.PessimisticLock(req.PrimaryKey, lock)
 				if err = store.dbWriter.Write(batch); err != nil {
 					return 0, 0, action, err
@@ -416,7 +414,7 @@ func (store *MVCCStore) prewriteOptimistic(reqCtx *requestCtx, mutations []*kvrp
 		if err1 != nil {
 			return err1
 		}
-		batch.Prewrite(m.Key, lock, false)
+		batch.Prewrite(m.Key, lock)
 	}
 	return store.dbWriter.Write(batch)
 }
@@ -470,7 +468,7 @@ func (store *MVCCStore) prewritePessimistic(reqCtx *requestCtx, mutations []*kvr
 		if err1 != nil {
 			return err1
 		}
-		batch.Prewrite(m.Key, lock, len(req.IsPessimisticLock) > 0 && req.IsPessimisticLock[i])
+		batch.Prewrite(m.Key, lock)
 	}
 	return store.dbWriter.Write(batch)
 }
@@ -724,10 +722,6 @@ func (store *MVCCStore) rollbackKeyReadLock(reqCtx *requestCtx, batch mvcc.Write
 					StartTS: lock.StartTS,
 					TTL:     uint64(lock.TTL),
 				}
-			}
-			if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
-				batch.PessimisticRollback(key)
-				return rollbackPessimistic, nil
 			}
 			// We can not simply delete the lock because the prewrite may be sent multiple times.
 			// To prevent that we update it a rollback lock.

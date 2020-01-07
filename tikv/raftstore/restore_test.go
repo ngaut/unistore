@@ -49,7 +49,7 @@ func TestRestore(t *testing.T) {
 		Primary: k1,
 		Value:   v1,
 	}
-	wb.Prewrite(k1, &expectLock, false)
+	wb.Prewrite(k1, &expectLock)
 	txn := engines.kv.DB.NewTransaction(true)
 	err := restoreAppliedEntry(genEntry(wb, t), txn, lockStore, rollbackStore)
 	require.Nil(t, err)

@@ -3,6 +3,12 @@ package raftstore
 import (
 	"time"
 
+	"github.com/ngaut/unistore/config"
+
+	"github.com/coocood/badger/y"
+
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+
 	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/errors"
@@ -31,7 +37,7 @@ type raftWriteBatch struct {
 	commitTS uint64
 }
 
-func (wb *raftWriteBatch) Prewrite(key []byte, lock *mvcc.MvccLock, isPessimisticLock bool) {
+func (wb *raftWriteBatch) Prewrite(key []byte, lock *mvcc.MvccLock) {
 	encodedKey := codec.EncodeBytes(nil, key)
 	putLock, putDefault := mvcc.EncodeLockCFValue(lock)
 	if len(putDefault) != 0 {
@@ -142,6 +148,9 @@ func (wb *raftWriteBatch) PessimisticRollback(key []byte) {
 }
 
 func (writer *raftDBWriter) NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Context) mvcc.WriteBatch {
+	if config.GetGlobalConf().RaftStore.CustomRaftLog {
+		return NewCustomWriteBatch(startTS, commitTS, ctx)
+	}
 	return &raftWriteBatch{
 		ctx:      ctx,
 		startTS:  startTS,
@@ -150,22 +159,28 @@ func (writer *raftDBWriter) NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb
 }
 
 func (writer *raftDBWriter) Write(batch mvcc.WriteBatch) error {
-	b := batch.(*raftWriteBatch)
-	ctx := b.ctx
-	header := &rcpb.RaftRequestHeader{
-		RegionId:    ctx.RegionId,
-		Peer:        ctx.Peer,
-		RegionEpoch: ctx.RegionEpoch,
-		Term:        ctx.Term,
-	}
-	request := &rcpb.RaftCmdRequest{
-		Header:   header,
-		Requests: b.requests,
-	}
 	cmd := &MsgRaftCmd{
 		SendTime: time.Now(),
-		Request:  request,
 		Callback: NewCallback(),
+	}
+	var reqLen int
+	switch x := batch.(type) {
+	case *raftWriteBatch:
+		ctx := x.ctx
+		header := &rcpb.RaftRequestHeader{
+			RegionId:    ctx.RegionId,
+			Peer:        ctx.Peer,
+			RegionEpoch: ctx.RegionEpoch,
+			Term:        ctx.Term,
+		}
+		cmd.Request = raftlog.NewRequest(&rcpb.RaftCmdRequest{
+			Header:   header,
+			Requests: x.requests,
+		})
+		reqLen = len(x.requests)
+	case *customWriteBatch:
+		cmd.Request = x.builder.Build()
+		reqLen = x.builder.Len()
 	}
 	start := time.Now()
 	err := writer.router.sendRaftCommand(cmd)
@@ -182,7 +197,7 @@ func (writer *raftDBWriter) Write(batch mvcc.WriteBatch) error {
 		metrics.WriteWaiteStepThree.Observe(cb.applyBeginTime.Sub(cb.raftDoneTime).Seconds())
 		metrics.WriteWaiteStepFour.Observe(cb.applyDoneTime.Sub(cb.applyBeginTime).Seconds())
 	}
-	return writer.checkResponse(cb.resp, len(b.requests))
+	return writer.checkResponse(cb.resp, reqLen)
 }
 
 type RaftError struct {
@@ -229,14 +244,11 @@ func (w *TestRaftWriter) Write(batch mvcc.WriteBatch) error {
 	raftWriteBatch := batch.(*raftWriteBatch)
 	applier := new(applier)
 	applyCtx := newApplyContext("test", nil, w.engine, nil, NewDefaultConfig())
-	_, _, err := applier.execWriteCmd(applyCtx, &rcpb.RaftCmdRequest{
+	applier.execWriteCmd(applyCtx, raftlog.NewRequest(&rcpb.RaftCmdRequest{
 		Header:   new(rcpb.RaftRequestHeader),
 		Requests: raftWriteBatch.requests,
-	})
-	if err != nil {
-		return err
-	}
-	err = applyCtx.wb.WriteToKV(w.dbBundle)
+	}))
+	err := applyCtx.wb.WriteToKV(w.dbBundle)
 	if err != nil {
 		return err
 	}
@@ -261,4 +273,61 @@ func NewTestRaftWriter(dbBundle *mvcc.DBBundle, engine *Engines) mvcc.DBWriter {
 		engine:   engine,
 	}
 	return writer
+}
+
+type customWriteBatch struct {
+	startTS  uint64
+	commitTS uint64
+	builder  *raftlog.CustomBuilder
+}
+
+func (wb *customWriteBatch) setType(tp raftlog.CustomRaftLogType) {
+	oldTp := wb.builder.GetType()
+	if oldTp == 0 {
+		wb.builder.SetType(tp)
+	} else {
+		y.Assert(tp == oldTp)
+	}
+}
+
+func (wb *customWriteBatch) Prewrite(key []byte, lock *mvcc.MvccLock) {
+	wb.setType(raftlog.TypePrewrite)
+	wb.builder.AppendLock(key, lock.MarshalBinary())
+}
+
+func (wb *customWriteBatch) Commit(key []byte, lock *mvcc.MvccLock) {
+	wb.setType(raftlog.TypeCommit)
+	wb.builder.AppendCommit(key, lock.MarshalBinary(), wb.commitTS)
+}
+
+func (wb *customWriteBatch) Rollback(key []byte, deleleLock bool) {
+	wb.setType(raftlog.TypeRolback)
+	rollbackKey := mvcc.EncodeRollbackKey(nil, key, wb.startTS)
+	wb.builder.AppendRollback(rollbackKey, deleleLock)
+}
+
+func (wb *customWriteBatch) PessimisticLock(key []byte, lock *mvcc.MvccLock) {
+	wb.setType(raftlog.TypePessimisticLock)
+	wb.builder.AppendLock(key, lock.MarshalBinary())
+}
+
+func (wb *customWriteBatch) PessimisticRollback(key []byte) {
+	wb.setType(raftlog.TypePessimisticRollback)
+	wb.builder.AppendPessimisticRollback(key)
+}
+
+func NewCustomWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Context) mvcc.WriteBatch {
+	header := raftlog.CustomHeader{
+		RegionID: ctx.RegionId,
+		Epoch:    raftlog.NewEpoch(ctx.RegionEpoch.Version, ctx.RegionEpoch.ConfVer),
+		PeerID:   ctx.Peer.Id,
+		StoreID:  ctx.Peer.StoreId,
+		Term:     ctx.Term,
+	}
+	b := raftlog.NewBuilder(header)
+	return &customWriteBatch{
+		startTS:  startTS,
+		commitTS: commitTS,
+		builder:  b,
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/zhangjinpeng1987/raft"
@@ -126,7 +127,7 @@ type MsgSignificant struct {
 
 type MsgRaftCmd struct {
 	SendTime time.Time
-	Request  *raft_cmdpb.RaftCmdRequest
+	Request  raftlog.RaftLog
 	Callback *Callback
 }
 

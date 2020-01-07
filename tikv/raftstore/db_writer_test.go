@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+
 	"github.com/coocood/badger"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -43,13 +45,12 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 			Primary: primary,
 			Value:   values[i],
 		}
-		wb.Prewrite(primary, &expectLock, false)
-		_, _, err := apply.execWriteCmd(applyCtx, &rfpb.RaftCmdRequest{
+		wb.Prewrite(primary, &expectLock)
+		apply.execWriteCmd(applyCtx, raftlog.NewRequest(&rfpb.RaftCmdRequest{
 			Header:   new(rfpb.RaftRequestHeader),
 			Requests: wb.requests,
-		})
-		assert.Nil(t, err)
-		err = applyCtx.wb.WriteToKV(engines.kv)
+		}))
+		err := applyCtx.wb.WriteToKV(engines.kv)
 		assert.Nil(t, err)
 		applyCtx.wb.Reset()
 		wb.requests = nil
@@ -75,10 +76,10 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 			Value: values[i],
 		}
 		wb.Commit(primary, expectLock)
-		apply.execWriteCmd(applyCtx, &rfpb.RaftCmdRequest{
+		apply.execWriteCmd(applyCtx, raftlog.NewRequest(&rfpb.RaftCmdRequest{
 			Header:   new(rfpb.RaftRequestHeader),
 			Requests: wb.requests,
-		})
+		}))
 		err := applyCtx.wb.WriteToKV(engines.kv)
 		assert.Nil(t, err)
 		applyCtx.wb.Reset()
@@ -122,11 +123,11 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 			Primary: primary,
 			Value:   longValue[:],
 		}
-		wb.Prewrite(primary, &expectLock, false)
-		apply.execWriteCmd(applyCtx, &rfpb.RaftCmdRequest{
+		wb.Prewrite(primary, &expectLock)
+		apply.execWriteCmd(applyCtx, raftlog.NewRequest(&rfpb.RaftCmdRequest{
 			Header:   new(rfpb.RaftRequestHeader),
 			Requests: wb.requests,
-		})
+		}))
 		err := applyCtx.wb.WriteToKV(engines.kv)
 		assert.Nil(t, err)
 		applyCtx.wb.Reset()
@@ -140,10 +141,10 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 	}
 	primary := []byte(fmt.Sprintf("t%08d_r%08d", 0, 0))
 	wb.Rollback(primary, false)
-	apply.execWriteCmd(applyCtx, &rfpb.RaftCmdRequest{
+	apply.execWriteCmd(applyCtx, raftlog.NewRequest(&rfpb.RaftCmdRequest{
 		Header:   new(rfpb.RaftRequestHeader),
 		Requests: wb.requests,
-	})
+	}))
 	err := applyCtx.wb.WriteToKV(engines.kv)
 	assert.Nil(t, err)
 	applyCtx.wb.Reset()
@@ -154,10 +155,10 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 	}
 	primary = []byte(fmt.Sprintf("t%08d_r%08d", 1, 1))
 	wb.Rollback(primary, true)
-	apply.execWriteCmd(applyCtx, &rfpb.RaftCmdRequest{
+	apply.execWriteCmd(applyCtx, raftlog.NewRequest(&rfpb.RaftCmdRequest{
 		Header:   new(rfpb.RaftRequestHeader),
 		Requests: wb.requests,
-	})
+	}))
 	err = applyCtx.wb.WriteToKV(engines.kv)
 	assert.Nil(t, err)
 	applyCtx.wb.Reset()

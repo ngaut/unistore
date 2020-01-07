@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
 	"github.com/ngaut/log"
@@ -772,7 +774,7 @@ func (d *storeMsgHandler) onComputeHashTick() {
 		CmdType: raft_cmdpb.AdminCmdType_ComputeHash,
 	}
 	cmd := &MsgRaftCmd{
-		Request: request,
+		Request: raftlog.NewRequest(request),
 	}
 	_ = d.ctx.router.sendRaftCommand(cmd)
 }

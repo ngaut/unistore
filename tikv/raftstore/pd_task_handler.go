@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/pd"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -262,14 +264,14 @@ func (r *pdTaskHandler) onDestroyPeer(t *pdDestroyPeerTask) {
 func (r *pdTaskHandler) sendAdminRequest(regionID uint64, epoch *metapb.RegionEpoch, peer *metapb.Peer, req *raft_cmdpb.AdminRequest, callback *Callback) {
 	cmd := &MsgRaftCmd{
 		SendTime: time.Now(),
-		Request: &raft_cmdpb.RaftCmdRequest{
+		Request: raftlog.NewRequest(&raft_cmdpb.RaftCmdRequest{
 			Header: &raft_cmdpb.RaftRequestHeader{
 				RegionId:    regionID,
 				Peer:        peer,
 				RegionEpoch: epoch,
 			},
 			AdminRequest: req,
-		},
+		}),
 		Callback: callback,
 	}
 	r.router.sendRaftCommand(cmd)

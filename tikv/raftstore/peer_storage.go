@@ -614,7 +614,7 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 	return snap, raft.ErrSnapshotTemporarilyUnavailable
 }
 
-// Append the given entries to the raft log using previous last index or self.last_index.
+// AppendLock the given entries to the raft log using previous last index or self.last_index.
 // Return the new last index for later update. After we commit in engine, we can set last_index
 // to the return one.
 func (ps *PeerStorage) Append(invokeCtx *InvokeContext, entries []eraftpb.Entry, raftWB *WriteBatch) error {

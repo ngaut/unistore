@@ -1,9 +1,11 @@
 package raftstore
 
 import (
+	"testing"
+
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/stretchr/testify/assert"
-	"testing"
 )
 
 func TestGetSyncLogFromRequest(t *testing.T) {
@@ -49,9 +51,9 @@ func TestIsUrgentRequest(t *testing.T) {
 		req.AdminRequest = new(raft_cmdpb.AdminRequest)
 		req.AdminRequest.CmdType = tp
 
-		assert.Equal(t, IsUrgentRequest(req), isUrgent)
+		assert.Equal(t, IsUrgentRequest(raftlog.NewRequest(req)), isUrgent)
 	}
-	assert.Equal(t, IsUrgentRequest(new(raft_cmdpb.RaftCmdRequest)), false)
+	assert.Equal(t, IsUrgentRequest(raftlog.NewRequest(new(raft_cmdpb.RaftCmdRequest))), false)
 }
 
 func TestEntryCtx(t *testing.T) {

@@ -9,6 +9,8 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -1165,20 +1167,21 @@ func (p *Peer) PostSplit() {
 // Propose a request.
 //
 // Return true means the request has been proposed successfully.
-func (p *Peer) Propose(kv *mvcc.DBBundle, cfg *Config, cb *Callback, req *raft_cmdpb.RaftCmdRequest, errResp *raft_cmdpb.RaftCmdResponse) bool {
+func (p *Peer) Propose(kv *mvcc.DBBundle, cfg *Config, cb *Callback, rlog raftlog.RaftLog, errResp *raft_cmdpb.RaftCmdResponse) bool {
 	if p.PendingRemove {
 		return false
 	}
 
 	isConfChange := false
-	isUrgent := IsUrgentRequest(req)
+	isUrgent := IsUrgentRequest(rlog)
 
-	policy, err := p.inspect(req)
+	policy, err := p.inspect(rlog)
 	if err != nil {
 		BindRespError(errResp, err)
 		cb.Done(errResp)
 		return false
 	}
+	req := rlog.GetRaftCmdRequest()
 	var idx uint64
 	switch policy {
 	case RequestPolicy_ReadLocal:
@@ -1187,7 +1190,7 @@ func (p *Peer) Propose(kv *mvcc.DBBundle, cfg *Config, cb *Callback, req *raft_c
 	case RequestPolicy_ReadIndex:
 		return p.readIndex(cfg, req, errResp, cb)
 	case RequestPolicy_ProposeNormal:
-		idx, err = p.ProposeNormal(cfg, req)
+		idx, err = p.ProposeNormal(cfg, rlog)
 	case RequestPolicy_ProposeTransferLeader:
 		return p.ProposeTransferLeader(cfg, req, cb)
 	case RequestPolicy_ProposeConfChange:
@@ -1417,7 +1420,7 @@ func (p *Peer) readIndex(cfg *Config, req *raft_cmdpb.RaftCmdRequest, errResp *r
 	// update leader lease.
 	if p.leaderLease.Inspect(renewLeaseTime) == LeaseState_Suspect {
 		req := new(raft_cmdpb.RaftCmdRequest)
-		if index, err := p.ProposeNormal(cfg, req); err == nil {
+		if index, err := p.ProposeNormal(cfg, raftlog.NewRequest(req)); err == nil {
 			meta := &ProposalMeta{
 				Index:          index,
 				Term:           p.Term(),
@@ -1495,9 +1498,12 @@ func (p *Peer) preProposePrepareMerge(cfg *Config, req *raft_cmdpb.RaftCmdReques
 	return nil
 }
 
-func (p *Peer) PrePropose(cfg *Config, req *raft_cmdpb.RaftCmdRequest) (*ProposalContext, error) {
+func (p *Peer) PrePropose(cfg *Config, rlog raftlog.RaftLog) (*ProposalContext, error) {
 	ctx := new(ProposalContext)
-
+	req := rlog.GetRaftCmdRequest()
+	if req == nil {
+		return ctx, nil
+	}
 	if getSyncLogFromRequest(req) {
 		ctx.insert(ProposalContext_SyncLog)
 	}
@@ -1523,21 +1529,18 @@ func (p *Peer) PrePropose(cfg *Config, req *raft_cmdpb.RaftCmdRequest) (*Proposa
 	return ctx, nil
 }
 
-func (p *Peer) ProposeNormal(cfg *Config, req *raft_cmdpb.RaftCmdRequest) (uint64, error) {
-	if p.PendingMergeState != nil && (req.AdminRequest.GetCmdType() != raft_cmdpb.AdminCmdType_RollbackMerge) {
+func (p *Peer) ProposeNormal(cfg *Config, rlog raftlog.RaftLog) (uint64, error) {
+	if p.PendingMergeState != nil && rlog.GetRaftCmdRequest().GetAdminRequest().GetCmdType() != raft_cmdpb.AdminCmdType_RollbackMerge {
 		return 0, fmt.Errorf("peer in merging mode, can't do proposal.")
 	}
 
 	// TODO: validate request for unexpected changes.
-	ctx, err := p.PrePropose(cfg, req)
+	ctx, err := p.PrePropose(cfg, rlog)
 	if err != nil {
 		log.Warnf("%v skip proposal: %v", p.Tag, err)
 		return 0, err
 	}
-	data, err := req.Marshal()
-	if err != nil {
-		return 0, err
-	}
+	data := rlog.Marshal()
 
 	if uint64(len(data)) > cfg.RaftEntryMaxSize {
 		log.Errorf("entry is too large, entry size %v", len(data))
@@ -1650,9 +1653,6 @@ type RequestInspector interface {
 	hasAppliedToCurrentTerm() bool
 	// Inspects its lease.
 	inspectLease() LeaseState
-	// Inspect a request, return a policy that tells us how to
-	// handle the request.
-	inspect(req *raft_cmdpb.RaftCmdRequest) (RequestPolicy, error)
 }
 
 func (p *Peer) hasAppliedToCurrentTerm() bool {
@@ -1672,7 +1672,11 @@ func (p *Peer) inspectLease() LeaseState {
 	return state
 }
 
-func (p *Peer) inspect(req *raft_cmdpb.RaftCmdRequest) (RequestPolicy, error) {
+func (p *Peer) inspect(rlog raftlog.RaftLog) (RequestPolicy, error) {
+	req := rlog.GetRaftCmdRequest()
+	if req == nil {
+		return RequestPolicy_ProposeNormal, nil
+	}
 	return Inspect(p, req)
 }
 
@@ -1859,11 +1863,12 @@ func getSyncLogFromRequest(req *raft_cmdpb.RaftCmdRequest) bool {
 /// But it may not be appropriate for some requests. This function
 /// checks whether the request should be committed on all followers
 /// as soon as possible.
-func IsUrgentRequest(req *raft_cmdpb.RaftCmdRequest) bool {
-	if req.AdminRequest == nil {
+func IsUrgentRequest(rlog raftlog.RaftLog) bool {
+	adminRequest := rlog.GetRaftCmdRequest().GetAdminRequest()
+	if adminRequest == nil {
 		return false
 	}
-	switch req.AdminRequest.CmdType {
+	switch adminRequest.CmdType {
 	case raft_cmdpb.AdminCmdType_Split,
 		raft_cmdpb.AdminCmdType_BatchSplit,
 		raft_cmdpb.AdminCmdType_ChangePeer,
@@ -1888,8 +1893,5 @@ func makeTransferLeaderResponse() *raft_cmdpb.RaftCmdResponse {
 }
 
 func GetChangePeerCmd(msg *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.ChangePeerRequest {
-	if msg.AdminRequest == nil || msg.AdminRequest.ChangePeer == nil {
-		return nil
-	}
-	return msg.AdminRequest.ChangePeer
+	return msg.GetAdminRequest().GetChangePeer()
 }

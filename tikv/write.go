@@ -288,10 +288,7 @@ type writeBatch struct {
 	lockBatch writeLockBatch
 }
 
-func (wb *writeBatch) Prewrite(key []byte, lock *mvcc.MvccLock, isPessimisticLock bool) {
-	if isPessimisticLock {
-		wb.lockBatch.delete(key)
-	}
+func (wb *writeBatch) Prewrite(key []byte, lock *mvcc.MvccLock) {
 	wb.lockBatch.set(key, lock.MarshalBinary())
 }
 
