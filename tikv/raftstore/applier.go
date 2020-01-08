@@ -22,7 +22,6 @@ import (
 )
 
 const (
-	WriteBatchMaxKeys  = 128
 	DefaultApplyWBSize = 4 * 1024
 
 	WriteTypeFlagPut      = 'P'
@@ -445,12 +444,6 @@ func shouldWriteToEngine(rlog raftlog.RaftLog, wbKeys int) bool {
 			raft_cmdpb.AdminCmdType_RollbackMerge:
 			return true
 		}
-	}
-
-	// When write batch contains more than `recommended` keys, write the batch
-	// to engine.
-	if wbKeys >= WriteBatchMaxKeys {
-		return true
 	}
 
 	// Some commands may modify keys covered by the current write batch, so we
