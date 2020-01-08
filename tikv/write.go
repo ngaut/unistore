@@ -167,9 +167,7 @@ func (w writeLockWorker) run() {
 					rollbackStore.Delete(entry.Key)
 				default:
 					insertCnt++
-					if !ls.PutWithHint(entry.Key, entry.Value, hint) {
-						panic("failed to insert key")
-					}
+					ls.PutWithHint(entry.Key, entry.Value, hint)
 				}
 			}
 			batch.wg.Done()
