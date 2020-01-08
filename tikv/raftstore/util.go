@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+
 	"github.com/ngaut/unistore/tikv/mvcc"
 
 	"github.com/golang/protobuf/proto"
@@ -395,9 +397,10 @@ func regionIDFromBytes(b []byte) uint64 {
 	return binary.LittleEndian.Uint64(b)
 }
 
-func checkRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, includeRegion bool) error {
+func checkRegionEpoch(rlog raftlog.RaftLog, region *metapb.Region, includeRegion bool) error {
 	var checkVer, checkConfVer bool
-	if req.AdminRequest == nil {
+	req := rlog.GetRaftCmdRequest()
+	if req.GetAdminRequest() == nil {
 		// for get/set/delete, we don't care conf_version.
 		checkVer = true
 	} else {
@@ -416,11 +419,6 @@ func checkRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, inc
 	if !checkVer && !checkConfVer {
 		return nil
 	}
-	if req.Header.RegionEpoch == nil {
-		return errors.Errorf("missing epoch")
-	}
-
-	fromEpoch := req.Header.RegionEpoch
 	currentEpoch := region.RegionEpoch
 
 	// We must check epochs strictly to avoid key not in region error.
@@ -432,30 +430,28 @@ func checkRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, inc
 	// request is higher than TiKV B, the request must be denied due to epoch
 	// not match, so it does not read on a stale snapshot, thus avoid the
 	// KeyNotInRegion error.
-	if (checkConfVer && fromEpoch.ConfVer != currentEpoch.ConfVer) ||
-		(checkVer && fromEpoch.Version != currentEpoch.Version) {
+	if (checkConfVer && rlog.Epoch().ConfVer() != currentEpoch.ConfVer) ||
+		(checkVer && rlog.Epoch().Ver() != currentEpoch.Version) {
 		err := &ErrEpochNotMatch{}
 		if includeRegion {
 			err.Regions = []*metapb.Region{region}
 		}
 		err.Message = fmt.Sprintf("current epoch of region %d is %s, but you sent %s",
-			region.Id, currentEpoch, fromEpoch)
+			region.Id, currentEpoch, rlog.Epoch())
 		return err
 	}
 	return nil
 }
 
-func checkStoreID(req *raft_cmdpb.RaftCmdRequest, storeID uint64) error {
-	peer := req.Header.Peer
-	if peer.StoreId == storeID {
+func checkStoreID(rlog raftlog.RaftLog, storeID uint64) error {
+	if rlog.StoreID() == storeID {
 		return nil
 	}
-	return errors.Errorf("store not match %d %d", peer.StoreId, storeID)
+	return errors.Errorf("store not match %d %d", rlog.StoreID(), storeID)
 }
 
-func checkTerm(req *raft_cmdpb.RaftCmdRequest, term uint64) error {
-	header := req.Header
-	if header.Term == 0 || term <= header.Term+1 {
+func checkTerm(rlog raftlog.RaftLog, term uint64) error {
+	if rlog.Term() == 0 || term <= rlog.Term()+1 {
 		return nil
 	}
 	// If header's term is 2 verions behind current term,
@@ -463,12 +459,11 @@ func checkTerm(req *raft_cmdpb.RaftCmdRequest, term uint64) error {
 	return &ErrStaleCommand{}
 }
 
-func checkPeerID(req *raft_cmdpb.RaftCmdRequest, peerID uint64) error {
-	peer := req.Header.Peer
-	if peer.Id == peerID {
+func checkPeerID(rlog raftlog.RaftLog, peerID uint64) error {
+	if rlog.PeerID() == peerID {
 		return nil
 	}
-	return errors.Errorf("mismatch peer id %d != %d", peer.Id, peerID)
+	return errors.Errorf("mismatch peer id %d != %d", rlog.PeerID(), peerID)
 }
 
 func CloneMsg(origin, cloned proto.Message) error {

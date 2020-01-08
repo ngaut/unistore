@@ -163,7 +163,7 @@ func (wb *WriteBatch) SetLock(key, val []byte) {
 	})
 }
 
-func (wb *WriteBatch) DeleteLock(key []byte, val []byte) {
+func (wb *WriteBatch) DeleteLock(key []byte) {
 	wb.lockEntries = append(wb.lockEntries, &badger.Entry{
 		Key:      key,
 		UserMeta: mvcc.LockUserMetaDelete,
@@ -390,7 +390,7 @@ func deleteLocksInBatch(db *mvcc.DBBundle, keys [][]byte, batchSize int) error {
 		keys = keys[batchSize:]
 		dbBatch := new(WriteBatch)
 		for _, key := range batchKeys {
-			dbBatch.DeleteLock(key, nil)
+			dbBatch.DeleteLock(key)
 		}
 		if err := dbBatch.WriteToKV(db); err != nil {
 			return err

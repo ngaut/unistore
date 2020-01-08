@@ -33,6 +33,7 @@ type RaftStore struct {
 	RaftBaseTickInterval     string `toml:"raft-base-tick-interval"`     // raft-base-tick-interval in milliseconds
 	RaftHeartbeatTicks       int    `toml:"raft-heartbeat-ticks"`        // raft-heartbeat-ticks times
 	RaftElectionTimeoutTicks int    `toml:"raft-election-timeout-ticks"` // raft-election-timeout-ticks times
+	CustomRaftLog            bool   `toml:"custom-raft-log"`
 }
 
 type Coprocessor struct {
@@ -95,6 +96,7 @@ var DefaultConf = Config{
 		RaftBaseTickInterval:     "1s",
 		RaftHeartbeatTicks:       2,
 		RaftElectionTimeoutTicks: 10,
+		CustomRaftLog:            true,
 	},
 	Engine: Engine{
 		DBPath:           "/tmp/badger",
@@ -104,7 +106,6 @@ var DefaultConf = Config{
 		NumL0Tables:      4,
 		NumL0TablesStall: 8,
 		VlogFileSize:     256 * MB,
-		SyncWrite:        true,
 		NumCompactors:    1,
 		SurfStartLevel:   8,
 		Compression:      make([]string, 7),

@@ -71,7 +71,7 @@ func (pr *router) send(regionID uint64, msg Msg) error {
 }
 
 func (pr *router) sendRaftCommand(cmd *MsgRaftCmd) error {
-	regionID := cmd.Request.Header.RegionId
+	regionID := cmd.Request.RegionID()
 	return pr.send(regionID, NewPeerMsg(MsgTypeRaftCmd, regionID, cmd))
 }
 

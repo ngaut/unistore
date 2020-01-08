@@ -23,7 +23,7 @@ type LatchHandle interface {
 }
 
 type WriteBatch interface {
-	Prewrite(key []byte, lock *MvccLock, isPessimisticLock bool)
+	Prewrite(key []byte, lock *MvccLock)
 	Commit(key []byte, lock *MvccLock)
 	Rollback(key []byte, deleleLock bool)
 	PessimisticLock(key []byte, lock *MvccLock)

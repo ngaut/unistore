@@ -3,6 +3,7 @@ package raftstore
 import (
 	"time"
 
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/zhangjinpeng1987/raft"
@@ -25,7 +26,7 @@ func (r *RaftstoreRouter) SendCommand(req *raft_cmdpb.RaftCmdRequest, cb *Callba
 	// TODO: support local reader
 	msg := &MsgRaftCmd{
 		SendTime: time.Now(),
-		Request:  req,
+		Request:  raftlog.NewRequest(req),
 		Callback: cb,
 	}
 	return r.router.sendRaftCommand(msg)

@@ -10,6 +10,7 @@ import (
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -21,7 +22,6 @@ import (
 )
 
 const (
-	WriteBatchMaxKeys  = 128
 	DefaultApplyWBSize = 4 * 1024
 
 	WriteTypeFlagPut      = 'P'
@@ -281,8 +281,6 @@ type applyContext struct {
 
 	// Indicates that WAL can be synchronized when data is written to KV engine.
 	enableSyncLog bool
-	// Whether synchronize WAL is preferred.
-	syncLogHint bool
 	// Whether to use the delete range API instead of deleting one by one.
 	useDeleteRange bool
 }
@@ -434,7 +432,11 @@ func notifyStaleReq(term uint64, cb *Callback) {
 }
 
 /// Checks if a write is needed to be issued before handling the command.
-func shouldWriteToEngine(cmd *raft_cmdpb.RaftCmdRequest, wbKeys int) bool {
+func shouldWriteToEngine(rlog raftlog.RaftLog, wbKeys int) bool {
+	cmd := rlog.GetRaftCmdRequest()
+	if cmd == nil {
+		return false
+	}
 	if cmd.AdminRequest != nil {
 		switch cmd.AdminRequest.CmdType {
 		case raft_cmdpb.AdminCmdType_ComputeHash, // ComputeHash require an up to date snapshot.
@@ -442,12 +444,6 @@ func shouldWriteToEngine(cmd *raft_cmdpb.RaftCmdRequest, wbKeys int) bool {
 			raft_cmdpb.AdminCmdType_RollbackMerge:
 			return true
 		}
-	}
-
-	// When write batch contains more than `recommended` keys, write the batch
-	// to engine.
-	if wbKeys >= WriteBatchMaxKeys {
-		return true
 	}
 
 	// Some commands may modify keys covered by the current write batch, so we
@@ -636,15 +632,22 @@ func (a *applier) handleRaftEntryNormal(aCtx *applyContext, entry *eraftpb.Entry
 	index := entry.Index
 	term := entry.Term
 	if len(entry.Data) > 0 {
-		cmd := new(raft_cmdpb.RaftCmdRequest)
-		err := cmd.Unmarshal(entry.Data)
-		if err != nil {
-			panic(err)
+		var rlog raftlog.RaftLog
+		if entry.Data[0] == raftlog.CustomRaftLogFlag {
+			rlog = raftlog.NewCustom(entry.Data)
+		} else {
+			cmd := new(raft_cmdpb.RaftCmdRequest)
+			err := cmd.Unmarshal(entry.Data)
+			if err != nil {
+				panic(err)
+			}
+			log.Info("cmd String", cmd.String())
+			rlog = raftlog.NewRequest(cmd)
 		}
-		if shouldWriteToEngine(cmd, len(aCtx.wb.entries)) {
+		if shouldWriteToEngine(rlog, len(aCtx.wb.entries)) {
 			aCtx.commit(a)
 		}
-		return a.processRaftCmd(aCtx, index, term, cmd)
+		return a.processRaftCmd(aCtx, index, term, rlog)
 	}
 
 	// when a peer become leader, it will send an empty entry.
@@ -675,7 +678,7 @@ func (a *applier) handleRaftEntryConfChange(aCtx *applyContext, entry *eraftpb.E
 	if err := cmd.Unmarshal(confChange.Context); err != nil {
 		panic(err)
 	}
-	result := a.processRaftCmd(aCtx, index, term, cmd)
+	result := a.processRaftCmd(aCtx, index, term, raftlog.NewRequest(cmd))
 	switch result.tp {
 	case applyResultTypeNone:
 		// If failed, tell Raft that the `ConfChange` was aborted.
@@ -718,15 +721,12 @@ func (a *applier) findCallback(index, term uint64, isConfChange bool) *Callback 
 	return nil
 }
 
-func (a *applier) processRaftCmd(aCtx *applyContext, index, term uint64, cmd *raft_cmdpb.RaftCmdRequest) applyResult {
+func (a *applier) processRaftCmd(aCtx *applyContext, index, term uint64, rlog raftlog.RaftLog) applyResult {
 	if index == 0 {
 		panic(fmt.Sprintf("%s process raft cmd need a none zero index", a.tag))
 	}
-	if cmd.AdminRequest != nil {
-		aCtx.syncLogHint = true
-	}
-	isConfChange := GetChangePeerCmd(cmd) != nil
-	resp, result := a.applyRaftCmd(aCtx, index, term, cmd)
+	isConfChange := GetChangePeerCmd(rlog.GetRaftCmdRequest()) != nil
+	resp, result := a.applyRaftCmd(aCtx, index, term, rlog)
 	if result.tp == applyResultTypeWaitMergeResource {
 		return result
 	}
@@ -749,13 +749,13 @@ func (a *applier) processRaftCmd(aCtx *applyContext, index, term uint64, cmd *ra
 /// we should try to apply the entry again or panic. Considering that this
 /// usually due to disk operation fail, which is rare, so just panic is ok.
 func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
-	req *raft_cmdpb.RaftCmdRequest) (*raft_cmdpb.RaftCmdResponse, applyResult) {
+	rlog raftlog.RaftLog) (*raft_cmdpb.RaftCmdResponse, applyResult) {
 	// if pending remove, apply should be aborted already.
 	y.Assert(!a.pendingRemove)
 
 	aCtx.execCtx = a.newCtx(index, term)
 	aCtx.wb.SetSafePoint()
-	resp, applyResult, err := a.execRaftCmd(aCtx, req)
+	resp, applyResult, err := a.execRaftCmd(aCtx, rlog)
 	if err != nil {
 		// clear dirty values.
 		aCtx.wb.RollbackToSafePoint()
@@ -816,18 +816,20 @@ func (a *applier) newCtx(index, term uint64) *applyExecContext {
 }
 
 // Only errors that will also occur on all other stores should be returned.
-func (a *applier) execRaftCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdRequest) (
+func (a *applier) execRaftCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 	resp *raft_cmdpb.RaftCmdResponse, result applyResult, err error) {
 	// Include region for epoch not match after merge may cause key not in range.
-	includeRegion := req.Header.GetRegionEpoch().GetVersion() >= a.lastMergeVersion
-	err = checkRegionEpoch(req, a.region, includeRegion)
+	includeRegion := rlog.Epoch().Ver() >= a.lastMergeVersion
+	err = checkRegionEpoch(rlog, a.region, includeRegion)
 	if err != nil {
 		return
 	}
-	if req.AdminRequest != nil {
+	req := rlog.GetRaftCmdRequest()
+	if req.GetAdminRequest() != nil {
 		return a.execAdminCmd(aCtx, req)
 	}
-	return a.execWriteCmd(aCtx, req)
+	resp, result = a.execWriteCmd(aCtx, rlog)
+	return
 }
 
 func (a *applier) execAdminCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdRequest) (
@@ -872,8 +874,13 @@ func (a *applier) execAdminCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdReques
 	return
 }
 
-func (a *applier) execWriteCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdRequest) (
-	resp *raft_cmdpb.RaftCmdResponse, result applyResult, err error) {
+func (a *applier) execWriteCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
+	resp *raft_cmdpb.RaftCmdResponse, result applyResult) {
+	if cl, ok := rlog.(*raftlog.CustomRaftLog); ok {
+		resp = a.execCustomLog(aCtx, cl)
+		return
+	}
+	req := rlog.GetRaftCmdRequest()
 	requests := req.GetRequests()
 	writeCmdOps := createWriteCmdOps(requests)
 	rangeDeleted := false
@@ -907,6 +914,39 @@ func (a *applier) execWriteCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdReques
 			data: &execResultDeleteRange{},
 		}
 	}
+	return
+}
+
+func (a *applier) execCustomLog(actx *applyContext, cl *raftlog.CustomRaftLog) (
+	resp *raft_cmdpb.RaftCmdResponse) {
+	var cnt int
+	switch cl.Type() {
+	case raftlog.TypePrewrite, raftlog.TypePessimisticLock:
+		cl.IterateLock(func(key, val []byte) {
+			actx.wb.SetLock(key, val)
+			cnt++
+		})
+	case raftlog.TypeCommit:
+		cl.IterateCommit(func(key, val []byte, commitTS uint64) {
+			a.commitLock(actx, key, val, commitTS)
+			cnt++
+		})
+	case raftlog.TypeRolback:
+		cl.IterateRollback(func(key []byte, deleteLock bool) {
+			actx.wb.Rollback(key)
+			if deleteLock {
+				actx.wb.DeleteLock(key[:len(key)-8])
+			}
+			cnt++
+		})
+	case raftlog.TypePessimisticRollback:
+		cl.IteratePessimisticRollback(func(key []byte) {
+			actx.wb.DeleteLock(key)
+			cnt++
+		})
+	}
+	resp = &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
+	resp.Responses = make([]*raft_cmdpb.Response, cnt)
 	return
 }
 
@@ -1071,6 +1111,11 @@ func (a *applier) execCommit(aCtx *applyContext, op commitOp) {
 	}
 	val := a.getLock(aCtx, rawKey)
 	y.Assert(len(val) > 0)
+	a.commitLock(aCtx, rawKey, val, commitTS)
+	return
+}
+
+func (a *applier) commitLock(aCtx *applyContext, rawKey []byte, val []byte, commitTS uint64) {
 	lock := mvcc.DecodeLock(val)
 	var sizeDiff int64
 	userMeta := mvcc.NewDBUserMeta(lock.StartTS, commitTS)
@@ -1101,10 +1146,7 @@ func (a *applier) execCommit(aCtx *applyContext, op commitOp) {
 	if sizeDiff > 0 {
 		a.metrics.sizeDiffHint += uint64(sizeDiff)
 	}
-	if op.delLock != nil {
-		aCtx.wb.DeleteLock(rawKey, val)
-	}
-	return
+	aCtx.wb.DeleteLock(rawKey)
 }
 
 func (a *applier) getLock(aCtx *applyContext, rawKey []byte) []byte {
@@ -1128,7 +1170,7 @@ func (a *applier) execRollback(aCtx *applyContext, op rollbackOp) {
 		}
 		aCtx.wb.Rollback(append(rawKey, remain...))
 		if op.delLock != nil {
-			aCtx.wb.DeleteLock(rawKey, a.getLock(aCtx, rawKey))
+			aCtx.wb.DeleteLock(rawKey)
 		}
 		return
 	}
@@ -1137,7 +1179,7 @@ func (a *applier) execRollback(aCtx *applyContext, op rollbackOp) {
 		if err != nil {
 			panic(op.delLock.Key)
 		}
-		aCtx.wb.DeleteLock(rawKey, a.getLock(aCtx, rawKey))
+		aCtx.wb.DeleteLock(rawKey)
 	}
 }
 
@@ -1176,7 +1218,7 @@ func (a *applier) execDeleteRange(aCtx *applyContext, req *raft_cmdpb.DeleteRang
 		if bytes.Compare(lockIt.Key(), endKey) >= 0 {
 			break
 		}
-		aCtx.wb.DeleteLock(safeCopy(lockIt.Key()), safeCopy(lockIt.Key()))
+		aCtx.wb.DeleteLock(safeCopy(lockIt.Key()))
 	}
 	return
 }

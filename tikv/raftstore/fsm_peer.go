@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+
 	"github.com/coocood/badger/y"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/tikv/mvcc"
@@ -999,12 +1001,13 @@ func (d *peerMsgHandler) checkMergeProposal(msg *raft_cmdpb.RaftCmdRequest) erro
 	return nil // TODO: merge func
 }
 
-func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) (*raft_cmdpb.RaftCmdResponse, error) {
+func (d *peerMsgHandler) preProposeRaftCommand(rlog raftlog.RaftLog) (*raft_cmdpb.RaftCmdResponse, error) {
+	req := rlog.GetRaftCmdRequest()
 	// Check store_id, make sure that the msg is dispatched to the right place.
-	if err := checkStoreID(req, d.storeID()); err != nil {
+	if err := checkStoreID(rlog, d.storeID()); err != nil {
 		return nil, err
 	}
-	if req.StatusRequest != nil {
+	if req.GetStatusRequest() != nil {
 		// For status commands, we handle it here directly.
 		return d.executeStatusCommand(req)
 	}
@@ -1017,14 +1020,14 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) (
 		return nil, &ErrNotLeader{regionID, leader}
 	}
 	// peer_id must be the same as peer's.
-	if err := checkPeerID(req, d.peerID()); err != nil {
+	if err := checkPeerID(rlog, d.peerID()); err != nil {
 		return nil, err
 	}
 	// Check whether the term is stale.
-	if err := checkTerm(req, d.peer.Term()); err != nil {
+	if err := checkTerm(rlog, d.peer.Term()); err != nil {
 		return nil, err
 	}
-	err := checkRegionEpoch(req, d.region(), true)
+	err := checkRegionEpoch(rlog, d.region(), true)
 	if errEpochNotMatching, ok := err.(*ErrEpochNotMatch); ok {
 		// Attach the region which might be split from the current region. But it doesn't
 		// matter if the region is not split from the current region. If the region meta
@@ -1039,8 +1042,8 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) (
 	return nil, err
 }
 
-func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *Callback) {
-	resp, err := d.preProposeRaftCommand(msg)
+func (d *peerMsgHandler) proposeRaftCommand(rlog raftlog.RaftLog, cb *Callback) {
+	resp, err := d.preProposeRaftCommand(rlog)
 	if err != nil {
 		cb.Done(ErrResp(err))
 		return
@@ -1054,7 +1057,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		NotifyReqRegionRemoved(d.regionID(), cb)
 		return
 	}
-
+	msg := rlog.GetRaftCmdRequest()
 	if err := d.checkMergeProposal(msg); err != nil {
 		log.Warnf("%s failed to process merge, message %s, err %v", d.tag(), msg, err)
 		cb.Done(ErrResp(err))
@@ -1068,7 +1071,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 
 	resp = &raft_cmdpb.RaftCmdResponse{}
 	BindRespTerm(resp, d.peer.Term())
-	if d.peer.Propose(d.ctx.engine.kv, d.ctx.cfg, cb, msg, resp) {
+	if d.peer.Propose(d.ctx.engine.kv, d.ctx.cfg, cb, rlog, resp) {
 		d.hasReady = true
 	}
 
@@ -1186,7 +1189,7 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 	// Create a compact log request and notify directly.
 	regionID := d.regionID()
 	request := newCompactLogRequest(regionID, d.peer.Meta, compactIdx, term)
-	d.proposeRaftCommand(request, nil)
+	d.proposeRaftCommand(raftlog.NewRequest(request), nil)
 }
 
 func (d *peerMsgHandler) onSplitRegionCheckTick() {
@@ -1389,7 +1392,7 @@ func (d *peerMsgHandler) onHashComputed(index uint64, hash []byte) {
 		return
 	}
 	req := newVerifyHashRequest(d.regionID(), d.peer.Meta, d.peer.ConsistencyState)
-	d.proposeRaftCommand(req, nil)
+	d.proposeRaftCommand(raftlog.NewRequest(req), nil)
 }
 
 /// Verify and store the hash to state. return true means the hash has been stored successfully.
