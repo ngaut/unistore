@@ -241,19 +241,20 @@ func (wb *WriteBatch) WriteToKV(bundle *mvcc.DBBundle) error {
 	}
 	if len(wb.lockEntries) > 0 {
 		start := time.Now()
+		hint := new(lockstore.Hint)
 		bundle.MemStoreMu.Lock()
 		for _, entry := range wb.lockEntries {
 			switch entry.UserMeta[0] {
 			case mvcc.LockUserMetaRollbackByte:
 				bundle.RollbackStore.Put(entry.Key, []byte{0})
 			case mvcc.LockUserMetaDeleteByte:
-				if !bundle.LockStore.Delete(entry.Key) {
+				if !bundle.LockStore.DeleteWithHint(entry.Key, hint) {
 					panic("failed to delete key")
 				}
 			case mvcc.LockUserMetaRollbackGCByte:
 				bundle.RollbackStore.Delete(entry.Key)
 			default:
-				bundle.LockStore.Put(entry.Key, entry.Value)
+				bundle.LockStore.PutWithHint(entry.Key, entry.Value, hint)
 			}
 		}
 		bundle.MemStoreMu.Unlock()

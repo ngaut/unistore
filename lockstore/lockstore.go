@@ -107,6 +107,15 @@ func (ls *MemStore) Get(key, buf []byte) []byte {
 	return append(buf[:0], e.getValue(ls.getArena())...)
 }
 
+func (n *node) getNextNode(arena *arena, level int) *node {
+	addr := n.getNextAddr(level)
+	if addr == nullArenaAddr {
+		return nil
+	}
+	data := arena.get(addr, nodeHeadrSize)
+	return (*node)(unsafe.Pointer(&data[0]))
+}
+
 func (ls *MemStore) getNext(n *node, level int) (e entry) {
 	addr := n.getNextAddr(level)
 	if addr == nullArenaAddr {
@@ -237,24 +246,36 @@ func (ls *MemStore) getNode(arena *arena, addr arenaAddr) *node {
 	return (*node)(unsafe.Pointer(&data[0]))
 }
 
-// Put puts the key-value pair, returns true if the key doesn't exist.
 func (ls *MemStore) Put(key []byte, v []byte) bool {
+	return ls.PutWithHint(key, v, nil)
+}
+
+// Put puts the key-value pair, returns true if the key doesn't exist.
+func (ls *MemStore) PutWithHint(key []byte, v []byte, hint *Hint) bool {
 	arena := ls.getArena()
 	lsHeight := ls.getHeight()
-	var prev [maxHeight + 1]*node
-	var next [maxHeight + 1]*node
-	prev[lsHeight] = ls.head
+	if hint == nil {
+		hint = new(Hint)
+	}
+	recomputeHeight := ls.calculateRecomputeHeight(key, hint, lsHeight)
 	var old *node
-	for i := int(lsHeight) - 1; i >= 0; i-- {
-		// Use higher level to speed up for current level.
-		var exists bool
-		prev[i], next[i], exists = ls.findSpliceForLevel(ls.getArena(), key, prev[i+1], i)
-		if exists {
-			old = next[i]
+	if recomputeHeight > 0 {
+		for i := int(recomputeHeight) - 1; i >= 0; i-- {
+			// Use higher level to speed up for current level.
+			var exists bool
+			hint.prev[i], hint.next[i], exists = ls.findSpliceForLevel(arena, key, hint.prev[i+1], i)
+			if exists {
+				old = hint.next[i]
+			}
+		}
+	} else {
+		if hint.next[0] != nil && bytes.Equal(key, hint.next[0].getKey(arena)) {
+			old = hint.next[0]
 		}
 	}
+
 	if old != nil {
-		ls.replace(key, v, prev[:], old)
+		ls.replace(key, v, hint, old)
 		return false
 	}
 	height := ls.randomHeight()
@@ -266,25 +287,34 @@ func (ls *MemStore) Put(key []byte, v []byte) bool {
 	// We always insert from the base level and up. After you add a node in base level, we cannot
 	// create a node in the level above because it would have discovered the node in the base level.
 	for i := 0; i < height; i++ {
-		if next[i] != nil {
-			x.nexts[i] = uint64(next[i].addr)
+		if hint.next[i] != nil {
+			x.nexts[i] = uint64(hint.next[i].addr)
 		} else {
 			x.nexts[i] = uint64(nullArenaAddr)
 		}
-		if prev[i] == nil {
-			prev[i] = ls.head
+		if hint.prev[i] == nil {
+			hint.prev[i] = ls.head
 		}
-		prev[i].setNextAddr(i, x.addr)
+		hint.prev[i].setNextAddr(i, x.addr)
+		hint.prev[i] = x
 	}
 	ls.length += 1
 	return true
 }
 
-func (ls *MemStore) replace(key, v []byte, prev []*node, old *node) {
+func (ls *MemStore) replace(key, v []byte, hint *Hint, old *node) {
 	x := ls.newNode(ls.getArena(), key, v, int(old.height))
+	arena := ls.getArena()
 	for i := 0; i < int(old.height); i++ {
-		x.nexts[i] = atomic.LoadUint64(&old.nexts[i])
-		prev[i].setNextAddr(i, x.addr)
+		nextAddr := atomic.LoadUint64(&old.nexts[i])
+		x.nexts[i] = nextAddr
+		if nextAddr != uint64(nullArenaAddr) {
+			hint.next[i] = ls.getNode(arena, arenaAddr(nextAddr))
+		} else {
+			hint.next[i] = nil
+		}
+		hint.prev[i].setNextAddr(i, x.addr)
+		hint.prev[i] = x
 	}
 	ls.getArena().free(old.addr)
 }
@@ -326,17 +356,62 @@ func (ls *MemStore) randomHeight() int {
 	return h
 }
 
-func (ls *MemStore) Delete(key []byte) bool {
+func (ls *MemStore) calculateRecomputeHeight(key []byte, hint *Hint, listHeight int) int {
+	recomputeHeight := 0
+	arena := ls.getArena()
+	if hint.height < int32(listHeight) {
+		// Either splice is never used or list height has grown, we recompute all.
+		hint.prev[listHeight] = ls.head
+		hint.next[listHeight] = nil
+		hint.height = int32(listHeight)
+		recomputeHeight = listHeight
+	} else {
+		for recomputeHeight < listHeight {
+			prevNext := hint.prev[recomputeHeight].getNextNode(arena, recomputeHeight)
+			if prevNext != hint.next[recomputeHeight] {
+				recomputeHeight++
+			} else if hint.prev[recomputeHeight] != ls.head &&
+				hint.prev[recomputeHeight] != nil &&
+				bytes.Compare(key, hint.prev[recomputeHeight].getKey(arena)) <= 0 {
+				// Key is before splice.
+				bad := hint.prev[recomputeHeight]
+				for bad == hint.prev[recomputeHeight] {
+					recomputeHeight++
+				}
+			} else if hint.next[recomputeHeight] != nil && bytes.Compare(key, hint.next[recomputeHeight].getKey(arena)) > 0 {
+				// Key is after splice.
+				bad := hint.next[recomputeHeight]
+				for bad == hint.next[recomputeHeight] {
+					recomputeHeight++
+				}
+			} else {
+				break
+			}
+		}
+	}
+	return recomputeHeight
+}
+
+func (ls *MemStore) DeleteWithHint(key []byte, hint *Hint) bool {
 	listHeight := ls.getHeight()
-	var prevs [maxHeight + 1]*node
-	prevs[listHeight] = ls.head
+	if hint == nil {
+		hint = new(Hint)
+	}
+	recomputeHeight := ls.calculateRecomputeHeight(key, hint, listHeight)
+	arena := ls.getArena()
 	var keyNode *node
-	for i := int(listHeight) - 1; i >= 0; i-- {
-		// Use higher level to speed up for current level.
-		var match bool
-		prevs[i], keyNode, match = ls.findSpliceForLevel(ls.getArena(), key, prevs[i+1], i)
-		if !match {
-			keyNode = nil
+	if recomputeHeight > 0 {
+		for i := recomputeHeight - 1; i >= 0; i-- {
+			// Use higher level to speed up for current level.
+			var match bool
+			hint.prev[i], hint.next[i], match = ls.findSpliceForLevel(arena, key, hint.prev[i+1], i)
+			if match {
+				keyNode = hint.next[i]
+			}
+		}
+	} else {
+		if hint.next[0] != nil && bytes.Equal(key, hint.next[0].getKey(arena)) {
+			keyNode = hint.next[0]
 		}
 	}
 	if keyNode == nil {
@@ -344,13 +419,29 @@ func (ls *MemStore) Delete(key []byte) bool {
 	}
 	for i := int(keyNode.height) - 1; i >= 0; i-- {
 		// Change the nexts from higher to lower, so the data is consistent at any point.
-		prevs[i].setNextAddr(i, keyNode.getNextAddr(i))
+		addr := keyNode.getNextAddr(i)
+		if addr != nullArenaAddr {
+			hint.next[i] = ls.getNode(arena, addr)
+		} else {
+			hint.next[i] = nil
+		}
+		hint.prev[i].setNextAddr(i, keyNode.getNextAddr(i))
 	}
-	ls.getArena().free(keyNode.addr)
+	arena.free(keyNode.addr)
 	ls.length -= 1
 	return true
 }
 
+func (ls *MemStore) Delete(key []byte) bool {
+	return ls.DeleteWithHint(key, nil)
+}
+
 func (ls *MemStore) Len() int {
 	return ls.length
+}
+
+type Hint struct {
+	height int32
+	prev   [maxHeight + 1]*node
+	next   [maxHeight + 1]*node
 }
