@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	Server      Server      `toml:"server"`      // Unistore server options
-	Engine      Engine      `toml:"engine"`      // Engine options.
-	RaftStore   RaftStore   `toml:"raftstore"`   // RaftStore configs
-	Coprocessor Coprocessor `toml:"coprocessor"` // Coprocessor options
+	Server         Server         `toml:"server"`          // Unistore server options
+	Engine         Engine         `toml:"engine"`          // Engine options.
+	RaftStore      RaftStore      `toml:"raftstore"`       // RaftStore configs
+	Coprocessor    Coprocessor    `toml:"coprocessor"`     // Coprocessor options
+	PessimisticTxn PessimisticTxn `toml:"pessimistic-txn"` // Pessimistic txn related
 }
 
 type Server struct {
@@ -55,6 +56,12 @@ type Engine struct {
 	BlockCacheSize    int64    `toml:"block-cache-size"`
 	Compression       []string `toml:"compression"` // Compression types for each level
 	IngestCompression string   `toml:"ingest-compression"`
+}
+
+type PessimisticTxn struct {
+	// The default and maximum delay in milliseconds before responding to TiDB when pessimistic
+	// transactions encounter locks
+	WaitForLockTimeout int64 `toml:"wait-for-lock-timeout"`
 }
 
 func ParseCompression(s string) options.CompressionType {
@@ -106,6 +113,9 @@ var DefaultConf = Config{
 	Coprocessor: Coprocessor{
 		RegionMaxKeys:   1440000,
 		RegionSplitKeys: 960000,
+	},
+	PessimisticTxn: PessimisticTxn{
+		WaitForLockTimeout: 1000, // 1000ms same with tikv default value
 	},
 }
 
