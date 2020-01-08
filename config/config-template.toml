@@ -72,3 +72,8 @@ num-compactors = 1
 ## And the number of keys in [a,b), [b,c), [c,d) will be region_split_keys.
 region-max-keys = 1440000
 region-split-keys = 960000
+
+[pessimistic-txn]
+# The default and maximum delay in milliseconds before responding to TiDB when pessimistic
+# transactions encounter locks, in milliseconds
+wait-for-lock-timeout = 1000

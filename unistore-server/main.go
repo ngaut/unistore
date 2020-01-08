@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"flag"
+	"fmt"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -40,6 +41,7 @@ var (
 	statusAddr    = flag.String("status-addr", "", "status address")
 	dataDir       = flag.String("data-dir", "", "data directory")
 	logFile       = flag.String("log-file", "", "log file")
+	configCheck   = flagBoolean("config-check", false, "check config file validity and exit")
 )
 
 var (
@@ -53,6 +55,14 @@ const (
 	subPathRaft = "raft"
 	subPathKV   = "kv"
 )
+
+func flagBoolean(name string, defaultVal bool, usage string) *bool {
+	if !defaultVal {
+		usage = fmt.Sprintf("%s (default false)", usage)
+		return flag.Bool(name, defaultVal, usage)
+	}
+	return flag.Bool(name, defaultVal, usage)
+}
 
 // loadCmdConf will overwrite configurations using command line arguments
 func loadCmdConf(conf *config.Config) {
@@ -74,7 +84,6 @@ func loadCmdConf(conf *config.Config) {
 	if *logFile != "" {
 		conf.Server.LogfilePath = *logFile
 	}
-
 }
 
 func main() {
@@ -181,7 +190,20 @@ func loadConfig() *config.Config {
 	if *configPath != "" {
 		_, err := toml.DecodeFile(*configPath, &conf)
 		if err != nil {
+			if *configCheck {
+				fmt.Fprintf(os.Stderr, "config check failed, err=%s\n", err.Error())
+				os.Exit(1)
+			}
 			panic(err)
+		}
+		if *configCheck {
+			os.Exit(0)
+		}
+	} else {
+		// configCheck should have the config file specified.
+		if *configCheck {
+			fmt.Fprintln(os.Stderr, "config check failed, no config file specified for config-check")
+			os.Exit(1)
 		}
 	}
 	y.Assert(len(conf.Engine.Compression) >= badger.DefaultOptions.TableBuilderOptions.MaxLevels)

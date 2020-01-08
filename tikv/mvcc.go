@@ -16,6 +16,7 @@ import (
 	"github.com/dgryski/go-farm"
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
+	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/tikv/dbreader"
@@ -171,7 +172,7 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 			return nil, err
 		}
 		if err != nil {
-			return store.handleCheckPessimisticErr(startTS, err, req.IsFirstLock)
+			return store.handleCheckPessimisticErr(startTS, err, req.IsFirstLock, req.WaitTimeout)
 		}
 		if lock != nil {
 			if lock.Op != uint8(kvrpcpb.Op_PessimisticLock) {
@@ -320,15 +321,19 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	}
 }
 
-func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isFirstLock bool) (*lockwaiter.Waiter, error) {
+func (store *MVCCStore) normalizeWaitTime(lockWaitTime int64) time.Duration {
+	if lockWaitTime > config.GetGlobalConf().PessimisticTxn.WaitForLockTimeout {
+		lockWaitTime = config.GetGlobalConf().PessimisticTxn.WaitForLockTimeout
+	}
+	return time.Duration(lockWaitTime) * time.Millisecond
+}
+
+func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isFirstLock bool, lockWaitTime int64) (*lockwaiter.Waiter, error) {
 	if lock, ok := err.(*ErrLocked); ok {
 		keyHash := farm.Fingerprint64(lock.Key)
-		waitTime := time.Second
-		if !isFirstLock { // No need to detect deadlock if it's first lock.
-			waitTime = 3 * time.Second
-		}
+		waitTimeDuration := store.normalizeWaitTime(lockWaitTime)
 		log.Infof("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
-		waiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, keyHash, waitTime)
+		waiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, keyHash, waitTimeDuration)
 		if !isFirstLock {
 			store.DeadlockDetectCli.Detect(startTS, lock.StartTS, keyHash)
 		}
