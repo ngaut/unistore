@@ -22,6 +22,8 @@ const (
 
 // CustomRaftLog is the raft log format for unistore to store Prewrite/Commit/PessimisticLock.
 //  | flag(1) | type(1) | version(2) | header(40) | entries
+//
+// It reduces the cost of marshal/unmarshal and avoid DB lookup during apply.
 type CustomRaftLog struct {
 	header *CustomHeader
 	Data   []byte
