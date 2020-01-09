@@ -169,6 +169,35 @@ func sortMutations(mutations []*kvrpcpb.Mutation) []*kvrpcpb.Mutation {
 	return mutations
 }
 
+func sortPrewrite(req *kvrpcpb.PrewriteRequest) []*kvrpcpb.Mutation {
+	if len(req.IsPessimisticLock) == 0 {
+		return sortMutations(req.Mutations)
+	}
+	sorter := pessimisticPrewriteSorter{PrewriteRequest: req}
+	if sort.IsSorted(sorter) {
+		return req.Mutations
+	}
+	sort.Sort(sorter)
+	return req.Mutations
+}
+
+type pessimisticPrewriteSorter struct {
+	*kvrpcpb.PrewriteRequest
+}
+
+func (sorter pessimisticPrewriteSorter) Less(i, j int) bool {
+	return bytes.Compare(sorter.Mutations[i].Key, sorter.Mutations[j].Key) < 0
+}
+
+func (sorter pessimisticPrewriteSorter) Len() int {
+	return len(sorter.Mutations)
+}
+
+func (sorter pessimisticPrewriteSorter) Swap(i, j int) {
+	sorter.Mutations[i], sorter.Mutations[j] = sorter.Mutations[j], sorter.Mutations[i]
+	sorter.IsPessimisticLock[i], sorter.IsPessimisticLock[j] = sorter.IsPessimisticLock[j], sorter.IsPessimisticLock[i]
+}
+
 func sortKeys(keys [][]byte) [][]byte {
 	less := func(i, j int) bool {
 		return bytes.Compare(keys[i], keys[j]) < 0
@@ -393,7 +422,7 @@ func (store *MVCCStore) buildPessimisticLock(m *kvrpcpb.Mutation, item *badger.I
 }
 
 func (store *MVCCStore) Prewrite(reqCtx *requestCtx, req *kvrpcpb.PrewriteRequest) error {
-	mutations := sortMutations(req.Mutations)
+	mutations := sortPrewrite(req)
 	regCtx := reqCtx.regCtx
 	hashVals := mutationsToHashVals(mutations)
 
