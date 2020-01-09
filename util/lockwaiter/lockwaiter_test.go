@@ -89,7 +89,7 @@ func (t *testLockwaiter) TestLockwaiterConcurrent(c *C) {
 				mgr.CleanUp(waiter)
 				wg.Done()
 				res := waiter.Wait()
-				c.Assert(res.Position, Equals, WaitTimeout)
+				c.Assert(res.WakeupSleepTime, Equals, WaitTimeout)
 				c.Assert(res.CommitTS, Equals, uint64(0))
 				c.Assert(res.DeadlockResp, IsNil)
 			} else {

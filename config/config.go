@@ -63,6 +63,9 @@ type PessimisticTxn struct {
 	// The default and maximum delay in milliseconds before responding to TiDB when pessimistic
 	// transactions encounter locks
 	WaitForLockTimeout int64 `toml:"wait-for-lock-timeout"`
+
+	// The duration between waking up lock waiter, in milliseconds
+	WakeUpDelayDuration int64 `toml:"wake-up-delay-duration"`
 }
 
 func ParseCompression(s string) options.CompressionType {
@@ -116,7 +119,8 @@ var DefaultConf = Config{
 		RegionSplitKeys: 960000,
 	},
 	PessimisticTxn: PessimisticTxn{
-		WaitForLockTimeout: 1000, // 1000ms same with tikv default value
+		WaitForLockTimeout:  1000, // 1000ms same with tikv default value
+		WakeUpDelayDuration: 300,  // 100ms same with tikv default value
 	},
 }
 

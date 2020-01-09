@@ -199,7 +199,7 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 	}
 	result := waiter.Wait()
 	svr.mvccStore.DeadlockDetectCli.CleanUpWaitFor(req.StartVersion, waiter.LockTS, waiter.KeyHash)
-	if result.Position == lockwaiter.WaitTimeout {
+	if result.WakeupSleepTime == lockwaiter.WaitTimeout {
 		svr.mvccStore.lockWaiterManager.CleanUp(waiter)
 		return resp, nil
 	} else if result.DeadlockResp != nil {
@@ -213,9 +213,10 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 		resp.Errors, resp.RegionError = convertToPBErrors(deadlockErr)
 		return resp, nil
 	}
-	if result.Position > 0 {
-		// Sleep a little so the transaction in lower position will more likely get the lock.
-		time.Sleep(time.Millisecond * 3)
+	if result.WakeupSleepTime > 0 {
+		// sleep as config "wake-up-delay-duration" specified, the oldest waiter won't sleep and will be more likely
+		// to get the lock
+		time.Sleep(time.Millisecond * time.Duration(result.WakeupSleepTime))
 	}
 	conflictCommitTS := result.CommitTS
 	if conflictCommitTS < req.GetForUpdateTs() {

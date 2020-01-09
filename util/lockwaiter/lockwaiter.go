@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ngaut/log"
+	"github.com/ngaut/unistore/config"
 	"github.com/pingcap/kvproto/pkg/deadlock"
 )
 
@@ -60,20 +61,24 @@ type Waiter struct {
 	KeyHash uint64
 }
 
-type Position int
+// WakeupWaitTime is the implementation of variable "wake-up-delay-duration"
+type WakeupWaitTime int
 
 type WaitResult struct {
-	Position     Position
-	CommitTS     uint64
-	DeadlockResp *deadlock.DeadlockResponse
+	// WakeupSleepTime, -1 means the wait is already timeout, 0 means the lock will be granted to this waiter
+	// others are the wake-up-delay-duration sleep time, in milliseconds
+	WakeupSleepTime WakeupWaitTime
+	CommitTS        uint64
+	DeadlockResp    *deadlock.DeadlockResponse
 }
 
-const WaitTimeout Position = -1
+const WaitTimeout WakeupWaitTime = -1
+const WakeUpThisWaiter WakeupWaitTime = 0
 
 func (w *Waiter) Wait() WaitResult {
 	select {
 	case <-time.After(w.timeout):
-		return WaitResult{Position: WaitTimeout}
+		return WaitResult{WakeupSleepTime: WaitTimeout}
 	case result := <-w.ch:
 		return result
 	}
@@ -133,8 +138,18 @@ func (lw *Manager) WakeUp(txn, commitTS uint64, keyHashes []uint64) {
 
 	// wake up waiters
 	if len(waiters) > 0 {
-		for i, w := range waiters {
-			w.ch <- WaitResult{Position: Position(i), CommitTS: commitTS}
+		wokenUpMap := make(map[uint64]struct{})
+		// make the waiters in star
+		sort.Slice(waiters, func(i, j int) bool {
+			return waiters[i].startTS < waiters[j].startTS
+		})
+		for _, w := range waiters {
+			wakeUpDelay := WakeupWaitTime(config.DefaultConf.PessimisticTxn.WakeUpDelayDuration)
+			if _, ok := wokenUpMap[w.KeyHash]; !ok {
+				wakeUpDelay = WakeUpThisWaiter
+				wokenUpMap[w.KeyHash] = struct{}{}
+			}
+			w.ch <- WaitResult{WakeupSleepTime: wakeUpDelay, CommitTS: commitTS}
 		}
 		log.Info("wakeup", len(waiters), "txns blocked by txn", txn, " keyHashes=", keyHashes)
 	}
