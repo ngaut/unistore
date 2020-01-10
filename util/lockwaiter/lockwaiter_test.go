@@ -21,10 +21,11 @@ type testLockwaiter struct{}
 func (t *testLockwaiter) TestLockwaiterBasic(c *C) {
 	mgr := NewManager()
 
-	mgr.NewWaiter(1, 2, 100, 10)
+	keyHash := uint64(100)
+	mgr.NewWaiter(1, 2, keyHash, 10)
 
 	// basic check queue and waiter
-	q := mgr.waitingQueues[2]
+	q := mgr.waitingQueues[keyHash]
 	c.Assert(q, NotNil)
 	waiter := q.waiters[0]
 	c.Assert(waiter.startTS, Equals, uint64(1))
@@ -32,38 +33,36 @@ func (t *testLockwaiter) TestLockwaiterBasic(c *C) {
 	c.Assert(waiter.KeyHash, Equals, uint64(100))
 
 	// check ready waiters
-	keyHash := make([]uint64, 0, 10)
-	keyHash = append(keyHash, 100)
-	rdyWaiters, remainSize := q.getReadyWaiters(keyHash)
-	rdyWaiter := rdyWaiters[0]
-	c.Assert(remainSize, Equals, 0)
+	keysHash := make([]uint64, 0, 10)
+	keysHash = append(keysHash, keyHash)
+	rdyWaiter, _ := q.getOldestWaiter()
 	c.Assert(rdyWaiter.startTS, Equals, uint64(1))
 	c.Assert(rdyWaiter.LockTS, Equals, uint64(2))
 	c.Assert(rdyWaiter.KeyHash, Equals, uint64(100))
-	q.waiters = rdyWaiters
 
 	// basic wake up test
-	mgr.WakeUp(2, 222, keyHash)
+	waiter = mgr.NewWaiter(3, 2, keyHash, 10)
+	mgr.WakeUp(2, 222, keysHash)
 	res := <-waiter.ch
 	c.Assert(res.CommitTS, Equals, uint64(222))
 	c.Assert(len(q.waiters), Equals, 0)
-	q = mgr.waitingQueues[2]
+	q = mgr.waitingQueues[keyHash]
 	// verify queue deleted from map
 	c.Assert(q, IsNil)
 
 	// basic wake up for deadlock test
-	waiter = mgr.NewWaiter(3, 4, 300, 10)
+	waiter = mgr.NewWaiter(3, 4, keyHash, 10)
 	resp := &deadlockPb.DeadlockResponse{}
 	resp.Entry.Txn = 3
 	resp.Entry.WaitForTxn = 4
-	resp.Entry.KeyHash = 300
+	resp.Entry.KeyHash = keyHash
 	resp.DeadlockKeyHash = 30192
 	mgr.WakeUpForDeadlock(resp)
 	res = <-waiter.ch
 	c.Assert(res.DeadlockResp, NotNil)
 	c.Assert(res.DeadlockResp.Entry.Txn, Equals, uint64(3))
 	c.Assert(res.DeadlockResp.Entry.WaitForTxn, Equals, uint64(4))
-	c.Assert(res.DeadlockResp.Entry.KeyHash, Equals, uint64(300))
+	c.Assert(res.DeadlockResp.Entry.KeyHash, Equals, keyHash)
 	c.Assert(res.DeadlockResp.DeadlockKeyHash, Equals, uint64(30192))
 	q = mgr.waitingQueues[4]
 	// verify queue deleted from map

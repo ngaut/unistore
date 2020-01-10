@@ -213,10 +213,17 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 		resp.Errors, resp.RegionError = convertToPBErrors(deadlockErr)
 		return resp, nil
 	}
-	if result.WakeupSleepTime > 0 {
-		// sleep as config "wake-up-delay-duration" specified, the oldest waiter won't sleep and will be more likely
+	if result.WakeupSleepTime != lockwaiter.WakeUpThisWaiter {
+		// wait as config "wake-up-delay-duration" specified, the oldest waiter won't sleep and will be more likely
 		// to get the lock
-		time.Sleep(time.Millisecond * time.Duration(result.WakeupSleepTime))
+		waiter.SetTimeout(time.Duration(result.WakeupSleepTime) * time.Millisecond)
+		waitRes := waiter.Wait()
+		if waitRes.WakeupSleepTime != lockwaiter.WakeUpThisWaiter {
+			svr.mvccStore.lockWaiterManager.CleanUp(waiter)
+		}
+		if waitRes.CommitTS > result.CommitTS {
+			result.CommitTS = waitRes.CommitTS
+		}
 	}
 	conflictCommitTS := result.CommitTS
 	if conflictCommitTS < req.GetForUpdateTs() {

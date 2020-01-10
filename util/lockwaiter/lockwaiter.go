@@ -27,19 +27,16 @@ type queue struct {
 
 // getReadyWaiters returns the ready waiters array, and left waiter size in this queue,
 // it should be used under map lock protection
-func (q *queue) getReadyWaiters(keyHashes []uint64) (readyWaiters []*Waiter, remainSize int) {
-	readyWaiters = make([]*Waiter, 0, 8)
-	remainedWaiters := q.waiters[:0]
-	for _, w := range q.waiters {
-		if w.inKeys(keyHashes) {
-			readyWaiters = append(readyWaiters, w)
-		} else {
-			remainedWaiters = append(remainedWaiters, w)
-		}
-	}
-	remainSize = len(remainedWaiters)
-	q.waiters = remainedWaiters
-	return
+func (q *queue) getOldestWaiter() (*Waiter, []*Waiter) {
+	// make the waiters in start ts order
+	sort.Slice(q.waiters, func(i, j int) bool {
+		return q.waiters[i].startTS < q.waiters[j].startTS
+	})
+	oldestWaiter := q.waiters[0]
+	remainWaiter := q.waiters[1:]
+	// the remain waiters still exist in the wait queue
+	q.waiters = remainWaiter
+	return oldestWaiter, remainWaiter
 }
 
 // removeWaiter removes the correspond waiter from pending array
@@ -84,14 +81,8 @@ func (w *Waiter) Wait() WaitResult {
 	}
 }
 
-func (w *Waiter) inKeys(keyHashes []uint64) bool {
-	idx := sort.Search(len(keyHashes), func(i int) bool {
-		return keyHashes[i] >= w.KeyHash
-	})
-	if idx == len(keyHashes) {
-		return false
-	}
-	return keyHashes[idx] == w.KeyHash
+func (w *Waiter) SetTimeout(duration time.Duration) {
+	w.timeout = duration
 }
 
 // Wait waits on a lock until waked by others or timeout.
@@ -108,10 +99,10 @@ func (lw *Manager) NewWaiter(startTS, lockTS, keyHash uint64, timeout time.Durat
 	}
 	q.waiters = append(q.waiters, waiter)
 	lw.mu.Lock()
-	if old, ok := lw.waitingQueues[lockTS]; ok {
+	if old, ok := lw.waitingQueues[keyHash]; ok {
 		old.waiters = append(old.waiters, waiter)
 	} else {
-		lw.waitingQueues[lockTS] = q
+		lw.waitingQueues[keyHash] = q
 	}
 	lw.mu.Unlock()
 	return waiter
@@ -119,50 +110,48 @@ func (lw *Manager) NewWaiter(startTS, lockTS, keyHash uint64, timeout time.Durat
 
 // WakeUp wakes up waiters that waiting on the transaction.
 func (lw *Manager) WakeUp(txn, commitTS uint64, keyHashes []uint64) {
-	var (
-		waiters    []*Waiter
-		remainSize int
-	)
+	waiters := make([]*Waiter, 0, 8)
+	wakeUpDelayWaiters := make([]*Waiter, 0, 8)
 	lw.mu.Lock()
-	q := lw.waitingQueues[txn]
-	if q != nil {
-		sort.Slice(keyHashes, func(i, j int) bool {
-			return keyHashes[i] < keyHashes[j]
-		})
-		waiters, remainSize = q.getReadyWaiters(keyHashes)
-		if remainSize == 0 {
-			delete(lw.waitingQueues, txn)
+	for _, keyHash := range keyHashes {
+		q := lw.waitingQueues[keyHash]
+		if q != nil {
+			waiter, remainWaiters := q.getOldestWaiter()
+			waiters = append(waiters, waiter)
+			if len(remainWaiters) == 0 {
+				delete(lw.waitingQueues, keyHash)
+			} else {
+				wakeUpDelayWaiters = append(wakeUpDelayWaiters, remainWaiters...)
+			}
 		}
 	}
 	lw.mu.Unlock()
 
 	// wake up waiters
 	if len(waiters) > 0 {
-		wokenUpMap := make(map[uint64]struct{})
-		// make the waiters in star
-		sort.Slice(waiters, func(i, j int) bool {
-			return waiters[i].startTS < waiters[j].startTS
-		})
 		for _, w := range waiters {
-			wakeUpDelay := WakeupWaitTime(config.DefaultConf.PessimisticTxn.WakeUpDelayDuration)
-			if _, ok := wokenUpMap[w.KeyHash]; !ok {
-				wakeUpDelay = WakeUpThisWaiter
-				wokenUpMap[w.KeyHash] = struct{}{}
-			}
-			w.ch <- WaitResult{WakeupSleepTime: wakeUpDelay, CommitTS: commitTS}
+			w.ch <- WaitResult{WakeupSleepTime: WakeUpThisWaiter, CommitTS: commitTS}
 		}
 		log.Info("wakeup", len(waiters), "txns blocked by txn", txn, " keyHashes=", keyHashes)
+	}
+	// wake up delay waiters, this will not remove waiter from queue
+	if len(wakeUpDelayWaiters) > 0 {
+		for _, w := range wakeUpDelayWaiters {
+			w.LockTS = txn
+			delayDuration := config.GetGlobalConf().PessimisticTxn.WakeUpDelayDuration
+			w.ch <- WaitResult{WakeupSleepTime: WakeupWaitTime(delayDuration), CommitTS: commitTS}
+		}
 	}
 }
 
 // CleanUp removes a waiter from waitingQueues when wait timeout.
 func (lw *Manager) CleanUp(w *Waiter) {
 	lw.mu.Lock()
-	q := lw.waitingQueues[w.LockTS]
+	q := lw.waitingQueues[w.KeyHash]
 	if q != nil {
 		q.removeWaiter(w)
 		if len(q.waiters) == 0 {
-			delete(lw.waitingQueues, w.LockTS)
+			delete(lw.waitingQueues, w.KeyHash)
 		}
 	}
 	lw.mu.Unlock()
@@ -171,12 +160,12 @@ func (lw *Manager) CleanUp(w *Waiter) {
 // WakeUpDetection wakes up waiters waiting for deadlock detection results
 func (lw *Manager) WakeUpForDeadlock(resp *deadlock.DeadlockResponse) {
 	var (
-		waiter     *Waiter
-		waitForTxn uint64
+		waiter         *Waiter
+		waitForKeyHash uint64
 	)
-	waitForTxn = resp.Entry.WaitForTxn
+	waitForKeyHash = resp.Entry.KeyHash
 	lw.mu.Lock()
-	q := lw.waitingQueues[waitForTxn]
+	q := lw.waitingQueues[waitForKeyHash]
 	if q != nil {
 		for i, curWaiter := range q.waiters {
 			// there should be no duplicated waiters
@@ -188,13 +177,13 @@ func (lw *Manager) WakeUpForDeadlock(resp *deadlock.DeadlockResponse) {
 			}
 		}
 		if len(q.waiters) == 0 {
-			delete(lw.waitingQueues, waitForTxn)
+			delete(lw.waitingQueues, waitForKeyHash)
 		}
 	}
 	lw.mu.Unlock()
 	if waiter != nil {
 		waiter.ch <- WaitResult{DeadlockResp: resp}
 		log.Infof("wakeup txn=%v blocked by txn=%v because of deadlock, keyHash=%v, deadlockKeyHash=%v",
-			resp.Entry.Txn, waitForTxn, resp.Entry.KeyHash, resp.DeadlockKeyHash)
+			resp.Entry.Txn, resp.Entry.WaitForTxn, resp.Entry.KeyHash, resp.DeadlockKeyHash)
 	}
 }

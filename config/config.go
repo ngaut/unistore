@@ -120,7 +120,7 @@ var DefaultConf = Config{
 	},
 	PessimisticTxn: PessimisticTxn{
 		WaitForLockTimeout:  1000, // 1000ms same with tikv default value
-		WakeUpDelayDuration: 300,  // 100ms same with tikv default value
+		WakeUpDelayDuration: 100,  // 100ms same with tikv default value
 	},
 }
 
