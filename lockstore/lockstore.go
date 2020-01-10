@@ -367,26 +367,28 @@ func (ls *MemStore) calculateRecomputeHeight(key []byte, hint *Hint, listHeight 
 		recomputeHeight = listHeight
 	} else {
 		for recomputeHeight < listHeight {
-			prevNext := hint.prev[recomputeHeight].getNextNode(arena, recomputeHeight)
-			if prevNext != hint.next[recomputeHeight] {
+			prevNode := hint.prev[recomputeHeight]
+			nextNode := hint.next[recomputeHeight]
+			prevNext := prevNode.getNextNode(arena, recomputeHeight)
+			if prevNext != nextNode {
 				recomputeHeight++
-			} else if hint.prev[recomputeHeight] != ls.head &&
-				hint.prev[recomputeHeight] != nil &&
-				bytes.Compare(key, hint.prev[recomputeHeight].getKey(arena)) <= 0 {
-				// Key is before splice.
-				bad := hint.prev[recomputeHeight]
-				for bad == hint.prev[recomputeHeight] {
-					recomputeHeight++
-				}
-			} else if hint.next[recomputeHeight] != nil && bytes.Compare(key, hint.next[recomputeHeight].getKey(arena)) > 0 {
-				// Key is after splice.
-				bad := hint.next[recomputeHeight]
-				for bad == hint.next[recomputeHeight] {
-					recomputeHeight++
-				}
-			} else {
-				break
+				continue
 			}
+			keyBeforePrev := prevNode != ls.head && prevNode != nil && bytes.Compare(key, prevNode.getKey(arena)) <= 0
+			if keyBeforePrev {
+				for prevNode == hint.prev[recomputeHeight] {
+					recomputeHeight++
+				}
+				continue
+			}
+			keyAfterNext := nextNode != nil && bytes.Compare(key, nextNode.getKey(arena)) > 0
+			if keyAfterNext {
+				for nextNode == hint.next[recomputeHeight] {
+					recomputeHeight++
+				}
+				continue
+			}
+			break
 		}
 	}
 	return recomputeHeight
