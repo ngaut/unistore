@@ -35,11 +35,12 @@ const keyFormat = "%s%020d"
 
 func insertMemStore(ls *MemStore, prefix, valPrefix string, n int) *MemStore {
 	perms := rand.Perm(n)
+	hint := new(Hint)
 	for _, v := range perms {
 		keyStr := fmt.Sprintf(keyFormat, prefix, v)
 		key := []byte(keyStr)
 		val := []byte(valPrefix + keyStr)
-		ls.Put(key, val)
+		ls.PutWithHint(key, val, hint)
 	}
 	return ls
 }
@@ -64,9 +65,10 @@ func deleteMemStore(t *testing.T, ls *MemStore, prefix string, n int) {
 
 func TestIterator(t *testing.T) {
 	ls := NewMemStore(1 << 10)
+	hint := new(Hint)
 	for i := 10; i < 1000; i += 10 {
 		key := []byte(fmt.Sprintf(keyFormat, "ls", i))
-		ls.Put(key, bytes.Repeat(key, 10))
+		ls.PutWithHint(key, bytes.Repeat(key, 10), hint)
 	}
 	require.Len(t, ls.getArena().blocks, 33)
 	it := ls.NewIterator()
@@ -137,18 +139,19 @@ func TestConcurrent(t *testing.T) {
 	ran := rand.New(rand.NewSource(time.Now().Unix()))
 	start := time.Now()
 	var totalInsert, totalDelete int
+	hint := new(Hint)
 	for {
 		if totalInsert%128 == 0 && time.Since(start) > time.Second*10 {
 			break
 		}
 		n := ran.Intn(keyRange)
 		key := concurrentKeys[n]
-		if ls.Put(key, key) {
+		if ls.PutWithHint(key, key, hint) {
 			totalInsert++
 		}
 		n = ran.Intn(keyRange)
 		key = concurrentKeys[n]
-		if ls.Delete(key) {
+		if ls.DeleteWithHint(key, hint) {
 			totalDelete++
 		}
 	}
@@ -212,5 +215,34 @@ func BenchmarkMemStoreIterate(b *testing.B) {
 		for it.Valid() {
 			it.Next()
 		}
+	}
+}
+
+func BenchmarkPutWithHint(b *testing.B) {
+	ls := NewMemStore(1 << 20)
+	numKeys := 100000
+	keys := make([][]byte, numKeys)
+	hint := new(Hint)
+	for i := 0; i < numKeys; i++ {
+		keys[i] = numToKey(i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx := i % numKeys
+		ls.PutWithHint(keys[idx], keys[idx], hint)
+	}
+}
+
+func BenchmarkPut(b *testing.B) {
+	ls := NewMemStore(1 << 20)
+	numKeys := 100000
+	keys := make([][]byte, numKeys)
+	for i := 0; i < numKeys; i++ {
+		keys[i] = numToKey(i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx := i % numKeys
+		ls.Put(keys[idx], keys[idx])
 	}
 }

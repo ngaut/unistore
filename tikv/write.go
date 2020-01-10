@@ -7,12 +7,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cznic/mathutil"
-	"github.com/ngaut/unistore/tikv/dbreader"
-	"github.com/pingcap/kvproto/pkg/kvrpcpb"
-
 	"github.com/coocood/badger"
+	"github.com/cznic/mathutil"
+	"github.com/ngaut/unistore/lockstore"
+	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 )
 
 const (
@@ -151,6 +151,7 @@ func (w writeLockWorker) run() {
 		for i := 0; i < chLen; i++ {
 			batches = append(batches, <-w.batchCh)
 		}
+		hint := new(lockstore.Hint)
 		var delCnt, insertCnt int
 		for _, batch := range batches {
 			for _, entry := range batch.entries {
@@ -159,16 +160,14 @@ func (w writeLockWorker) run() {
 					rollbackStore.Put(entry.Key, []byte{0})
 				case mvcc.LockUserMetaDeleteByte:
 					delCnt++
-					if !ls.Delete(entry.Key) {
+					if !ls.DeleteWithHint(entry.Key, hint) {
 						panic("failed to delete key")
 					}
 				case mvcc.LockUserMetaRollbackGCByte:
 					rollbackStore.Delete(entry.Key)
 				default:
 					insertCnt++
-					if !ls.Put(entry.Key, entry.Value) {
-						panic("failed to insert key")
-					}
+					ls.PutWithHint(entry.Key, entry.Value, hint)
 				}
 			}
 			batch.wg.Done()

@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"math"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -157,8 +158,59 @@ func (store *MVCCStore) getDBItems(reqCtx *requestCtx, mutations []*kvrpcpb.Muta
 	return txn.MultiGet(keys)
 }
 
+func sortMutations(mutations []*kvrpcpb.Mutation) []*kvrpcpb.Mutation {
+	fn := func(i, j int) bool {
+		return bytes.Compare(mutations[i].Key, mutations[j].Key) < 0
+	}
+	if sort.SliceIsSorted(mutations, fn) {
+		return mutations
+	}
+	sort.Slice(mutations, fn)
+	return mutations
+}
+
+func sortPrewrite(req *kvrpcpb.PrewriteRequest) []*kvrpcpb.Mutation {
+	if len(req.IsPessimisticLock) == 0 {
+		return sortMutations(req.Mutations)
+	}
+	sorter := pessimisticPrewriteSorter{PrewriteRequest: req}
+	if sort.IsSorted(sorter) {
+		return req.Mutations
+	}
+	sort.Sort(sorter)
+	return req.Mutations
+}
+
+type pessimisticPrewriteSorter struct {
+	*kvrpcpb.PrewriteRequest
+}
+
+func (sorter pessimisticPrewriteSorter) Less(i, j int) bool {
+	return bytes.Compare(sorter.Mutations[i].Key, sorter.Mutations[j].Key) < 0
+}
+
+func (sorter pessimisticPrewriteSorter) Len() int {
+	return len(sorter.Mutations)
+}
+
+func (sorter pessimisticPrewriteSorter) Swap(i, j int) {
+	sorter.Mutations[i], sorter.Mutations[j] = sorter.Mutations[j], sorter.Mutations[i]
+	sorter.IsPessimisticLock[i], sorter.IsPessimisticLock[j] = sorter.IsPessimisticLock[j], sorter.IsPessimisticLock[i]
+}
+
+func sortKeys(keys [][]byte) [][]byte {
+	less := func(i, j int) bool {
+		return bytes.Compare(keys[i], keys[j]) < 0
+	}
+	if sort.SliceIsSorted(keys, less) {
+		return keys
+	}
+	sort.Slice(keys, less)
+	return keys
+}
+
 func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.PessimisticLockRequest) (*lockwaiter.Waiter, error) {
-	mutations := req.Mutations
+	mutations := sortMutations(req.Mutations)
 	startTS := req.StartVersion
 	regCtx := reqCtx.regCtx
 	hashVals := mutationsToHashVals(mutations)
@@ -201,7 +253,7 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 }
 
 func (store *MVCCStore) PessimisticRollback(reqCtx *requestCtx, req *kvrpcpb.PessimisticRollbackRequest) error {
-	keys := req.Keys
+	keys := sortKeys(req.Keys)
 	hashVals := keysToHashVals(keys...)
 	regCtx := reqCtx.regCtx
 	regCtx.AcquireLatches(hashVals)
@@ -370,7 +422,7 @@ func (store *MVCCStore) buildPessimisticLock(m *kvrpcpb.Mutation, item *badger.I
 }
 
 func (store *MVCCStore) Prewrite(reqCtx *requestCtx, req *kvrpcpb.PrewriteRequest) error {
-	mutations := req.Mutations
+	mutations := sortPrewrite(req)
 	regCtx := reqCtx.regCtx
 	hashVals := mutationsToHashVals(mutations)
 
@@ -585,6 +637,7 @@ const maxSystemTS uint64 = math.MaxUint64
 
 // Commit implements the MVCCStore interface.
 func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS uint64) error {
+	sortKeys(keys)
 	store.updateLatestTS(commitTS)
 	regCtx := req.regCtx
 	hashVals := keysToHashVals(keys...)
@@ -668,6 +721,7 @@ const (
 )
 
 func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint64) error {
+	sortKeys(keys)
 	hashVals := keysToHashVals(keys...)
 	log.Warnf("%d rollback %v", startTS, hashVals)
 	regCtx := reqCtx.regCtx

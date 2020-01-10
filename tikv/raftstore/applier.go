@@ -641,7 +641,6 @@ func (a *applier) handleRaftEntryNormal(aCtx *applyContext, entry *eraftpb.Entry
 			if err != nil {
 				panic(err)
 			}
-			log.Info("cmd String", cmd.String())
 			rlog = raftlog.NewRequest(cmd)
 		}
 		if shouldWriteToEngine(rlog, len(aCtx.wb.entries)) {
