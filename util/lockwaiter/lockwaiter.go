@@ -88,7 +88,9 @@ func (w *Waiter) Wait() WaitResult {
 				// will be more likely  to get the lock
 				delaySleepDuration := time.Duration(result.WakeupSleepTime) * time.Millisecond
 				if time.Now().Add(delaySleepDuration).Before(w.deadlineTime) {
-					w.timer.Reset(delaySleepDuration)
+					if w.timer.Stop() {
+						w.timer.Reset(delaySleepDuration)
+					}
 				}
 				w.CommitTs = result.CommitTS
 				continue
