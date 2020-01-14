@@ -83,7 +83,7 @@ func (w *Waiter) Wait() WaitResult {
 			}
 			return WaitResult{WakeupSleepTime: WaitTimeout}
 		case result := <-w.ch:
-			if result.WakeupSleepTime != WakeUpThisWaiter {
+			if result.WakeupSleepTime == WakeupDelayTimeout {
 				// wait as config "wake-up-delay-duration" specified, the oldest waiter won't sleep and
 				// will be more likely  to get the lock
 				delaySleepDuration := time.Duration(result.WakeupSleepTime) * time.Millisecond
