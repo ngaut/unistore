@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/ngaut/log"
-	"github.com/ngaut/unistore/config"
 	"github.com/pingcap/kvproto/pkg/deadlock"
 )
 
@@ -51,11 +50,13 @@ func (q *queue) removeWaiter(w *Waiter) {
 }
 
 type Waiter struct {
-	timeout time.Duration
-	ch      chan WaitResult
-	startTS uint64
-	LockTS  uint64
-	KeyHash uint64
+	deadlineTime time.Time
+	timer        *time.Timer
+	ch           chan WaitResult
+	startTS      uint64
+	LockTS       uint64
+	KeyHash      uint64
+	CommitTs     uint64
 }
 
 // WakeupWaitTime is the implementation of variable "wake-up-delay-duration"
@@ -71,18 +72,30 @@ type WaitResult struct {
 
 const WaitTimeout WakeupWaitTime = -1
 const WakeUpThisWaiter WakeupWaitTime = 0
+const WakeupDelayTimeout WakeupWaitTime = 1
 
 func (w *Waiter) Wait() WaitResult {
-	select {
-	case <-time.After(w.timeout):
-		return WaitResult{WakeupSleepTime: WaitTimeout}
-	case result := <-w.ch:
-		return result
+	for {
+		select {
+		case <-w.timer.C:
+			if w.CommitTs > 0 {
+				return WaitResult{WakeupSleepTime: WakeupDelayTimeout, CommitTS: w.CommitTs}
+			}
+			return WaitResult{WakeupSleepTime: WaitTimeout}
+		case result := <-w.ch:
+			if result.WakeupSleepTime != WakeUpThisWaiter {
+				// wait as config "wake-up-delay-duration" specified, the oldest waiter won't sleep and
+				// will be more likely  to get the lock
+				delaySleepDuration := time.Duration(result.WakeupSleepTime) * time.Millisecond
+				if time.Now().Add(delaySleepDuration).Before(w.deadlineTime) {
+					w.timer.Reset(delaySleepDuration)
+				}
+				w.CommitTs = result.CommitTS
+				continue
+			}
+			return result
+		}
 	}
-}
-
-func (w *Waiter) SetTimeout(duration time.Duration) {
-	w.timeout = duration
 }
 
 // Wait waits on a lock until waked by others or timeout.
@@ -91,11 +104,12 @@ func (lw *Manager) NewWaiter(startTS, lockTS, keyHash uint64, timeout time.Durat
 	q := new(queue)
 	q.waiters = make([]*Waiter, 0, 8)
 	waiter := &Waiter{
-		timeout: timeout,
-		ch:      make(chan WaitResult, 1),
-		startTS: startTS,
-		LockTS:  lockTS,
-		KeyHash: keyHash,
+		deadlineTime: time.Now().Add(timeout),
+		timer:        time.NewTimer(timeout),
+		ch:           make(chan WaitResult, 1),
+		startTS:      startTS,
+		LockTS:       lockTS,
+		KeyHash:      keyHash,
 	}
 	q.waiters = append(q.waiters, waiter)
 	lw.mu.Lock()
@@ -138,8 +152,7 @@ func (lw *Manager) WakeUp(txn, commitTS uint64, keyHashes []uint64) {
 	if len(wakeUpDelayWaiters) > 0 {
 		for _, w := range wakeUpDelayWaiters {
 			w.LockTS = txn
-			delayDuration := config.GetGlobalConf().PessimisticTxn.WakeUpDelayDuration
-			w.ch <- WaitResult{WakeupSleepTime: WakeupWaitTime(delayDuration), CommitTS: commitTS}
+			w.ch <- WaitResult{WakeupSleepTime: WakeupDelayTimeout, CommitTS: commitTS}
 		}
 	}
 }
