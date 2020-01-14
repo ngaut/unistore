@@ -50,13 +50,14 @@ func (q *queue) removeWaiter(w *Waiter) {
 }
 
 type Waiter struct {
-	deadlineTime time.Time
-	timer        *time.Timer
-	ch           chan WaitResult
-	startTS      uint64
-	LockTS       uint64
-	KeyHash      uint64
-	CommitTs     uint64
+	deadlineTime  time.Time
+	timer         *time.Timer
+	ch            chan WaitResult
+	startTS       uint64
+	LockTS        uint64
+	KeyHash       uint64
+	CommitTs      uint64
+	wakeupDelayed bool
 }
 
 // WakeupWaitTime is the implementation of variable "wake-up-delay-duration"
@@ -78,7 +79,7 @@ func (w *Waiter) Wait() WaitResult {
 	for {
 		select {
 		case <-w.timer.C:
-			if w.CommitTs > 0 {
+			if w.wakeupDelayed {
 				return WaitResult{WakeupSleepTime: WakeupDelayTimeout, CommitTS: w.CommitTs}
 			}
 			return WaitResult{WakeupSleepTime: WaitTimeout}
@@ -86,13 +87,8 @@ func (w *Waiter) Wait() WaitResult {
 			if result.WakeupSleepTime == WakeupDelayTimeout {
 				// wait as config "wake-up-delay-duration" specified, the oldest waiter won't sleep and
 				// will be more likely  to get the lock
-				delaySleepDuration := time.Duration(result.WakeupSleepTime) * time.Millisecond
-				if time.Now().Add(delaySleepDuration).Before(w.deadlineTime) {
-					if w.timer.Stop() {
-						w.timer.Reset(delaySleepDuration)
-					}
-				}
 				w.CommitTs = result.CommitTS
+				w.wakeupDelayed = true
 				continue
 			}
 			return result
