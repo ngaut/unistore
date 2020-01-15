@@ -214,11 +214,9 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 		resp.Errors, resp.RegionError = convertToPBErrors(deadlockErr)
 		return resp, nil
 	}
-	conflictCommitTS := result.CommitTS
-	if conflictCommitTS < req.GetForUpdateTs() {
-		// The key is rollbacked, we don't have the exact commitTS, but we can use the server's latest.
-		conflictCommitTS = svr.mvccStore.getLatestTS()
-	}
+	// The key is rollbacked, we don't have the exact commitTS, but we can use the server's latest.
+	// Always use the store latest ts since the waiter result commitTs may not be the real conflict ts
+	conflictCommitTS := svr.mvccStore.getLatestTS()
 	err = &ErrConflict{
 		StartTS:          req.GetForUpdateTs(),
 		ConflictTS:       waiter.LockTS,
