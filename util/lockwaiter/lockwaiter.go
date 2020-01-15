@@ -85,14 +85,18 @@ func (w *Waiter) Wait() WaitResult {
 			return WaitResult{WakeupSleepTime: WaitTimeout}
 		case result := <-w.ch:
 			if result.WakeupSleepTime == WakeupDelayTimeout {
-				// wait as config "wake-up-delay-duration" specified, the oldest waiter won't sleep and
-				// will be more likely  to get the lock
 				w.CommitTs = result.CommitTS
 				w.wakeupDelayed = true
 				continue
 			}
 			return result
 		}
+	}
+}
+
+func (w *Waiter) DrainCh() {
+	for len(w.ch) > 0 {
+		<-w.ch
 	}
 }
 
@@ -104,7 +108,7 @@ func (lw *Manager) NewWaiter(startTS, lockTS, keyHash uint64, timeout time.Durat
 	waiter := &Waiter{
 		deadlineTime: time.Now().Add(timeout),
 		timer:        time.NewTimer(timeout),
-		ch:           make(chan WaitResult, 1),
+		ch:           make(chan WaitResult, 32),
 		startTS:      startTS,
 		LockTS:       lockTS,
 		KeyHash:      keyHash,
@@ -166,6 +170,7 @@ func (lw *Manager) CleanUp(w *Waiter) {
 		}
 	}
 	lw.mu.Unlock()
+	w.DrainCh()
 }
 
 // WakeUpDetection wakes up waiters waiting for deadlock detection results
