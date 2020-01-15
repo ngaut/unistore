@@ -199,10 +199,11 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 	}
 	result := waiter.Wait()
 	svr.mvccStore.DeadlockDetectCli.CleanUpWaitFor(req.StartVersion, waiter.LockTS, waiter.KeyHash)
-	if result.Position == lockwaiter.WaitTimeout {
-		svr.mvccStore.lockWaiterManager.CleanUp(waiter)
+	svr.mvccStore.lockWaiterManager.CleanUp(waiter)
+	if result.WakeupSleepTime == lockwaiter.WaitTimeout {
 		return resp, nil
-	} else if result.DeadlockResp != nil {
+	}
+	if result.DeadlockResp != nil {
 		log.Errorf("deadlock found for entry=%v", result.DeadlockResp.Entry)
 		errLocked := err.(*ErrLocked)
 		deadlockErr := &ErrDeadlock{
@@ -213,15 +214,9 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 		resp.Errors, resp.RegionError = convertToPBErrors(deadlockErr)
 		return resp, nil
 	}
-	if result.Position > 0 {
-		// Sleep a little so the transaction in lower position will more likely get the lock.
-		time.Sleep(time.Millisecond * 3)
-	}
-	conflictCommitTS := result.CommitTS
-	if conflictCommitTS < req.GetForUpdateTs() {
-		// The key is rollbacked, we don't have the exact commitTS, but we can use the server's latest.
-		conflictCommitTS = svr.mvccStore.getLatestTS()
-	}
+	// The key is rollbacked, we don't have the exact commitTS, but we can use the server's latest.
+	// Always use the store latest ts since the waiter result commitTs may not be the real conflict ts
+	conflictCommitTS := svr.mvccStore.getLatestTS()
 	err = &ErrConflict{
 		StartTS:          req.GetForUpdateTs(),
 		ConflictTS:       waiter.LockTS,
