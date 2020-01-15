@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ngaut/log"
+	"github.com/ngaut/unistore/config"
 	"github.com/pingcap/kvproto/pkg/deadlock"
 )
 
@@ -87,6 +88,12 @@ func (w *Waiter) Wait() WaitResult {
 			if result.WakeupSleepTime == WakeupDelayTimeout {
 				w.CommitTs = result.CommitTS
 				w.wakeupDelayed = true
+				delaySleepDuration := time.Duration(config.GetGlobalConf().PessimisticTxn.WakeUpDelayDuration) * time.Millisecond
+				if time.Now().Add(delaySleepDuration).Before(w.deadlineTime) {
+					if w.timer.Stop() {
+						w.timer.Reset(delaySleepDuration)
+					}
+				}
 				continue
 			}
 			return result
@@ -146,7 +153,10 @@ func (lw *Manager) WakeUp(txn, commitTS uint64, keyHashes []uint64) {
 	// wake up waiters
 	if len(waiters) > 0 {
 		for _, w := range waiters {
-			w.ch <- WaitResult{WakeupSleepTime: WakeUpThisWaiter, CommitTS: commitTS}
+			select {
+			case w.ch <- WaitResult{WakeupSleepTime: WakeUpThisWaiter, CommitTS: commitTS}:
+			default:
+			}
 		}
 		log.Info("wakeup", len(waiters), "txns blocked by txn", txn, " keyHashes=", keyHashes)
 	}
@@ -154,7 +164,10 @@ func (lw *Manager) WakeUp(txn, commitTS uint64, keyHashes []uint64) {
 	if len(wakeUpDelayWaiters) > 0 {
 		for _, w := range wakeUpDelayWaiters {
 			w.LockTS = txn
-			w.ch <- WaitResult{WakeupSleepTime: WakeupDelayTimeout, CommitTS: commitTS}
+			select {
+			case w.ch <- WaitResult{WakeupSleepTime: WakeupDelayTimeout, CommitTS: commitTS}:
+			default:
+			}
 		}
 	}
 }
