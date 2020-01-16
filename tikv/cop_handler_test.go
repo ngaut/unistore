@@ -45,7 +45,7 @@ type encodedTestKVData struct {
 func initTestData(store *TestStore, encodedKVDatas []*encodedTestKVData) []error {
 	reqCtx := requestCtx{
 		regCtx: &regionCtx{
-			latches: make(map[uint64]*sync.WaitGroup),
+			latches: new(sync.Map),
 		},
 		svr: store.Svr,
 	}

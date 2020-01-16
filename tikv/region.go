@@ -3,6 +3,7 @@ package tikv
 import (
 	"bytes"
 	"encoding/binary"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 	"unsafe"
 
 	"github.com/coocood/badger"
+	"github.com/coocood/badger/y"
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/metrics"
@@ -43,8 +45,7 @@ type regionCtx struct {
 	approximateSize int64
 	diff            int64
 
-	latches   map[uint64]*sync.WaitGroup
-	latchesMu sync.RWMutex
+	latches *sync.Map
 
 	refCount sync.WaitGroup
 	parent   unsafe.Pointer // Parent is used to wait for all latches being released.
@@ -55,7 +56,7 @@ type regionCtx struct {
 func newRegionCtx(meta *metapb.Region, parent *regionCtx, checker raftstore.LeaderChecker) *regionCtx {
 	regCtx := &regionCtx{
 		meta:          meta,
-		latches:       make(map[uint64]*sync.WaitGroup),
+		latches:       new(sync.Map),
 		regionEpoch:   unsafe.Pointer(meta.GetRegionEpoch()),
 		parent:        unsafe.Pointer(parent),
 		leaderChecker: checker,
@@ -123,7 +124,7 @@ func (ri *regionCtx) unmarshal(data []byte) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	ri.latches = make(map[uint64]*sync.WaitGroup)
+	ri.latches = new(sync.Map)
 	ri.startKey = ri.rawStartKey()
 	ri.endKey = ri.rawEndKey()
 	ri.regionEpoch = unsafe.Pointer(ri.meta.RegionEpoch)
@@ -141,46 +142,64 @@ func (ri *regionCtx) marshal() []byte {
 	return data
 }
 
-func (ri *regionCtx) tryAcquireLatches(hashVals []uint64) (bool, *sync.WaitGroup) {
+func (ri *regionCtx) tryAcquireLatches(hashVals []uint64) {
+	log.Infof("[for debug] try ac k=%v", hashVals)
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
-	ri.latchesMu.Lock()
-	defer ri.latchesMu.Unlock()
 	for _, hashVal := range hashVals {
-		if wg, ok := ri.latches[hashVal]; ok {
-			return false, wg
+		for {
+			res, loaded := ri.latches.LoadOrStore(hashVal, wg)
+			if loaded {
+				resWg := res.(*sync.WaitGroup)
+				log.Infof("[for debug] loaded found, wait")
+				resWg.Wait()
+				log.Infof("[for debug] wait wakeup retry LoadOrStore")
+				continue
+			}
+			log.Infof("[for debug] latch got for k=%v", hashVal)
+			break
 		}
 	}
-	for _, hashVal := range hashVals {
-		ri.latches[hashVal] = wg
-	}
-	return true, nil
 }
 
+// AcquireLatches add latches for all input hashVals, the input hashVals should be
+// sorted and have no duplicates
 func (ri *regionCtx) AcquireLatches(hashVals []uint64) {
-	start := time.Now()
-	for {
-		ok, wg := ri.tryAcquireLatches(hashVals)
-		if ok {
-			dur := time.Since(start)
-			metrics.LatchWait.Observe(dur.Seconds())
-			if dur > time.Millisecond*50 {
-				log.Warnf("region %d acquire %d locks takes %v", ri.meta.Id, len(hashVals), dur)
-			}
-			return
+	if len(hashVals) == 0 {
+		log.Errorf("hashVals array length equals 0")
+		return
+	}
+	// Make sure hashVals in sort ascending order and no duplicates
+	sort.Slice(hashVals, func(i, j int) bool {
+		return hashVals[i] < hashVals[j]
+	})
+	idx := 0
+	for i, v := range hashVals {
+		if i > 0 && hashVals[i] == hashVals[i-1] {
+			continue
 		}
-		wg.Wait()
+		hashVals[idx] = v
+		idx++
+	}
+	hashVals = hashVals[0:idx]
+	start := time.Now()
+	ri.tryAcquireLatches(hashVals)
+	dur := time.Since(start)
+	metrics.LatchWait.Observe(dur.Seconds())
+	if dur > time.Millisecond*50 {
+		log.Warnf("region %d acquire %d locks takes %v", ri.meta.Id, len(hashVals), dur)
 	}
 }
 
 func (ri *regionCtx) ReleaseLatches(hashVals []uint64) {
-	ri.latchesMu.Lock()
-	defer ri.latchesMu.Unlock()
-	wg := ri.latches[hashVals[0]]
+	var resWg *sync.WaitGroup
 	for _, hashVal := range hashVals {
-		delete(ri.latches, hashVal)
+		res, ok := ri.latches.Load(hashVal)
+		y.Assert(ok)
+		resWg = res.(*sync.WaitGroup)
+		ri.latches.Delete(hashVal)
 	}
-	wg.Done()
+	resWg.Done()
 }
 
 func (ri *regionCtx) waitParent() {
