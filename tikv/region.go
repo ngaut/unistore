@@ -143,7 +143,6 @@ func (ri *regionCtx) marshal() []byte {
 }
 
 func (ri *regionCtx) tryAcquireLatches(hashVals []uint64) {
-	log.Infof("[for debug] try ac k=%v", hashVals)
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
 	for _, hashVal := range hashVals {
@@ -151,12 +150,9 @@ func (ri *regionCtx) tryAcquireLatches(hashVals []uint64) {
 			res, loaded := ri.latches.LoadOrStore(hashVal, wg)
 			if loaded {
 				resWg := res.(*sync.WaitGroup)
-				log.Infof("[for debug] loaded found, wait")
 				resWg.Wait()
-				log.Infof("[for debug] wait wakeup retry LoadOrStore")
 				continue
 			}
-			log.Infof("[for debug] latch got for k=%v", hashVal)
 			break
 		}
 	}
