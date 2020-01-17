@@ -40,7 +40,7 @@ func (ts *TestStore) newReqCtx() *requestCtx {
 func (ts *TestStore) newReqCtxWithKeys(startKey, endKey []byte) *requestCtx {
 	return &requestCtx{
 		regCtx: &regionCtx{
-			latches:  make(map[uint64]*sync.WaitGroup),
+			latches:  new(sync.Map),
 			startKey: startKey,
 			endKey:   endKey,
 		},
