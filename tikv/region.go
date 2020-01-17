@@ -3,7 +3,6 @@ package tikv
 import (
 	"bytes"
 	"encoding/binary"
-	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -165,19 +164,6 @@ func (ri *regionCtx) AcquireLatches(hashVals []uint64) {
 		log.Errorf("hashVals array length equals 0")
 		return
 	}
-	// Make sure hashVals in sort ascending order and no duplicates
-	sort.Slice(hashVals, func(i, j int) bool {
-		return hashVals[i] < hashVals[j]
-	})
-	idx := 0
-	for i, v := range hashVals {
-		if i > 0 && hashVals[i] == hashVals[i-1] {
-			continue
-		}
-		hashVals[idx] = v
-		idx++
-	}
-	hashVals = hashVals[0:idx]
 	start := time.Now()
 	ri.tryAcquireLatches(hashVals)
 	dur := time.Since(start)
