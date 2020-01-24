@@ -24,9 +24,11 @@ require (
 	github.com/uber-go/atomic v1.3.2
 	github.com/zhangjinpeng1987/raft v0.0.0-20190624145930-deeb32d6553d
 	go.etcd.io/bbolt v1.3.3 // indirect
-	golang.org/x/net v0.0.0-20190909003024-a7b16738d86b
+	golang.org/x/net v0.0.0-20200114155413-6afb5195e5aa
+	golang.org/x/sys v0.0.0-20200122134326-e047566fdf82 // indirect
 	golang.org/x/time v0.0.0-20190308202827-9d24e82272b4
-	google.golang.org/grpc v1.25.1
+	google.golang.org/genproto v0.0.0-20200122232147-0452cf42e150 // indirect
+	google.golang.org/grpc v1.26.0
 	gopkg.in/mgo.v2 v2.0.0-20180705113604-9856a29383ce // indirect
 )
 

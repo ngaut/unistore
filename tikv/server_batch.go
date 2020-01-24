@@ -81,7 +81,7 @@ func (h *batchRequestHandler) dispatchBatchRequest(ctx context.Context) error {
 
 		for i, req := range batchReq.GetRequests() {
 			id := batchReq.GetRequestIds()[i]
-			go h.handleRequest(id, req)
+			h.handleRequest(id, req)
 		}
 	}
 }
