@@ -638,16 +638,32 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 	var buf []byte
 	var tmpDiff int
 	var isPessimisticTxn bool
+	var lockErr error
+	var checkErr error
+	var lock mvcc.MvccLock
 	for _, key := range keys {
+		lockErr = nil
 		buf = store.lockStore.Get(key, buf)
 		if len(buf) == 0 {
 			// We never commit partial keys in Commit request, so if one lock is not found,
 			// the others keys must not be found too.
-			return store.handleLockNotFound(req, key, startTS, commitTS)
+			lockErr = ErrLockNotFound
+		} else {
+			lock = mvcc.DecodeLock(buf)
+			if lock.StartTS != startTS {
+				lockErr = ErrReplaced
+			}
 		}
-		lock := mvcc.DecodeLock(buf)
-		if lock.StartTS != startTS {
-			return ErrReplaced
+		if lockErr != nil {
+			// Maybe the secondary keys committed by other concurrent transactions using lock resolver,
+			// check commit info from store
+			checkErr = store.handleLockNotFound(req, key, startTS, commitTS)
+			if checkErr == nil {
+				continue
+			}
+			log.Errorf("Commit failed for key=%v startTS=%v, no correspond lock found, lock=%v, error=%v",
+				key, startTS, lock, lockErr)
+			return lockErr
 		}
 		if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
 			return &ErrCommitPessimisticLock{

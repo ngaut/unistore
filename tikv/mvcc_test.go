@@ -1302,3 +1302,45 @@ func (s *testMvccSuite) TestPessimisticLock(c *C) {
 	MustRollbackKey(k, 40, store)
 	MustUnLocked(k, store)
 }
+
+func (s *testMvccSuite) TestResolveCommit(c *C) {
+	store, err := NewTestStore("TestRedundantCommit", "TestRedundantCommit", c)
+	c.Assert(err, IsNil)
+	defer CleanTestStore(store)
+
+	pk := []byte("tpk")
+	v := []byte("v")
+	sk := []byte("tsk")
+
+	// Lock and prewrite keys
+	MustAcquirePessimisticLock(pk, pk, 1, 1, store)
+	MustAcquirePessimisticLock(pk, sk, 1, 1, store)
+	MustPrewritePessimistic(pk, pk, v, 1, 100, []bool{true}, 1, store)
+	MustPrewritePessimistic(pk, sk, v, 1, 100, []bool{true}, 1, store)
+
+	// Resolve secondary key
+	MustCommit(pk, 1, 2, store)
+	err = store.MvccStore.ResolveLock(store.newReqCtx(), 1, 2)
+	c.Assert(err, IsNil)
+
+	// Commit secondary key, not reporting lock not found
+	MustCommit(sk, 1, 2, store)
+
+	// Commit secondary key, not reporting error replaced
+	k2 := []byte("tk2")
+	v2 := []byte("v2")
+	MustAcquirePessimisticLock(k2, k2, 3, 3, store)
+	MustCommit(sk, 1, 2, store)
+	MustPrewritePessimistic(k2, k2, v2, 3, 100, []bool{true}, 3, store)
+	MustCommit(k2, 3, 4, store)
+
+	// The error path
+	kvTxn := store.MvccStore.db.NewTransaction(true)
+	err = kvTxn.Delete(sk)
+	c.Assert(err, IsNil)
+	err = kvTxn.Commit()
+	c.Assert(err, IsNil)
+	MustCommitErr(sk, 1, 2, store)
+	MustAcquirePessimisticLock(sk, sk, 5, 5, store)
+	MustCommitErr(sk, 1, 2, store)
+}
