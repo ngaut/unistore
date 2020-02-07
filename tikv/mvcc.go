@@ -502,12 +502,7 @@ func (store *MVCCStore) prewritePessimistic(reqCtx *requestCtx, mutations []*kvr
 			if !valid {
 				// Safe to set TTL to zero because the transaction of the lock is committed
 				// or rollbacked or must be rollbacked.
-				return &ErrLocked{
-					Key:     m.Key,
-					Primary: lock.Primary,
-					StartTS: lock.StartTS,
-					TTL:     0,
-				}
+				return BuildLockErr(m.Key, lock.Primary, lock.StartTS, 0, lock.Op)
 			}
 			if lockMatch {
 				// Duplicate command.
@@ -625,12 +620,7 @@ func (store *MVCCStore) checkConflictInLockStore(
 		// Same ts, no need to overwrite.
 		return &lock, nil
 	}
-	return nil, &ErrLocked{
-		Key:     mutation.Key,
-		StartTS: lock.StartTS,
-		Primary: lock.Primary,
-		TTL:     uint64(lock.TTL),
-	}
+	return nil, BuildLockErr(mutation.Key, lock.Primary, lock.StartTS, uint64(lock.TTL), lock.Op)
 }
 
 const maxSystemTS uint64 = math.MaxUint64
@@ -775,12 +765,7 @@ func (store *MVCCStore) rollbackKeyReadLock(reqCtx *requestCtx, batch mvcc.Write
 		}
 		if lock.StartTS == startTS {
 			if currentTs > 0 && uint64(oracle.ExtractPhysical(lock.StartTS))+uint64(lock.TTL) >= uint64(oracle.ExtractPhysical(currentTs)) {
-				return rollbackStatusLocked, &ErrLocked{
-					Primary: key,
-					Key:     key,
-					StartTS: lock.StartTS,
-					TTL:     uint64(lock.TTL),
-				}
+				return rollbackStatusLocked, BuildLockErr(key, key, lock.StartTS, uint64(lock.TTL), lock.Op)
 			}
 			// We can not simply delete the lock because the prewrite may be sent multiple times.
 			// To prevent that we update it a rollback lock.
@@ -849,12 +834,7 @@ func checkLock(lock mvcc.MvccLock, key []byte, startTS uint64) error {
 	isWriteLock := lock.Op == uint8(kvrpcpb.Op_Put) || lock.Op == uint8(kvrpcpb.Op_Del)
 	isPrimaryGet := startTS == maxSystemTS && bytes.Equal(lock.Primary, key)
 	if lockVisible && isWriteLock && !isPrimaryGet {
-		return &ErrLocked{
-			Key:     key,
-			StartTS: lock.StartTS,
-			Primary: lock.Primary,
-			TTL:     uint64(lock.TTL),
-		}
+		return BuildLockErr(key, lock.Primary, lock.StartTS, uint64(lock.TTL), lock.Op)
 	}
 	return nil
 }

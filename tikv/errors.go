@@ -7,15 +7,28 @@ import (
 // ErrLocked is returned when trying to Read/Write on a locked key. Client should
 // backoff or cleanup the lock then retry.
 type ErrLocked struct {
-	Key     []byte
-	Primary []byte
-	StartTS uint64
-	TTL     uint64
+	Key      []byte
+	Primary  []byte
+	StartTS  uint64
+	TTL      uint64
+	LockType uint8
+}
+
+// BuildLockErr generates ErrKeyLocked objects
+func BuildLockErr(key []byte, primaryKey []byte, startTS uint64, TTL uint64, lockType uint8) *ErrLocked {
+	errLocked := &ErrLocked{
+		Key:      key,
+		Primary:  primaryKey,
+		StartTS:  startTS,
+		TTL:      TTL,
+		LockType: lockType,
+	}
+	return errLocked
 }
 
 // Error formats the lock to a string.
 func (e *ErrLocked) Error() string {
-	return fmt.Sprintf("key is locked, key: %q, primary: %q, startTS: %v", e.Key, e.Primary, e.StartTS)
+	return fmt.Sprintf("key is locked, key: %q, Type: %v, primary: %q, startTS: %v", e.Key, e.LockType, e.Primary, e.StartTS)
 }
 
 // ErrRetryable suggests that client may restart the txn. e.g. write conflict.
