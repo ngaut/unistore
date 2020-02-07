@@ -109,10 +109,10 @@ var DefaultConf = Config{
 		NumL0Tables:      4,
 		NumL0TablesStall: 8,
 		VlogFileSize:     256 * MB,
-		NumCompactors:    1,
+		NumCompactors:    3,
 		SurfStartLevel:   8,
 		Compression:      make([]string, 7),
-		BlockCacheSize:   1 << 30,
+		BlockCacheSize:   0, // 0 means disable block cache, use mmap to access sst.
 	},
 	Coprocessor: Coprocessor{
 		RegionMaxKeys:   1440000,
