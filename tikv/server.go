@@ -204,8 +204,8 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.PessimisticLockResponse{RegionError: reqCtx.regErr}, nil
 	}
-	waiter, err := svr.mvccStore.PessimisticLock(reqCtx, req)
 	resp := &kvrpcpb.PessimisticLockResponse{}
+	waiter, err := svr.mvccStore.PessimisticLock(reqCtx, req, resp)
 	resp.Errors, resp.RegionError = convertToPBErrors(err)
 	if waiter == nil {
 		return resp, nil
@@ -636,6 +636,22 @@ func (svr *Server) Detect(stream deadlockPb.Deadlock_DetectServer) error {
 		}
 	}
 	return nil
+}
+
+func (svr *Server) CheckLockObserver(context.Context, *kvrpcpb.CheckLockObserverRequest) (*kvrpcpb.CheckLockObserverResponse, error) {
+	panic("implement me")
+}
+
+func (svr *Server) PhysicalScanLock(*kvrpcpb.PhysicalScanLockRequest, tikvpb.Tikv_PhysicalScanLockServer) error {
+	panic("implement me")
+}
+
+func (svr *Server) RegisterLockObserver(context.Context, *kvrpcpb.RegisterLockObserverRequest) (*kvrpcpb.RegisterLockObserverResponse, error) {
+	panic("implement me")
+}
+
+func (svr *Server) RemoveLockObserver(context.Context, *kvrpcpb.RemoveLockObserverRequest) (*kvrpcpb.RemoveLockObserverResponse, error) {
+	panic("implement me")
 }
 
 func convertToKeyError(err error) *kvrpcpb.KeyError {

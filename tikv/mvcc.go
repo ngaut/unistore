@@ -222,7 +222,7 @@ func sortKeys(keys [][]byte) [][]byte {
 	return keys
 }
 
-func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.PessimisticLockRequest) (*lockwaiter.Waiter, error) {
+func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.PessimisticLockRequest, resp *kvrpcpb.PessimisticLockResponse) (*lockwaiter.Waiter, error) {
 	mutations := sortMutations(req.Mutations)
 	startTS := req.StartVersion
 	regCtx := reqCtx.regCtx
@@ -262,6 +262,27 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 		batch.PessimisticLock(m.Key, lock)
 	}
 	err = store.dbWriter.Write(batch)
+	if err != nil {
+		return nil, err
+	}
+	if req.Force {
+		dbMeta := mvcc.DBUserMeta(items[0].UserMeta())
+		val, err1 := items[0].Value()
+		if err1 != nil {
+			return nil, err1
+		}
+		resp.Value = val
+		resp.CommitTs = dbMeta.CommitTS()
+	}
+	if req.ReturnValues {
+		for _, item := range items {
+			val, err1 := item.Value()
+			if err1 != nil {
+				return nil, err1
+			}
+			resp.Values = append(resp.Values, val)
+		}
+	}
 	return nil, err
 }
 
