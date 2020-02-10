@@ -972,9 +972,11 @@ type rollbackOp struct {
 // createWriteCmdOps regroups requests into operations.
 func createWriteCmdOps(requests []*raft_cmdpb.Request) (ops []interface{}) {
 	// If first request is delete write, then this is a GC command, we can ignore it.
-	if del := requests[0].Delete; del != nil {
-		if del.Cf == CFWrite {
-			return
+	if len(requests) > 0 {
+		if del := requests[0].Delete; del != nil {
+			if del.Cf == CFWrite {
+				return
+			}
 		}
 	}
 	for i := 0; i < len(requests); i++ {
