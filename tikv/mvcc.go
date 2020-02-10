@@ -638,11 +638,10 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 	var buf []byte
 	var tmpDiff int
 	var isPessimisticTxn bool
-	var lockErr error
-	var checkErr error
-	var lock mvcc.MvccLock
 	for _, key := range keys {
-		lockErr = nil
+		var lockErr error
+		var checkErr error
+		var lock mvcc.MvccLock
 		buf = store.lockStore.Get(key, buf)
 		if len(buf) == 0 {
 			// We never commit partial keys in Commit request, so if one lock is not found,
