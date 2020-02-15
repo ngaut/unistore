@@ -1,4 +1,4 @@
-// Copyright 2017 PingCAP, Inc.
+// Copyright 2019-present PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -100,7 +100,7 @@ func NewClient(pdAddrs []string, tag string) (Client, error) {
 	log.Infof("[%s][pd] create pd client with endpoints %v", tag, urls)
 
 	c := &client{
-		urls:                     urls,
+		urls: urls,
 		receiveRegionHeartbeatCh: make(chan *pdpb.RegionHeartbeatResponse, 1),
 		checkLeaderCh:            make(chan struct{}, 1),
 		ctx:                      ctx,
