@@ -425,23 +425,15 @@ func (bs *raftBatchSystem) startWorkers(peers []*peerFsm) {
 	ctx := bs.ctx
 	workers := bs.workers
 	router := bs.router
-	balancer := &balancer{
-		router: router,
-	}
-	for i := 0; i < ctx.cfg.RaftWorkerCnt; i++ {
-		rw := newRaftWorker(ctx, router.workerSenders[i], router)
-		balancer.workers = append(balancer.workers, rw)
-		bs.wg.Add(1)
-		go rw.run(bs.closeCh, bs.wg)
-	}
+	rw := newRaftWorker(ctx, router.peerSender, router)
+	bs.wg.Add(1)
+	go rw.run(bs.closeCh, bs.wg)
 	storeCtx := &StoreContext{GlobalContext: ctx, applyingSnapCount: new(uint64)}
 	sw := &storeWorker{
 		store: newStoreFsmDelegate(router.storeFsm, storeCtx),
 	}
 	bs.wg.Add(1)
 	go sw.run(bs.closeCh, bs.wg)
-	bs.wg.Add(1)
-	go balancer.run(bs.closeCh, bs.wg)
 	router.sendStore(Msg{Type: MsgTypeStoreStart, Data: ctx.store})
 	for i := 0; i < len(peers); i++ {
 		regionID := peers[i].peer.regionId
@@ -479,7 +471,7 @@ func (bs *raftBatchSystem) shutDown() {
 
 func createRaftBatchSystem(cfg *Config) (*router, *raftBatchSystem) {
 	storeSender, storeFsm := newStoreFsm(cfg)
-	router := newRouter(cfg.RaftWorkerCnt, storeSender, storeFsm)
+	router := newRouter(storeSender, storeFsm)
 	raftBatchSystem := &raftBatchSystem{
 		router:     router,
 		tickDriver: newTickDriver(cfg.RaftBaseTickInterval, router, storeFsm.ticker),
