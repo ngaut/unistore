@@ -37,7 +37,7 @@ type RaftInnerServer struct {
 
 	node          *Node
 	snapManager   *SnapManager
-	raftRouter    *RaftstoreRouter
+	router        *router
 	batchSystem   *raftBatchSystem
 	pdWorker      *worker
 	resolveWorker *worker
@@ -51,7 +51,7 @@ func (ris *RaftInnerServer) Raft(stream tikvpb.Tikv_RaftServer) error {
 		if err != nil {
 			return err
 		}
-		ris.raftRouter.SendRaftMessage(msg)
+		_ = ris.router.sendRaftMessage(msg)
 	}
 }
 
@@ -62,7 +62,7 @@ func (ris *RaftInnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error 
 			return err
 		}
 		for _, msg := range msgs.GetMsgs() {
-			ris.raftRouter.SendRaftMessage(msg)
+			_ = ris.router.sendRaftMessage(msg)
 		}
 	}
 }
@@ -95,7 +95,7 @@ func (ris *RaftInnerServer) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcp
 		SplitKeys:   splitKeys,
 		Callback:    cb,
 	}
-	err := ris.raftRouter.router.send(req.Context.RegionId, Msg{Type: MsgTypeSplitRegion, Data: msg})
+	err := ris.router.send(req.Context.RegionId, Msg{Type: MsgTypeSplitRegion, Data: msg})
 	if err != nil {
 		return &kvrpcpb.SplitRegionResponse{RegionError: &errorpb.Error{Message: err.Error()}}
 	}
@@ -122,7 +122,7 @@ func (ris *RaftInnerServer) Setup(pdClient pd.Client) {
 	cfg := ris.raftConfig
 	router, batchSystem := createRaftBatchSystem(cfg)
 
-	ris.raftRouter = NewRaftstoreRouter(router) // TODO: init with local reader
+	ris.router = router // TODO: init with local reader
 	ris.snapManager = NewSnapManager(cfg.SnapPath, router)
 	ris.batchSystem = batchSystem
 	ris.lsDumper = &lockStoreDumper{
@@ -133,7 +133,7 @@ func (ris *RaftInnerServer) Setup(pdClient pd.Client) {
 }
 
 func (ris *RaftInnerServer) GetRaftstoreRouter() *RaftstoreRouter {
-	return ris.raftRouter
+	return &RaftstoreRouter{router: ris.router}
 }
 
 func (ris *RaftInnerServer) GetStoreMeta() *metapb.Store {
@@ -149,15 +149,15 @@ func (ris *RaftInnerServer) Start(pdClient pd.Client) error {
 
 	raftClient := newRaftClient(ris.raftConfig)
 	resolveSender := ris.resolveWorker.sender
-	trans := NewServerTransport(raftClient, ris.snapWorker.sender, ris.raftRouter, resolveSender)
+	trans := NewServerTransport(raftClient, ris.snapWorker.sender, ris.router, resolveSender)
 
 	resolveRunner := newResolverRunner(pdClient)
 	ris.resolveWorker.start(resolveRunner)
-	err := ris.node.Start(context.TODO(), ris.engines, trans, ris.snapManager, ris.pdWorker, ris.raftRouter)
+	err := ris.node.Start(context.TODO(), ris.engines, trans, ris.snapManager, ris.pdWorker, ris.router)
 	if err != nil {
 		return err
 	}
-	snapRunner := newSnapRunner(ris.snapManager, ris.raftConfig, ris.raftRouter)
+	snapRunner := newSnapRunner(ris.snapManager, ris.raftConfig, ris.router)
 	ris.snapWorker.start(snapRunner)
 	go ris.lsDumper.run()
 	return nil

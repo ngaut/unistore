@@ -225,7 +225,6 @@ func loadConfig() *config.Config {
 
 func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	raftConf.Addr = conf.Server.StoreAddr
-	raftConf.RaftWorkerCnt = conf.RaftStore.RaftWorkers
 
 	// raftstore block
 	raftConf.PdHeartbeatTickInterval = config.ParseDuration(conf.RaftStore.PdHeartbeatTickInterval)

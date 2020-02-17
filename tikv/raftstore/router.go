@@ -15,7 +15,11 @@ package raftstore
 
 import (
 	"sync"
-	"unsafe"
+	"sync/atomic"
+	"time"
+
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 
@@ -24,20 +28,17 @@ import (
 
 // router routes a message to a peer.
 type router struct {
-	peers         sync.Map
-	workerSenders []chan Msg
-	storeSender   chan<- Msg
-	storeFsm      *storeFsm
+	peers       sync.Map
+	peerSender  chan Msg
+	storeSender chan<- Msg
+	storeFsm    *storeFsm
 }
 
-func newRouter(workerSize int, storeSender chan<- Msg, storeFsm *storeFsm) *router {
+func newRouter(storeSender chan<- Msg, storeFsm *storeFsm) *router {
 	pm := &router{
-		workerSenders: make([]chan Msg, workerSize),
-		storeSender:   storeSender,
-		storeFsm:      storeFsm,
-	}
-	for i := 0; i < workerSize; i++ {
-		pm.workerSenders[i] = make(chan Msg, 4096)
+		peerSender:  make(chan Msg, 4096),
+		storeSender: storeSender,
+		storeFsm:    storeFsm,
 	}
 	return pm
 }
@@ -52,15 +53,10 @@ func (pr *router) get(regionID uint64) *peerState {
 
 func (pr *router) register(peer *peerFsm) {
 	id := peer.peer.regionId
-	idx := int(id) % len(pr.workerSenders)
 	apply := newApplierFromPeer(peer)
-	handle := &workerHandle{
-		msgCh: pr.workerSenders[idx],
-	}
 	newPeer := &peerState{
-		handle: unsafe.Pointer(handle),
-		peer:   peer,
-		apply:  apply,
+		peer:  peer,
+		apply: apply,
 	}
 	pr.peers.Store(id, newPeer)
 }
@@ -69,7 +65,7 @@ func (pr *router) close(regionID uint64) {
 	v, ok := pr.peers.Load(regionID)
 	if ok {
 		ps := v.(*peerState)
-		ps.close()
+		atomic.StoreUint32(&ps.closed, 1)
 		pr.peers.Delete(regionID)
 	}
 }
@@ -77,10 +73,11 @@ func (pr *router) close(regionID uint64) {
 func (pr *router) send(regionID uint64, msg Msg) error {
 	msg.RegionID = regionID
 	p := pr.get(regionID)
-	if p == nil {
+	if p == nil || atomic.LoadUint32(&p.closed) == 1 {
 		return errPeerNotFound
 	}
-	return p.send(msg)
+	pr.peerSender <- msg
+	return nil
 }
 
 func (pr *router) sendRaftCommand(cmd *MsgRaftCmd) error {
@@ -98,6 +95,22 @@ func (pr *router) sendRaftMessage(msg *raft_serverpb.RaftMessage) error {
 
 func (pr *router) sendStore(msg Msg) {
 	pr.storeSender <- msg
+}
+
+// RaftstoreRouter exports SendCommand method for other packages.
+type RaftstoreRouter struct {
+	router *router
+	// TODO: add localReader here.
+}
+
+func (r *RaftstoreRouter) SendCommand(req *raft_cmdpb.RaftCmdRequest, cb *Callback) error {
+	// TODO: support local reader
+	msg := &MsgRaftCmd{
+		SendTime: time.Now(),
+		Request:  raftlog.NewRequest(req),
+		Callback: cb,
+	}
+	return r.router.sendRaftCommand(msg)
 }
 
 var errPeerNotFound = errors.New("peer not found")

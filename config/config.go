@@ -40,7 +40,6 @@ type Server struct {
 }
 
 type RaftStore struct {
-	RaftWorkers              int    `toml:"raft-workers"`                // Number of raft workers.
 	PdHeartbeatTickInterval  string `toml:"pd-heartbeat-tick-interval"`  // pd-heartbeat-tick-interval in seconds
 	RaftStoreMaxLeaderLease  string `toml:"raft-store-max-leader-lease"` // raft-store-max-leader-lease in milliseconds
 	RaftBaseTickInterval     string `toml:"raft-base-tick-interval"`     // raft-base-tick-interval in milliseconds
@@ -106,7 +105,6 @@ var DefaultConf = Config{
 		LogfilePath: "",
 	},
 	RaftStore: RaftStore{
-		RaftWorkers:              2,
 		PdHeartbeatTickInterval:  "20s",
 		RaftStoreMaxLeaderLease:  "9s",
 		RaftBaseTickInterval:     "1s",

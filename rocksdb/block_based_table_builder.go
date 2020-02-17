@@ -65,12 +65,12 @@ func NewBlockBasedTableBuilder(f *os.File, opts *BlockBasedTableOptions) *BlockB
 	}
 
 	return &BlockBasedTableBuilder{
-		writer:            w,
-		comparator:        opts.Comparator,
-		dataBlockBuilder:  newBlockBuilder(opts.BlockRestartInterval),
-		indexBlockBuilder: newIndexBlockBuilder(opts.IndexBlockRestartInterval),
-		filterBuilder:     newFullFilterBlockBuilder(opts),
-		opts:              opts,
+		writer:                  w,
+		comparator:              opts.Comparator,
+		dataBlockBuilder:        newBlockBuilder(opts.BlockRestartInterval),
+		indexBlockBuilder:       newIndexBlockBuilder(opts.IndexBlockRestartInterval),
+		filterBuilder:           newFullFilterBlockBuilder(opts),
+		opts:                    opts,
 		blockSizeDeviationLimit: blockSizeDeviationLimit,
 		alignment:               alignment,
 	}

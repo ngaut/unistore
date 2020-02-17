@@ -22,24 +22,18 @@ import (
 	"github.com/zhangjinpeng1987/raft"
 )
 
-type RaftRouter interface {
-	SendRaftMessage(msg *raft_serverpb.RaftMessage)
-	ReportSnapshotStatus(regionID uint64, toPeerID uint64, status raft.SnapshotStatus) error
-	ReportUnreachable(regionID, toPeerID uint64) error
-}
-
 type ServerTransport struct {
 	raftClient        *RaftClient
-	raftRouter        RaftRouter
+	router            *router
 	resolverScheduler chan<- task
 	snapScheduler     chan<- task
 	resolving         sync.Map
 }
 
-func NewServerTransport(raftClient *RaftClient, snapScheduler chan<- task, raftRouter RaftRouter, resolverScheduler chan<- task) *ServerTransport {
+func NewServerTransport(raftClient *RaftClient, snapScheduler chan<- task, router *router, resolverScheduler chan<- task) *ServerTransport {
 	return &ServerTransport{
 		raftClient:        raftClient,
-		raftRouter:        raftRouter,
+		router:            router,
 		resolverScheduler: resolverScheduler,
 		snapScheduler:     snapScheduler,
 	}
@@ -124,7 +118,11 @@ func (t *ServerTransport) ReportSnapshotStatus(msg *raft_serverpb.RaftMessage, s
 	toPeerID := msg.GetToPeer().GetId()
 	toStoreID := msg.GetToPeer().GetStoreId()
 	log.Debugf("send snapshot. toPeerID: %v, regionID: %v, status: %v", toPeerID, regionID, status)
-	if err := t.raftRouter.ReportSnapshotStatus(regionID, toPeerID, status); err != nil {
+	if err := t.router.send(regionID, NewMsg(MsgTypeSignificantMsg, &MsgSignificant{
+		Type:           MsgSignificantTypeStatus,
+		ToPeerID:       toPeerID,
+		SnapshotStatus: status,
+	})); err != nil {
 		log.Errorf("report snapshot to peer fails. toPeerID: %v, toStoreID: %v, regionID: %v, err: %v", toPeerID, toStoreID, regionID, err)
 	}
 }
@@ -137,7 +135,10 @@ func (t *ServerTransport) ReportUnreachable(msg *raft_serverpb.RaftMessage) {
 		t.ReportSnapshotStatus(msg, raft.SnapshotFailure)
 		return
 	}
-	if err := t.raftRouter.ReportUnreachable(regionID, toPeerID); err != nil {
+	if err := t.router.send(regionID, NewMsg(MsgTypeSignificantMsg, &MsgSignificant{
+		Type:     MsgSignificantTypeUnreachable,
+		ToPeerID: toPeerID,
+	})); err != nil {
 		log.Errorf("report peer unreachable failed. regionID: %v, toStoreID: %v, toPeerID: %v, err: %v", regionID, toStoreID, toPeerID, err)
 	}
 }
