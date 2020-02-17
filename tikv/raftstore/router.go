@@ -16,6 +16,10 @@ package raftstore
 import (
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 
@@ -91,6 +95,22 @@ func (pr *router) sendRaftMessage(msg *raft_serverpb.RaftMessage) error {
 
 func (pr *router) sendStore(msg Msg) {
 	pr.storeSender <- msg
+}
+
+// RaftstoreRouter exports SendCommand method for other packages.
+type RaftstoreRouter struct {
+	router *router
+	// TODO: add localReader here.
+}
+
+func (r *RaftstoreRouter) SendCommand(req *raft_cmdpb.RaftCmdRequest, cb *Callback) error {
+	// TODO: support local reader
+	msg := &MsgRaftCmd{
+		SendTime: time.Now(),
+		Request:  raftlog.NewRequest(req),
+		Callback: cb,
+	}
+	return r.router.sendRaftCommand(msg)
 }
 
 var errPeerNotFound = errors.New("peer not found")

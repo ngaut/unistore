@@ -83,7 +83,7 @@ func newRaftWorker(ctx *GlobalContext, ch chan Msg, pm *router) *raftWorker {
 // On each loop, raft commands are batched by channel buffer.
 // After commands are handled, we collect apply messages by peers, make a applyBatch, send it to apply channel.
 func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
-	go rw.runApply(wg)
+	defer wg.Done()
 	var msgs []Msg
 	for {
 		msgs = msgs[:0]
@@ -198,12 +198,26 @@ func (rw *raftWorker) removeQueuedSnapshots() {
 	}
 }
 
-// runApply runs apply tasks, since it is already batched by raftCh, we don't need to batch it here.
-func (rw *raftWorker) runApply(wg *sync.WaitGroup) {
+type applyWorker struct {
+	r   *router
+	ch  chan *applyBatch
+	ctx *applyContext
+}
+
+func newApplyWorker(r *router, ch chan *applyBatch, ctx *applyContext) *applyWorker {
+	return &applyWorker{
+		r:   r,
+		ch:  ch,
+		ctx: ctx,
+	}
+}
+
+// run runs apply tasks, since it is already batched by raftCh, we don't need to batch it here.
+func (aw *applyWorker) run(wg *sync.WaitGroup) {
+	defer wg.Done()
 	for {
-		batch := <-rw.applyCh
+		batch := <-aw.ch
 		if batch == nil {
-			wg.Done()
 			return
 		}
 		begin := time.Now()
@@ -216,12 +230,12 @@ func (rw *raftWorker) runApply(wg *sync.WaitGroup) {
 		for _, msg := range batch.msgs {
 			ps := batch.peers[msg.RegionID]
 			if ps == nil {
-				ps = rw.pr.get(msg.RegionID)
+				ps = aw.r.get(msg.RegionID)
 				batch.peers[msg.RegionID] = ps
 			}
-			ps.apply.handleTask(rw.applyCtx, msg)
+			ps.apply.handleTask(aw.ctx, msg)
 		}
-		rw.applyCtx.flush()
+		aw.ctx.flush()
 	}
 }
 
@@ -230,12 +244,19 @@ type storeWorker struct {
 	store *storeMsgHandler
 }
 
+func newStoreWorker(ctx *GlobalContext, r *router) *storeWorker {
+	storeCtx := &StoreContext{GlobalContext: ctx, applyingSnapCount: new(uint64)}
+	return &storeWorker{
+		store: newStoreFsmDelegate(r.storeFsm, storeCtx),
+	}
+}
+
 func (sw *storeWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
+	defer wg.Done()
 	for {
 		var msg Msg
 		select {
 		case <-closeCh:
-			wg.Done()
 			return
 		case msg = <-sw.store.receiver:
 		}

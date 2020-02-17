@@ -425,15 +425,15 @@ func (bs *raftBatchSystem) startWorkers(peers []*peerFsm) {
 	ctx := bs.ctx
 	workers := bs.workers
 	router := bs.router
+
+	bs.wg.Add(3) // raftWorker, applyWorker, storeWorker
 	rw := newRaftWorker(ctx, router.peerSender, router)
-	bs.wg.Add(1)
 	go rw.run(bs.closeCh, bs.wg)
-	storeCtx := &StoreContext{GlobalContext: ctx, applyingSnapCount: new(uint64)}
-	sw := &storeWorker{
-		store: newStoreFsmDelegate(router.storeFsm, storeCtx),
-	}
-	bs.wg.Add(1)
+	aw := newApplyWorker(router, rw.applyCh, rw.applyCtx)
+	go aw.run(bs.wg)
+	sw := newStoreWorker(ctx, router)
 	go sw.run(bs.closeCh, bs.wg)
+
 	router.sendStore(Msg{Type: MsgTypeStoreStart, Data: ctx.store})
 	for i := 0; i < len(peers); i++ {
 		regionID := peers[i].peer.regionId

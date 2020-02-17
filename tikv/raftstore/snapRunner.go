@@ -31,12 +31,12 @@ import (
 type snapRunner struct {
 	config         *Config
 	snapManager    *SnapManager
-	router         RaftRouter
+	router         *router
 	sendingCount   int64
 	receivingCount int64
 }
 
-func newSnapRunner(snapManager *SnapManager, config *Config, router RaftRouter) *snapRunner {
+func newSnapRunner(snapManager *SnapManager, config *Config, router *router) *snapRunner {
 	return &snapRunner{
 		config:      config,
 		snapManager: snapManager,
@@ -138,7 +138,7 @@ func (r *snapRunner) recv(t recvSnapTask) {
 	defer atomic.AddInt64(&r.receivingCount, -1)
 	msg, err := r.recvSnap(t.stream)
 	if err == nil {
-		r.router.SendRaftMessage(msg)
+		_ = r.router.sendRaftMessage(msg)
 	}
 	t.callback(err)
 }

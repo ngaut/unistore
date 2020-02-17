@@ -60,7 +60,7 @@ func NewNode(system *raftBatchSystem, store *metapb.Store, cfg *Config, pdClient
 	}
 }
 
-func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, snapMgr *SnapManager, pdWorker *worker, router *RaftstoreRouter) error {
+func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, snapMgr *SnapManager, pdWorker *worker, router *router) error {
 	storeID, err := n.checkStore(engines)
 	if err != nil {
 		return err
@@ -107,7 +107,7 @@ func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, sna
 			},
 			Callback: cb,
 		}
-		err := router.router.send(firstRegion.Id, Msg{
+		err := router.send(firstRegion.Id, Msg{
 			Type:     MsgTypeSplitRegion,
 			RegionID: firstRegion.Id,
 			Data:     msg,

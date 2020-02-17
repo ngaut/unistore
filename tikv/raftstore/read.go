@@ -19,6 +19,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -64,8 +65,12 @@ func (c *leaderChecker) IsLeader(ctx *kvrpcpb.Context, router *RaftstoreRouter) 
 		Header:   header,
 		Requests: []*raft_cmdpb.Request{req},
 	}
-
-	err = router.SendCommand(cmd, cb)
+	msg := &MsgRaftCmd{
+		SendTime: time.Now(),
+		Request:  raftlog.NewRequest(cmd),
+		Callback: cb,
+	}
+	err = router.router.sendRaftCommand(msg)
 	if err != nil {
 		return RaftstoreErrToPbError(err)
 	}
