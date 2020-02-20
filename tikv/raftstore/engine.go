@@ -95,6 +95,11 @@ func (en *Engines) newRegionSnapshot(regionId, redoIdx uint64) (snap *regionSnap
 	}
 
 	txn := en.kv.DB.NewTransaction(false)
+	defer func() {
+		if err != nil {
+			txn.Discard()
+		}
+	}()
 
 	// Verify that the region version to make sure the start key and end key has not changed.
 	regionState := new(raft_serverpb.RegionLocalState)

@@ -377,6 +377,7 @@ func (writer *dbWriter) DeleteRange(startKey, endKey []byte, latchHandle mvcc.La
 	oldStartKey := mvcc.EncodeOldKey(startKey, maxSystemTS)
 	oldEndKey := mvcc.EncodeOldKey(endKey, maxSystemTS)
 	txn := writer.bundle.DB.NewTransaction(false)
+	defer txn.Discard()
 	reader := dbreader.NewDBReader(startKey, endKey, txn, atomic.LoadUint64(&writer.safePoint.timestamp))
 	keys = writer.collectRangeKeys(reader.GetIter(), startKey, endKey, keys)
 	keys = writer.collectRangeKeys(reader.GetIter(), oldStartKey, oldEndKey, keys)

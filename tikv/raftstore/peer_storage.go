@@ -1082,6 +1082,7 @@ func doSnapshot(engines *Engines, mgr *SnapManager, regionId, redoIdx uint64) (*
 	if err != nil {
 		return nil, err
 	}
+	defer snap.txn.Discard()
 	if snap.regionState.GetState() != rspb.PeerState_Normal {
 		return nil, storageError(fmt.Sprintf("snap job %d seems stale, skip", regionId))
 	}

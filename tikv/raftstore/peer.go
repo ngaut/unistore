@@ -1086,7 +1086,7 @@ func (p *Peer) ApplyReads(kv *mvcc.DBBundle, ready *raft.Ready) {
 				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.binaryId()))
 			}
 			for _, reqCb := range read.cmds {
-				resp, _ := p.handleRead(kv, reqCb.Req, true)
+				resp := p.handleRead(kv, reqCb.Req, true)
 				reqCb.Cb.Done(resp)
 			}
 			read.cmds = nil
@@ -1155,7 +1155,7 @@ func (p *Peer) PostApply(kv *mvcc.DBBundle, applyState applyState, appliedIndexT
 				panic("read is nil, this should not happen")
 			}
 			for _, reqCb := range read.cmds {
-				resp, _ := p.handleRead(kv, reqCb.Req, true)
+				resp := p.handleRead(kv, reqCb.Req, true)
 				reqCb.Cb.Done(resp)
 			}
 			read.cmds = read.cmds[:0]
@@ -1369,7 +1369,7 @@ func (p *Peer) readyToTransferLeader(cfg *Config, peer *metapb.Peer) bool {
 }
 
 func (p *Peer) readLocal(kv *mvcc.DBBundle, req *raft_cmdpb.RaftCmdRequest, cb *Callback) {
-	resp, _ := p.handleRead(kv, req, false)
+	resp := p.handleRead(kv, req, false)
 	cb.Done(resp)
 }
 
@@ -1641,11 +1641,11 @@ func (p *Peer) ProposeConfChange(cfg *Config, req *raft_cmdpb.RaftCmdRequest) (u
 	return proposeIndex, nil
 }
 
-func (p *Peer) handleRead(kv *mvcc.DBBundle, req *raft_cmdpb.RaftCmdRequest, checkEpoch bool) (*raft_cmdpb.RaftCmdResponse, *mvcc.DBSnapshot) {
-	readExecutor := NewReadExecutor(kv, checkEpoch, false)
-	resp, snap := readExecutor.Execute(req, p.Region())
+func (p *Peer) handleRead(kv *mvcc.DBBundle, req *raft_cmdpb.RaftCmdRequest, checkEpoch bool) *raft_cmdpb.RaftCmdResponse {
+	readExecutor := NewReadExecutor(checkEpoch)
+	resp := readExecutor.Execute(req, p.Region())
 	BindRespTerm(resp, p.Term())
-	return resp, snap
+	return resp
 }
 
 type RequestPolicy int
@@ -1748,107 +1748,37 @@ func Inspect(i RequestInspector, req *raft_cmdpb.RaftCmdRequest) (RequestPolicy,
 }
 
 type ReadExecutor struct {
-	checkEpoch       bool
-	engine           *mvcc.DBBundle
-	snapshot         *mvcc.DBSnapshot
-	snapshotTime     *time.Time
-	needSnapshotTime bool
+	checkEpoch bool
 }
 
-func NewReadExecutor(engine *mvcc.DBBundle, checkEpoch bool, needSnapshotTime bool) *ReadExecutor {
+func NewReadExecutor(checkEpoch bool) *ReadExecutor {
 	return &ReadExecutor{
-		checkEpoch:       checkEpoch,
-		engine:           engine,
-		snapshot:         nil,
-		snapshotTime:     nil,
-		needSnapshotTime: needSnapshotTime,
+		checkEpoch: checkEpoch,
 	}
 }
 
-func (r *ReadExecutor) SnapshotTime() *time.Time {
-	r.MaybeUpdateSnapshot()
-	return r.snapshotTime
-}
-
-func (r *ReadExecutor) MaybeUpdateSnapshot() {
-	if r.snapshot != nil {
-		return
-	}
-	r.snapshot = &mvcc.DBSnapshot{
-		Txn:           r.engine.DB.NewTransaction(false),
-		LockStore:     r.engine.LockStore,
-		RollbackStore: r.engine.RollbackStore,
-	}
-	// Reading current timespec after snapshot, in case we do not
-	// expire lease in time.
-	// Todo: atomic::fence(atomic::Ordering::Release)
-	if r.needSnapshotTime {
-		t := time.Now()
-		r.snapshotTime = &t
-	}
-}
-
-func (r *ReadExecutor) DoGet(req *raft_cmdpb.Request, region *metapb.Region) (*raft_cmdpb.Response, error) {
-	// region key range has no data prefix, so we must use origin key to check.
-	if err := CheckKeyInRegion(req.Get.Key, region); err != nil {
-		return nil, err
-	}
-
-	resp := new(raft_cmdpb.Response)
-	item, err := r.snapshot.Txn.Get(DataKey(req.Get.Key))
-	if err != nil {
-		panic(fmt.Sprintf("[region %v] failed to get %v, err: %v", region.Id, req.Get.Key, err))
-	}
-	if item != nil {
-		value, err := item.Value()
-		if err != nil {
-			panic(fmt.Sprintf("[region %v] failed to get %v, err: %v", region.Id, req.Get.Key, err))
-		}
-		resp.Get = new(raft_cmdpb.GetResponse)
-		resp.Get.Value = append([]byte{}, value...)
-	}
-	return resp, nil
-}
-
-func (r *ReadExecutor) Execute(msg *raft_cmdpb.RaftCmdRequest, region *metapb.Region) (*raft_cmdpb.RaftCmdResponse, *mvcc.DBSnapshot) {
+func (r *ReadExecutor) Execute(msg *raft_cmdpb.RaftCmdRequest, region *metapb.Region) *raft_cmdpb.RaftCmdResponse {
 	if r.checkEpoch {
 		if err := CheckRegionEpoch(msg, region, true); err != nil {
 			log.Debugf("[region %v] epoch not match, err: %v", region.Id, err)
-			return ErrResp(err), nil
+			return ErrResp(err)
 		}
 	}
-
-	r.MaybeUpdateSnapshot()
-	needSnapshot := false
 	resps := make([]*raft_cmdpb.Response, 0, len(msg.Requests))
 	var resp *raft_cmdpb.Response
-	var err error
 	for _, req := range msg.Requests {
 		switch req.CmdType {
-		case raft_cmdpb.CmdType_Get:
-			if resp, err = r.DoGet(req, region); err != nil {
-				log.Errorf("[region %v] execute raft command err %v", region.Id, err)
-				return ErrResp(err), nil
-			}
 		case raft_cmdpb.CmdType_Snap:
-			needSnapshot = true
 			resp = new(raft_cmdpb.Response)
-		case raft_cmdpb.CmdType_Prewrite, raft_cmdpb.CmdType_Put, raft_cmdpb.CmdType_Delete,
-			raft_cmdpb.CmdType_DeleteRange, raft_cmdpb.CmdType_IngestSST, raft_cmdpb.CmdType_Invalid:
+			resp.CmdType = req.CmdType
+		default:
 			panic("unreachable")
 		}
-
-		resp.CmdType = req.CmdType
 		resps = append(resps, resp)
 	}
-
 	response := new(raft_cmdpb.RaftCmdResponse)
 	response.Responses = resps
-	if needSnapshot {
-		return response, r.snapshot
-	} else {
-		return response, nil
-	}
+	return response
 }
 
 func getTransferLeaderCmd(req *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.TransferLeaderRequest {
