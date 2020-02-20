@@ -330,6 +330,7 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) *b
 	if safePoint != nil {
 		opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
 	}
+	opts.CompactL0WhenClose = false
 	db, err := badger.Open(opts)
 	if err != nil {
 		log.Fatal(err)
