@@ -53,8 +53,9 @@ type raftWorker struct {
 	raftCtx       *RaftContext
 	raftStartTime time.Time
 
-	applyCh  chan *applyBatch
-	applyCtx *applyContext
+	applyCh    chan *applyBatch
+	applyResCh chan Msg
+	applyCtx   *applyContext
 
 	msgCnt            uint64
 	movePeerCandidate uint64
@@ -70,12 +71,14 @@ func newRaftWorker(ctx *GlobalContext, ch chan Msg, pm *router) *raftWorker {
 		raftWB:        new(WriteBatch),
 		localStats:    new(storeStats),
 	}
+	applyResCh := make(chan Msg, cap(ch))
 	return &raftWorker{
-		raftCh:   ch,
-		raftCtx:  raftCtx,
-		pr:       pm,
-		applyCh:  make(chan *applyBatch, 1),
-		applyCtx: newApplyContext("", ctx.regionTaskSender, ctx.engine, ch, ctx.cfg),
+		raftCh:     ch,
+		applyResCh: applyResCh,
+		raftCtx:    raftCtx,
+		pr:         pm,
+		applyCh:    make(chan *applyBatch, 1),
+		applyCtx:   newApplyContext("", ctx.regionTaskSender, ctx.engine, applyResCh, ctx.cfg),
 	}
 }
 
@@ -93,10 +96,16 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 			return
 		case msg := <-rw.raftCh:
 			msgs = append(msgs, msg)
+		case msg := <-rw.applyResCh:
+			msgs = append(msgs, msg)
 		}
 		pending := len(rw.raftCh)
 		for i := 0; i < pending; i++ {
 			msgs = append(msgs, <-rw.raftCh)
+		}
+		resLen := len(rw.applyResCh)
+		for i := 0; i < resLen; i++ {
+			msgs = append(msgs, <-rw.applyResCh)
 		}
 		metrics.RaftBatchSize.Observe(float64(len(msgs)))
 		atomic.AddUint64(&rw.msgCnt, uint64(len(msgs)))

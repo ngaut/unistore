@@ -280,7 +280,7 @@ type applyContext struct {
 	tag              string
 	timer            *time.Time
 	regionScheduler  chan<- task
-	notifier         chan<- Msg
+	applyResCh       chan<- Msg
 	engines          *Engines
 	txn              *badger.Txn
 	cbs              []applyCallback
@@ -299,12 +299,12 @@ type applyContext struct {
 }
 
 func newApplyContext(tag string, regionScheduler chan<- task, engines *Engines,
-	notifier chan<- Msg, cfg *Config) *applyContext {
+	applyResCh chan<- Msg, cfg *Config) *applyContext {
 	return &applyContext{
 		tag:             tag,
 		regionScheduler: regionScheduler,
 		engines:         engines,
-		notifier:        notifier,
+		applyResCh:      applyResCh,
 		enableSyncLog:   cfg.SyncLog,
 		useDeleteRange:  cfg.UseDeleteRange,
 		wb:              new(WriteBatch),
@@ -416,7 +416,7 @@ func (ac *applyContext) flush() {
 	ac.writeToDB()
 	if len(ac.applyTaskResList) > 0 {
 		for _, res := range ac.applyTaskResList {
-			ac.notifier <- NewPeerMsg(MsgTypeApplyRes, res.regionID, res)
+			ac.applyResCh <- NewPeerMsg(MsgTypeApplyRes, res.regionID, res)
 		}
 		ac.applyTaskResList = ac.applyTaskResList[:0]
 	}
@@ -1595,7 +1595,7 @@ func (a *applier) destroy(aCtx *applyContext) {
 func (a *applier) handleDestroy(aCtx *applyContext, regionID uint64) {
 	if !a.stopped {
 		a.destroy(aCtx)
-		aCtx.notifier <- NewPeerMsg(MsgTypeApplyRes, a.region.Id, &applyTaskRes{
+		aCtx.applyResCh <- NewPeerMsg(MsgTypeApplyRes, a.region.Id, &applyTaskRes{
 			regionID:      a.region.Id,
 			destroyPeerID: a.id,
 		})
