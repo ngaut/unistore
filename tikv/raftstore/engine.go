@@ -261,9 +261,7 @@ func (wb *WriteBatch) WriteToKV(bundle *mvcc.DBBundle) error {
 			case mvcc.LockUserMetaRollbackByte:
 				bundle.RollbackStore.Put(entry.Key, []byte{0})
 			case mvcc.LockUserMetaDeleteByte:
-				if !bundle.LockStore.DeleteWithHint(entry.Key, hint) {
-					panic("failed to delete key")
-				}
+				bundle.LockStore.DeleteWithHint(entry.Key, hint)
 			case mvcc.LockUserMetaRollbackGCByte:
 				bundle.RollbackStore.Delete(entry.Key)
 			default:
