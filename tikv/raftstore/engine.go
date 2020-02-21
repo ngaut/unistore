@@ -319,7 +319,13 @@ func (wb *WriteBatch) MustWriteToRaft(db *badger.DB) {
 }
 
 func (wb *WriteBatch) Reset() {
+	for i := range wb.entries {
+		wb.entries[i] = nil
+	}
 	wb.entries = wb.entries[:0]
+	for i := range wb.lockEntries {
+		wb.lockEntries[i] = nil
+	}
 	wb.lockEntries = wb.lockEntries[:0]
 	wb.size = 0
 	wb.safePoint = 0
