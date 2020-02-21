@@ -223,7 +223,10 @@ func sortKeys(keys [][]byte) [][]byte {
 }
 
 func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.PessimisticLockRequest, resp *kvrpcpb.PessimisticLockResponse) (*lockwaiter.Waiter, error) {
-	mutations := sortMutations(req.Mutations)
+	mutations := req.Mutations
+	if !req.ReturnValues {
+		mutations = sortMutations(req.Mutations)
+	}
 	startTS := req.StartVersion
 	regCtx := reqCtx.regCtx
 	hashVals := mutationsToHashVals(mutations)
