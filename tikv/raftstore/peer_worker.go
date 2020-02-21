@@ -89,6 +89,9 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 	var msgs []Msg
 	for {
+		for i := range msgs {
+			msgs[i] = Msg{}
+		}
 		msgs = msgs[:0]
 		select {
 		case <-closeCh:
@@ -138,6 +141,9 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 		})
 		applyMsgs := rw.raftCtx.applyMsgs
 		batch.msgs = append(batch.msgs, applyMsgs.msgs...)
+		for i := range applyMsgs.msgs {
+			applyMsgs.msgs[i] = Msg{}
+		}
 		applyMsgs.msgs = applyMsgs.msgs[:0]
 		rw.removeQueuedSnapshots()
 		rw.applyCh <- batch

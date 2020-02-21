@@ -102,6 +102,9 @@ func (w writeDBWorker) run() {
 	defer w.writer.wg.Done()
 	var batches []*writeDBBatch
 	for {
+		for i := range batches {
+			batches[i] = nil
+		}
 		batches = batches[:0]
 		select {
 		case <-w.writer.closeCh:
@@ -153,6 +156,9 @@ func (w writeLockWorker) run() {
 	ls := w.writer.bundle.LockStore
 	var batches []*writeLockBatch
 	for {
+		for i := range batches {
+			batches[i] = nil
+		}
 		batches = batches[:0]
 		select {
 		case <-w.writer.closeCh:

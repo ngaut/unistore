@@ -363,7 +363,7 @@ func (ac *applyContext) writeToDB() {
 	for _, cb := range ac.cbs {
 		cb.invokeAll(doneApply)
 	}
-	ac.cbs = ac.cbs[:0]
+	ac.cbs = make([]applyCallback, 0, cap(ac.cbs))
 }
 
 /// Finishes `Apply`s for the applier.
@@ -415,8 +415,9 @@ func (ac *applyContext) flush() {
 	// so we use sync-log flag here.
 	ac.writeToDB()
 	if len(ac.applyTaskResList) > 0 {
-		for _, res := range ac.applyTaskResList {
+		for i, res := range ac.applyTaskResList {
 			ac.applyResCh <- NewPeerMsg(MsgTypeApplyRes, res.regionID, res)
+			ac.applyTaskResList[i] = nil
 		}
 		ac.applyTaskResList = ac.applyTaskResList[:0]
 	}
@@ -810,8 +811,9 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 }
 
 func (a *applier) clearAllCommandsAsStale() {
-	for _, cmd := range a.pendingCmds.normals {
+	for i, cmd := range a.pendingCmds.normals {
 		notifyStaleCommand(a.region.Id, a.id, a.term, cmd)
+		a.pendingCmds.normals[i] = pendingCmd{}
 	}
 	a.pendingCmds.normals = a.pendingCmds.normals[:0]
 	if cmd := a.pendingCmds.takeConfChange(); cmd != nil {
@@ -1527,6 +1529,9 @@ func (a *applier) handleApply(aCtx *applyContext, apply *apply) {
 	a.metrics = applyMetrics{}
 	a.term = apply.term
 	a.handleRaftCommittedEntries(aCtx, apply.entries)
+	for i := range apply.entries {
+		apply.entries[i] = eraftpb.Entry{}
+	}
 	apply.entries = apply.entries[:0]
 	if a.waitMergeState != nil {
 		return

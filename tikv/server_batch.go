@@ -102,6 +102,9 @@ func (h *batchRequestHandler) dispatchBatchRequest(ctx context.Context) error {
 func (h *batchRequestHandler) collectAndSendResponse() error {
 	batchResp := &tikvpb.BatchCommandsResponse{}
 	for {
+		for i := range batchResp.Responses {
+			batchResp.Responses[i] = nil
+		}
 		batchResp.Responses = batchResp.Responses[:0]
 		batchResp.RequestIds = batchResp.RequestIds[:0]
 		select {

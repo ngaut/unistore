@@ -137,6 +137,9 @@ func (q *ProposalQueue) Push(meta *ProposalMeta) {
 }
 
 func (q *ProposalQueue) Clear() {
+	for i := range q.queue {
+		q.queue[i] = nil
+	}
 	q.queue = q.queue[:0]
 }
 
@@ -1158,7 +1161,7 @@ func (p *Peer) PostApply(kv *mvcc.DBBundle, applyState applyState, appliedIndexT
 				resp := p.handleRead(kv, reqCb.Req, true)
 				reqCb.Cb.Done(resp)
 			}
-			read.cmds = read.cmds[:0]
+			read.cmds = nil
 		}
 		p.pendingReads.readyCnt = 0
 	}
