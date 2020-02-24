@@ -13,11 +13,6 @@
 
 package raftstore
 
-import (
-	"sync"
-	"time"
-)
-
 type ticker struct {
 	regionID  uint64
 	tick      int64
@@ -89,51 +84,4 @@ func (t *ticker) scheduleStore(tp StoreTick) {
 		return
 	}
 	sched.runAt = t.tick + sched.interval
-}
-
-type tickDriver struct {
-	baseTickInterval time.Duration
-	newRegionCh      chan uint64
-	regions          map[uint64]struct{}
-	router           *router
-	storeTicker      *ticker
-}
-
-func newTickDriver(baseTickInterval time.Duration, router *router, storeTicker *ticker) *tickDriver {
-	return &tickDriver{
-		baseTickInterval: baseTickInterval,
-		newRegionCh:      make(chan uint64),
-		regions:          make(map[uint64]struct{}),
-		router:           router,
-		storeTicker:      storeTicker,
-	}
-}
-
-func (r *tickDriver) run(closeCh chan struct{}, wg *sync.WaitGroup) {
-	timer := time.Tick(r.baseTickInterval)
-	for {
-		select {
-		case <-closeCh:
-			wg.Done()
-			return
-		case <-timer:
-			for regionID, _ := range r.regions {
-				if r.router.send(regionID, NewPeerMsg(MsgTypeTick, regionID, nil)) != nil {
-					delete(r.regions, regionID)
-				}
-			}
-			r.tickStore()
-		case regionID := <-r.newRegionCh:
-			r.regions[regionID] = struct{}{}
-		}
-	}
-}
-
-func (r *tickDriver) tickStore() {
-	r.storeTicker.tickClock()
-	for i := range r.storeTicker.schedules {
-		if r.storeTicker.isOnStoreTick(StoreTick(i)) {
-			r.router.sendStore(NewMsg(MsgTypeStoreTick, StoreTick(i)))
-		}
-	}
 }

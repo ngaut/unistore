@@ -87,6 +87,7 @@ func newRaftWorker(ctx *GlobalContext, ch chan Msg, pm *router) *raftWorker {
 // After commands are handled, we collect apply messages by peers, make a applyBatch, send it to apply channel.
 func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
+	timeTicker := time.NewTicker(rw.raftCtx.cfg.RaftBaseTickInterval)
 	var msgs []Msg
 	for {
 		for i := range msgs {
@@ -101,6 +102,11 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 			msgs = append(msgs, msg)
 		case msg := <-rw.applyResCh:
 			msgs = append(msgs, msg)
+		case <-timeTicker.C:
+			rw.pr.peers.Range(func(key, value interface{}) bool {
+				msgs = append(msgs, NewPeerMsg(MsgTypeTick, key.(uint64), nil))
+				return true
+			})
 		}
 		pending := len(rw.raftCh)
 		for i := 0; i < pending; i++ {
@@ -268,11 +274,20 @@ func newStoreWorker(ctx *GlobalContext, r *router) *storeWorker {
 
 func (sw *storeWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
+	timeTicker := time.NewTicker(sw.store.ctx.cfg.RaftBaseTickInterval)
+	storeTicker := sw.store.ticker
 	for {
 		var msg Msg
 		select {
 		case <-closeCh:
 			return
+		case <-timeTicker.C:
+			storeTicker.tickClock()
+			for i := range storeTicker.schedules {
+				if storeTicker.isOnStoreTick(StoreTick(i)) {
+					sw.store.handleMsg(NewMsg(MsgTypeStoreTick, StoreTick(i)))
+				}
+			}
 		case msg = <-sw.store.receiver:
 		}
 		sw.store.handleMsg(msg)

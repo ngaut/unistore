@@ -232,7 +232,6 @@ func (d *peerMsgHandler) onTick() {
 	if d.ticker.isOnTick(PeerTickPeerStaleState) {
 		d.onCheckPeerStaleStateTick()
 	}
-	d.ctx.tickDriverSender <- d.regionID()
 }
 
 func (d *peerMsgHandler) startTicker() {
@@ -240,7 +239,6 @@ func (d *peerMsgHandler) startTicker() {
 		d.notifyPrepareMerge()
 	}
 	d.ticker = newTicker(d.regionID(), d.ctx.cfg)
-	d.ctx.tickDriverSender <- d.regionID()
 	d.ticker.schedule(PeerTickRaft)
 	d.ticker.schedule(PeerTickRaftLogGC)
 	d.ticker.schedule(PeerTickSplitRegionCheck)
