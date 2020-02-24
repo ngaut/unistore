@@ -20,6 +20,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/coocood/badger"
@@ -1356,4 +1357,34 @@ func (s *testMvccSuite) TestResolveCommit(c *C) {
 	MustCommitErr(sk, 1, 2, store)
 	MustAcquirePessimisticLock(sk, sk, 5, 5, store)
 	MustCommitErr(sk, 1, 2, store)
+}
+
+func MustLoad(startTS, commitTS uint64, store *TestStore, pairs ...string) {
+	var keys [][]byte
+	var vals [][]byte
+	for _, pair := range pairs {
+		strs := strings.Split(pair, ":")
+		keys = append(keys, []byte(strs[0]))
+		vals = append(vals, []byte(strs[1]))
+	}
+	for i := 0; i < len(keys); i++ {
+		MustPrewritePut(keys[0], keys[i], vals[i], startTS, store)
+	}
+	for i := 0; i < len(keys); i++ {
+		MustCommit(keys[i], startTS, commitTS, store)
+	}
+}
+
+func (s *testMvccSuite) TestBatchGet(c *C) {
+	store, err := NewTestStore("TestBatchGet", "TestBatchGet", c)
+	c.Assert(err, IsNil)
+	defer CleanTestStore(store)
+	MustLoad(100, 101, store, "ta:1", "tb:2", "tc:3")
+	MustPrewritePut([]byte("ta"), []byte("ta"), []byte("0"), 103, store)
+	keys := [][]byte{[]byte("ta"), []byte("tb"), []byte("tc")}
+	pairs := store.MvccStore.BatchGet(store.newReqCtx(), keys, 104)
+	c.Assert(len(pairs), Equals, 3)
+	c.Assert(pairs[0].Error, NotNil)
+	c.Assert(string(pairs[1].Value), Equals, "2")
+	c.Assert(string(pairs[2].Value), Equals, "3")
 }

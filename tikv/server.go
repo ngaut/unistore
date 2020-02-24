@@ -350,21 +350,7 @@ func (svr *Server) KvBatchGet(ctx context.Context, req *kvrpcpb.BatchGetRequest)
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.BatchGetResponse{RegionError: reqCtx.regErr}, nil
 	}
-	err = svr.mvccStore.CheckKeysLock(req.GetVersion(), req.Keys...)
-	if err != nil {
-		return &kvrpcpb.BatchGetResponse{Pairs: []*kvrpcpb.KvPair{{Error: convertToKeyError(err)}}}, nil
-	}
-	pairs := make([]*kvrpcpb.KvPair, 0, len(req.Keys))
-	batchGetFunc := func(key, value []byte, err error) {
-		if len(value) != 0 {
-			pairs = append(pairs, &kvrpcpb.KvPair{
-				Key:   safeCopy(key),
-				Value: safeCopy(value),
-				Error: convertToKeyError(err),
-			})
-		}
-	}
-	reqCtx.getDBReader().BatchGet(req.Keys, req.GetVersion(), batchGetFunc)
+	pairs := svr.mvccStore.BatchGet(reqCtx, req.Keys, req.GetVersion())
 	return &kvrpcpb.BatchGetResponse{
 		Pairs: pairs,
 	}, nil
