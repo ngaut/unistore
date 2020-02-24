@@ -223,7 +223,10 @@ func sortKeys(keys [][]byte) [][]byte {
 }
 
 func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.PessimisticLockRequest, resp *kvrpcpb.PessimisticLockResponse) (*lockwaiter.Waiter, error) {
-	mutations := sortMutations(req.Mutations)
+	mutations := req.Mutations
+	if !req.ReturnValues {
+		mutations = sortMutations(req.Mutations)
+	}
 	startTS := req.StartVersion
 	regCtx := reqCtx.regCtx
 	hashVals := mutationsToHashVals(mutations)
@@ -416,7 +419,7 @@ func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isF
 	if lock, ok := err.(*ErrLocked); ok {
 		keyHash := farm.Fingerprint64(lock.Key)
 		waitTimeDuration := store.normalizeWaitTime(lockWaitTime)
-		log.Infof("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
+		log.Debugf("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
 		waiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, keyHash, waitTimeDuration)
 		if !isFirstLock {
 			store.DeadlockDetectCli.Detect(startTS, lock.StartTS, keyHash)
