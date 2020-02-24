@@ -416,7 +416,7 @@ func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isF
 	if lock, ok := err.(*ErrLocked); ok {
 		keyHash := farm.Fingerprint64(lock.Key)
 		waitTimeDuration := store.normalizeWaitTime(lockWaitTime)
-		log.Infof("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
+		log.Debugf("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
 		waiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, keyHash, waitTimeDuration)
 		if !isFirstLock {
 			store.DeadlockDetectCli.Detect(startTS, lock.StartTS, keyHash)
