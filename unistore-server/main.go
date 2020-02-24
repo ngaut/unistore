@@ -315,6 +315,7 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) *b
 	opts.Dir = filepath.Join(conf.DBPath, subPath)
 	opts.ValueDir = opts.Dir
 	opts.ValueLogFileSize = conf.VlogFileSize
+	opts.MaxMemTableSize = conf.MaxMemTableSize
 	opts.MaxTableSize = conf.MaxTableSize
 	opts.NumMemtables = conf.NumMemTables
 	opts.NumLevelZeroTables = conf.NumL0Tables
