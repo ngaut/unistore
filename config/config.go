@@ -56,7 +56,8 @@ type Coprocessor struct {
 type Engine struct {
 	DBPath           string `toml:"db-path"`             // Directory to store the data in. Should exist and be writable.
 	ValueThreshold   int    `toml:"value-threshold"`     // If value size >= this threshold, only store value offsets in tree.
-	MaxTableSize     int64  `toml:"max-table-size"`      // Each table is at most this size.
+	MaxMemTableSize  int64  `toml:"max-mem-table-size"`  // Each mem table is at most this size.
+	MaxTableSize     int64  `toml:"max-table-size"`      // Each table file is at most this size.
 	NumMemTables     int    `toml:"num-mem-tables"`      // Maximum number of tables to keep in memory, before stalling.
 	NumL0Tables      int    `toml:"num-L0-tables"`       // Maximum number of Level 0 tables before we start compacting.
 	NumL0TablesStall int    `toml:"num-L0-tables-stall"` // Maximum number of Level 0 tables before stalling.
@@ -115,7 +116,8 @@ var DefaultConf = Config{
 	Engine: Engine{
 		DBPath:           "/tmp/badger",
 		ValueThreshold:   256,
-		MaxTableSize:     64 * MB,
+		MaxMemTableSize:  64 * MB,
+		MaxTableSize:     8 * MB,
 		NumMemTables:     3,
 		NumL0Tables:      4,
 		NumL0TablesStall: 8,

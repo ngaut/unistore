@@ -134,7 +134,7 @@ func PessimisticLock(pk []byte, key []byte, startTs uint64, lockTTL uint64, forU
 		ForUpdateTs:  forUpdateTs,
 		IsFirstLock:  isFirstLock,
 	}
-	waiter, err := store.MvccStore.PessimisticLock(store.newReqCtx(), req)
+	waiter, err := store.MvccStore.PessimisticLock(store.newReqCtx(), req, &kvrpcpb.PessimisticLockResponse{})
 	return waiter, err
 }
 
