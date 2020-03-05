@@ -273,6 +273,9 @@ func (svr *Server) handleBatchRequest(ctx context.Context, req *tikvpb.BatchComm
 			return nil, err
 		}
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_Coprocessor{Coprocessor: res}}, nil
+	case *tikvpb.BatchCommandsRequest_Request_Empty:
+		res := &tikvpb.BatchCommandsEmptyResponse{TestId: req.Empty.TestId}
+		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_Empty{Empty: res}}, nil
 	}
 	return nil, nil
 }
