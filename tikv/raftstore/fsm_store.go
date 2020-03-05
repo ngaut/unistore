@@ -95,7 +95,6 @@ type GlobalContext struct {
 	pdClient              pd.Client
 	peerEventObserver     PeerEventObserver
 	globalStats           *storeStats
-	tickDriverSender      chan uint64
 }
 
 type StoreContext struct {
@@ -353,12 +352,11 @@ type workers struct {
 }
 
 type raftBatchSystem struct {
-	ctx        *GlobalContext
-	router     *router
-	workers    *workers
-	tickDriver *tickDriver
-	closeCh    chan struct{}
-	wg         *sync.WaitGroup
+	ctx     *GlobalContext
+	router  *router
+	workers *workers
+	closeCh chan struct{}
+	wg      *sync.WaitGroup
 }
 
 func (bs *raftBatchSystem) start(
@@ -407,7 +405,6 @@ func (bs *raftBatchSystem) start(
 		pdClient:              pdClient,
 		peerEventObserver:     observer,
 		globalStats:           new(storeStats),
-		tickDriverSender:      bs.tickDriver.newRegionCh,
 	}
 	regionPeers, err := bs.loadPeers()
 	if err != nil {
@@ -447,8 +444,6 @@ func (bs *raftBatchSystem) startWorkers(peers []*peerFsm) {
 	workers.compactWorker.start(&compactTaskHandler{engine: engines.kv.DB})
 	workers.pdWorker.start(newPDTaskHandler(ctx.store.Id, ctx.pdClient, bs.router))
 	workers.computeHashWorker.start(&computeHashTaskHandler{router: bs.router})
-	bs.wg.Add(1)
-	go bs.tickDriver.run(bs.closeCh, bs.wg) // TODO: temp workaround.
 }
 
 func (bs *raftBatchSystem) shutDown() {
@@ -473,10 +468,9 @@ func createRaftBatchSystem(cfg *Config) (*router, *raftBatchSystem) {
 	storeSender, storeFsm := newStoreFsm(cfg)
 	router := newRouter(storeSender, storeFsm)
 	raftBatchSystem := &raftBatchSystem{
-		router:     router,
-		tickDriver: newTickDriver(cfg.RaftBaseTickInterval, router, storeFsm.ticker),
-		closeCh:    make(chan struct{}),
-		wg:         new(sync.WaitGroup),
+		router:  router,
+		closeCh: make(chan struct{}),
+		wg:      new(sync.WaitGroup),
 	}
 	return router, raftBatchSystem
 }
