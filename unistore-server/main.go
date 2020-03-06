@@ -320,6 +320,7 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) *b
 	opts.NumMemtables = conf.NumMemTables
 	opts.NumLevelZeroTables = conf.NumL0Tables
 	opts.NumLevelZeroTablesStall = conf.NumL0TablesStall
+	opts.LevelOneSize = 512 * 1024 * 1024
 	opts.SyncWrites = conf.SyncWrite
 	compressionPerLevel := make([]options.CompressionType, len(conf.Compression))
 	for i := range opts.TableBuilderOptions.CompressionPerLevel {

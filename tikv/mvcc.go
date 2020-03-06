@@ -279,6 +279,10 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 	}
 	if req.ReturnValues {
 		for _, item := range items {
+			if item == nil {
+				resp.Values = append(resp.Values, nil)
+				continue
+			}
 			val, err1 := item.Value()
 			if err1 != nil {
 				return nil, err1
@@ -1113,6 +1117,30 @@ func (store *MVCCStore) DeleteFileInRange(start, end []byte) {
 	start[0]++
 	end[0]++
 	store.db.DeleteFilesInRange(start, end)
+}
+
+func (store *MVCCStore) BatchGet(reqCtx *requestCtx, keys [][]byte, version uint64) []*kvrpcpb.KvPair {
+	pairs := make([]*kvrpcpb.KvPair, 0, len(keys))
+	remain := make([][]byte, 0, len(keys))
+	for _, key := range keys {
+		err := store.CheckKeysLock(version, key)
+		if err != nil {
+			pairs = append(pairs, &kvrpcpb.KvPair{Key: key, Error: convertToKeyError(err)})
+		} else {
+			remain = append(remain, key)
+		}
+	}
+	batchGetFunc := func(key, value []byte, err error) {
+		if len(value) != 0 {
+			pairs = append(pairs, &kvrpcpb.KvPair{
+				Key:   safeCopy(key),
+				Value: safeCopy(value),
+				Error: convertToKeyError(err),
+			})
+		}
+	}
+	reqCtx.getDBReader().BatchGet(remain, version, batchGetFunc)
+	return pairs
 }
 
 type SafePoint struct {
