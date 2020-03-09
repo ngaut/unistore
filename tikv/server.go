@@ -628,7 +628,7 @@ func (svr *Server) CheckLockObserver(context.Context, *kvrpcpb.CheckLockObserver
 	panic("implement me")
 }
 
-func (svr *Server) PhysicalScanLock(*kvrpcpb.PhysicalScanLockRequest, tikvpb.Tikv_PhysicalScanLockServer) error {
+func (svr *Server) PhysicalScanLock(context.Context, *kvrpcpb.PhysicalScanLockRequest) (*kvrpcpb.PhysicalScanLockResponse, error) {
 	panic("implement me")
 }
 
