@@ -1388,3 +1388,14 @@ func (s *testMvccSuite) TestBatchGet(c *C) {
 	c.Assert(string(pairs[1].Value), Equals, "2")
 	c.Assert(string(pairs[2].Value), Equals, "3")
 }
+
+func (s *testMvccSuite) TestCommitPessimisticLock(c *C) {
+	store, err := NewTestStore("TestCommitPessimistic", "TestCommitPessimistic", c)
+	c.Assert(err, IsNil)
+	defer CleanTestStore(store)
+	k := []byte("ta")
+	MustAcquirePessimisticLock(k, k, 10, 10, store)
+	MustCommitErr(k, 20, 30, store)
+	MustCommit(k, 10, 20, store)
+	MustGet(k, 30, store)
+}

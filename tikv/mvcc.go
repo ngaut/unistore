@@ -705,11 +705,6 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 				key, startTS, lock, lockErr)
 			return lockErr
 		}
-		if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
-			return &ErrCommitPessimisticLock{
-				key: key,
-			}
-		}
 		if commitTS < lock.MinCommitTS {
 			log.Infof("trying to commit with smaller commitTs=%v than minCommitTs=%v, key=%v",
 				commitTS, lock.MinCommitTS, key)
@@ -719,6 +714,10 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 				MinCommitTs: lock.MinCommitTS,
 				Key:         key,
 			}
+		}
+		if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
+			log.Warnf("commit a pessimistic lock with Lock type key=%v, startTS=%v, commitTS=%v", key, startTS, commitTS)
+			lock.Op = uint8(kvrpcpb.Op_Lock)
 		}
 		isPessimisticTxn = lock.ForUpdateTS > 0
 		tmpDiff += len(key) + len(lock.Value)
