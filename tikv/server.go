@@ -699,10 +699,6 @@ func convertToKeyError(err error) *kvrpcpb.KeyError {
 				PrimaryKey: x.PrimaryKey,
 			},
 		}
-	case *ErrCommitPessimisticLock:
-		return &kvrpcpb.KeyError{
-			Abort: x.Error(),
-		}
 	default:
 		return &kvrpcpb.KeyError{
 			Abort: err.Error(),
