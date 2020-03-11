@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/coocood/badger"
+	"github.com/coocood/badger/y"
 	"github.com/cznic/mathutil"
 	"github.com/golang/protobuf/proto"
 	"github.com/ngaut/unistore/lockstore"
@@ -165,17 +166,17 @@ func (wb *WriteBatch) Len() int {
 	return len(wb.entries) + len(wb.lockEntries)
 }
 
-func (wb *WriteBatch) Set(key, val []byte) {
+func (wb *WriteBatch) Set(key y.Key, val []byte) {
 	wb.entries = append(wb.entries, &badger.Entry{
 		Key:   key,
 		Value: val,
 	})
-	wb.size += len(key) + len(val)
+	wb.size += key.Len() + len(val)
 }
 
 func (wb *WriteBatch) SetLock(key, val []byte) {
 	wb.lockEntries = append(wb.lockEntries, &badger.Entry{
-		Key:      key,
+		Key:      y.KeyWithTs(key, 0),
 		Value:    val,
 		UserMeta: mvcc.LockUserMetaNone,
 	})
@@ -183,35 +184,45 @@ func (wb *WriteBatch) SetLock(key, val []byte) {
 
 func (wb *WriteBatch) DeleteLock(key []byte) {
 	wb.lockEntries = append(wb.lockEntries, &badger.Entry{
-		Key:      key,
+		Key:      y.KeyWithTs(key, 0),
 		UserMeta: mvcc.LockUserMetaDelete,
 	})
 }
 
 func (wb *WriteBatch) Rollback(key []byte) {
 	wb.lockEntries = append(wb.lockEntries, &badger.Entry{
-		Key:      key,
+		Key:      y.KeyWithTs(key, 0),
 		UserMeta: mvcc.LockUserMetaRollback,
 	})
 }
 
-func (wb *WriteBatch) SetWithUserMeta(key, val, useMeta []byte) {
+func (wb *WriteBatch) SetWithUserMeta(key y.Key, val, useMeta []byte) {
 	wb.entries = append(wb.entries, &badger.Entry{
 		Key:      key,
 		Value:    val,
 		UserMeta: useMeta,
 	})
-	wb.size += len(key) + len(val) + len(useMeta)
+	wb.size += key.Len() + len(val) + len(useMeta)
 }
 
-func (wb *WriteBatch) Delete(key []byte) {
+func (wb *WriteBatch) SetOpLock(key y.Key, useMeta []byte) {
+	e := &badger.Entry{
+		Key:      key,
+		UserMeta: useMeta,
+	}
+	e.SetHidden()
+	wb.entries = append(wb.entries, e)
+	wb.size += key.Len() + len(useMeta)
+}
+
+func (wb *WriteBatch) Delete(key y.Key) {
 	wb.entries = append(wb.entries, &badger.Entry{
 		Key: key,
 	})
-	wb.size += len(key)
+	wb.size += key.Len()
 }
 
-func (wb *WriteBatch) SetMsg(key []byte, msg proto.Message) error {
+func (wb *WriteBatch) SetMsg(key y.Key, msg proto.Message) error {
 	val, err := proto.Marshal(msg)
 	if err != nil {
 		return errors.WithStack(err)
@@ -240,12 +251,10 @@ func (wb *WriteBatch) WriteToKV(bundle *mvcc.DBBundle) error {
 		start := time.Now()
 		err := bundle.DB.Update(func(txn *badger.Txn) error {
 			for _, entry := range wb.entries {
-				var err1 error
 				if len(entry.UserMeta) == 0 && len(entry.Value) == 0 {
-					err1 = txn.Delete(entry.Key)
-				} else {
-					err1 = txn.SetEntry(entry)
+					entry.SetDelete()
 				}
+				err1 := txn.SetEntry(entry)
 				if err1 != nil {
 					return err1
 				}
@@ -264,13 +273,13 @@ func (wb *WriteBatch) WriteToKV(bundle *mvcc.DBBundle) error {
 		for _, entry := range wb.lockEntries {
 			switch entry.UserMeta[0] {
 			case mvcc.LockUserMetaRollbackByte:
-				bundle.RollbackStore.Put(entry.Key, []byte{0})
+				bundle.RollbackStore.Put(entry.Key.UserKey, []byte{0})
 			case mvcc.LockUserMetaDeleteByte:
-				bundle.LockStore.DeleteWithHint(entry.Key, hint)
+				bundle.LockStore.DeleteWithHint(entry.Key.UserKey, hint)
 			case mvcc.LockUserMetaRollbackGCByte:
-				bundle.RollbackStore.Delete(entry.Key)
+				bundle.RollbackStore.Delete(entry.Key.UserKey)
 			default:
-				bundle.LockStore.PutWithHint(entry.Key, entry.Value, hint)
+				bundle.LockStore.PutWithHint(entry.Key.UserKey, entry.Value, hint)
 			}
 		}
 		bundle.MemStoreMu.Unlock()
@@ -283,13 +292,11 @@ func (wb *WriteBatch) WriteToRaft(db *badger.DB) error {
 	if len(wb.entries) > 0 {
 		start := time.Now()
 		err := db.Update(func(txn *badger.Txn) error {
-			var err1 error
 			for _, entry := range wb.entries {
 				if len(entry.Value) == 0 {
-					err1 = txn.Delete(entry.Key)
-				} else {
-					err1 = txn.SetEntry(entry)
+					entry.SetDelete()
 				}
+				err1 := txn.SetEntry(entry)
 				if err1 != nil {
 					return err1
 				}
@@ -342,13 +349,10 @@ const maxSystemTS = math.MaxUint64
 
 func deleteRange(db *mvcc.DBBundle, startKey, endKey []byte) error {
 	// Delete keys first.
-	keys := make([][]byte, 0, delRangeBatchSize)
-	oldStartKey := mvcc.EncodeOldKey(startKey, maxSystemTS)
-	oldEndKey := mvcc.EncodeOldKey(endKey, maxSystemTS)
+	keys := make([]y.Key, 0, delRangeBatchSize)
 	txn := db.DB.NewTransaction(false)
 	reader := dbreader.NewDBReader(startKey, endKey, txn, 0)
 	keys = collectRangeKeys(reader.GetIter(), startKey, endKey, keys)
-	keys = collectRangeKeys(reader.GetIter(), oldStartKey, oldEndKey, keys)
 	reader.Close()
 	if err := deleteKeysInBatch(db, keys, delRangeBatchSize); err != nil {
 		return err
@@ -361,7 +365,7 @@ func deleteRange(db *mvcc.DBBundle, startKey, endKey []byte) error {
 	return deleteLocksInBatch(db, keys, delRangeBatchSize)
 }
 
-func collectRangeKeys(it *badger.Iterator, startKey, endKey []byte, keys [][]byte) [][]byte {
+func collectRangeKeys(it *badger.Iterator, startKey, endKey []byte, keys []y.Key) []y.Key {
 	if len(endKey) == 0 {
 		panic("invalid end key")
 	}
@@ -371,12 +375,12 @@ func collectRangeKeys(it *badger.Iterator, startKey, endKey []byte, keys [][]byt
 		if exceedEndKey(key, endKey) {
 			break
 		}
-		keys = append(keys, key)
+		keys = append(keys, y.KeyWithTs(key, item.Version()))
 	}
 	return keys
 }
 
-func collectLockRangeKeys(it *lockstore.Iterator, startKey, endKey []byte, keys [][]byte) [][]byte {
+func collectLockRangeKeys(it *lockstore.Iterator, startKey, endKey []byte, keys []y.Key) []y.Key {
 	if len(endKey) == 0 {
 		panic("invalid end key")
 	}
@@ -385,18 +389,19 @@ func collectLockRangeKeys(it *lockstore.Iterator, startKey, endKey []byte, keys 
 		if exceedEndKey(key, endKey) {
 			break
 		}
-		keys = append(keys, key)
+		keys = append(keys, y.KeyWithTs(key, 0))
 	}
 	return keys
 }
 
-func deleteKeysInBatch(db *mvcc.DBBundle, keys [][]byte, batchSize int) error {
+func deleteKeysInBatch(db *mvcc.DBBundle, keys []y.Key, batchSize int) error {
 	for len(keys) > 0 {
 		batchSize := mathutil.Min(len(keys), batchSize)
 		batchKeys := keys[:batchSize]
 		keys = keys[batchSize:]
 		dbBatch := new(WriteBatch)
 		for _, key := range batchKeys {
+			key.Version++
 			dbBatch.Delete(key)
 		}
 		if err := dbBatch.WriteToKV(db); err != nil {
@@ -406,14 +411,14 @@ func deleteKeysInBatch(db *mvcc.DBBundle, keys [][]byte, batchSize int) error {
 	return nil
 }
 
-func deleteLocksInBatch(db *mvcc.DBBundle, keys [][]byte, batchSize int) error {
+func deleteLocksInBatch(db *mvcc.DBBundle, keys []y.Key, batchSize int) error {
 	for len(keys) > 0 {
 		batchSize := mathutil.Min(len(keys), batchSize)
 		batchKeys := keys[:batchSize]
 		keys = keys[batchSize:]
 		dbBatch := new(WriteBatch)
 		for _, key := range batchKeys {
-			dbBatch.DeleteLock(key)
+			dbBatch.DeleteLock(key.UserKey)
 		}
 		if err := dbBatch.WriteToKV(db); err != nil {
 			return err

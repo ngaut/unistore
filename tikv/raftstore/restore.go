@@ -17,7 +17,6 @@ import (
 	"encoding/binary"
 
 	"github.com/coocood/badger"
-	"github.com/coocood/badger/y"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/mvcc"
@@ -37,11 +36,10 @@ func RestoreLockStore(offset uint64, bundle *mvcc.DBBundle, raftDB *badger.DB) e
 		if err != nil {
 			return
 		}
-		key := y.ParseKey(e.Key)
-		if !isRaftLogKey(key) {
+		if !isRaftLogKey(e.Key.UserKey) {
 			return
 		}
-		applied, err := isRaftLogApplied(key, appliedIndices, txn)
+		applied, err := isRaftLogApplied(e.Key.UserKey, appliedIndices, txn)
 		if err != nil {
 			return
 		}

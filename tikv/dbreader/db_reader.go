@@ -65,111 +65,53 @@ type DBReader struct {
 	txn       *badger.Txn
 	iter      *badger.Iterator
 	revIter   *badger.Iterator
-	oldIter   *badger.Iterator
 	safePoint uint64
 }
 
 // GetMvccInfoByKey fills MvccInfo reading committed keys from db
 func (r *DBReader) GetMvccInfoByKey(key []byte, isRowKey bool, mvccInfo *kvrpcpb.MvccInfo) error {
-	err := r.getKeyWithMeta(key, isRowKey, uint64(math.MaxUint64), mvccInfo)
-	if err != nil {
-		return err
-	}
-	if len(mvccInfo.Writes) > 0 {
-		oldKey := mvcc.EncodeOldKey(key, mvccInfo.Writes[0].CommitTs)
-		err = r.getOldKeysWithMeta(oldKey, isRowKey, mvccInfo)
+	r.txn.SetReadHidden(true)
+	it := r.GetIter()
+	it.SetAllVersions(true)
+	for it.Seek(key); it.Valid(); it.Next() {
+		item := it.Item()
+		if !bytes.Equal(item.Key(), key) {
+			break
+		}
+		var val []byte
+		val, err := item.ValueCopy(nil)
 		if err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-// getKeyWithMeta will try to get current key without looking for historical version
-func (r *DBReader) getKeyWithMeta(key []byte, isRowKey bool, startTs uint64, mvccInfo *kvrpcpb.MvccInfo) error {
-	item, err := r.txn.Get(key)
-	if err != nil && err != badger.ErrKeyNotFound {
-		return errors.Trace(err)
-	}
-	if err == badger.ErrKeyNotFound {
-		return nil
-	}
-	dbUsrMeta := mvcc.DBUserMeta(item.UserMeta())
-	if dbUsrMeta.CommitTS() <= startTs {
-		var val []byte
-		if isRowKey {
-			val, err = item.Value()
-			if err != nil {
-				return err
-			}
+		userMeta := mvcc.DBUserMeta(item.UserMeta())
+		var tp kvrpcpb.Op
+		if item.IsHidden() {
+			tp = kvrpcpb.Op_Lock
+		} else if len(val) == 0 {
+			tp = kvrpcpb.Op_Del
 		} else {
-			val, err = item.ValueCopy(nil)
-			if err != nil {
-				return err
-			}
+			tp = kvrpcpb.Op_Put
 		}
-		curRecord := &kvrpcpb.MvccWrite{
-			Type:       kvrpcpb.Op_Put,
-			StartTs:    dbUsrMeta.StartTS(),
-			CommitTs:   dbUsrMeta.CommitTS(),
+		mvccInfo.Writes = append(mvccInfo.Writes, &kvrpcpb.MvccWrite{
+			Type:       tp,
+			StartTs:    userMeta.StartTS(),
+			CommitTs:   userMeta.CommitTS(),
 			ShortValue: val,
-		}
-		mvccInfo.Writes = append(mvccInfo.Writes, curRecord)
+		})
 	}
-	return nil
-}
-
-// getOldKeysWithMeta will try to fill mvccInfo with all the historical committed records
-// the oldKey should be in old-key encoded format
-func (r *DBReader) getOldKeysWithMeta(oldKey []byte, isRowKey bool, mvccInfo *kvrpcpb.MvccInfo) error {
-	oldIter := r.GetOldIter()
-	for oldIter.Seek(oldKey); oldIter.ValidForPrefix(oldKey[:len(oldKey)-8]); oldIter.Next() {
-		item := oldIter.Item()
-		oldUsrMeta := mvcc.OldUserMeta(item.UserMeta())
-		commitTs, err := mvcc.DecodeOldKeyCommitTs(item.Key())
-		if err != nil {
-			return err
-		}
-		var val []byte
-		if isRowKey {
-			val, err = item.Value()
-			if err != nil {
-				return err
-			}
-		} else {
-			val, err = item.ValueCopy(nil)
-			if err != nil {
-				return err
-			}
-		}
-		curRecord := &kvrpcpb.MvccWrite{
-			Type:       kvrpcpb.Op_Put,
-			StartTs:    oldUsrMeta.StartTS(),
-			CommitTs:   commitTs,
-			ShortValue: val,
-		}
-		mvccInfo.Writes = append(mvccInfo.Writes, curRecord)
-	}
-
 	return nil
 }
 
 func (r *DBReader) Get(key []byte, startTS uint64) ([]byte, error) {
+	r.txn.SetReadTS(startTS)
 	item, err := r.txn.Get(key)
 	if err != nil && err != badger.ErrKeyNotFound {
 		return nil, errors.Trace(err)
 	}
-	if err == badger.ErrKeyNotFound {
+	if item == nil {
 		return nil, nil
 	}
-	if mvcc.DBUserMeta(item.UserMeta()).CommitTS() <= startTS {
-		return item.Value()
-	}
-	item = r.getOldItem(key, startTS)
-	if item != nil && !item.IsEmpty() {
-		return item.Value()
-	}
-	return nil, nil
+	return item.Value()
 }
 
 func (r *DBReader) GetIter() *badger.Iterator {
@@ -186,24 +128,10 @@ func (r *DBReader) getReverseIter() *badger.Iterator {
 	return r.revIter
 }
 
-func (r *DBReader) GetOldIter() *badger.Iterator {
-	if r.oldIter == nil {
-		oldStartKey := append([]byte{}, r.startKey...)
-		if len(oldStartKey) > 0 {
-			oldStartKey[0]++
-		}
-		oldEndKey := append([]byte{}, r.endKey...)
-		if len(oldEndKey) > 0 {
-			oldEndKey[0]++
-		}
-		r.oldIter = NewIterator(r.txn, false, oldStartKey, oldEndKey)
-	}
-	return r.oldIter
-}
-
 type BatchGetFunc = func(key, value []byte, err error)
 
 func (r *DBReader) BatchGet(keys [][]byte, startTS uint64, f BatchGetFunc) {
+	r.txn.SetReadTS(startTS)
 	items, err := r.txn.MultiGet(keys)
 	if err != nil {
 		for _, key := range keys {
@@ -215,14 +143,7 @@ func (r *DBReader) BatchGet(keys [][]byte, startTS uint64, f BatchGetFunc) {
 		key := keys[i]
 		var val []byte
 		if item != nil {
-			if mvcc.DBUserMeta(item.UserMeta()).CommitTS() <= startTS {
-				val, err = item.Value()
-			} else {
-				item = r.getOldItem(keys[i], startTS)
-				if item != nil && !item.IsEmpty() {
-					val, err = item.Value()
-				}
-			}
+			val, err = item.Value()
 		}
 		f(key, val, err)
 	}
@@ -259,12 +180,6 @@ func (r *DBReader) Scan(startKey, endKey []byte, limit int, startTS uint64, proc
 			break
 		}
 		var err error
-		if mvcc.DBUserMeta(item.UserMeta()).CommitTS() > startTS {
-			item = r.getOldItem(key, startTS)
-			if item == nil {
-				continue
-			}
-		}
 		if item.IsEmpty() {
 			continue
 		}
@@ -291,7 +206,9 @@ func (r *DBReader) Scan(startKey, endKey []byte, limit int, startTS uint64, proc
 }
 
 func (r *DBReader) GetKeyByStartTs(startKey, endKey []byte, startTs uint64) ([]byte, error) {
+	r.txn.SetReadHidden(true)
 	iter := r.GetIter()
+	iter.SetAllVersions(true)
 	for iter.Seek(startKey); iter.Valid(); iter.Next() {
 		curItem := iter.Item()
 		curKey := curItem.Key()
@@ -303,54 +220,14 @@ func (r *DBReader) GetKeyByStartTs(startKey, endKey []byte, startTs uint64) ([]b
 			return curItem.KeyCopy(nil), nil
 		}
 	}
-	oldIter := r.GetOldIter()
-	oldStartKey := append([]byte{}, startKey...)
-	oldStartKey[0]++
-	oldEndKey := append([]byte{}, endKey...)
-	oldEndKey[0]++
-	for oldIter.Seek(oldStartKey); oldIter.Valid(); oldIter.Next() {
-		curItem := oldIter.Item()
-		oldKey := curItem.Key()
-		if bytes.Compare(oldKey, oldEndKey) >= 0 {
-			break
-		}
-		oldMeta := mvcc.OldUserMeta(curItem.UserMeta())
-		if oldMeta.StartTS() == startTs {
-			rawKey, _, err := mvcc.DecodeOldKey(oldKey)
-			if err != nil {
-				return nil, err
-			}
-			return rawKey, nil
-		}
-	}
 	return nil, nil
-}
-
-func (r *DBReader) getOldItem(key []byte, startTS uint64) *badger.Item {
-	oldKey := mvcc.EncodeOldKey(key, startTS)
-	oldIter := r.GetOldIter()
-	oldIter.Seek(oldKey)
-	for oldIter.ValidForPrefix(oldKey[:len(oldKey)-8]) {
-		item := oldIter.Item()
-		nextCommitTS := mvcc.OldUserMeta(item.UserMeta()).NextCommitTS()
-		if nextCommitTS < r.safePoint {
-			// Ignore the obsolete version.
-			return nil
-		}
-		if nextCommitTS == mvcc.DecodeKeyTS(item.Key()) {
-			// Ignore Op_Lock old entry.
-			oldIter.Next()
-			continue
-		}
-		return item
-	}
-	return nil
 }
 
 // ReverseScan implements the MVCCStore interface. The search range is [startKey, endKey).
 func (r *DBReader) ReverseScan(startKey, endKey []byte, limit int, startTS uint64, proc ScanProcessor) error {
 	skipValue := proc.SkipValue()
 	iter := r.getReverseIter()
+	r.txn.SetReadTS(startTS)
 	var cnt int
 	for iter.Seek(endKey); iter.Valid(); iter.Next() {
 		item := iter.Item()
@@ -362,12 +239,6 @@ func (r *DBReader) ReverseScan(startKey, endKey []byte, limit int, startTS uint6
 			continue
 		}
 		var err error
-		if mvcc.DBUserMeta(item.UserMeta()).CommitTS() > startTS {
-			item = r.getOldItem(key, startTS)
-			if item == nil {
-				continue
-			}
-		}
 		if item.IsEmpty() {
 			continue
 		}
@@ -400,9 +271,6 @@ func (r *DBReader) GetTxn() *badger.Txn {
 func (r *DBReader) Close() {
 	if r.iter != nil {
 		r.iter.Close()
-	}
-	if r.oldIter != nil {
-		r.oldIter.Close()
 	}
 	if r.revIter != nil {
 		r.revIter.Close()

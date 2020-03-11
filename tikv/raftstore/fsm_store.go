@@ -271,6 +271,10 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 			if localState.State == rspb.PeerState_Applying {
 				// in case of restart happen when we just write region state to Applying,
 				// but not write raft_local_state to raft rocksdb in time.
+				err = recoverFromApplyingState(ctx.engine, raftWB, regionID)
+				if err != nil {
+					return errors.WithStack(err)
+				}
 				applyingCount++
 				applyingRegions = append(applyingRegions, region)
 				continue
@@ -335,7 +339,7 @@ func (bs *raftBatchSystem) clearStaleMeta(kvWB, raftWB *WriteBatch, originState 
 	if err != nil {
 		panic(err)
 	}
-	key := RegionStateKey(region.Id)
+	key := y.KeyWithTs(RegionStateKey(region.Id), KvTS)
 	if err := kvWB.SetMsg(key, originState); err != nil {
 		panic(err)
 	}

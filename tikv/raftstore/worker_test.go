@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/coocood/badger"
+	"github.com/coocood/badger/y"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -136,8 +137,8 @@ func TestPendingApplies(t *testing.T) {
 	keys := []byte{1, 2, 3, 4, 5, 6}
 	for _, k := range keys {
 		require.Nil(t, db.DB.Update(func(txn *badger.Txn) error {
-			require.Nil(t, txn.Set([]byte{k}, []byte{k}))
-			require.Nil(t, txn.Set([]byte{k + 1}, []byte{k + 1}))
+			require.Nil(t, txn.SetEntry(&badger.Entry{Key: y.KeyWithTs([]byte{k}, KvTS), Value: []byte{k}}))
+			require.Nil(t, txn.SetEntry(&badger.Entry{Key: y.KeyWithTs([]byte{k + 1}, KvTS), Value: []byte{k + 1}}))
 			// todo, there might be flush method needed.
 			// todo, test also test level 0 files, we add later when badger export level 0 files api.
 			return nil
@@ -187,7 +188,7 @@ func TestPendingApplies(t *testing.T) {
 		regionLocalState, err := getRegionLocalState(engines.kv.DB, regionId)
 		require.Nil(t, err)
 		regionLocalState.State = rspb.PeerState_Applying
-		require.Nil(t, wb.SetMsg(RegionStateKey(regionId), regionLocalState))
+		require.Nil(t, wb.SetMsg(y.KeyWithTs(RegionStateKey(regionId), KvTS), regionLocalState))
 		require.Nil(t, wb.WriteToKV(engines.kv))
 
 		// apply snapshot
@@ -275,7 +276,7 @@ func TestGcRaftLog(t *testing.T) {
 	raftWb := new(WriteBatch)
 	for i := uint64(0); i < 100; i++ {
 		k := RaftLogKey(regionId, i)
-		raftWb.Set(k, []byte("entry"))
+		raftWb.Set(y.KeyWithTs(k, RaftTS), []byte("entry"))
 	}
 	raftWb.WriteToRaft(raftDb)
 

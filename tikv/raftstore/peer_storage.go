@@ -196,12 +196,12 @@ func (ic *InvokeContext) hasSnapshot() bool {
 }
 
 func (ic *InvokeContext) saveRaftStateTo(wb *WriteBatch) {
-	key := RaftStateKey(ic.RegionID)
+	key := y.KeyWithTs(RaftStateKey(ic.RegionID), RaftTS)
 	wb.Set(key, ic.RaftState.Marshal())
 }
 
 func (ic *InvokeContext) saveApplyStateTo(wb *WriteBatch) {
-	key := ApplyStateKey(ic.RegionID)
+	key := y.KeyWithTs(ApplyStateKey(ic.RegionID), KvTS)
 	wb.Set(key, ic.ApplyState.Marshal())
 }
 
@@ -209,7 +209,7 @@ func (ic *InvokeContext) saveSnapshotRaftStateTo(snapshotIdx uint64, wb *WriteBa
 	snapshotRaftState := ic.RaftState
 	snapshotRaftState.commit = snapshotIdx
 	snapshotRaftState.lastIndex = snapshotIdx
-	key := SnapshotRaftStateKey(ic.RegionID)
+	key := y.KeyWithTs(SnapshotRaftStateKey(ic.RegionID), KvTS)
 	wb.Set(key, snapshotRaftState.Marshal())
 }
 
@@ -224,7 +224,7 @@ func recoverFromApplyingState(engines *Engines, raftWB *WriteBatch, regionID uin
 
 	raftStateKey := RaftStateKey(regionID)
 	raftState := raftState{}
-	val, err = getValue(engines.kv.DB, raftStateKey)
+	val, err = getValue(engines.raft, raftStateKey)
 	if err != nil && err != badger.ErrKeyNotFound {
 		return errors.WithStack(err)
 	}
@@ -237,7 +237,7 @@ func recoverFromApplyingState(engines *Engines, raftWB *WriteBatch, regionID uin
 	// (snapshot_raft_state), and set snapshot_raft_state.last_index = snapshot_index.
 	// after restart, we need check last_index.
 	if snapRaftState.lastIndex > raftState.lastIndex {
-		raftWB.Set(raftStateKey, snapRaftState.Marshal())
+		raftWB.Set(y.KeyWithTs(raftStateKey, RaftTS), snapRaftState.Marshal())
 	}
 	return nil
 }
@@ -369,6 +369,12 @@ func putMsg(engine *badger.DB, key []byte, msg proto.Message) error {
 
 func putValue(engine *badger.DB, key, val []byte) error {
 	return engine.Update(func(txn *badger.Txn) error {
+		if engine.IsManaged() {
+			return txn.SetEntry(&badger.Entry{
+				Key:   y.KeyWithTs(key, KvTS),
+				Value: val,
+			})
+		}
 		return txn.Set(key, val)
 	})
 }
@@ -640,14 +646,14 @@ func (ps *PeerStorage) Append(invokeCtx *InvokeContext, entries []eraftpb.Entry,
 	lastIndex := lastEntry.Index
 	lastTerm := lastEntry.Term
 	for _, entry := range entries {
-		err := raftWB.SetMsg(RaftLogKey(ps.region.Id, entry.Index), &entry)
+		err := raftWB.SetMsg(y.KeyWithTs(RaftLogKey(ps.region.Id, entry.Index), RaftTS), &entry)
 		if err != nil {
 			return err
 		}
 	}
 	// Delete any previously appended log entries which never committed.
 	for i := lastIndex + 1; i <= prevLastIndex; i++ {
-		raftWB.Delete(RaftLogKey(ps.region.Id, i))
+		raftWB.Delete(y.KeyWithTs(RaftLogKey(ps.region.Id, i), RaftTS))
 	}
 	invokeCtx.RaftState.lastIndex = lastIndex
 	invokeCtx.lastTerm = lastTerm
@@ -806,8 +812,8 @@ func fetchEntriesTo(engine *badger.DB, regionID, low, high, maxSize uint64, buf 
 
 func ClearMeta(engines *Engines, kvWB, raftWB *WriteBatch, regionID uint64, lastIndex uint64) error {
 	start := time.Now()
-	kvWB.Delete(RegionStateKey(regionID))
-	kvWB.Delete(ApplyStateKey(regionID))
+	kvWB.Delete(y.KeyWithTs(RegionStateKey(regionID), KvTS))
+	kvWB.Delete(y.KeyWithTs(ApplyStateKey(regionID), KvTS))
 
 	firstIndex := lastIndex + 1
 	beginLogKey := RaftLogKey(regionID, 0)
@@ -829,9 +835,9 @@ func ClearMeta(engines *Engines, kvWB, raftWB *WriteBatch, regionID uint64, last
 		return err
 	}
 	for i := firstIndex; i <= lastIndex; i++ {
-		raftWB.Delete(RaftLogKey(regionID, i))
+		raftWB.Delete(y.KeyWithTs(RaftLogKey(regionID, i), RaftTS))
 	}
-	raftWB.Delete(RaftStateKey(regionID))
+	raftWB.Delete(y.KeyWithTs(RaftStateKey(regionID), RaftTS))
 	log.Infof(
 		"[region %d] clear peer 1 meta key 1 apply key 1 raft key and %d raft logs, takes %v",
 		regionID,
@@ -850,7 +856,7 @@ func WritePeerState(kvWB *WriteBatch, region *metapb.Region, state rspb.PeerStat
 		regionState.MergeState = mergeState
 	}
 	data, _ := regionState.Marshal()
-	kvWB.Set(RegionStateKey(regionID), data)
+	kvWB.Set(y.KeyWithTs(RegionStateKey(regionID), KvTS), data)
 }
 
 // Apply the peer with given snapshot.

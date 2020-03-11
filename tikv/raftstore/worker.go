@@ -667,7 +667,7 @@ func (snapCtx *snapContext) cleanUpOriginData(regionState *rspb.RegionLocalState
 }
 
 // applySnap applies snapshot data of the Region.
-func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builder, oldBuilder *table.Builder) (ApplyResult, error) {
+func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builder *table.Builder) (ApplyResult, error) {
 	log.Infof("begin apply snap data. [regionId: %d]", regionId)
 	var result ApplyResult
 	if err := checkAbort(status); err != nil {
@@ -699,7 +699,7 @@ func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builde
 	}
 
 	t := time.Now()
-	applyOptions := newApplyOptions(snapCtx.engiens.kv, regionState.GetRegion(), status, builder, oldBuilder)
+	applyOptions := newApplyOptions(snapCtx.engiens.kv, regionState.GetRegion(), status, builder)
 	if result, err = snap.Apply(*applyOptions); err != nil {
 		return result, err
 	}
@@ -712,9 +712,9 @@ func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builde
 }
 
 // handleApply tries to apply the snapshot of the specified Region. It calls `applySnap` to do the actual work.
-func (snapCtx *snapContext) handleApply(regionId uint64, status *JobStatus, builder, oldBuilder *table.Builder) (ApplyResult, error) {
+func (snapCtx *snapContext) handleApply(regionId uint64, status *JobStatus, builder *table.Builder) (ApplyResult, error) {
 	atomic.CompareAndSwapUint32(status, JobStatus_Pending, JobStatus_Running)
-	result, err := snapCtx.applySnap(regionId, status, builder, oldBuilder)
+	result, err := snapCtx.applySnap(regionId, status, builder)
 	switch err.(type) {
 	case nil:
 		atomic.SwapUint32(status, JobStatus_Finished)
@@ -791,10 +791,8 @@ type regionTaskHandler struct {
 	// pending_applies records all delayed apply task, and will check again later
 	pendingApplies []task
 
-	builderFile    *os.File
-	builder        *table.Builder
-	oldBuilderFile *os.File
-	oldBuilder     *table.Builder
+	builderFile *os.File
+	builder     *table.Builder
 
 	tableFiles  []*os.File
 	applyStates []regionApplyState
@@ -826,17 +824,9 @@ func (r *regionTaskHandler) resetBuilder() error {
 	compressionType := config.ParseCompression(config.GetGlobalConf().Engine.IngestCompression)
 	if r.builder == nil {
 		r.builder = r.ctx.engiens.kv.DB.NewExternalTableBuilder(r.builderFile, compressionType, r.ctx.mgr.limiter)
+		r.builder.SetIsManaged()
 	} else {
 		r.builder.Reset(r.builderFile)
-	}
-
-	if r.oldBuilderFile, err = r.tempFile(); err != nil {
-		return err
-	}
-	if r.oldBuilder == nil {
-		r.oldBuilder = r.ctx.engiens.kv.DB.NewExternalTableBuilder(r.oldBuilderFile, compressionType, r.ctx.mgr.limiter)
-	} else {
-		r.oldBuilder.Reset(r.oldBuilderFile)
 	}
 
 	return nil
@@ -851,22 +841,10 @@ func (r *regionTaskHandler) handleApplyResult(result ApplyResult) error {
 		os.Remove(r.builderFile.Name())
 	}
 
-	if result.HasOldPut {
-		if err := r.oldBuilder.Finish(); err != nil {
-			return err
-		}
-	} else {
-		os.Remove(r.oldBuilderFile.Name())
-	}
-
 	state := regionApplyState{localState: result.RegionState}
 	if result.HasPut {
 		state.tableCount++
 		r.tableFiles = append(r.tableFiles, r.builderFile)
-	}
-	if result.HasOldPut {
-		state.tableCount++
-		r.tableFiles = append(r.tableFiles, r.oldBuilderFile)
 	}
 	r.applyStates = append(r.applyStates, state)
 
@@ -894,8 +872,8 @@ func (r *regionTaskHandler) finishApply() error {
 		cnt += state.tableCount
 		rs := state.localState
 		regionID := rs.Region.Id
-		wb.SetMsg(RegionStateKey(regionID), rs)
-		wb.Delete(SnapshotRaftStateKey(regionID))
+		wb.SetMsg(y.KeyWithTs(RegionStateKey(regionID), KvTS), rs)
+		wb.Delete(y.KeyWithTs(SnapshotRaftStateKey(regionID), KvTS))
 	}
 
 	if err := wb.WriteToKV(r.ctx.engiens.kv); err != nil {
@@ -929,7 +907,7 @@ func (r *regionTaskHandler) handlePendingApplies() {
 		}
 
 		task := apply.data.(*regionTask)
-		result, err := r.ctx.handleApply(task.regionId, task.status, r.builder, r.oldBuilder)
+		result, err := r.ctx.handleApply(task.regionId, task.status, r.builder)
 		if err != nil {
 			log.Error(err)
 			continue
@@ -1010,7 +988,7 @@ func (r *raftLogGCTaskHandler) gcRaftLog(raftDb *badger.DB, regionId, startIdx, 
 
 	raftWb := WriteBatch{}
 	for idx := firstIdx; idx < endIdx; idx += 1 {
-		key := RaftLogKey(regionId, idx)
+		key := y.KeyWithTs(RaftLogKey(regionId, idx), RaftTS)
 		raftWb.Delete(key)
 		if raftWb.size >= MaxDeleteBatchSize {
 			// Avoid large write batch to reduce latency.

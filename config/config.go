@@ -54,10 +54,11 @@ type Coprocessor struct {
 }
 
 type Engine struct {
-	DBPath           string `toml:"db-path"`             // Directory to store the data in. Should exist and be writable.
-	ValueThreshold   int    `toml:"value-threshold"`     // If value size >= this threshold, only store value offsets in tree.
-	MaxMemTableSize  int64  `toml:"max-mem-table-size"`  // Each mem table is at most this size.
-	MaxTableSize     int64  `toml:"max-table-size"`      // Each table file is at most this size.
+	DBPath           string `toml:"db-path"`            // Directory to store the data in. Should exist and be writable.
+	ValueThreshold   int    `toml:"value-threshold"`    // If value size >= this threshold, only store value offsets in tree.
+	MaxMemTableSize  int64  `toml:"max-mem-table-size"` // Each mem table is at most this size.
+	MaxTableSize     int64  `toml:"max-table-size"`     // Each table file is at most this size.
+	L1Size           int64  `toml:"l1-size"`
 	NumMemTables     int    `toml:"num-mem-tables"`      // Maximum number of tables to keep in memory, before stalling.
 	NumL0Tables      int    `toml:"num-L0-tables"`       // Maximum number of Level 0 tables before we start compacting.
 	NumL0TablesStall int    `toml:"num-L0-tables-stall"` // Maximum number of Level 0 tables before stalling.
@@ -70,6 +71,8 @@ type Engine struct {
 	BlockCacheSize    int64    `toml:"block-cache-size"`
 	Compression       []string `toml:"compression"` // Compression types for each level
 	IngestCompression string   `toml:"ingest-compression"`
+
+	CompactL0WhenClose bool `toml:"compact-l0-when-close"`
 }
 
 type PessimisticTxn struct {
@@ -114,18 +117,20 @@ var DefaultConf = Config{
 		CustomRaftLog:            true,
 	},
 	Engine: Engine{
-		DBPath:           "/tmp/badger",
-		ValueThreshold:   256,
-		MaxMemTableSize:  64 * MB,
-		MaxTableSize:     8 * MB,
-		NumMemTables:     3,
-		NumL0Tables:      4,
-		NumL0TablesStall: 8,
-		VlogFileSize:     256 * MB,
-		NumCompactors:    3,
-		SurfStartLevel:   8,
-		Compression:      make([]string, 7),
-		BlockCacheSize:   0, // 0 means disable block cache, use mmap to access sst.
+		DBPath:             "/tmp/badger",
+		ValueThreshold:     256,
+		MaxMemTableSize:    64 * MB,
+		MaxTableSize:       8 * MB,
+		NumMemTables:       3,
+		NumL0Tables:        4,
+		NumL0TablesStall:   8,
+		VlogFileSize:       256 * MB,
+		NumCompactors:      3,
+		SurfStartLevel:     8,
+		L1Size:             512 * MB,
+		Compression:        make([]string, 7),
+		BlockCacheSize:     0, // 0 means disable block cache, use mmap to access sst.
+		CompactL0WhenClose: true,
 	},
 	Coprocessor: Coprocessor{
 		RegionMaxKeys:   1440000,

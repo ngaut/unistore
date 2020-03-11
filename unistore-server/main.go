@@ -310,6 +310,8 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) *b
 	if subPath == subPathRaft {
 		// Do not need to write blob for raft engine because it will be deleted soon.
 		opts.ValueThreshold = 0
+	} else {
+		opts.ManagedTxns = true
 	}
 	opts.ValueLogWriteOptions.WriteBufferSize = 4 * 1024 * 1024
 	opts.Dir = filepath.Join(conf.DBPath, subPath)
@@ -320,7 +322,7 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) *b
 	opts.NumMemtables = conf.NumMemTables
 	opts.NumLevelZeroTables = conf.NumL0Tables
 	opts.NumLevelZeroTablesStall = conf.NumL0TablesStall
-	opts.LevelOneSize = 512 * 1024 * 1024
+	opts.LevelOneSize = conf.L1Size
 	opts.SyncWrites = conf.SyncWrite
 	compressionPerLevel := make([]options.CompressionType, len(conf.Compression))
 	for i := range opts.TableBuilderOptions.CompressionPerLevel {
@@ -332,7 +334,7 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) *b
 	if safePoint != nil {
 		opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
 	}
-	opts.CompactL0WhenClose = false
+	opts.CompactL0WhenClose = conf.CompactL0WhenClose
 	db, err := badger.Open(opts)
 	if err != nil {
 		log.Fatal(err)

@@ -623,19 +623,9 @@ func (store *MVCCStore) buildPrewriteLock(reqCtx *requestCtx, m *kvrpcpb.Mutatio
 		Value:   m.Value,
 	}
 	var err error
-	if item != nil {
-		lock.HasOldVer = true
-		if m.Op != kvrpcpb.Op_Lock { // We don't need to store old value for Op_Lock。
-			lock.OldMeta = mvcc.DBUserMeta(item.UserMeta())
-			lock.OldVal, err = item.Value()
-		}
-		if err != nil {
-			return nil, err
-		}
-	}
 	lock.Op = uint8(m.Op)
 	if lock.Op == uint8(kvrpcpb.Op_Insert) {
-		if lock.HasOldVer && len(lock.OldVal) > 0 {
+		if item != nil && item.ValueSize() > 0 {
 			return nil, &ErrKeyAlreadyExists{Key: m.Key}
 		}
 		lock.Op = uint8(kvrpcpb.Op_Put)
@@ -754,6 +744,8 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 
 func (store *MVCCStore) handleLockNotFound(reqCtx *requestCtx, key []byte, startTS, commitTS uint64) error {
 	txn := reqCtx.getDBReader().GetTxn()
+	txn.SetReadHidden(true)
+	txn.SetReadTS(commitTS)
 	item, err := txn.Get(key)
 	if err != nil && err != badger.ErrKeyNotFound {
 		return errors.Trace(err)
@@ -765,14 +757,6 @@ func (store *MVCCStore) handleLockNotFound(reqCtx *requestCtx, key []byte, start
 	if useMeta.StartTS() == startTS {
 		// Already committed.
 		return nil
-	} else {
-		// The transaction may be committed and moved to old data, we need to look for that.
-		oldKey := mvcc.EncodeOldKey(key, commitTS)
-		_, err = txn.Get(oldKey)
-		if err == nil {
-			// Found committed key.
-			return nil
-		}
 	}
 	return ErrLockNotFound
 }
@@ -867,7 +851,9 @@ func (store *MVCCStore) rollbackKeyReadDB(req *requestCtx, batch mvcc.WriteBatch
 }
 
 func (store *MVCCStore) checkCommitted(reader *dbreader.DBReader, key []byte, startTS uint64) (uint64, error) {
-	item, err := reader.GetTxn().Get(key)
+	txn := reader.GetTxn()
+	txn.SetReadHidden(true)
+	item, err := txn.Get(key)
 	if err != nil && err != badger.ErrKeyNotFound {
 		return 0, errors.Trace(err)
 	}
@@ -878,22 +864,16 @@ func (store *MVCCStore) checkCommitted(reader *dbreader.DBReader, key []byte, st
 	if userMeta.StartTS() == startTS {
 		return userMeta.CommitTS(), nil
 	}
-	// look for the key in the old version to check if the key is committed.
-	it := reader.GetOldIter()
-	oldKey := mvcc.EncodeOldKey(key, math.MaxUint64)
-	// find greater commit version.
-	for it.Seek(oldKey); it.ValidForPrefix(oldKey[:len(oldKey)-8]); it.Next() {
-		item := it.Item()
-		foundKey := item.Key()
-		if isVisibleKey(foundKey, startTS) {
+	it := reader.GetIter()
+	it.SetAllVersions(true)
+	for it.Seek(key); it.Valid(); it.Next() {
+		item = it.Item()
+		if !bytes.Equal(item.Key(), key) {
 			break
 		}
-		_, ts, err := codec.DecodeUintDesc(foundKey[len(foundKey)-8:])
-		if err != nil {
-			return 0, errors.Trace(err)
-		}
-		if mvcc.OldUserMeta(item.UserMeta()).StartTS() == startTS {
-			return ts, nil
+		userMeta = mvcc.DBUserMeta(item.UserMeta())
+		if userMeta.StartTS() == startTS {
+			return userMeta.CommitTS(), nil
 		}
 	}
 	return 0, nil
@@ -1046,20 +1026,7 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 
 func (store *MVCCStore) GC(reqCtx *requestCtx, safePoint uint64) error {
 	// We use the gcLock to make sure safePoint can only increase.
-	store.gcLock.Lock()
-	defer store.gcLock.Unlock()
-	oldSafePoint := atomic.LoadUint64(&store.safePoint.timestamp)
-	if oldSafePoint < safePoint {
-		err := store.db.Update(func(txn *badger.Txn) error {
-			safePointValue := make([]byte, 8)
-			binary.LittleEndian.PutUint64(safePointValue, safePoint)
-			return txn.Set(InternalSafePointKey, safePointValue)
-		})
-		if err != nil {
-			return err
-		}
-		atomic.StoreUint64(&store.safePoint.timestamp, safePoint)
-	}
+	store.db.UpdateSafeTs(safePoint)
 	return nil
 }
 
@@ -1093,6 +1060,9 @@ func (store *MVCCStore) MvccGetByKey(reqCtx *requestCtx, key []byte) (*kvrpcpb.M
 	if err != nil {
 		return nil, err
 	}
+	sort.Slice(mvccInfo.Writes, func(i, j int) bool {
+		return mvccInfo.Writes[i].CommitTs > mvccInfo.Writes[j].CommitTs
+	})
 	return mvccInfo, nil
 }
 
@@ -1182,12 +1152,8 @@ type GCCompactionFilter struct {
 
 // (old key first byte) = (latest key first byte) + 1
 const (
-	metaPrefix byte = 'm'
-	// 'm' + 1 = 'n'
-	metaOldPrefix byte = 'n'
-	tablePrefix   byte = 't'
-	// 't' + 1 = 'u
-	tableOldPrefix byte = 'u'
+	metaPrefix  byte = 'm'
+	tablePrefix byte = 't'
 )
 
 // Filter implements the badger.CompactionFilter interface.
@@ -1209,35 +1175,27 @@ func (f *GCCompactionFilter) Filter(key, value, userMeta []byte) badger.Decision
 		if mvcc.DBUserMeta(userMeta).CommitTS() < f.safePoint && len(value) == 0 {
 			return badger.DecisionMarkTombstone
 		}
-	case metaOldPrefix, tableOldPrefix:
-		// The key is old version key.
-		if mvcc.OldUserMeta(userMeta).NextCommitTS() < f.safePoint {
-			return badger.DecisionDrop
-		}
 	}
 	return badger.DecisionKeep
 }
 
 var (
-	baseGuard          = badger.Guard{MatchLen: 64, MinSize: 64 * 1024}
-	raftGuard          = badger.Guard{Prefix: []byte{0}, MatchLen: 1, MinSize: 64 * 1024}
-	metaGuard          = badger.Guard{Prefix: []byte{'m'}, MatchLen: 1, MinSize: 64 * 1024}
-	metaOldGuard       = badger.Guard{Prefix: []byte{'n'}, MatchLen: 1, MinSize: 64 * 1024}
-	tableGuard         = badger.Guard{Prefix: []byte{'t'}, MatchLen: 9, MinSize: 1 * 1024 * 1024}
-	tableOldGuard      = badger.Guard{Prefix: []byte{'u'}, MatchLen: 9, MinSize: 1 * 1024 * 1024}
-	tableIndexGuard    = badger.Guard{Prefix: []byte{'t'}, MatchLen: 11, MinSize: 1 * 1024 * 1024}
-	tableIndexOldGuard = badger.Guard{Prefix: []byte{'u'}, MatchLen: 11, MinSize: 1 * 1024 * 1024}
+	baseGuard       = badger.Guard{MatchLen: 64, MinSize: 64 * 1024}
+	raftGuard       = badger.Guard{Prefix: []byte{0}, MatchLen: 1, MinSize: 64 * 1024}
+	metaGuard       = badger.Guard{Prefix: []byte{'m'}, MatchLen: 1, MinSize: 64 * 1024}
+	tableGuard      = badger.Guard{Prefix: []byte{'t'}, MatchLen: 9, MinSize: 1 * 1024 * 1024}
+	tableIndexGuard = badger.Guard{Prefix: []byte{'t'}, MatchLen: 11, MinSize: 1 * 1024 * 1024}
 )
 
 func (f *GCCompactionFilter) Guards() []badger.Guard {
 	if f.targetLevel < 4 {
 		// do not split index and row for top levels.
 		return []badger.Guard{
-			baseGuard, raftGuard, metaGuard, metaOldGuard, tableGuard, tableOldGuard,
+			baseGuard, raftGuard, metaGuard, tableGuard,
 		}
 	}
 	// split index and row for bottom levels.
 	return []badger.Guard{
-		baseGuard, raftGuard, metaGuard, metaOldGuard, tableIndexGuard, tableIndexOldGuard,
+		baseGuard, raftGuard, metaGuard, tableIndexGuard,
 	}
 }

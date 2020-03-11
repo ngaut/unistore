@@ -15,7 +15,6 @@ package raftstore
 
 import (
 	"bytes"
-	"math"
 	"os"
 
 	"github.com/coocood/badger"
@@ -33,15 +32,15 @@ func newSnapBuilder(cfFiles []*CFFile, snap *regionSnapshot, region *metapb.Regi
 	b.cfFiles = cfFiles
 	b.endKey = rawRegionKey(region.EndKey)
 	b.txn = snap.txn
-	b.dbIterator = b.txn.NewIterator(badger.DefaultIteratorOptions)
+	itOpt := badger.DefaultIteratorOptions
+	itOpt.AllVersions = true
+	b.dbIterator = b.txn.NewIterator(itOpt)
 	startKey := rawDataStartKey(region.StartKey)
 
 	b.dbIterator.Seek(startKey)
 	if b.dbIterator.Valid() && !b.reachEnd(b.dbIterator.Item().Key()) {
 		b.curDBKey = b.dbIterator.Item().Key()
 	}
-	b.dbOldIterator = b.txn.NewIterator(badger.DefaultIteratorOptions)
-	b.dbOldIterator.Seek(mvcc.EncodeOldKey(startKey, math.MaxUint64))
 
 	b.lockIterator = snap.lockSnap.NewIterator()
 	b.lockIterator.Seek(startKey)
@@ -71,7 +70,6 @@ type snapBuilder struct {
 	txn             *badger.Txn
 	lockIterator    *lockstore.Iterator
 	dbIterator      *badger.Iterator
-	dbOldIterator   *badger.Iterator
 	curLockKey      []byte
 	curDBKey        []byte
 	lockCFWriter    *os.File
@@ -87,7 +85,6 @@ type snapBuilder struct {
 func (b *snapBuilder) build() error {
 	defer func() {
 		b.dbIterator.Close()
-		b.dbOldIterator.Close()
 		b.txn.Discard()
 	}()
 	for {
@@ -174,10 +171,6 @@ func (b *snapBuilder) addDBEntry() error {
 	if err != nil {
 		return err
 	}
-	err = b.addOldWrite()
-	if err != nil {
-		return err
-	}
 	b.dbIterator.Next()
 	if b.dbIterator.Valid() && !b.reachEnd(b.dbIterator.Item().Key()) {
 		b.curDBKey = b.dbIterator.Item().Key()
@@ -185,33 +178,6 @@ func (b *snapBuilder) addDBEntry() error {
 		b.curDBKey = nil
 	}
 	return nil
-}
-
-func (b *snapBuilder) addOldWrite() error {
-	for {
-		if !b.dbOldIterator.Valid() {
-			return nil
-		}
-		item := b.dbOldIterator.Item()
-		oldKey := item.Key()
-		if !isLatestKeyAndOldKeySame(b.curDBKey, oldKey) {
-			return nil
-		}
-		_, commitTS, err := codec.DecodeUintDesc(oldKey[len(oldKey)-8:])
-		if err != nil {
-			return errors.WithStack(err)
-		}
-		meta := mvcc.OldUserMeta(item.UserMeta())
-		val, err := item.Value()
-		if err != nil {
-			return errors.WithStack(err)
-		}
-		err = b.addSSTKey(b.curDBKey, meta.StartTS(), commitTS, val)
-		if err != nil {
-			return errors.WithStack(err)
-		}
-		b.dbOldIterator.Next()
-	}
 }
 
 func (b *snapBuilder) addSSTKey(key []byte, startTS, commitTS uint64, val []byte) error {
