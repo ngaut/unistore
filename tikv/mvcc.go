@@ -234,6 +234,7 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 	defer regCtx.ReleaseLatches(hashVals)
 
 	batch := store.dbWriter.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
+	var dup bool
 	for _, m := range mutations {
 		lock, err := store.checkConflictInLockStore(reqCtx, m, startTS)
 		if err == ErrAlreadyRollback {
@@ -247,8 +248,9 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 				return nil, errors.New("lock type not match")
 			}
 			if lock.ForUpdateTS >= req.ForUpdateTs {
-				// It's a duplicate command, we can return directly.
-				return nil, nil
+				// It's a duplicate command, we can simply return values.
+				dup = true
+				break
 			}
 			// Single statement rollback key, we can overwrite it.
 		}
@@ -257,16 +259,18 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 	if err != nil {
 		return nil, err
 	}
-	for i, m := range mutations {
-		lock, err1 := store.buildPessimisticLock(m, items[i], req)
-		if err1 != nil {
-			return nil, err1
+	if !dup {
+		for i, m := range mutations {
+			lock, err1 := store.buildPessimisticLock(m, items[i], req)
+			if err1 != nil {
+				return nil, err1
+			}
+			batch.PessimisticLock(m.Key, lock)
 		}
-		batch.PessimisticLock(m.Key, lock)
-	}
-	err = store.dbWriter.Write(batch)
-	if err != nil {
-		return nil, err
+		err = store.dbWriter.Write(batch)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if req.Force {
 		dbMeta := mvcc.DBUserMeta(items[0].UserMeta())
