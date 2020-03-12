@@ -252,6 +252,35 @@ func MustPrewriteInsertAlreadyExists(pk, key []byte, val []byte, startTs uint64,
 	store.c.Assert(existErr, NotNil)
 }
 
+func MustPrewriteOpCheckExistAlreadyExist(pk, key []byte, startTs uint64, store *TestStore) {
+	prewriteReq := &kvrpcpb.PrewriteRequest{
+		Mutations:    []*kvrpcpb.Mutation{newMutation(kvrpcpb.Op_CheckNotExists, key, nil)},
+		PrimaryLock:  pk,
+		StartVersion: startTs,
+		LockTtl:      lockTTL,
+		MinCommitTs:  startTs,
+	}
+	err := store.MvccStore.prewriteOptimistic(store.newReqCtx(), prewriteReq.Mutations, prewriteReq)
+	store.c.Assert(err, NotNil)
+	existErr := err.(*ErrKeyAlreadyExists)
+	store.c.Assert(existErr, NotNil)
+}
+
+func MustPrewriteOpCheckExistOk(pk, key []byte, startTs uint64, store *TestStore) {
+	prewriteReq := &kvrpcpb.PrewriteRequest{
+		Mutations:    []*kvrpcpb.Mutation{newMutation(kvrpcpb.Op_CheckNotExists, key, nil)},
+		PrimaryLock:  pk,
+		StartVersion: startTs,
+		LockTtl:      lockTTL,
+		MinCommitTs:  startTs,
+	}
+	err := store.MvccStore.prewriteOptimistic(store.newReqCtx(), prewriteReq.Mutations, prewriteReq)
+	store.c.Assert(err, IsNil)
+	var buf []byte
+	buf = store.MvccStore.lockStore.Get(key, buf)
+	store.c.Assert(len(buf), Equals, 0)
+}
+
 func MustPrewriteDelete(pk, key []byte, startTs uint64, store *TestStore) {
 	MustPrewriteOptimistic(pk, key, nil, startTs, 50, startTs, store)
 }
@@ -1246,8 +1275,7 @@ func (s *testMvccSuite) TestPessimisticLock(c *C) {
 	MustCleanup(k, 23, 0, store)
 	MustAcquirePessimisticLock(k, k, 24, 24, store)
 	MustPessimisticLocked(k, 24, 24, store)
-	MustCommitErr(k, 24, 25, store)
-	MustRollbackKey(k, 24, store)
+	MustCommit(k, 24, 25, store)
 
 	// Acquire lock on a prewritten key should fail
 	MustAcquirePessimisticLock(k, k, 26, 26, store)
@@ -1307,13 +1335,12 @@ func (s *testMvccSuite) TestPessimisticLock(c *C) {
 	MustGetVal(k, v, 37, store)
 
 	// Prewrite meets pessimistic lock on a non-pessimistic key
-	// Currently not checked, so prewrite will success, but commit will fail
+	// Currently not checked, so prewrite will success, and commit pessimistic lock will success
 	MustAcquirePessimisticLock(k, k, 40, 40, store)
 	MustLocked(k, true, store)
 	store.c.Assert(PrewriteOptimistic(k, k, v, 40, lockTTL, 40, store), IsNil)
 	MustLocked(k, true, store)
-	MustCommitErr(k, 40, 41, store)
-	MustRollbackKey(k, 40, store)
+	MustCommit(k, 40, 41, store)
 	MustUnLocked(k, store)
 }
 
@@ -1398,4 +1425,22 @@ func (s *testMvccSuite) TestCommitPessimisticLock(c *C) {
 	MustCommitErr(k, 20, 30, store)
 	MustCommit(k, 10, 20, store)
 	MustGet(k, 30, store)
+}
+
+func (s *testMvccSuite) TestOpCheckNotExist(c *C) {
+	store, err := NewTestStore("TestOpCheckNotExist", "TestOpCheckNotExist", c)
+	c.Assert(err, IsNil)
+	defer CleanTestStore(store)
+
+	k := []byte("ta")
+	v := []byte("v")
+	MustPrewritePut(k, k, v, 1, store)
+	MustCommit(k, 1, 2, store)
+	MustPrewriteOpCheckExistAlreadyExist(k, k, 3, store)
+	MustPrewriteDelete(k, k, 4, store)
+	MustCommit(k, 4, 5, store)
+	MustPrewriteOpCheckExistOk(k, k, 6, store)
+	MustPrewritePut(k, k, v, 7, store)
+	MustRollbackKey(k, 7, store)
+	MustPrewriteOpCheckExistOk(k, k, 8, store)
 }
