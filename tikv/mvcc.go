@@ -512,6 +512,19 @@ func (store *MVCCStore) prewriteOptimistic(reqCtx *requestCtx, mutations []*kvrp
 				}
 			}
 		}
+		// Op_CheckNotExists type requests should not add lock
+		if m.Op == kvrpcpb.Op_CheckNotExists {
+			if item != nil {
+				val, err := item.Value()
+				if err != nil {
+					return err
+				}
+				if len(val) > 0 {
+					return &ErrKeyAlreadyExists{Key: m.Key}
+				}
+			}
+			continue
+		}
 		lock, err1 := store.buildPrewriteLock(reqCtx, m, items[i], req)
 		if err1 != nil {
 			return err1
@@ -524,6 +537,9 @@ func (store *MVCCStore) prewriteOptimistic(reqCtx *requestCtx, mutations []*kvrp
 func (store *MVCCStore) prewritePessimistic(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, req *kvrpcpb.PrewriteRequest) error {
 	startTS := req.StartVersion
 	for i, m := range mutations {
+		if m.Op == kvrpcpb.Op_CheckNotExists {
+			return ErrInvalidOp{op: m.Op}
+		}
 		lock := store.getLock(reqCtx, m.Key)
 		isPessimisticLock := len(req.IsPessimisticLock) > 0 && req.IsPessimisticLock[i]
 		lockExists := lock != nil

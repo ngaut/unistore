@@ -15,6 +15,8 @@ package tikv
 
 import (
 	"fmt"
+
+	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 )
 
 // ErrLocked is returned when trying to Read/Write on a locked key. Client should
@@ -56,6 +58,14 @@ var (
 	ErrAlreadyRollback = ErrRetryable("already rollback")
 	ErrReplaced        = ErrRetryable("replaced by another transaction")
 )
+
+type ErrInvalidOp struct {
+	op kvrpcpb.Op
+}
+
+func (e ErrInvalidOp) Error() string {
+	return fmt.Sprintf("invalid op: %s", e.op.String())
+}
 
 // ErrAlreadyCommitted is returned specially when client tries to rollback a
 // committed lock.
