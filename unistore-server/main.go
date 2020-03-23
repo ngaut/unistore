@@ -114,10 +114,9 @@ func main() {
 	log.Info("gitHash:", gitHash)
 	log.SetLevelByString(conf.Server.LogLevel)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
-	safePoint := &tikv.SafePoint{}
 	log.Infof("conf %v", conf)
 	config.SetGlobalConf(conf)
-	db := createDB(subPathKV, safePoint, &conf.Engine)
+	db := createDB(subPathKV, &conf.Engine)
 	bundle := &mvcc.DBBundle{
 		DB:            db,
 		LockStore:     lockstore.NewMemStore(8 << 20),
@@ -135,9 +134,9 @@ func main() {
 		regionManager tikv.RegionManager
 	)
 	if conf.Server.Raft {
-		innerServer, store, regionManager = setupRaftInnerServer(bundle, safePoint, pdClient, conf)
+		innerServer, store, regionManager = setupRaftInnerServer(bundle, pdClient, conf)
 	} else {
-		innerServer, store, regionManager = setupStandAlongInnerServer(bundle, safePoint, pdClient, conf)
+		innerServer, store, regionManager = setupStandAlongInnerServer(bundle, pdClient, conf)
 	}
 	err = store.StartDeadlockDetection(context.Background(), pdClient, innerServer, conf.Server.Raft)
 	if err != nil {
@@ -238,7 +237,7 @@ func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	raftConf.SplitCheck.RegionSplitKeys = uint64(conf.Coprocessor.RegionSplitKeys)
 }
 
-func setupRaftInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient pd.Client, conf *config.Config) (tikv.InnerServer, *tikv.MVCCStore, tikv.RegionManager) {
+func setupRaftInnerServer(bundle *mvcc.DBBundle, pdClient pd.Client, conf *config.Config) (tikv.InnerServer, *tikv.MVCCStore, tikv.RegionManager) {
 	dbPath := conf.Engine.DBPath
 	kvPath := filepath.Join(dbPath, "kv")
 	raftPath := filepath.Join(dbPath, "raft")
@@ -252,7 +251,7 @@ func setupRaftInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdCl
 	raftConf.SnapPath = snapPath
 	setupRaftStoreConf(raftConf, conf)
 
-	raftDB := createDB(subPathRaft, nil, &conf.Engine)
+	raftDB := createDB(subPathRaft, &conf.Engine)
 	meta, err := bundle.LockStore.LoadFromFile(filepath.Join(kvPath, raftstore.LockstoreFileName))
 	if err != nil {
 		log.Fatal(err)
@@ -272,7 +271,7 @@ func setupRaftInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdCl
 	innerServer.Setup(pdClient)
 	router := innerServer.GetRaftstoreRouter()
 	storeMeta := innerServer.GetStoreMeta()
-	store := tikv.NewMVCCStore(bundle, dbPath, safePoint, raftstore.NewDBWriter(router), pdClient)
+	store := tikv.NewMVCCStore(bundle, dbPath, raftstore.NewDBWriter(router), pdClient)
 	rm := tikv.NewRaftRegionManager(storeMeta, router, store.DeadlockDetectSvr)
 	innerServer.SetPeerEventObserver(rm)
 
@@ -283,7 +282,7 @@ func setupRaftInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdCl
 	return innerServer, store, rm
 }
 
-func setupStandAlongInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient pd.Client, conf *config.Config) (tikv.InnerServer, *tikv.MVCCStore, tikv.RegionManager) {
+func setupStandAlongInnerServer(bundle *mvcc.DBBundle, pdClient pd.Client, conf *config.Config) (tikv.InnerServer, *tikv.MVCCStore, tikv.RegionManager) {
 	regionOpts := tikv.RegionOptions{
 		StoreAddr:  conf.Server.StoreAddr,
 		PDAddr:     conf.Server.PDAddr,
@@ -292,7 +291,7 @@ func setupStandAlongInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint
 
 	innerServer := tikv.NewStandAlongInnerServer(bundle)
 	innerServer.Setup(pdClient)
-	store := tikv.NewMVCCStore(bundle, conf.Engine.DBPath, safePoint, tikv.NewDBWriter(bundle, safePoint), pdClient)
+	store := tikv.NewMVCCStore(bundle, conf.Engine.DBPath, tikv.NewDBWriter(bundle), pdClient)
 	store.DeadlockDetectSvr.ChangeRole(tikv.Leader)
 	rm := tikv.NewStandAloneRegionManager(bundle.DB, regionOpts, pdClient)
 
@@ -303,7 +302,7 @@ func setupStandAlongInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint
 	return innerServer, store, rm
 }
 
-func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) *badger.DB {
+func createDB(subPath string, conf *config.Engine) *badger.DB {
 	opts := badger.DefaultOptions
 	opts.NumCompactors = conf.NumCompactors
 	opts.ValueThreshold = conf.ValueThreshold
@@ -331,9 +330,7 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) *b
 	opts.TableBuilderOptions.CompressionPerLevel = compressionPerLevel
 	opts.MaxCacheSize = conf.BlockCacheSize
 	opts.TableBuilderOptions.SuRFStartLevel = conf.SurfStartLevel
-	if safePoint != nil {
-		opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
-	}
+	opts.CompactionFilterFactory = tikv.CreateCompactionFilter
 	opts.CompactL0WhenClose = conf.CompactL0WhenClose
 	db, err := badger.Open(opts)
 	if err != nil {

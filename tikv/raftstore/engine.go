@@ -351,7 +351,7 @@ func deleteRange(db *mvcc.DBBundle, startKey, endKey []byte) error {
 	// Delete keys first.
 	keys := make([]y.Key, 0, delRangeBatchSize)
 	txn := db.DB.NewTransaction(false)
-	reader := dbreader.NewDBReader(startKey, endKey, txn, 0)
+	reader := dbreader.NewDBReader(startKey, endKey, txn)
 	keys = collectRangeKeys(reader.GetIter(), startKey, endKey, keys)
 	reader.Close()
 	if err := deleteKeysInBatch(db, keys, delRangeBatchSize); err != nil {

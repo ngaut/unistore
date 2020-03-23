@@ -243,20 +243,18 @@ func (w rollbackGCWorker) run() {
 }
 
 type dbWriter struct {
-	bundle    *mvcc.DBBundle
-	safePoint *SafePoint
-	dbCh      chan<- *writeDBBatch
-	lockCh    chan<- *writeLockBatch
-	wg        sync.WaitGroup
-	closeCh   chan struct{}
-	latestTS  uint64
+	bundle   *mvcc.DBBundle
+	dbCh     chan<- *writeDBBatch
+	lockCh   chan<- *writeLockBatch
+	wg       sync.WaitGroup
+	closeCh  chan struct{}
+	latestTS uint64
 }
 
-func NewDBWriter(bundle *mvcc.DBBundle, safePoint *SafePoint) mvcc.DBWriter {
+func NewDBWriter(bundle *mvcc.DBBundle) mvcc.DBWriter {
 	return &dbWriter{
-		bundle:    bundle,
-		safePoint: safePoint,
-		closeCh:   make(chan struct{}, 0),
+		bundle:  bundle,
+		closeCh: make(chan struct{}, 0),
 	}
 }
 
@@ -376,7 +374,7 @@ func (writer *dbWriter) DeleteRange(startKey, endKey []byte, latchHandle mvcc.La
 	keys := make([]y.Key, 0, delRangeBatchSize)
 	txn := writer.bundle.DB.NewTransaction(false)
 	defer txn.Discard()
-	reader := dbreader.NewDBReader(startKey, endKey, txn, atomic.LoadUint64(&writer.safePoint.timestamp))
+	reader := dbreader.NewDBReader(startKey, endKey, txn)
 	keys = writer.collectRangeKeys(reader.GetIter(), startKey, endKey, keys)
 	reader.Close()
 	return writer.deleteKeysInBatch(latchHandle, keys, delRangeBatchSize)

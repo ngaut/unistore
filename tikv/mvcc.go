@@ -52,8 +52,7 @@ type MVCCStore struct {
 	rollbackStore *lockstore.MemStore
 	dbWriter      mvcc.DBWriter
 
-	safePoint *SafePoint
-	gcLock    sync.Mutex
+	gcLock sync.Mutex
 
 	latestTS          uint64
 	lockWaiterManager *lockwaiter.Manager
@@ -62,42 +61,20 @@ type MVCCStore struct {
 }
 
 // NewMVCCStore creates a new MVCCStore
-func NewMVCCStore(bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint,
+func NewMVCCStore(bundle *mvcc.DBBundle, dataDir string,
 	writer mvcc.DBWriter, pdClinet pd.Client) *MVCCStore {
 	store := &MVCCStore{
 		db:                bundle.DB,
 		dir:               dataDir,
 		lockStore:         bundle.LockStore,
 		rollbackStore:     bundle.RollbackStore,
-		safePoint:         safePoint,
 		dbWriter:          writer,
 		lockWaiterManager: lockwaiter.NewManager(),
 	}
 	store.DeadlockDetectSvr = NewDetectorServer()
 	store.DeadlockDetectCli = NewDetectorClient(store.lockWaiterManager, pdClinet)
-	store.loadSafePoint()
 	writer.Open()
 	return store
-}
-
-func (store *MVCCStore) loadSafePoint() {
-	err := store.db.View(func(txn *badger.Txn) error {
-		item, err1 := txn.Get(InternalSafePointKey)
-		if err1 == badger.ErrKeyNotFound {
-			return nil
-		} else if err1 != nil {
-			return err1
-		}
-		val, err1 := item.Value()
-		if err1 != nil {
-			return err1
-		}
-		atomic.StoreUint64(&store.safePoint.timestamp, binary.LittleEndian.Uint64(val))
-		return nil
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
 }
 
 func (store *MVCCStore) updateLatestTS(ts uint64) {
@@ -1132,50 +1109,21 @@ func (store *MVCCStore) BatchGet(reqCtx *requestCtx, keys [][]byte, version uint
 	return pairs
 }
 
-type SafePoint struct {
-	timestamp uint64
-}
-
 // CreateCompactionFilter implements badger.CompactionFilterFactory function.
-func (sp *SafePoint) CreateCompactionFilter(targetLevel int, startKey, endKey []byte) badger.CompactionFilter {
+func CreateCompactionFilter(targetLevel int, startKey, endKey []byte) badger.CompactionFilter {
 	return &GCCompactionFilter{
 		targetLevel: targetLevel,
-		safePoint:   atomic.LoadUint64(&sp.timestamp),
 	}
 }
 
 // GCCompactionFilter implements the badger.CompactionFilter interface.
 type GCCompactionFilter struct {
 	targetLevel int
-	safePoint   uint64
 }
 
-// (old key first byte) = (latest key first byte) + 1
-const (
-	metaPrefix  byte = 'm'
-	tablePrefix byte = 't'
-)
-
 // Filter implements the badger.CompactionFilter interface.
-//
-// The keys is divided into two sections, latest key and old key, the latest keys don't have commitTS appended,
-// the old keys have commitTS appended and has a different key prefix.
-//
-// For old keys, if the nextCommitTS is before the safePoint, it means we already have one version before the safePoint,
-// we can safely drop this entry.
-//
-// For latest keys, only Delete entry should be GCed, if the commitTS of the Delete entry is older than safePoint,
-// we can remove the Delete entry. But we need to convert it to a tombstone instead of drop.
-// Because there maybe multiple badger level old entries under the same key, dropping it results in old
-// entries may appear again.
+// Since we use txn ts as badger version, we do not need to filter anything.
 func (f *GCCompactionFilter) Filter(key, value, userMeta []byte) badger.Decision {
-	switch key[0] {
-	case metaPrefix, tablePrefix:
-		// For latest version, we can only remove `delete` key, which has value len 0.
-		if mvcc.DBUserMeta(userMeta).CommitTS() < f.safePoint && len(value) == 0 {
-			return badger.DecisionMarkTombstone
-		}
-	}
 	return badger.DecisionKeep
 }
 

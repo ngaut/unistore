@@ -282,7 +282,7 @@ func (r *splitCheckHandler) handle(t task) {
 	log.Debugf("executing split check task: [regionId: %d, startKey: %s, endKey: %s]", regionId,
 		hex.EncodeToString(startKey), hex.EncodeToString(endKey))
 	txn := r.engine.NewTransaction(false)
-	reader := dbreader.NewDBReader(startKey, endKey, txn, 0)
+	reader := dbreader.NewDBReader(startKey, endKey, txn)
 	defer reader.Close()
 	var keys [][]byte
 	switch t.tp {

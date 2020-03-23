@@ -108,8 +108,7 @@ func (req *requestCtx) getDBReader() *dbreader.DBReader {
 	if req.reader == nil {
 		mvccStore := req.svr.mvccStore
 		txn := mvccStore.db.NewTransaction(false)
-		safePoint := atomic.LoadUint64(&mvccStore.safePoint.timestamp)
-		req.reader = dbreader.NewDBReader(req.regCtx.startKey, req.regCtx.endKey, txn, safePoint)
+		req.reader = dbreader.NewDBReader(req.regCtx.startKey, req.regCtx.endKey, txn)
 	}
 	return req.reader
 }

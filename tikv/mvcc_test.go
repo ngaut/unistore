@@ -89,7 +89,6 @@ func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	safePoint := &SafePoint{}
 	db, err := CreateTestDB(dbPath, LogPath)
 	if err != nil {
 		return nil, err
@@ -110,7 +109,7 @@ func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
 	engines := raftstore.NewEngines(dbBundle, dbBundle.DB, kvPath, raftPath)
 	writer := raftstore.NewTestRaftWriter(dbBundle, engines)
 
-	store := NewMVCCStore(dbBundle, dbPath, safePoint, writer, nil)
+	store := NewMVCCStore(dbBundle, dbPath, writer, nil)
 	svr := NewServer(nil, store, nil)
 	return &TestStore{
 		MvccStore: store,
@@ -1112,6 +1111,7 @@ func (s *testMvccSuite) TestMinCommitTs(c *C) {
 }
 
 func (s *testMvccSuite) TestGC(c *C) {
+	c.Skip("GC work is hand over to badger.")
 	store, err := NewTestStore("TestGC", "TestGC", c)
 	c.Assert(err, IsNil)
 	defer CleanTestStore(store)

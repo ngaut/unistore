@@ -37,12 +37,11 @@ import (
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 )
 
-func NewDBReader(startKey, endKey []byte, txn *badger.Txn, safePoint uint64) *DBReader {
+func NewDBReader(startKey, endKey []byte, txn *badger.Txn) *DBReader {
 	return &DBReader{
-		startKey:  startKey,
-		endKey:    endKey,
-		txn:       txn,
-		safePoint: safePoint,
+		startKey: startKey,
+		endKey:   endKey,
+		txn:      txn,
 	}
 }
 
@@ -60,12 +59,11 @@ func NewIterator(txn *badger.Txn, reverse bool, startKey, endKey []byte) *badger
 
 // DBReader reads data from DB, for read-only requests, the locks must already be checked before DBReader is created.
 type DBReader struct {
-	startKey  []byte
-	endKey    []byte
-	txn       *badger.Txn
-	iter      *badger.Iterator
-	revIter   *badger.Iterator
-	safePoint uint64
+	startKey []byte
+	endKey   []byte
+	txn      *badger.Txn
+	iter     *badger.Iterator
+	revIter  *badger.Iterator
 }
 
 // GetMvccInfoByKey fills MvccInfo reading committed keys from db
