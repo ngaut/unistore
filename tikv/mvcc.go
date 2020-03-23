@@ -1123,8 +1123,14 @@ type GCCompactionFilter struct {
 
 // Filter implements the badger.CompactionFilter interface.
 // Since we use txn ts as badger version, we do not need to filter anything.
+// It is called for the first valid version before safe point, older versions are discarded automatically.
 func (f *GCCompactionFilter) Filter(key, value, userMeta []byte) badger.Decision {
-	return badger.DecisionDrop
+	if len(value) == 0 {
+		// Delete or Op_Lock, convert it to tombstone so it can discard it if it is the most bottom level.
+		return badger.DecisionMarkTombstone
+	}
+	// Older version are discarded automatically, we need to keep the first valid version.
+	return badger.DecisionKeep
 }
 
 var (
