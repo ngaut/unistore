@@ -1124,7 +1124,7 @@ type GCCompactionFilter struct {
 // Filter implements the badger.CompactionFilter interface.
 // Since we use txn ts as badger version, we do not need to filter anything.
 func (f *GCCompactionFilter) Filter(key, value, userMeta []byte) badger.Decision {
-	return badger.DecisionKeep
+	return badger.DecisionDrop
 }
 
 var (
