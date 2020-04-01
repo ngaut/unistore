@@ -109,7 +109,7 @@ func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
 	engines := raftstore.NewEngines(dbBundle, dbBundle.DB, kvPath, raftPath)
 	writer := raftstore.NewTestRaftWriter(dbBundle, engines)
 
-	store := NewMVCCStore(dbBundle, safePoint, dbPath, writer, nil)
+	store := NewMVCCStore(dbBundle, dbPath, safePoint, writer, nil)
 	svr := NewServer(nil, store, nil)
 	return &TestStore{
 		MvccStore: store,

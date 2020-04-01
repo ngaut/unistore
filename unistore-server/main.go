@@ -271,7 +271,7 @@ func setupRaftInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdCl
 	innerServer.Setup(pdClient)
 	router := innerServer.GetRaftstoreRouter()
 	storeMeta := innerServer.GetStoreMeta()
-	store := tikv.NewMVCCStore(bundle, safePoint, dbPath, raftstore.NewDBWriter(router), pdClient)
+	store := tikv.NewMVCCStore(bundle, dbPath, safePoint, raftstore.NewDBWriter(router), pdClient)
 	rm := tikv.NewRaftRegionManager(storeMeta, router, store.DeadlockDetectSvr)
 	innerServer.SetPeerEventObserver(rm)
 
@@ -291,7 +291,7 @@ func setupStandAlongInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint
 
 	innerServer := tikv.NewStandAlongInnerServer(bundle)
 	innerServer.Setup(pdClient)
-	store := tikv.NewMVCCStore(bundle, safePoint, conf.Engine.DBPath, tikv.NewDBWriter(bundle), pdClient)
+	store := tikv.NewMVCCStore(bundle, conf.Engine.DBPath, safePoint, tikv.NewDBWriter(bundle), pdClient)
 	store.DeadlockDetectSvr.ChangeRole(tikv.Leader)
 	rm := tikv.NewStandAloneRegionManager(bundle.DB, regionOpts, pdClient)
 

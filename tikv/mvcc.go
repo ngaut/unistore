@@ -61,14 +61,14 @@ type MVCCStore struct {
 }
 
 // NewMVCCStore creates a new MVCCStore
-func NewMVCCStore(bundle *mvcc.DBBundle, safePoint *SafePoint, dataDir string,
+func NewMVCCStore(bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint,
 	writer mvcc.DBWriter, pdClinet pd.Client) *MVCCStore {
 	store := &MVCCStore{
 		db:                bundle.DB,
 		dir:               dataDir,
 		lockStore:         bundle.LockStore,
-		dbWriter:          writer,
 		safePoint:         safePoint,
+		dbWriter:          writer,
 		lockWaiterManager: lockwaiter.NewManager(),
 	}
 	store.DeadlockDetectSvr = NewDetectorServer()
