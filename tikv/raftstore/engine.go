@@ -197,24 +197,24 @@ func (wb *WriteBatch) Rollback(key y.Key) {
 	})
 }
 
-func (wb *WriteBatch) SetWithUserMeta(key y.Key, val, useMeta []byte) {
+func (wb *WriteBatch) SetWithUserMeta(key y.Key, val, userMeta []byte) {
 	wb.entries = append(wb.entries, &badger.Entry{
 		Key:      key,
 		Value:    val,
-		UserMeta: useMeta,
+		UserMeta: userMeta,
 	})
-	wb.size += key.Len() + len(val) + len(useMeta)
+	wb.size += key.Len() + len(val) + len(userMeta)
 }
 
-func (wb *WriteBatch) SetOpLock(key y.Key, useMeta []byte) {
-	startTS := mvcc.DBUserMeta(useMeta).StartTS()
+func (wb *WriteBatch) SetOpLock(key y.Key, userMeta []byte) {
+	startTS := mvcc.DBUserMeta(userMeta).StartTS()
 	opLockKey := y.KeyWithTs(mvcc.EncodeExtraTxnStatusKey(key.UserKey, startTS), key.Version)
 	e := &badger.Entry{
 		Key:      opLockKey,
-		UserMeta: useMeta,
+		UserMeta: userMeta,
 	}
 	wb.entries = append(wb.entries, e)
-	wb.size += key.Len() + len(useMeta)
+	wb.size += key.Len() + len(userMeta)
 }
 
 func (wb *WriteBatch) Delete(key y.Key) {

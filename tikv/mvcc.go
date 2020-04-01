@@ -767,8 +767,8 @@ func (store *MVCCStore) handleLockNotFound(reqCtx *requestCtx, key []byte, start
 	if item == nil {
 		return ErrLockNotFound
 	}
-	useMeta := mvcc.DBUserMeta(item.UserMeta())
-	if useMeta.StartTS() == startTS {
+	userMeta := mvcc.DBUserMeta(item.UserMeta())
+	if userMeta.StartTS() == startTS {
 		// Already committed.
 		return nil
 	}
