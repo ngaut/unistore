@@ -39,7 +39,6 @@ func newTestEngines(t *testing.T) *Engines {
 	kvOpts.ValueThreshold = 256
 	engines.kv.DB, err = badger.Open(kvOpts)
 	engines.kv.LockStore = lockstore.NewMemStore(16 * 1024)
-	engines.kv.RollbackStore = lockstore.NewMemStore(16 * 1024)
 	require.Nil(t, err)
 	engines.raftPath, err = ioutil.TempDir("", "unistore_raft")
 	require.Nil(t, err)

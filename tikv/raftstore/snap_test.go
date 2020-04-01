@@ -141,11 +141,9 @@ func openDBBundle(t *testing.T, dir string) *mvcc.DBBundle {
 	db, err := badger.Open(opts)
 	require.Nil(t, err)
 	lockStore := lockstore.NewMemStore(1024)
-	rollbackStore := lockstore.NewMemStore(1024)
 	return &mvcc.DBBundle{
-		DB:            db,
-		LockStore:     lockStore,
-		RollbackStore: rollbackStore,
+		DB:        db,
+		LockStore: lockStore,
 	}
 }
 

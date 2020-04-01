@@ -94,9 +94,8 @@ func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
 		return nil, err
 	}
 	dbBundle := &mvcc.DBBundle{
-		DB:            db,
-		LockStore:     lockstore.NewMemStore(4096),
-		RollbackStore: lockstore.NewMemStore(4096),
+		DB:        db,
+		LockStore: lockstore.NewMemStore(4096),
 	}
 	// Some raft store path problems could not be found using simple store in tests
 	// writer := NewDBWriter(dbBundle, safePoint)
@@ -367,9 +366,8 @@ func MustCommitErr(key []byte, startTs, commitTs uint64, store *TestStore) {
 func MustRollbackKey(key []byte, startTs uint64, store *TestStore) {
 	err := store.MvccStore.Rollback(store.newReqCtx(), [][]byte{key}, startTs)
 	store.c.Assert(err, IsNil)
-	rollbackKey := mvcc.EncodeRollbackKey(nil, key, startTs)
-	res := store.MvccStore.rollbackStore.Get(rollbackKey, nil)
-	store.c.Assert(len(res), GreaterEqual, 0)
+	status := store.MvccStore.checkExtraTxnStatus(store.newReqCtx(), key, startTs)
+	store.c.Assert(status.isRollback, IsTrue)
 }
 
 func MustRollbackErr(key []byte, startTs uint64, store *TestStore) {
@@ -453,10 +451,8 @@ func MustTxnHeartBeat(pk []byte, startTs, adviceTTL, expectedTTL uint64, store *
 }
 
 func MustGetRollback(key []byte, ts uint64, store *TestStore) {
-	// Rollback entry still exits in rollbackStore if no rollbackGC
-	rollbackKey := mvcc.EncodeRollbackKey(key, key, ts)
-	res := store.MvccStore.rollbackStore.Get(rollbackKey, nil)
-	store.c.Assert(bytes.Compare(res, []byte{0}), Equals, 0)
+	res := store.MvccStore.checkExtraTxnStatus(store.newReqCtx(), key, ts)
+	store.c.Assert(res.isRollback, IsTrue)
 }
 
 func (s *testMvccSuite) TestBasicOptimistic(c *C) {
@@ -521,11 +517,8 @@ func (s *testMvccSuite) TestRollback(c *C) {
 
 	MustPrewriteOptimistic(key, key, val, startTs+1, lockTTL, 0, store)
 	MustRollbackKey(key, startTs+1, store)
-	var buf []byte
-	// Rollback entry still exits in rollbackStore if no rollbackGC
-	rollbackKey := mvcc.EncodeRollbackKey(buf, key, startTs)
-	res := store.MvccStore.rollbackStore.Get(rollbackKey, nil)
-	c.Assert(bytes.Compare(res, []byte{0}), Equals, 0)
+	res := store.MvccStore.checkExtraTxnStatus(store.newReqCtx(), key, startTs)
+	c.Assert(res.isRollback, IsTrue)
 
 	// Test collapse rollback
 	k := []byte("tk")
@@ -733,7 +726,7 @@ func (s *testMvccSuite) TestMvccGet(c *C) {
 
 	c.Assert(res.Writes[1].StartTs, Equals, startTs3)
 	c.Assert(res.Writes[1].CommitTs, Equals, startTs3)
-	c.Assert(bytes.Compare(res.Writes[1].ShortValue, []byte{0}), Equals, 0)
+	c.Assert(bytes.Compare(res.Writes[1].ShortValue, emptyVal), Equals, 0)
 
 	c.Assert(res.Writes[0].StartTs, Equals, startTs4)
 	c.Assert(res.Writes[0].CommitTs, Equals, commitTs4)
@@ -756,10 +749,12 @@ func (s *testMvccSuite) TestMvccGet(c *C) {
 
 	c.Assert(res2.Writes[1].StartTs, Equals, startTs3)
 	c.Assert(res2.Writes[1].CommitTs, Equals, startTs3)
-	c.Assert(bytes.Compare(res2.Writes[1].ShortValue, []byte{0}), Equals, 0)
+	c.Assert(res2.Writes[1].Type, Equals, kvrpcpb.Op_Rollback)
+	c.Assert(bytes.Compare(res2.Writes[1].ShortValue, emptyVal), Equals, 0)
 
 	c.Assert(res2.Writes[0].StartTs, Equals, startTs4)
 	c.Assert(res2.Writes[0].CommitTs, Equals, commitTs4)
+	c.Assert(res2.Writes[0].Type, Equals, kvrpcpb.Op_Del)
 	c.Assert(bytes.Compare(res2.Writes[0].ShortValue, emptyVal), Equals, 0)
 
 	// read using MvccGetByStartTs using non exists startTs
@@ -777,7 +772,7 @@ func (s *testMvccSuite) TestMvccGet(c *C) {
 	c.Assert(len(res4.Writes), Equals, 4)
 	c.Assert(res4.Writes[1].StartTs, Equals, startTs3)
 	c.Assert(res4.Writes[1].CommitTs, Equals, startTs3)
-	c.Assert(bytes.Compare(res4.Writes[1].ShortValue, []byte{0}), Equals, 0)
+	c.Assert(bytes.Compare(res4.Writes[1].ShortValue, emptyVal), Equals, 0)
 
 	res4, resKey, err = store.MvccStore.MvccGetByStartTs(store.newReqCtxWithKeys([]byte("t1_r1"), []byte("t1_r2")), startTs2)
 	c.Assert(err, IsNil)
@@ -786,7 +781,7 @@ func (s *testMvccSuite) TestMvccGet(c *C) {
 	c.Assert(len(res4.Writes), Equals, 4)
 	c.Assert(res4.Writes[1].StartTs, Equals, startTs3)
 	c.Assert(res4.Writes[1].CommitTs, Equals, startTs3)
-	c.Assert(bytes.Compare(res4.Writes[1].ShortValue, []byte{0}), Equals, 0)
+	c.Assert(bytes.Compare(res4.Writes[1].ShortValue, emptyVal), Equals, 0)
 }
 
 func (s *testMvccSuite) TestPrimaryKeyOpLock(c *C) {

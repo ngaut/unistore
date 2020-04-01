@@ -109,14 +109,16 @@ type ApplyOptions struct {
 	Region   *metapb.Region
 	Abort    *uint32
 	Builder  *table.Builder
+	WB       *WriteBatch
 }
 
-func newApplyOptions(db *mvcc.DBBundle, region *metapb.Region, abort *uint32, builder *table.Builder) *ApplyOptions {
+func newApplyOptions(db *mvcc.DBBundle, region *metapb.Region, abort *uint32, builder *table.Builder, wb *WriteBatch) *ApplyOptions {
 	return &ApplyOptions{
 		DBBundle: db,
 		Region:   region,
 		Abort:    abort,
 		Builder:  builder,
+		WB:       wb,
 	}
 }
 
@@ -766,7 +768,9 @@ func (s *Snap) Apply(opts ApplyOptions) (ApplyResult, error) {
 		case applySnapTypeLock:
 			opts.DBBundle.LockStore.Put(item.key.UserKey, item.val)
 		case applySnapTypeRollback:
-			opts.DBBundle.RollbackStore.Put(item.key.UserKey, item.val)
+			opts.WB.Rollback(item.key)
+		case applySnapTypeOpLock:
+			opts.WB.SetOpLock(item.key, item.userMeta)
 		}
 	}
 

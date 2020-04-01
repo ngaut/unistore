@@ -18,7 +18,6 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
@@ -51,15 +50,6 @@ func (batch *writeDBBatch) set(key y.Key, val []byte, userMeta []byte) {
 	})
 }
 
-func (batch *writeDBBatch) setHidden(key y.Key, userMeta []byte) {
-	e := &badger.Entry{
-		Key:      key,
-		UserMeta: userMeta,
-	}
-	e.SetHidden()
-	batch.entries = append(batch.entries, e)
-}
-
 // delete is a badger level operation, only used in DeleteRange, so we don't need to set UserMeta.
 // Then we can tell the entry is delete if UserMeta is nil.
 func (batch *writeDBBatch) delete(key y.Key) {
@@ -79,20 +69,6 @@ func (batch *writeLockBatch) set(key, val []byte) {
 		Key:      y.KeyWithTs(key, 0),
 		Value:    val,
 		UserMeta: mvcc.LockUserMetaNone,
-	})
-}
-
-func (batch *writeLockBatch) rollback(key []byte) {
-	batch.entries = append(batch.entries, &badger.Entry{
-		Key:      y.KeyWithTs(key, 0),
-		UserMeta: mvcc.LockUserMetaRollback,
-	})
-}
-
-func (batch *writeLockBatch) rollbackGC(key []byte) {
-	batch.entries = append(batch.entries, &badger.Entry{
-		Key:      y.KeyWithTs(key, 0),
-		UserMeta: mvcc.LockUserMetaRollbackGC,
 	})
 }
 
@@ -161,7 +137,6 @@ type writeLockWorker struct {
 
 func (w writeLockWorker) run() {
 	defer w.writer.wg.Done()
-	rollbackStore := w.writer.bundle.RollbackStore
 	ls := w.writer.bundle.LockStore
 	var batches []*writeLockBatch
 	for {
@@ -184,15 +159,11 @@ func (w writeLockWorker) run() {
 		for _, batch := range batches {
 			for _, entry := range batch.entries {
 				switch entry.UserMeta[0] {
-				case mvcc.LockUserMetaRollbackByte:
-					rollbackStore.Put(entry.Key.UserKey, []byte{0})
 				case mvcc.LockUserMetaDeleteByte:
 					delCnt++
 					if !ls.DeleteWithHint(entry.Key.UserKey, hint) {
 						panic("failed to delete key")
 					}
-				case mvcc.LockUserMetaRollbackGCByte:
-					rollbackStore.Delete(entry.Key.UserKey)
 				default:
 					insertCnt++
 					ls.PutWithHint(entry.Key.UserKey, entry.Value, hint)
@@ -200,45 +171,6 @@ func (w writeLockWorker) run() {
 			}
 			batch.wg.Done()
 		}
-	}
-}
-
-// rollbackGCWorker delete all rollback keys after one minute to recycle memory.
-type rollbackGCWorker struct {
-	writer *dbWriter
-}
-
-func (w rollbackGCWorker) run() {
-	defer w.writer.wg.Done()
-	ticker := time.Tick(time.Minute)
-	rollbackStore := w.writer.bundle.RollbackStore
-	for {
-		select {
-		case <-w.writer.closeCh:
-			return
-		case <-ticker:
-		}
-		lockBatch := &writeLockBatch{}
-		it := rollbackStore.NewIterator()
-		latestTS := w.writer.getLatestTS()
-		for it.SeekToFirst(); it.Valid(); it.Next() {
-			ts := mvcc.DecodeKeyTS(it.Key())
-			if tsSub(latestTS, ts) > time.Minute {
-				lockBatch.rollbackGC(safeCopy(it.Key()))
-			}
-			if len(lockBatch.entries) >= 1000 {
-				lockBatch.wg.Add(1)
-				w.writer.lockCh <- lockBatch
-				lockBatch.wg.Wait()
-				lockBatch.entries = lockBatch.entries[:0]
-			}
-		}
-		if len(lockBatch.entries) == 0 {
-			continue
-		}
-		lockBatch.wg.Add(1)
-		w.writer.lockCh <- lockBatch
-		lockBatch.wg.Wait()
 	}
 }
 
@@ -273,10 +205,6 @@ func (writer *dbWriter) Open() {
 	go writeLockWorker{
 		batchCh: lockCh,
 		writer:  writer,
-	}.run()
-
-	go rollbackGCWorker{
-		writer: writer,
 	}.run()
 }
 
@@ -323,15 +251,16 @@ func (wb *writeBatch) Commit(key []byte, lock *mvcc.MvccLock) {
 	if lock.Op != uint8(kvrpcpb.Op_Lock) {
 		wb.dbBatch.set(k, lock.Value, userMeta)
 	} else if bytes.Equal(key, lock.Primary) {
-		// Convert the lock to a delete to store the transaction status.
-		wb.dbBatch.set(k, nil, userMeta)
+		opLockKey := y.KeyWithTs(mvcc.EncodeExtraTxnStatusKey(key, wb.startTS), wb.startTS)
+		wb.dbBatch.set(opLockKey, nil, userMeta)
 	}
 	wb.lockBatch.delete(key)
 }
 
 func (wb *writeBatch) Rollback(key []byte, deleteLock bool) {
-	rollbackKey := mvcc.EncodeRollbackKey(nil, key, wb.startTS)
-	wb.lockBatch.rollback(rollbackKey)
+	rollbackKey := y.KeyWithTs(mvcc.EncodeExtraTxnStatusKey(key, wb.startTS), wb.startTS)
+	userMeta := mvcc.NewDBUserMeta(wb.startTS, 0)
+	wb.dbBatch.set(rollbackKey, nil, userMeta)
 	if deleteLock {
 		wb.lockBatch.delete(key)
 	}

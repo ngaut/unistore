@@ -37,6 +37,7 @@ const (
 	applySnapTypePut = iota
 	applySnapTypeLock
 	applySnapTypeRollback
+	applySnapTypeOpLock
 )
 
 // snapApplier iteratos all the CFs and returns the entries to write to badger.
@@ -188,7 +189,14 @@ func (ai *snapApplier) nextWrite() (*applySnapItem, error) {
 	writeVal := decodeWriteCFValue(y.SafeCopy(nil, ai.writeCFIterator.Value()))
 	if writeVal.writeType == byte(kvrpcpb.Op_Rollback) {
 		item.applySnapType = applySnapTypeRollback
-		item.key = y.KeyWithTs(codec.EncodeUintDesc(ai.curWriteKey, writeVal.startTS), 0)
+		item.key = y.KeyWithTs(ai.curWriteKey, writeVal.startTS)
+		item.userMeta = mvcc.NewDBUserMeta(writeVal.startTS, 0)
+		return item, nil
+	}
+	if writeVal.writeType == byte(kvrpcpb.Op_Lock) {
+		item.applySnapType = applySnapTypeOpLock
+		item.key = y.KeyWithTs(ai.curWriteKey, writeVal.startTS)
+		item.userMeta = mvcc.NewDBUserMeta(writeVal.startTS, ai.curWriteCommitTS)
 		return item, nil
 	}
 	item.applySnapType = applySnapTypePut

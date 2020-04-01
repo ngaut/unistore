@@ -59,16 +59,16 @@ func NewIterator(txn *badger.Txn, reverse bool, startKey, endKey []byte) *badger
 
 // DBReader reads data from DB, for read-only requests, the locks must already be checked before DBReader is created.
 type DBReader struct {
-	startKey []byte
-	endKey   []byte
-	txn      *badger.Txn
-	iter     *badger.Iterator
-	revIter  *badger.Iterator
+	startKey  []byte
+	endKey    []byte
+	txn       *badger.Txn
+	iter      *badger.Iterator
+	extraIter *badger.Iterator
+	revIter   *badger.Iterator
 }
 
 // GetMvccInfoByKey fills MvccInfo reading committed keys from db
 func (r *DBReader) GetMvccInfoByKey(key []byte, isRowKey bool, mvccInfo *kvrpcpb.MvccInfo) error {
-	r.txn.SetReadHidden(true)
 	it := r.GetIter()
 	it.SetAllVersions(true)
 	for it.Seek(key); it.Valid(); it.Next() {
@@ -83,9 +83,7 @@ func (r *DBReader) GetMvccInfoByKey(key []byte, isRowKey bool, mvccInfo *kvrpcpb
 		}
 		userMeta := mvcc.DBUserMeta(item.UserMeta())
 		var tp kvrpcpb.Op
-		if item.IsHidden() {
-			tp = kvrpcpb.Op_Lock
-		} else if len(val) == 0 {
+		if len(val) == 0 {
 			tp = kvrpcpb.Op_Del
 		} else {
 			tp = kvrpcpb.Op_Put
@@ -117,6 +115,17 @@ func (r *DBReader) GetIter() *badger.Iterator {
 		r.iter = NewIterator(r.txn, false, r.startKey, r.endKey)
 	}
 	return r.iter
+}
+
+func (r *DBReader) GetExtraIter() *badger.Iterator {
+	if r.extraIter == nil {
+		rbStartKey := append([]byte{}, r.startKey...)
+		rbStartKey[0]++
+		rbEndKey := append([]byte{}, r.endKey...)
+		rbEndKey[0]++
+		r.extraIter = NewIterator(r.txn, false, rbStartKey, rbEndKey)
+	}
+	return r.extraIter
 }
 
 func (r *DBReader) getReverseIter() *badger.Iterator {
@@ -204,7 +213,6 @@ func (r *DBReader) Scan(startKey, endKey []byte, limit int, startTS uint64, proc
 }
 
 func (r *DBReader) GetKeyByStartTs(startKey, endKey []byte, startTs uint64) ([]byte, error) {
-	r.txn.SetReadHidden(true)
 	iter := r.GetIter()
 	iter.SetAllVersions(true)
 	for iter.Seek(startKey); iter.Valid(); iter.Next() {
@@ -272,6 +280,9 @@ func (r *DBReader) Close() {
 	}
 	if r.revIter != nil {
 		r.revIter.Close()
+	}
+	if r.extraIter != nil {
+		r.extraIter.Close()
 	}
 	r.txn.Discard()
 }

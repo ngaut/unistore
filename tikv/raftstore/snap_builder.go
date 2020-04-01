@@ -15,6 +15,7 @@ package raftstore
 
 import (
 	"bytes"
+	"math"
 	"os"
 
 	"github.com/coocood/badger"
@@ -31,15 +32,24 @@ func newSnapBuilder(cfFiles []*CFFile, snap *regionSnapshot, region *metapb.Regi
 	b := new(snapBuilder)
 	b.cfFiles = cfFiles
 	b.endKey = rawRegionKey(region.EndKey)
+	if len(b.endKey) > 0 {
+		b.extraEndKey = mvcc.EncodeExtraTxnStatusKey(b.endKey, 0)
+	}
 	b.txn = snap.txn
 	itOpt := badger.DefaultIteratorOptions
 	itOpt.AllVersions = true
 	b.dbIterator = b.txn.NewIterator(itOpt)
+	// extraIterator doesn't need to read all versions because startTS is encoded in the key.
+	b.extraIterator = b.txn.NewIterator(badger.DefaultIteratorOptions)
 	startKey := rawDataStartKey(region.StartKey)
 
 	b.dbIterator.Seek(startKey)
 	if b.dbIterator.Valid() && !b.reachEnd(b.dbIterator.Item().Key()) {
 		b.curDBKey = b.dbIterator.Item().Key()
+	}
+	b.extraIterator.Seek(mvcc.EncodeExtraTxnStatusKey(startKey, math.MaxUint64))
+	if b.extraIterator.Valid() && !b.reachExtraEnd(b.extraIterator.Item().Key()) {
+		b.curExtraKey = mvcc.DecodeExtraTxnStatusKey(b.extraIterator.Item().Key())
 	}
 
 	b.lockIterator = snap.lockSnap.NewIterator()
@@ -67,11 +77,14 @@ func newSnapBuilder(cfFiles []*CFFile, snap *regionSnapshot, region *metapb.Regi
 // TODO: handle rollbacks and locks the region later.
 type snapBuilder struct {
 	endKey          []byte
+	extraEndKey     []byte
 	txn             *badger.Txn
 	lockIterator    *lockstore.Iterator
 	dbIterator      *badger.Iterator
+	extraIterator   *badger.Iterator
 	curLockKey      []byte
 	curDBKey        []byte
+	curExtraKey     []byte
 	lockCFWriter    *os.File
 	defaultCFWriter *rocksdb.SstFileWriter
 	writeCFWriter   *rocksdb.SstFileWriter
@@ -85,22 +98,27 @@ type snapBuilder struct {
 func (b *snapBuilder) build() error {
 	defer func() {
 		b.dbIterator.Close()
+		b.extraIterator.Close()
 		b.txn.Discard()
 	}()
 	for {
 		var err error
-		if b.curLockKey != nil && b.curDBKey != nil {
-			if bytes.Compare(b.curLockKey, b.curDBKey) <= 0 {
-				err = b.addLockEntry()
-			} else {
-				err = b.addDBEntry()
+		switch b.currentKeyType() {
+		case currentKeyDB:
+			if len(b.curDBKey) == 0 {
+				return nil
 			}
-		} else if b.curLockKey != nil {
-			err = b.addLockEntry()
-		} else if b.curDBKey != nil {
 			err = b.addDBEntry()
-		} else {
-			return nil
+		case currentKeyLock:
+			if len(b.curLockKey) == 0 {
+				return nil
+			}
+			err = b.addLockEntry()
+		case currentKeyExtra:
+			if len(b.curExtraKey) == 0 {
+				return nil
+			}
+			err = b.addExtraEntry()
 		}
 		if err != nil {
 			return err
@@ -108,11 +126,35 @@ func (b *snapBuilder) build() error {
 	}
 }
 
+const (
+	currentKeyDB = iota
+	currentKeyLock
+	currentKeyExtra
+)
+
+func (b *snapBuilder) currentKeyType() (keyType int) {
+	curKey := b.curDBKey
+	if len(curKey) == 0 || (len(b.curLockKey) > 0 && bytes.Compare(b.curLockKey, curKey) < 0) {
+		keyType = currentKeyLock
+	}
+	if len(curKey) == 0 || (len(b.curExtraKey) > 0 && bytes.Compare(b.curExtraKey, curKey) < 0) {
+		keyType = currentKeyExtra
+	}
+	return
+}
+
 func (b *snapBuilder) reachEnd(key []byte) bool {
 	if len(b.endKey) == 0 {
 		return false
 	}
 	return bytes.Compare(key, b.endKey) >= 0
+}
+
+func (b *snapBuilder) reachExtraEnd(key []byte) bool {
+	if len(b.extraEndKey) == 0 {
+		return false
+	}
+	return bytes.Compare(key, b.extraEndKey) >= 0
 }
 
 func (b *snapBuilder) addLockEntry() error {
@@ -167,7 +209,11 @@ func (b *snapBuilder) addDBEntry() error {
 		return err
 	}
 	meta := mvcc.DBUserMeta(item.UserMeta())
-	err = b.addSSTKey(b.curDBKey, meta.StartTS(), meta.CommitTS(), val)
+	writeType := byte(kvrpcpb.Op_Put)
+	if len(val) == 0 {
+		writeType = byte(kvrpcpb.Op_Del)
+	}
+	err = b.addSSTKey(b.curDBKey, meta.StartTS(), meta.CommitTS(), val, writeType)
 	if err != nil {
 		return err
 	}
@@ -180,14 +226,34 @@ func (b *snapBuilder) addDBEntry() error {
 	return nil
 }
 
-func (b *snapBuilder) addSSTKey(key []byte, startTS, commitTS uint64, val []byte) error {
+func (b *snapBuilder) addExtraEntry() error {
+	item := b.extraIterator.Item()
+	meta := mvcc.DBUserMeta(item.UserMeta())
+	var sstCommitTS uint64
+	var writeType byte
+	if meta.CommitTS() == 0 {
+		writeType = byte(kvrpcpb.Op_Rollback)
+		sstCommitTS = meta.StartTS()
+	} else {
+		writeType = byte(kvrpcpb.Op_Lock)
+		sstCommitTS = meta.CommitTS()
+	}
+	err := b.addSSTKey(b.curExtraKey, meta.StartTS(), sstCommitTS, nil, writeType)
+	if err != nil {
+		return err
+	}
+	b.curExtraKey = nil
+	b.extraIterator.Next()
+	if b.extraIterator.Valid() && !b.reachExtraEnd(b.extraIterator.Item().Key()) {
+		b.curExtraKey = mvcc.DecodeExtraTxnStatusKey(b.extraIterator.Item().Key())
+	}
+	return nil
+}
+
+func (b *snapBuilder) addSSTKey(key []byte, startTS, commitTS uint64, val []byte, writeType byte) error {
 	writeCFKey := encodeRocksDBSSTKey(key, commitTS)
 	writeCFVal := new(writeCFValue)
-	if len(val) == 0 {
-		writeCFVal.writeType = byte(kvrpcpb.Op_Del)
-	} else {
-		writeCFVal.writeType = byte(kvrpcpb.Op_Put)
-	}
+	writeCFVal.writeType = writeType
 	writeCFVal.startTS = startTS
 	if len(val) <= shortValueMaxLen {
 		writeCFVal.shortValue = val
@@ -210,8 +276,4 @@ func (b *snapBuilder) addSSTKey(key []byte, startTS, commitTS uint64, val []byte
 	b.size += len(writeCFKey) + len(encodedWriteCFVal)
 	b.kvCount++
 	return nil
-}
-
-func isLatestKeyAndOldKeySame(lastestKey, oldKey []byte) bool {
-	return len(oldKey)-len(lastestKey) == 8 && bytes.Equal(lastestKey[1:], oldKey[1:len(lastestKey)])
 }

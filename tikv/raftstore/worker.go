@@ -625,6 +625,7 @@ func (pendDelRanges *pendingDeleteRanges) drainOverlapRanges(startKey, endKey []
 
 type snapContext struct {
 	engiens             *Engines
+	wb                  *WriteBatch
 	batchSize           uint64
 	mgr                 *SnapManager
 	cleanStalePeerDelay time.Duration
@@ -695,11 +696,11 @@ func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builde
 
 	snap, err := snapCtx.mgr.GetSnapshotForApplying(snapKey)
 	if err != nil {
-		return result, errors.New(fmt.Sprintf("missing snapshot file %s", snap.Path()))
+		return result, errors.New(fmt.Sprintf("missing snapshot file %s", snapKey))
 	}
 
 	t := time.Now()
-	applyOptions := newApplyOptions(snapCtx.engiens.kv, regionState.GetRegion(), status, builder)
+	applyOptions := newApplyOptions(snapCtx.engiens.kv, regionState.GetRegion(), status, builder, snapCtx.wb)
 	if result, err = snap.Apply(*applyOptions); err != nil {
 		return result, err
 	}
@@ -863,7 +864,8 @@ func (r *regionTaskHandler) finishApply() error {
 		log.Errorf("ingest sst failed (first %d files succeeded): %s", n, err)
 	}
 
-	wb := new(WriteBatch)
+	wb := r.ctx.wb
+	r.ctx.wb = nil
 	var cnt int
 	for _, state := range r.applyStates {
 		if cnt >= n {
@@ -892,6 +894,7 @@ func (r *regionTaskHandler) finishApply() error {
 
 // handlePendingApplies tries to apply pending tasks if there is some.
 func (r *regionTaskHandler) handlePendingApplies() {
+	r.ctx.wb = new(WriteBatch)
 	for len(r.pendingApplies) > 0 {
 		// Should not handle too many applies than the number of files that can be ingested.
 		// Check level 0 every time because we can not make sure how does the number of level 0 files change.

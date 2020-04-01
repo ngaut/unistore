@@ -150,16 +150,18 @@ func (rl *CustomRaftLog) IterateCommit(itFunc func(key, val []byte, commitTS uin
 	}
 }
 
-func (rl *CustomRaftLog) IterateRollback(itFunc func(key []byte, deleteLock bool)) {
+func (rl *CustomRaftLog) IterateRollback(itFunc func(key []byte, startTS uint64, deleteLock bool)) {
 	i := 4 + headerSize
 	for i < len(rl.Data) {
 		keyLen := endian.Uint16(rl.Data[i:])
 		i += 2
 		key := rl.Data[i : i+int(keyLen)]
 		i += int(keyLen)
+		startTS := endian.Uint64(rl.Data[i:])
+		i += 8
 		del := rl.Data[i]
 		i++
-		itFunc(key, del > 0)
+		itFunc(key, startTS, del > 0)
 	}
 }
 
@@ -203,9 +205,10 @@ func (b *CustomBuilder) AppendCommit(key, value []byte, commitTS uint64) {
 	b.cnt++
 }
 
-func (b *CustomBuilder) AppendRollback(key []byte, deleteLock bool) {
+func (b *CustomBuilder) AppendRollback(key []byte, startTS uint64, deleteLock bool) {
 	b.data = append(b.data, u16ToBytes(uint16(len(key)))...)
 	b.data = append(b.data, key...)
+	b.data = append(b.data, u64ToBytes(startTS)...)
 	if deleteLock {
 		b.data = append(b.data, 1)
 	} else {

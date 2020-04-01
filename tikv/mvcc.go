@@ -46,11 +46,11 @@ import (
 
 // MVCCStore is a wrapper of badger.DB to provide MVCC functions.
 type MVCCStore struct {
-	dir           string
-	db            *badger.DB
-	lockStore     *lockstore.MemStore
-	rollbackStore *lockstore.MemStore
-	dbWriter      mvcc.DBWriter
+	dir       string
+	db        *badger.DB
+	lockStore *lockstore.MemStore
+	dbWriter  mvcc.DBWriter
+	safePoint *SafePoint
 
 	gcLock sync.Mutex
 
@@ -61,14 +61,14 @@ type MVCCStore struct {
 }
 
 // NewMVCCStore creates a new MVCCStore
-func NewMVCCStore(bundle *mvcc.DBBundle, dataDir string,
+func NewMVCCStore(bundle *mvcc.DBBundle, safePoint *SafePoint, dataDir string,
 	writer mvcc.DBWriter, pdClinet pd.Client) *MVCCStore {
 	store := &MVCCStore{
 		db:                bundle.DB,
 		dir:               dataDir,
 		lockStore:         bundle.LockStore,
-		rollbackStore:     bundle.RollbackStore,
 		dbWriter:          writer,
+		safePoint:         safePoint,
 		lockWaiterManager: lockwaiter.NewManager(),
 	}
 	store.DeadlockDetectSvr = NewDetectorServer()
@@ -214,9 +214,6 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 	var dup bool
 	for _, m := range mutations {
 		lock, err := store.checkConflictInLockStore(reqCtx, m, startTS)
-		if err == ErrAlreadyRollback {
-			return nil, err
-		}
 		if err != nil {
 			return store.handleCheckPessimisticErr(startTS, err, req.IsFirstLock, req.WaitTimeout)
 		}
@@ -230,6 +227,15 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 				break
 			}
 			// Single statement rollback key, we can overwrite it.
+		}
+		if bytes.Equal(m.Key, req.PrimaryLock) {
+			txnStatus := store.checkExtraTxnStatus(reqCtx, m.Key, startTS)
+			if txnStatus.isRollback {
+				return nil, ErrAlreadyRollback
+			} else if txnStatus.isOpLockCommitted() {
+				dup = true
+				break
+			}
 		}
 	}
 	items, err := store.getDBItems(reqCtx, mutations)
@@ -272,6 +278,30 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 		}
 	}
 	return nil, err
+}
+
+// extraTxnStatus can be rollback or Op_Lock that only contains transaction status info, no values.
+type extraTxnStatus struct {
+	commitTS   uint64
+	isRollback bool
+}
+
+func (s extraTxnStatus) isOpLockCommitted() bool {
+	return s.commitTS > 0
+}
+
+func (store *MVCCStore) checkExtraTxnStatus(reqCtx *requestCtx, key []byte, startTS uint64) extraTxnStatus {
+	txn := reqCtx.getDBReader().GetTxn()
+	txnStatusKey := mvcc.EncodeExtraTxnStatusKey(key, startTS)
+	item, err := txn.Get(txnStatusKey)
+	if err != nil {
+		return extraTxnStatus{}
+	}
+	userMeta := mvcc.DBUserMeta(item.UserMeta())
+	if userMeta.CommitTS() == 0 {
+		return extraTxnStatus{isRollback: true}
+	}
+	return extraTxnStatus{commitTS: userMeta.CommitTS()}
 }
 
 func (store *MVCCStore) PessimisticRollback(reqCtx *requestCtx, req *kvrpcpb.PessimisticRollbackRequest) error {
@@ -371,8 +401,13 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 		return
 	}
 	// Check if the transaction already rollbacked
-	if len(store.rollbackStore.Get(req.PrimaryKey, nil)) > 0 {
+	status := store.checkExtraTxnStatus(reqCtx, req.PrimaryKey, req.LockTs)
+	if status.isRollback {
 		action = kvrpcpb.Action_NoAction
+		return
+	}
+	if status.isOpLockCommitted() {
+		commitTS = status.commitTS
 		return
 	}
 	// If current transaction is not prewritted before, it may be pessimistic lock.
@@ -469,6 +504,16 @@ func (store *MVCCStore) prewriteOptimistic(reqCtx *requestCtx, mutations []*kvrp
 		if lock != nil {
 			// duplicated command
 			return nil
+		}
+		if bytes.Equal(m.Key, req.PrimaryLock) {
+			status := store.checkExtraTxnStatus(reqCtx, m.Key, req.StartVersion)
+			if status.isRollback {
+				return ErrAlreadyRollback
+			}
+			if status.isOpLockCommitted() {
+				// duplicated command
+				return nil
+			}
 		}
 	}
 	items, err := store.getDBItems(reqCtx, mutations)
@@ -635,10 +680,6 @@ func (store *MVCCStore) getLock(req *requestCtx, key []byte) *mvcc.MvccLock {
 
 func (store *MVCCStore) checkConflictInLockStore(
 	req *requestCtx, mutation *kvrpcpb.Mutation, startTS uint64) (*mvcc.MvccLock, error) {
-	req.buf = mvcc.EncodeRollbackKey(req.buf, mutation.Key, startTS)
-	if len(store.rollbackStore.Get(req.buf, nil)) > 0 {
-		return nil, ErrAlreadyRollback
-	}
 	req.buf = store.lockStore.Get(mutation.Key, req.buf)
 	if len(req.buf) == 0 {
 		return nil, nil
@@ -721,7 +762,6 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 
 func (store *MVCCStore) handleLockNotFound(reqCtx *requestCtx, key []byte, startTS, commitTS uint64) error {
 	txn := reqCtx.getDBReader().GetTxn()
-	txn.SetReadHidden(true)
 	txn.SetReadTS(commitTS)
 	item, err := txn.Get(key)
 	if err != nil && err != badger.ErrKeyNotFound {
@@ -782,13 +822,6 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 
 func (store *MVCCStore) rollbackKeyReadLock(reqCtx *requestCtx, batch mvcc.WriteBatch, key []byte,
 	startTS, currentTs uint64) (int, error) {
-	reqCtx.buf = mvcc.EncodeRollbackKey(reqCtx.buf, key, startTS)
-	rollbackKey := safeCopy(reqCtx.buf)
-	reqCtx.buf = store.rollbackStore.Get(rollbackKey, reqCtx.buf)
-	if len(reqCtx.buf) != 0 {
-		// Already rollback.
-		return rollbackStatusDone, nil
-	}
 	reqCtx.buf = store.lockStore.Get(key, reqCtx.buf)
 	hasLock := len(reqCtx.buf) > 0
 	if hasLock {
@@ -829,7 +862,6 @@ func (store *MVCCStore) rollbackKeyReadDB(req *requestCtx, batch mvcc.WriteBatch
 
 func (store *MVCCStore) checkCommitted(reader *dbreader.DBReader, key []byte, startTS uint64) (uint64, error) {
 	txn := reader.GetTxn()
-	txn.SetReadHidden(true)
 	item, err := txn.Get(key)
 	if err != nil && err != badger.ErrKeyNotFound {
 		return 0, errors.Trace(err)
@@ -923,6 +955,10 @@ func (store *MVCCStore) Cleanup(reqCtx *requestCtx, key []byte, startTS, current
 		if err != nil {
 			return err
 		}
+		rbStatus := store.checkExtraTxnStatus(reqCtx, key, startTS)
+		if rbStatus.isOpLockCommitted() {
+			return ErrAlreadyCommitted(rbStatus.commitTS)
+		}
 	}
 	err = store.dbWriter.Write(batch)
 	store.lockWaiterManager.WakeUp(startTS, 0, hashVals)
@@ -1004,6 +1040,7 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 func (store *MVCCStore) GC(reqCtx *requestCtx, safePoint uint64) error {
 	// We use the gcLock to make sure safePoint can only increase.
 	store.db.UpdateSafeTs(safePoint)
+	store.safePoint.UpdateTS(safePoint)
 	return nil
 }
 
@@ -1033,7 +1070,7 @@ func (store *MVCCStore) MvccGetByKey(reqCtx *requestCtx, key []byte) (*kvrpcpb.M
 		return nil, err
 	}
 	// Get rollback writes from rollback store
-	err = store.getRollbackMvcc(key, uint64(math.MaxUint64), reqCtx, mvccInfo)
+	err = store.getExtraMvccInfo(key, reqCtx, mvccInfo)
 	if err != nil {
 		return nil, err
 	}
@@ -1043,17 +1080,21 @@ func (store *MVCCStore) MvccGetByKey(reqCtx *requestCtx, key []byte) (*kvrpcpb.M
 	return mvccInfo, nil
 }
 
-func (store *MVCCStore) getRollbackMvcc(rawkey []byte, ts uint64,
+func (store *MVCCStore) getExtraMvccInfo(rawkey []byte,
 	reqCtx *requestCtx, mvccInfo *kvrpcpb.MvccInfo) error {
-	it := store.rollbackStore.NewIterator()
-	rbStartKey := mvcc.EncodeRollbackKey(reqCtx.buf, rawkey, ts)
-	for it.Seek(rbStartKey); it.Valid() && bytes.HasPrefix(it.Key(), rawkey); it.Next() {
-		rollbackTs := mvcc.DecodeKeyTS(it.Key())
+	it := reqCtx.getDBReader().GetExtraIter()
+	rbStartKey := mvcc.EncodeExtraTxnStatusKey(rawkey, math.MaxUint64)
+	rbEndKey := mvcc.EncodeExtraTxnStatusKey(rawkey, 0)
+	for it.Seek(rbStartKey); it.Valid(); it.Next() {
+		item := it.Item()
+		if bytes.Compare(item.Key(), rbEndKey) > 0 {
+			break
+		}
+		rollbackTs := mvcc.DecodeKeyTS(item.Key())
 		curRecord := &kvrpcpb.MvccWrite{
-			Type:       kvrpcpb.Op_Rollback,
-			StartTs:    rollbackTs,
-			CommitTs:   rollbackTs,
-			ShortValue: safeCopy(it.Value()),
+			Type:     kvrpcpb.Op_Rollback,
+			StartTs:  rollbackTs,
+			CommitTs: rollbackTs,
 		}
 		mvccInfo.Writes = append(mvccInfo.Writes, curRecord)
 	}
@@ -1109,25 +1150,60 @@ func (store *MVCCStore) BatchGet(reqCtx *requestCtx, keys [][]byte, version uint
 	return pairs
 }
 
+type SafePoint struct {
+	timestamp uint64
+}
+
+func (sp *SafePoint) UpdateTS(ts uint64) {
+	for {
+		old := atomic.LoadUint64(&sp.timestamp)
+		if old < ts {
+			if !atomic.CompareAndSwapUint64(&sp.timestamp, old, ts) {
+				continue
+			}
+		}
+		break
+	}
+}
+
 // CreateCompactionFilter implements badger.CompactionFilterFactory function.
-func CreateCompactionFilter(targetLevel int, startKey, endKey []byte) badger.CompactionFilter {
+func (sp *SafePoint) CreateCompactionFilter(targetLevel int, startKey, endKey []byte) badger.CompactionFilter {
 	return &GCCompactionFilter{
 		targetLevel: targetLevel,
+		safePoint:   atomic.LoadUint64(&sp.timestamp),
 	}
 }
 
 // GCCompactionFilter implements the badger.CompactionFilter interface.
 type GCCompactionFilter struct {
 	targetLevel int
+	safePoint   uint64
 }
+
+const (
+	metaPrefix byte = 'm'
+	// 'm' + 1 = 'n'
+	metaExtraPrefix byte = 'n'
+	tablePrefix     byte = 't'
+	// 't' + 1 = 'u
+	tableExtraPrefix byte = 'u'
+)
 
 // Filter implements the badger.CompactionFilter interface.
 // Since we use txn ts as badger version, we do not need to filter anything.
 // It is called for the first valid version before safe point, older versions are discarded automatically.
 func (f *GCCompactionFilter) Filter(key, value, userMeta []byte) badger.Decision {
-	if len(value) == 0 {
-		// Delete or Op_Lock, convert it to tombstone so it can discard it if it is the most bottom level.
-		return badger.DecisionMarkTombstone
+	switch key[0] {
+	case metaPrefix, tablePrefix:
+		// For latest version, we need to remove `delete` key, which has value len 0.
+		if mvcc.DBUserMeta(userMeta).CommitTS() < f.safePoint && len(value) == 0 {
+			return badger.DecisionMarkTombstone
+		}
+	case metaExtraPrefix, tableExtraPrefix:
+		// For latest version, we can only remove `delete` key, which has value len 0.
+		if mvcc.DBUserMeta(userMeta).StartTS() < f.safePoint {
+			return badger.DecisionDrop
+		}
 	}
 	// Older version are discarded automatically, we need to keep the first valid version.
 	return badger.DecisionKeep
@@ -1137,19 +1213,21 @@ var (
 	baseGuard       = badger.Guard{MatchLen: 64, MinSize: 64 * 1024}
 	raftGuard       = badger.Guard{Prefix: []byte{0}, MatchLen: 1, MinSize: 64 * 1024}
 	metaGuard       = badger.Guard{Prefix: []byte{'m'}, MatchLen: 1, MinSize: 64 * 1024}
+	metaExtraGuard  = badger.Guard{Prefix: []byte{'n'}, MatchLen: 1, MinSize: 1}
 	tableGuard      = badger.Guard{Prefix: []byte{'t'}, MatchLen: 9, MinSize: 1 * 1024 * 1024}
 	tableIndexGuard = badger.Guard{Prefix: []byte{'t'}, MatchLen: 11, MinSize: 1 * 1024 * 1024}
+	tableExtraGuard = badger.Guard{Prefix: []byte{'u'}, MatchLen: 1, MinSize: 1}
 )
 
 func (f *GCCompactionFilter) Guards() []badger.Guard {
 	if f.targetLevel < 4 {
 		// do not split index and row for top levels.
 		return []badger.Guard{
-			baseGuard, raftGuard, metaGuard, tableGuard,
+			baseGuard, raftGuard, metaGuard, metaExtraGuard, tableGuard, tableExtraGuard,
 		}
 	}
 	// split index and row for bottom levels.
 	return []badger.Guard{
-		baseGuard, raftGuard, metaGuard, tableIndexGuard,
+		baseGuard, raftGuard, metaGuard, metaExtraGuard, tableIndexGuard, tableExtraGuard,
 	}
 }

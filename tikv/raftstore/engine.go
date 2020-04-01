@@ -56,7 +56,7 @@ func (rs *regionSnapshot) redoLocks(raft *badger.DB, redoIdx uint64) error {
 		return err
 	}
 	for i := range entries {
-		err = restoreAppliedEntry(&entries[i], rs.txn, rs.lockSnap, nil)
+		err = restoreAppliedEntry(&entries[i], rs.txn, rs.lockSnap)
 		if err != nil {
 			return err
 		}
@@ -189,10 +189,11 @@ func (wb *WriteBatch) DeleteLock(key []byte) {
 	})
 }
 
-func (wb *WriteBatch) Rollback(key []byte) {
-	wb.lockEntries = append(wb.lockEntries, &badger.Entry{
-		Key:      y.KeyWithTs(key, 0),
-		UserMeta: mvcc.LockUserMetaRollback,
+func (wb *WriteBatch) Rollback(key y.Key) {
+	rollbackKey := mvcc.EncodeExtraTxnStatusKey(key.UserKey, key.Version)
+	wb.entries = append(wb.entries, &badger.Entry{
+		Key:      y.KeyWithTs(rollbackKey, key.Version),
+		UserMeta: mvcc.NewDBUserMeta(key.Version, 0),
 	})
 }
 
@@ -206,11 +207,12 @@ func (wb *WriteBatch) SetWithUserMeta(key y.Key, val, useMeta []byte) {
 }
 
 func (wb *WriteBatch) SetOpLock(key y.Key, useMeta []byte) {
+	startTS := mvcc.DBUserMeta(useMeta).StartTS()
+	opLockKey := y.KeyWithTs(mvcc.EncodeExtraTxnStatusKey(key.UserKey, startTS), key.Version)
 	e := &badger.Entry{
-		Key:      key,
+		Key:      opLockKey,
 		UserMeta: useMeta,
 	}
-	e.SetHidden()
 	wb.entries = append(wb.entries, e)
 	wb.size += key.Len() + len(useMeta)
 }
@@ -272,12 +274,8 @@ func (wb *WriteBatch) WriteToKV(bundle *mvcc.DBBundle) error {
 		bundle.MemStoreMu.Lock()
 		for _, entry := range wb.lockEntries {
 			switch entry.UserMeta[0] {
-			case mvcc.LockUserMetaRollbackByte:
-				bundle.RollbackStore.Put(entry.Key.UserKey, []byte{0})
 			case mvcc.LockUserMetaDeleteByte:
 				bundle.LockStore.DeleteWithHint(entry.Key.UserKey, hint)
-			case mvcc.LockUserMetaRollbackGCByte:
-				bundle.RollbackStore.Delete(entry.Key.UserKey)
 			default:
 				bundle.LockStore.PutWithHint(entry.Key.UserKey, entry.Value, hint)
 			}

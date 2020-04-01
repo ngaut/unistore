@@ -947,8 +947,8 @@ func (a *applier) execCustomLog(actx *applyContext, cl *raftlog.CustomRaftLog) (
 			cnt++
 		})
 	case raftlog.TypeRolback:
-		cl.IterateRollback(func(key []byte, deleteLock bool) {
-			actx.wb.Rollback(key)
+		cl.IterateRollback(func(key []byte, startTS uint64, deleteLock bool) {
+			actx.wb.Rollback(y.KeyWithTs(key, startTS))
 			if deleteLock {
 				actx.wb.DeleteLock(key[:len(key)-8])
 			}
@@ -1158,7 +1158,7 @@ func (a *applier) execRollback(aCtx *applyContext, op rollbackOp) {
 		if err != nil {
 			panic(op.putWrite.Key)
 		}
-		aCtx.wb.Rollback(append(rawKey, remain...))
+		aCtx.wb.Rollback(y.KeyWithTs(rawKey, mvcc.DecodeKeyTS(remain)))
 		if op.delLock != nil {
 			aCtx.wb.DeleteLock(rawKey)
 		}

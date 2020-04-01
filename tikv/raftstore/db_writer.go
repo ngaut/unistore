@@ -315,8 +315,7 @@ func (wb *customWriteBatch) Commit(key []byte, lock *mvcc.MvccLock) {
 
 func (wb *customWriteBatch) Rollback(key []byte, deleleLock bool) {
 	wb.setType(raftlog.TypeRolback)
-	rollbackKey := mvcc.EncodeRollbackKey(nil, key, wb.startTS)
-	wb.builder.AppendRollback(rollbackKey, deleleLock)
+	wb.builder.AppendRollback(key, wb.startTS, deleleLock)
 }
 
 func (wb *customWriteBatch) PessimisticLock(key []byte, lock *mvcc.MvccLock) {

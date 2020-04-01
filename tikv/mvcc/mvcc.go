@@ -74,26 +74,15 @@ func (l *MvccLock) MarshalBinary() []byte {
 
 // UserMeta value for lock.
 const (
-	LockUserMetaNoneByte       = 0
-	LockUserMetaRollbackByte   = 1
-	LockUserMetaDeleteByte     = 2
-	LockUserMetaRollbackGCByte = 3
+	LockUserMetaNoneByte   = 0
+	LockUserMetaDeleteByte = 2
 )
 
 // UserMeta byte slices for lock.
 var (
-	LockUserMetaNone       = []byte{LockUserMetaNoneByte}
-	LockUserMetaRollback   = []byte{LockUserMetaRollbackByte}
-	LockUserMetaDelete     = []byte{LockUserMetaDeleteByte}
-	LockUserMetaRollbackGC = []byte{LockUserMetaRollbackGCByte}
+	LockUserMetaNone   = []byte{LockUserMetaNoneByte}
+	LockUserMetaDelete = []byte{LockUserMetaDeleteByte}
 )
-
-// EncodeRollbackKey encodes a rollback key.
-func EncodeRollbackKey(buf, key []byte, ts uint64) []byte {
-	buf = append(buf[:0], key...)
-	buf = codec.EncodeUintDesc(buf, ts)
-	return buf
-}
 
 // DecodeKeyTS decodes the TS in a key.
 func DecodeKeyTS(buf []byte) uint64 {
@@ -121,4 +110,23 @@ func (m DBUserMeta) CommitTS() uint64 {
 // StartTS reads the startTS from the DBUserMeta.
 func (m DBUserMeta) StartTS() uint64 {
 	return defaultEndian.Uint64(m[:8])
+}
+
+// EncodeExtraTxnStatusKey encodes a extra transaction status key.
+// It is only used for Rollback and Op_Lock.
+func EncodeExtraTxnStatusKey(key []byte, startTS uint64) []byte {
+	b := append([]byte{}, key...)
+	ret := codec.EncodeUintDesc(b, startTS)
+	ret[0]++
+	return ret
+}
+
+// DecodeExtraTxnStatusKey decodes a extra transaction status key.
+func DecodeExtraTxnStatusKey(extraKey []byte) (key []byte) {
+	if len(extraKey) <= 9 {
+		return nil
+	}
+	key = append([]byte{}, extraKey[:len(extraKey)-8]...)
+	key[0]--
+	return
 }
