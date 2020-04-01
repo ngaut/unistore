@@ -21,7 +21,6 @@ import (
 	"math"
 	"os"
 	"sort"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -51,8 +50,6 @@ type MVCCStore struct {
 	lockStore *lockstore.MemStore
 	dbWriter  mvcc.DBWriter
 	safePoint *SafePoint
-
-	gcLock sync.Mutex
 
 	latestTS          uint64
 	lockWaiterManager *lockwaiter.Manager
@@ -1190,7 +1187,7 @@ const (
 )
 
 // Filter implements the badger.CompactionFilter interface.
-// Since we use txn ts as badger version, we do not need to filter anything.
+// Since we use txn ts as badger version, we only need to filter Delete, Rollback and Op_Lock.
 // It is called for the first valid version before safe point, older versions are discarded automatically.
 func (f *GCCompactionFilter) Filter(key, value, userMeta []byte) badger.Decision {
 	switch key[0] {
