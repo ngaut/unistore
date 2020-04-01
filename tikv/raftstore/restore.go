@@ -17,7 +17,6 @@ import (
 	"encoding/binary"
 
 	"github.com/coocood/badger"
-	"github.com/coocood/badger/y"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/mvcc"
@@ -37,11 +36,10 @@ func RestoreLockStore(offset uint64, bundle *mvcc.DBBundle, raftDB *badger.DB) e
 		if err != nil {
 			return
 		}
-		key := y.ParseKey(e.Key)
-		if !isRaftLogKey(key) {
+		if !isRaftLogKey(e.Key.UserKey) {
 			return
 		}
-		applied, err := isRaftLogApplied(key, appliedIndices, txn)
+		applied, err := isRaftLogApplied(e.Key.UserKey, appliedIndices, txn)
 		if err != nil {
 			return
 		}
@@ -53,7 +51,7 @@ func RestoreLockStore(offset uint64, bundle *mvcc.DBBundle, raftDB *badger.DB) e
 		if err != nil {
 			return
 		}
-		err = restoreAppliedEntry(&entry, txn, bundle.LockStore, bundle.RollbackStore)
+		err = restoreAppliedEntry(&entry, txn, bundle.LockStore)
 		if err != nil {
 			return
 		}
@@ -67,7 +65,7 @@ func RestoreLockStore(offset uint64, bundle *mvcc.DBBundle, raftDB *badger.DB) e
 	return err1
 }
 
-func restoreAppliedEntry(entry *eraftpb.Entry, txn *badger.Txn, lockStore, rollbackStore *lockstore.MemStore) error {
+func restoreAppliedEntry(entry *eraftpb.Entry, txn *badger.Txn, lockStore *lockstore.MemStore) error {
 	if entry.EntryType != eraftpb.EntryType_EntryNormal {
 		return nil
 	}
@@ -90,9 +88,6 @@ func restoreAppliedEntry(entry *eraftpb.Entry, txn *badger.Txn, lockStore, rollb
 		case *commitOp:
 			restoreCommit(*x, lockStore)
 		case *rollbackOp:
-			if rollbackStore != nil {
-				restoreRollback(*x, rollbackStore)
-			}
 		case *raft_cmdpb.DeleteRangeRequest:
 		default:
 			log.Fatalf("invalid input op=%v", x)
@@ -112,24 +107,6 @@ func restoreCommit(op commitOp, lockStore *lockstore.MemStore) {
 		panic(err)
 	}
 	lockStore.Delete(rawKey)
-}
-
-func restoreRollback(op rollbackOp, rollbackStore *lockstore.MemStore) {
-	// Pessimistic lock rollback will have only `delLock` operation
-	var destKey []byte
-	if op.putWrite != nil {
-		destKey = op.putWrite.Key
-	} else if op.delLock != nil {
-		destKey = op.delLock.Key
-	} else {
-		log.Errorf("invalid rollback operation=%v", op)
-		panic("invalid rollback record")
-	}
-	remain, rawKey, err := codec.DecodeBytes(destKey, nil)
-	if err != nil {
-		panic(err)
-	}
-	rollbackStore.Put(append(rawKey, remain...), []byte{0})
 }
 
 func isRaftLogKey(key []byte) bool {

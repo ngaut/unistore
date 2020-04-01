@@ -17,6 +17,7 @@ import (
 	"bytes"
 
 	"github.com/coocood/badger"
+	"github.com/coocood/badger/y"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -26,6 +27,8 @@ import (
 const (
 	InitEpochVer     uint64 = 1
 	InitEpochConfVer uint64 = 1
+	KvTS             uint64 = 1
+	RaftTS           uint64 = 0
 )
 
 func isRangeEmpty(engine *badger.DB, startKey, endKey []byte) (bool, error) {
@@ -101,8 +104,8 @@ func writePrepareBootstrap(engines *Engines, region *metapb.Region) error {
 	state := new(rspb.RegionLocalState)
 	state.Region = region
 	kvWB := new(WriteBatch)
-	kvWB.SetMsg(prepareBootstrapKey, state)
-	kvWB.SetMsg(RegionStateKey(region.Id), state)
+	kvWB.SetMsg(y.KeyWithTs(prepareBootstrapKey, KvTS), state)
+	kvWB.SetMsg(y.KeyWithTs(RegionStateKey(region.Id), KvTS), state)
 	writeInitialApplyState(kvWB, region.Id)
 	err := engines.WriteKV(kvWB)
 	if err != nil {
@@ -127,7 +130,7 @@ func writeInitialApplyState(kvWB *WriteBatch, regionID uint64) {
 		truncatedIndex: RaftInitLogIndex,
 		truncatedTerm:  RaftInitLogTerm,
 	}
-	kvWB.Set(ApplyStateKey(regionID), applyState.Marshal())
+	kvWB.Set(y.KeyWithTs(ApplyStateKey(regionID), KvTS), applyState.Marshal())
 }
 
 func writeInitialRaftState(raftWB *WriteBatch, regionID uint64) {
@@ -136,7 +139,7 @@ func writeInitialRaftState(raftWB *WriteBatch, regionID uint64) {
 		term:      RaftInitLogTerm,
 		commit:    RaftInitLogIndex,
 	}
-	raftWB.Set(RaftStateKey(regionID), raftState.Marshal())
+	raftWB.Set(y.KeyWithTs(RaftStateKey(regionID), RaftTS), raftState.Marshal())
 }
 
 func ClearPrepareBootstrap(engines *Engines, regionID uint64) error {
@@ -147,10 +150,10 @@ func ClearPrepareBootstrap(engines *Engines, regionID uint64) error {
 		return errors.WithStack(err)
 	}
 	wb := new(WriteBatch)
-	wb.Delete(prepareBootstrapKey)
+	wb.Delete(y.KeyWithTs(prepareBootstrapKey, KvTS))
 	// should clear raft initial state too.
-	wb.Delete(RegionStateKey(regionID))
-	wb.Delete(ApplyStateKey(regionID))
+	wb.Delete(y.KeyWithTs(RegionStateKey(regionID), KvTS))
+	wb.Delete(y.KeyWithTs(ApplyStateKey(regionID), KvTS))
 	err = engines.WriteKV(wb)
 	if err != nil {
 		return err
@@ -160,7 +163,9 @@ func ClearPrepareBootstrap(engines *Engines, regionID uint64) error {
 
 func ClearPrepareBootstrapState(engines *Engines) error {
 	err := engines.kv.DB.Update(func(txn *badger.Txn) error {
-		return txn.Delete(prepareBootstrapKey)
+		e := &badger.Entry{Key: y.KeyWithTs(prepareBootstrapKey, KvTS)}
+		e.SetDelete()
+		return txn.SetEntry(e)
 	})
 	engines.SyncKVWAL()
 	return errors.WithStack(err)

@@ -105,26 +105,25 @@ type SnapStatistics struct {
 }
 
 type ApplyOptions struct {
-	DBBundle   *mvcc.DBBundle
-	Region     *metapb.Region
-	Abort      *uint32
-	Builder    *table.Builder
-	OldBuilder *table.Builder
+	DBBundle *mvcc.DBBundle
+	Region   *metapb.Region
+	Abort    *uint32
+	Builder  *table.Builder
+	WB       *WriteBatch
 }
 
-func newApplyOptions(db *mvcc.DBBundle, region *metapb.Region, abort *uint32, builder, oldBuilder *table.Builder) *ApplyOptions {
+func newApplyOptions(db *mvcc.DBBundle, region *metapb.Region, abort *uint32, builder *table.Builder, wb *WriteBatch) *ApplyOptions {
 	return &ApplyOptions{
-		DBBundle:   db,
-		Region:     region,
-		Abort:      abort,
-		Builder:    builder,
-		OldBuilder: oldBuilder,
+		DBBundle: db,
+		Region:   region,
+		Abort:    abort,
+		Builder:  builder,
+		WB:       wb,
 	}
 }
 
 type ApplyResult struct {
 	HasPut      bool
-	HasOldPut   bool
 	RegionState *rspb.RegionLocalState
 }
 
@@ -766,16 +765,12 @@ func (s *Snap) Apply(opts ApplyOptions) (ApplyResult, error) {
 				Value:    item.val,
 				UserMeta: item.userMeta,
 			})
-		case applySnapTypePutOld:
-			result.HasOldPut = true
-			opts.OldBuilder.Add(item.key, y.ValueStruct{
-				Value:    item.val,
-				UserMeta: item.userMeta,
-			})
 		case applySnapTypeLock:
-			opts.DBBundle.LockStore.Put(item.key, item.val)
+			opts.DBBundle.LockStore.Put(item.key.UserKey, item.val)
 		case applySnapTypeRollback:
-			opts.DBBundle.RollbackStore.Put(item.key, item.val)
+			opts.WB.Rollback(item.key)
+		case applySnapTypeOpLock:
+			opts.WB.SetOpLock(item.key, item.userMeta)
 		}
 	}
 

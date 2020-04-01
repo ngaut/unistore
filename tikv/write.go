@@ -18,9 +18,9 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/coocood/badger"
+	"github.com/coocood/badger/y"
 	"github.com/cznic/mathutil"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/dbreader"
@@ -42,7 +42,7 @@ func newWriteDBBatch() *writeDBBatch {
 	return &writeDBBatch{}
 }
 
-func (batch *writeDBBatch) set(key, val []byte, userMeta []byte) {
+func (batch *writeDBBatch) set(key y.Key, val []byte, userMeta []byte) {
 	batch.entries = append(batch.entries, &badger.Entry{
 		Key:      key,
 		Value:    val,
@@ -52,7 +52,7 @@ func (batch *writeDBBatch) set(key, val []byte, userMeta []byte) {
 
 // delete is a badger level operation, only used in DeleteRange, so we don't need to set UserMeta.
 // Then we can tell the entry is delete if UserMeta is nil.
-func (batch *writeDBBatch) delete(key []byte) {
+func (batch *writeDBBatch) delete(key y.Key) {
 	batch.entries = append(batch.entries, &badger.Entry{
 		Key: key,
 	})
@@ -66,29 +66,15 @@ type writeLockBatch struct {
 
 func (batch *writeLockBatch) set(key, val []byte) {
 	batch.entries = append(batch.entries, &badger.Entry{
-		Key:      key,
+		Key:      y.KeyWithTs(key, 0),
 		Value:    val,
 		UserMeta: mvcc.LockUserMetaNone,
 	})
 }
 
-func (batch *writeLockBatch) rollback(key []byte) {
-	batch.entries = append(batch.entries, &badger.Entry{
-		Key:      key,
-		UserMeta: mvcc.LockUserMetaRollback,
-	})
-}
-
-func (batch *writeLockBatch) rollbackGC(key []byte) {
-	batch.entries = append(batch.entries, &badger.Entry{
-		Key:      key,
-		UserMeta: mvcc.LockUserMetaRollbackGC,
-	})
-}
-
 func (batch *writeLockBatch) delete(key []byte) {
 	batch.entries = append(batch.entries, &badger.Entry{
-		Key:      key,
+		Key:      y.KeyWithTs(key, 0),
 		UserMeta: mvcc.LockUserMetaDelete,
 	})
 }
@@ -128,10 +114,9 @@ func (w writeDBWorker) updateBatchGroup(batchGroup []*writeDBBatch) {
 			for _, entry := range batch.entries {
 				var err error
 				if len(entry.UserMeta) == 0 {
-					err = txn.Delete(entry.Key)
-				} else {
-					err = txn.SetEntry(entry)
+					entry.SetDelete()
 				}
+				err = txn.SetEntry(entry)
 				if err != nil {
 					return err
 				}
@@ -152,7 +137,6 @@ type writeLockWorker struct {
 
 func (w writeLockWorker) run() {
 	defer w.writer.wg.Done()
-	rollbackStore := w.writer.bundle.RollbackStore
 	ls := w.writer.bundle.LockStore
 	var batches []*writeLockBatch
 	for {
@@ -175,18 +159,14 @@ func (w writeLockWorker) run() {
 		for _, batch := range batches {
 			for _, entry := range batch.entries {
 				switch entry.UserMeta[0] {
-				case mvcc.LockUserMetaRollbackByte:
-					rollbackStore.Put(entry.Key, []byte{0})
 				case mvcc.LockUserMetaDeleteByte:
 					delCnt++
-					if !ls.DeleteWithHint(entry.Key, hint) {
+					if !ls.DeleteWithHint(entry.Key.UserKey, hint) {
 						panic("failed to delete key")
 					}
-				case mvcc.LockUserMetaRollbackGCByte:
-					rollbackStore.Delete(entry.Key)
 				default:
 					insertCnt++
-					ls.PutWithHint(entry.Key, entry.Value, hint)
+					ls.PutWithHint(entry.Key.UserKey, entry.Value, hint)
 				}
 			}
 			batch.wg.Done()
@@ -194,60 +174,19 @@ func (w writeLockWorker) run() {
 	}
 }
 
-// rollbackGCWorker delete all rollback keys after one minute to recycle memory.
-type rollbackGCWorker struct {
-	writer *dbWriter
-}
-
-func (w rollbackGCWorker) run() {
-	defer w.writer.wg.Done()
-	ticker := time.Tick(time.Minute)
-	rollbackStore := w.writer.bundle.RollbackStore
-	for {
-		select {
-		case <-w.writer.closeCh:
-			return
-		case <-ticker:
-		}
-		lockBatch := &writeLockBatch{}
-		it := rollbackStore.NewIterator()
-		latestTS := w.writer.getLatestTS()
-		for it.SeekToFirst(); it.Valid(); it.Next() {
-			ts := mvcc.DecodeKeyTS(it.Key())
-			if tsSub(latestTS, ts) > time.Minute {
-				lockBatch.rollbackGC(safeCopy(it.Key()))
-			}
-			if len(lockBatch.entries) >= 1000 {
-				lockBatch.wg.Add(1)
-				w.writer.lockCh <- lockBatch
-				lockBatch.wg.Wait()
-				lockBatch.entries = lockBatch.entries[:0]
-			}
-		}
-		if len(lockBatch.entries) == 0 {
-			continue
-		}
-		lockBatch.wg.Add(1)
-		w.writer.lockCh <- lockBatch
-		lockBatch.wg.Wait()
-	}
-}
-
 type dbWriter struct {
-	bundle    *mvcc.DBBundle
-	safePoint *SafePoint
-	dbCh      chan<- *writeDBBatch
-	lockCh    chan<- *writeLockBatch
-	wg        sync.WaitGroup
-	closeCh   chan struct{}
-	latestTS  uint64
+	bundle   *mvcc.DBBundle
+	dbCh     chan<- *writeDBBatch
+	lockCh   chan<- *writeLockBatch
+	wg       sync.WaitGroup
+	closeCh  chan struct{}
+	latestTS uint64
 }
 
-func NewDBWriter(bundle *mvcc.DBBundle, safePoint *SafePoint) mvcc.DBWriter {
+func NewDBWriter(bundle *mvcc.DBBundle) mvcc.DBWriter {
 	return &dbWriter{
-		bundle:    bundle,
-		safePoint: safePoint,
-		closeCh:   make(chan struct{}, 0),
+		bundle:  bundle,
+		closeCh: make(chan struct{}, 0),
 	}
 }
 
@@ -266,10 +205,6 @@ func (writer *dbWriter) Open() {
 	go writeLockWorker{
 		batchCh: lockCh,
 		writer:  writer,
-	}.run()
-
-	go rollbackGCWorker{
-		writer: writer,
 	}.run()
 }
 
@@ -312,34 +247,20 @@ func (wb *writeBatch) Prewrite(key []byte, lock *mvcc.MvccLock) {
 
 func (wb *writeBatch) Commit(key []byte, lock *mvcc.MvccLock) {
 	userMeta := mvcc.NewDBUserMeta(wb.startTS, wb.commitTS)
+	k := y.KeyWithTs(key, wb.commitTS)
 	if lock.Op != uint8(kvrpcpb.Op_Lock) {
-		wb.dbBatch.set(key, lock.Value, userMeta)
-		if lock.HasOldVer {
-			oldKey := mvcc.EncodeOldKey(key, lock.OldMeta.CommitTS())
-			wb.dbBatch.set(oldKey, lock.OldVal, lock.OldMeta.ToOldUserMeta(wb.commitTS))
-		}
+		wb.dbBatch.set(k, lock.Value, userMeta)
 	} else if bytes.Equal(key, lock.Primary) {
-		// For primary key with Op_Lock type, the value need to be skipped, but we need to keep the transaction status.
-		// So we put it as old key directly.
-		if lock.HasOldVer {
-			// There is a latest value, we don't want to move the value to the old key space for performance and simplicity.
-			// Write the lock as old key directly to store the transaction status.
-			// The old entry doesn't have value as Delete entry, but we can compare the commitTS in key and NextCommitTS
-			// in the user meta to determine if the entry is Delete or Op_Lock.
-			// If NextCommitTS equals CommitTS, it is Op_Lock, otherwise, it is Delete.
-			oldKey := mvcc.EncodeOldKey(key, wb.commitTS)
-			wb.dbBatch.set(oldKey, nil, userMeta)
-		} else {
-			// Convert the lock to a delete to store the transaction status.
-			wb.dbBatch.set(key, nil, userMeta)
-		}
+		opLockKey := y.KeyWithTs(mvcc.EncodeExtraTxnStatusKey(key, wb.startTS), wb.startTS)
+		wb.dbBatch.set(opLockKey, nil, userMeta)
 	}
 	wb.lockBatch.delete(key)
 }
 
 func (wb *writeBatch) Rollback(key []byte, deleteLock bool) {
-	rollbackKey := mvcc.EncodeRollbackKey(nil, key, wb.startTS)
-	wb.lockBatch.rollback(rollbackKey)
+	rollbackKey := y.KeyWithTs(mvcc.EncodeExtraTxnStatusKey(key, wb.startTS), wb.startTS)
+	userMeta := mvcc.NewDBUserMeta(wb.startTS, 0)
+	wb.dbBatch.set(rollbackKey, nil, userMeta)
 	if deleteLock {
 		wb.lockBatch.delete(key)
 	}
@@ -379,19 +300,16 @@ func (writer *dbWriter) updateLatestTS(ts uint64) {
 const delRangeBatchSize = 4096
 
 func (writer *dbWriter) DeleteRange(startKey, endKey []byte, latchHandle mvcc.LatchHandle) error {
-	keys := make([][]byte, 0, delRangeBatchSize)
-	oldStartKey := mvcc.EncodeOldKey(startKey, maxSystemTS)
-	oldEndKey := mvcc.EncodeOldKey(endKey, maxSystemTS)
+	keys := make([]y.Key, 0, delRangeBatchSize)
 	txn := writer.bundle.DB.NewTransaction(false)
 	defer txn.Discard()
-	reader := dbreader.NewDBReader(startKey, endKey, txn, atomic.LoadUint64(&writer.safePoint.timestamp))
+	reader := dbreader.NewDBReader(startKey, endKey, txn)
 	keys = writer.collectRangeKeys(reader.GetIter(), startKey, endKey, keys)
-	keys = writer.collectRangeKeys(reader.GetIter(), oldStartKey, oldEndKey, keys)
 	reader.Close()
 	return writer.deleteKeysInBatch(latchHandle, keys, delRangeBatchSize)
 }
 
-func (writer *dbWriter) collectRangeKeys(it *badger.Iterator, startKey, endKey []byte, keys [][]byte) [][]byte {
+func (writer *dbWriter) collectRangeKeys(it *badger.Iterator, startKey, endKey []byte, keys []y.Key) []y.Key {
 	if len(endKey) == 0 {
 		panic("invalid end key")
 	}
@@ -401,19 +319,20 @@ func (writer *dbWriter) collectRangeKeys(it *badger.Iterator, startKey, endKey [
 		if exceedEndKey(key, endKey) {
 			break
 		}
-		keys = append(keys, key)
+		keys = append(keys, y.KeyWithTs(key, item.Version()))
 	}
 	return keys
 }
 
-func (writer *dbWriter) deleteKeysInBatch(latchHandle mvcc.LatchHandle, keys [][]byte, batchSize int) error {
+func (writer *dbWriter) deleteKeysInBatch(latchHandle mvcc.LatchHandle, keys []y.Key, batchSize int) error {
 	for len(keys) > 0 {
 		batchSize := mathutil.Min(len(keys), batchSize)
 		batchKeys := keys[:batchSize]
 		keys = keys[batchSize:]
-		hashVals := keysToHashVals(batchKeys...)
+		hashVals := userKeysToHashVals(batchKeys...)
 		dbBatch := newWriteDBBatch()
 		for _, key := range batchKeys {
+			key.Version++
 			dbBatch.delete(key)
 		}
 		latchHandle.AcquireLatches(hashVals)

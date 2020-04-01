@@ -27,7 +27,7 @@ import (
 )
 
 type applySnapItem struct {
-	key           []byte
+	key           y.Key
 	val           []byte
 	userMeta      []byte
 	applySnapType byte
@@ -35,9 +35,9 @@ type applySnapItem struct {
 
 const (
 	applySnapTypePut = iota
-	applySnapTypePutOld
 	applySnapTypeLock
 	applySnapTypeRollback
+	applySnapTypeOpLock
 )
 
 // snapApplier iteratos all the CFs and returns the entries to write to badger.
@@ -121,14 +121,14 @@ func (ai *snapApplier) next() (*applySnapItem, error) {
 
 func (ai *snapApplier) nextLock() (*applySnapItem, error) {
 	item := new(applySnapItem)
-	item.key = ai.curLockKey
+	item.key = y.KeyWithTs(ai.curLockKey, 0)
 	item.applySnapType = applySnapTypeLock
 	item.userMeta = mvcc.LockUserMetaNone
 	lv, err := decodeLockCFValue(ai.curLockValue)
 	if err != nil {
 		return nil, err
 	}
-	val, err := ai.popFullValue(item.key, lv.startTS, lv.shortVal, lv.lockType)
+	val, err := ai.popFullValue(item.key.UserKey, lv.startTS, lv.shortVal, lv.lockType)
 	if err != nil {
 		return nil, err
 	}
@@ -139,10 +139,6 @@ func (ai *snapApplier) nextLock() (*applySnapItem, error) {
 	mvccLock.PrimaryLen = uint16(len(lv.primary))
 	mvccLock.Primary = lv.primary
 	mvccLock.Value = val
-	err = ai.loadOldValue(mvccLock)
-	if err != nil {
-		return nil, err
-	}
 	item.val = mvccLock.MarshalBinary()
 	if len(ai.lockCFData) > 1 {
 		ai.curLockKey, ai.curLockValue, ai.lockCFData, err = readEntryFromPlainFile(ai.lockCFData)
@@ -188,47 +184,24 @@ func (ai *snapApplier) loadFullValueOpt(key []byte, startTS uint64, shortVal []b
 	return shortVal, nil
 }
 
-func (ai *snapApplier) loadOldValue(lock *mvcc.MvccLock) error {
-	if lock.Op == byte(kvrpcpb.Op_Lock) {
-		return nil
-	}
-	for bytes.Equal(ai.curLockKey, ai.curWriteKey) {
-		var err error
-		writeVal := decodeWriteCFValue(y.SafeCopy(nil, ai.writeCFIterator.Value()))
-		if writeVal.writeType == byte(kvrpcpb.Op_Rollback) {
-			// Skip rollback entry, find the next write key.
-			// As long as there is a lock, it is safe to ignore the rollback keys.
-			err = ai.writeCFIteratorNext()
-			if err != nil {
-				return err
-			}
-			continue
-		}
-		lock.HasOldVer = true
-		lock.OldMeta = mvcc.NewDBUserMeta(writeVal.startTS, ai.curWriteCommitTS)
-		lock.OldVal, err = ai.loadFullValue(ai.curLockKey, writeVal.startTS, writeVal.shortValue, writeVal.writeType)
-		return err
-	}
-	return nil
-}
-
 func (ai *snapApplier) nextWrite() (*applySnapItem, error) {
 	item := new(applySnapItem)
 	writeVal := decodeWriteCFValue(y.SafeCopy(nil, ai.writeCFIterator.Value()))
 	if writeVal.writeType == byte(kvrpcpb.Op_Rollback) {
 		item.applySnapType = applySnapTypeRollback
-		item.key = codec.EncodeUintDesc(ai.curWriteKey, writeVal.startTS)
+		item.key = y.KeyWithTs(ai.curWriteKey, writeVal.startTS)
+		item.userMeta = mvcc.NewDBUserMeta(writeVal.startTS, 0)
 		return item, nil
 	}
-	if bytes.Equal(ai.lastWriteKey, ai.curWriteKey) {
-		item.applySnapType = applySnapTypePutOld
-		item.key = mvcc.EncodeOldKey(ai.curWriteKey, ai.curWriteCommitTS)
-		item.userMeta = mvcc.NewDBUserMeta(writeVal.startTS, ai.curWriteCommitTS).ToOldUserMeta(ai.lastCommitTS)
-	} else {
-		item.applySnapType = applySnapTypePut
-		item.key = ai.curWriteKey
+	if writeVal.writeType == byte(kvrpcpb.Op_Lock) {
+		item.applySnapType = applySnapTypeOpLock
+		item.key = y.KeyWithTs(ai.curWriteKey, writeVal.startTS)
 		item.userMeta = mvcc.NewDBUserMeta(writeVal.startTS, ai.curWriteCommitTS)
+		return item, nil
 	}
+	item.applySnapType = applySnapTypePut
+	item.key = y.KeyWithTs(ai.curWriteKey, ai.curWriteCommitTS)
+	item.userMeta = mvcc.NewDBUserMeta(writeVal.startTS, ai.curWriteCommitTS)
 	val, err := ai.popFullValue(ai.curWriteKey, writeVal.startTS, writeVal.shortValue, writeVal.writeType)
 	if err != nil {
 		return nil, err

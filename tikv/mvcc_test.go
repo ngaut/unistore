@@ -24,6 +24,7 @@ import (
 	"sync"
 
 	"github.com/coocood/badger"
+	"github.com/coocood/badger/y"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore"
@@ -75,6 +76,7 @@ func CreateTestDB(dbPath, LogPath string) (*badger.DB, error) {
 	opts := badger.DefaultOptions
 	opts.Dir = dbPath + subPath
 	opts.ValueDir = LogPath + subPath
+	opts.ManagedTxns = true
 	return badger.Open(opts)
 }
 
@@ -93,9 +95,8 @@ func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
 		return nil, err
 	}
 	dbBundle := &mvcc.DBBundle{
-		DB:            db,
-		LockStore:     lockstore.NewMemStore(4096),
-		RollbackStore: lockstore.NewMemStore(4096),
+		DB:        db,
+		LockStore: lockstore.NewMemStore(4096),
 	}
 	// Some raft store path problems could not be found using simple store in tests
 	// writer := NewDBWriter(dbBundle, safePoint)
@@ -366,9 +367,8 @@ func MustCommitErr(key []byte, startTs, commitTs uint64, store *TestStore) {
 func MustRollbackKey(key []byte, startTs uint64, store *TestStore) {
 	err := store.MvccStore.Rollback(store.newReqCtx(), [][]byte{key}, startTs)
 	store.c.Assert(err, IsNil)
-	rollbackKey := mvcc.EncodeRollbackKey(nil, key, startTs)
-	res := store.MvccStore.rollbackStore.Get(rollbackKey, nil)
-	store.c.Assert(len(res), GreaterEqual, 0)
+	status := store.MvccStore.checkExtraTxnStatus(store.newReqCtx(), key, startTs)
+	store.c.Assert(status.isRollback, IsTrue)
 }
 
 func MustRollbackErr(key []byte, startTs uint64, store *TestStore) {
@@ -452,10 +452,8 @@ func MustTxnHeartBeat(pk []byte, startTs, adviceTTL, expectedTTL uint64, store *
 }
 
 func MustGetRollback(key []byte, ts uint64, store *TestStore) {
-	// Rollback entry still exits in rollbackStore if no rollbackGC
-	rollbackKey := mvcc.EncodeRollbackKey(key, key, ts)
-	res := store.MvccStore.rollbackStore.Get(rollbackKey, nil)
-	store.c.Assert(bytes.Compare(res, []byte{0}), Equals, 0)
+	res := store.MvccStore.checkExtraTxnStatus(store.newReqCtx(), key, ts)
+	store.c.Assert(res.isRollback, IsTrue)
 }
 
 func (s *testMvccSuite) TestBasicOptimistic(c *C) {
@@ -520,11 +518,8 @@ func (s *testMvccSuite) TestRollback(c *C) {
 
 	MustPrewriteOptimistic(key, key, val, startTs+1, lockTTL, 0, store)
 	MustRollbackKey(key, startTs+1, store)
-	var buf []byte
-	// Rollback entry still exits in rollbackStore if no rollbackGC
-	rollbackKey := mvcc.EncodeRollbackKey(buf, key, startTs)
-	res := store.MvccStore.rollbackStore.Get(rollbackKey, nil)
-	c.Assert(bytes.Compare(res, []byte{0}), Equals, 0)
+	res := store.MvccStore.checkExtraTxnStatus(store.newReqCtx(), key, startTs)
+	c.Assert(res.isRollback, IsTrue)
 
 	// Test collapse rollback
 	k := []byte("tk")
@@ -675,17 +670,6 @@ func (s *testMvccSuite) TestCheckTxnStatus(c *C) {
 	c.Assert(action, Equals, kvrpcpb.Action_NoAction)
 }
 
-func (s *testMvccSuite) TestDecodeOldKey(c *C) {
-	rawKey := []byte("trawKey")
-	oldCommitTs := uint64(1)
-	oldKey := mvcc.EncodeOldKey(rawKey, oldCommitTs)
-
-	resKey, resTs, err := mvcc.DecodeOldKey(oldKey)
-	c.Assert(err, IsNil)
-	c.Assert(bytes.Compare(resKey, rawKey), Equals, 0)
-	c.Assert(resTs, Equals, oldCommitTs)
-}
-
 func (s *testMvccSuite) TestMvccGet(c *C) {
 	var err error
 	store, err := NewTestStore("TestMvccGetBy", "TestMvccGetBy", c)
@@ -732,21 +716,22 @@ func (s *testMvccSuite) TestMvccGet(c *C) {
 	res, err = store.MvccStore.MvccGetByKey(store.newReqCtx(), pk)
 	c.Assert(err, IsNil)
 	c.Assert(len(res.Writes), Equals, 4)
-	c.Assert(res.Writes[2].StartTs, Equals, startTs1)
-	c.Assert(res.Writes[2].CommitTs, Equals, commitTs1)
-	c.Assert(bytes.Compare(res.Writes[2].ShortValue, pkVal), Equals, 0)
 
-	c.Assert(res.Writes[1].StartTs, Equals, startTs2)
-	c.Assert(res.Writes[1].CommitTs, Equals, commitTs2)
-	c.Assert(bytes.Compare(res.Writes[1].ShortValue, newVal), Equals, 0)
+	c.Assert(res.Writes[3].StartTs, Equals, startTs1)
+	c.Assert(res.Writes[3].CommitTs, Equals, commitTs1)
+	c.Assert(bytes.Compare(res.Writes[3].ShortValue, pkVal), Equals, 0)
+
+	c.Assert(res.Writes[2].StartTs, Equals, startTs2)
+	c.Assert(res.Writes[2].CommitTs, Equals, commitTs2)
+	c.Assert(bytes.Compare(res.Writes[2].ShortValue, newVal), Equals, 0)
+
+	c.Assert(res.Writes[1].StartTs, Equals, startTs3)
+	c.Assert(res.Writes[1].CommitTs, Equals, startTs3)
+	c.Assert(bytes.Compare(res.Writes[1].ShortValue, emptyVal), Equals, 0)
 
 	c.Assert(res.Writes[0].StartTs, Equals, startTs4)
 	c.Assert(res.Writes[0].CommitTs, Equals, commitTs4)
 	c.Assert(bytes.Compare(res.Writes[0].ShortValue, emptyVal), Equals, 0)
-
-	c.Assert(res.Writes[3].StartTs, Equals, startTs3)
-	c.Assert(res.Writes[3].CommitTs, Equals, startTs3)
-	c.Assert(bytes.Compare(res.Writes[3].ShortValue, []byte{0}), Equals, 0)
 
 	// read using MvccGetByStartTs using key current ts
 	res2, resKey, err := store.MvccStore.MvccGetByStartTs(store.newReqCtx(), startTs4)
@@ -754,21 +739,24 @@ func (s *testMvccSuite) TestMvccGet(c *C) {
 	c.Assert(res2, NotNil)
 	c.Assert(bytes.Compare(resKey, pk), Equals, 0)
 	c.Assert(len(res2.Writes), Equals, 4)
-	c.Assert(res2.Writes[2].StartTs, Equals, startTs1)
-	c.Assert(res2.Writes[2].CommitTs, Equals, commitTs1)
-	c.Assert(bytes.Compare(res2.Writes[2].ShortValue, pkVal), Equals, 0)
 
-	c.Assert(res2.Writes[1].StartTs, Equals, startTs2)
-	c.Assert(res2.Writes[1].CommitTs, Equals, commitTs2)
-	c.Assert(bytes.Compare(res2.Writes[1].ShortValue, newVal), Equals, 0)
+	c.Assert(res2.Writes[3].StartTs, Equals, startTs1)
+	c.Assert(res2.Writes[3].CommitTs, Equals, commitTs1)
+	c.Assert(bytes.Compare(res2.Writes[3].ShortValue, pkVal), Equals, 0)
+
+	c.Assert(res2.Writes[2].StartTs, Equals, startTs2)
+	c.Assert(res2.Writes[2].CommitTs, Equals, commitTs2)
+	c.Assert(bytes.Compare(res2.Writes[2].ShortValue, newVal), Equals, 0)
+
+	c.Assert(res2.Writes[1].StartTs, Equals, startTs3)
+	c.Assert(res2.Writes[1].CommitTs, Equals, startTs3)
+	c.Assert(res2.Writes[1].Type, Equals, kvrpcpb.Op_Rollback)
+	c.Assert(bytes.Compare(res2.Writes[1].ShortValue, emptyVal), Equals, 0)
 
 	c.Assert(res2.Writes[0].StartTs, Equals, startTs4)
 	c.Assert(res2.Writes[0].CommitTs, Equals, commitTs4)
+	c.Assert(res2.Writes[0].Type, Equals, kvrpcpb.Op_Del)
 	c.Assert(bytes.Compare(res2.Writes[0].ShortValue, emptyVal), Equals, 0)
-
-	c.Assert(res2.Writes[3].StartTs, Equals, startTs3)
-	c.Assert(res2.Writes[3].CommitTs, Equals, startTs3)
-	c.Assert(bytes.Compare(res2.Writes[3].ShortValue, []byte{0}), Equals, 0)
 
 	// read using MvccGetByStartTs using non exists startTs
 	startTsNonExists := uint64(1000)
@@ -783,18 +771,18 @@ func (s *testMvccSuite) TestMvccGet(c *C) {
 	c.Assert(res4, NotNil)
 	c.Assert(bytes.Compare(resKey, pk), Equals, 0)
 	c.Assert(len(res4.Writes), Equals, 4)
-	c.Assert(res4.Writes[3].StartTs, Equals, startTs3)
-	c.Assert(res4.Writes[3].CommitTs, Equals, startTs3)
-	c.Assert(bytes.Compare(res4.Writes[3].ShortValue, []byte{0}), Equals, 0)
+	c.Assert(res4.Writes[1].StartTs, Equals, startTs3)
+	c.Assert(res4.Writes[1].CommitTs, Equals, startTs3)
+	c.Assert(bytes.Compare(res4.Writes[1].ShortValue, emptyVal), Equals, 0)
 
 	res4, resKey, err = store.MvccStore.MvccGetByStartTs(store.newReqCtxWithKeys([]byte("t1_r1"), []byte("t1_r2")), startTs2)
 	c.Assert(err, IsNil)
 	c.Assert(res4, NotNil)
 	c.Assert(bytes.Compare(resKey, pk), Equals, 0)
 	c.Assert(len(res4.Writes), Equals, 4)
-	c.Assert(res4.Writes[3].StartTs, Equals, startTs3)
-	c.Assert(res4.Writes[3].CommitTs, Equals, startTs3)
-	c.Assert(bytes.Compare(res4.Writes[3].ShortValue, []byte{0}), Equals, 0)
+	c.Assert(res4.Writes[1].StartTs, Equals, startTs3)
+	c.Assert(res4.Writes[1].CommitTs, Equals, startTs3)
+	c.Assert(bytes.Compare(res4.Writes[1].ShortValue, emptyVal), Equals, 0)
 }
 
 func (s *testMvccSuite) TestPrimaryKeyOpLock(c *C) {
@@ -1119,6 +1107,7 @@ func (s *testMvccSuite) TestMinCommitTs(c *C) {
 }
 
 func (s *testMvccSuite) TestGC(c *C) {
+	c.Skip("GC work is hand over to badger.")
 	store, err := NewTestStore("TestGC", "TestGC", c)
 	c.Assert(err, IsNil)
 	defer CleanTestStore(store)
@@ -1377,7 +1366,11 @@ func (s *testMvccSuite) TestResolveCommit(c *C) {
 
 	// The error path
 	kvTxn := store.MvccStore.db.NewTransaction(true)
-	err = kvTxn.Delete(sk)
+	e := &badger.Entry{
+		Key: y.KeyWithTs(sk, 2),
+	}
+	e.SetDelete()
+	err = kvTxn.SetEntry(e)
 	c.Assert(err, IsNil)
 	err = kvTxn.Commit()
 	c.Assert(err, IsNil)

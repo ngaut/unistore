@@ -50,7 +50,6 @@ func TestRestore(t *testing.T) {
 	v1 := []byte("v")
 
 	lockStore := lockstore.NewMemStore(1000)
-	rollbackStore := lockstore.NewMemStore(1000)
 	// Restore prewrite
 	expectLock := mvcc.MvccLock{
 		MvccLockHdr: mvcc.MvccLockHdr{
@@ -64,7 +63,7 @@ func TestRestore(t *testing.T) {
 	}
 	wb.Prewrite(k1, &expectLock)
 	txn := engines.kv.DB.NewTransaction(true)
-	err := restoreAppliedEntry(genEntry(wb, t), txn, lockStore, rollbackStore)
+	err := restoreAppliedEntry(genEntry(wb, t), txn, lockStore)
 	require.Nil(t, err)
 
 	// Restore commit
@@ -74,7 +73,7 @@ func TestRestore(t *testing.T) {
 	}
 	wbCommit.Commit(k1, &expectLock)
 	txn = engines.kv.DB.NewTransaction(true)
-	err = restoreAppliedEntry(genEntry(wbCommit, t), txn, lockStore, rollbackStore)
+	err = restoreAppliedEntry(genEntry(wbCommit, t), txn, lockStore)
 	require.Nil(t, err)
 
 	// Restore common rollback
@@ -84,7 +83,7 @@ func TestRestore(t *testing.T) {
 	}
 	wbRollback.Rollback(k1, true)
 	txn = engines.kv.DB.NewTransaction(true)
-	err = restoreAppliedEntry(genEntry(wbRollback, t), txn, lockStore, rollbackStore)
+	err = restoreAppliedEntry(genEntry(wbRollback, t), txn, lockStore)
 	require.Nil(t, err)
 
 	// Restore pessimistic rollback
@@ -94,6 +93,6 @@ func TestRestore(t *testing.T) {
 	}
 	wbPessimisticRollback.PessimisticRollback(k1)
 	txn = engines.kv.DB.NewTransaction(true)
-	err = restoreAppliedEntry(genEntry(wbPessimisticRollback, t), txn, lockStore, rollbackStore)
+	err = restoreAppliedEntry(genEntry(wbPessimisticRollback, t), txn, lockStore)
 	require.Nil(t, err)
 }

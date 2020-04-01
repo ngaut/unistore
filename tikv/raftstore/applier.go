@@ -639,7 +639,8 @@ func (a *applier) updateMetrics(aCtx *applyContext) {
 }
 
 func (a *applier) writeApplyState(wb *WriteBatch) {
-	wb.Set(ApplyStateKey(a.region.Id), a.applyState.Marshal())
+	applyStateKey := y.KeyWithTs(ApplyStateKey(a.region.Id), KvTS)
+	wb.Set(applyStateKey, a.applyState.Marshal())
 }
 
 func (a *applier) handleRaftEntryNormal(aCtx *applyContext, entry *eraftpb.Entry) applyResult {
@@ -946,8 +947,8 @@ func (a *applier) execCustomLog(actx *applyContext, cl *raftlog.CustomRaftLog) (
 			cnt++
 		})
 	case raftlog.TypeRolback:
-		cl.IterateRollback(func(key []byte, deleteLock bool) {
-			actx.wb.Rollback(key)
+		cl.IterateRollback(func(key []byte, startTS uint64, deleteLock bool) {
+			actx.wb.Rollback(y.KeyWithTs(key, startTS))
 			if deleteLock {
 				actx.wb.DeleteLock(key[:len(key)-8])
 			}
@@ -1101,15 +1102,6 @@ func convertPrewriteToLock(op prewriteOp, txn *badger.Txn) (key, value []byte) {
 	if err != nil {
 		panic(op.putLock.Value)
 	}
-	if item, err := txn.Get(rawKey); err == nil {
-		val, err1 := item.Value()
-		if err1 != nil {
-			panic(err1)
-		}
-		lock.HasOldVer = true
-		lock.OldMeta = item.UserMeta()
-		lock.OldVal = val
-	}
 	if op.putDefault != nil {
 		lock.Value = op.putDefault.Value
 	}
@@ -1136,28 +1128,10 @@ func (a *applier) commitLock(aCtx *applyContext, rawKey []byte, val []byte, comm
 	var sizeDiff int64
 	userMeta := mvcc.NewDBUserMeta(lock.StartTS, commitTS)
 	if lock.Op != uint8(kvrpcpb.Op_Lock) {
-		aCtx.wb.SetWithUserMeta(rawKey, lock.Value, userMeta)
+		aCtx.wb.SetWithUserMeta(y.KeyWithTs(rawKey, commitTS), lock.Value, userMeta)
 		sizeDiff = int64(len(rawKey) + len(lock.Value))
-		if lock.HasOldVer {
-			oldKey := mvcc.EncodeOldKey(rawKey, lock.OldMeta.CommitTS())
-			aCtx.wb.SetWithUserMeta(oldKey, lock.OldVal, lock.OldMeta.ToOldUserMeta(commitTS))
-			sizeDiff -= int64(len(rawKey) + len(lock.OldVal))
-		}
 	} else if bytes.Equal(lock.Primary, rawKey) {
-		// For primary key with Op_Lock type, the value need to be skipped, but we need to keep the transaction status.
-		// So we put it as old key directly.
-		if lock.HasOldVer {
-			// There is a latest value, we don't want to move the value to the old key space for performance and simplicity.
-			// Write the lock as old key directly to store the transaction status.
-			// The old entry doesn't have value as Delete entry, but we can compare the commitTS in key and NextCommitTS
-			// in the user meta to determine if the entry is Delete or Op_Lock.
-			// If NextCommitTS equals CommitTS, it is Op_Lock, otherwise, it is Delete.
-			oldKey := mvcc.EncodeOldKey(rawKey, commitTS)
-			aCtx.wb.SetWithUserMeta(oldKey, nil, userMeta)
-		} else {
-			// Convert the lock to a delete to store the transaction status.
-			aCtx.wb.SetWithUserMeta(rawKey, nil, userMeta)
-		}
+		aCtx.wb.SetOpLock(y.KeyWithTs(rawKey, commitTS), userMeta)
 	}
 	if sizeDiff > 0 {
 		a.metrics.sizeDiffHint += uint64(sizeDiff)
@@ -1171,7 +1145,7 @@ func (a *applier) getLock(aCtx *applyContext, rawKey []byte) []byte {
 	}
 	lockEntries := aCtx.wb.lockEntries
 	for i := len(lockEntries) - 1; i >= 0; i-- {
-		if bytes.Equal(lockEntries[i].Key, rawKey) {
+		if bytes.Equal(lockEntries[i].Key.UserKey, rawKey) {
 			return lockEntries[i].Value
 		}
 	}
@@ -1184,7 +1158,7 @@ func (a *applier) execRollback(aCtx *applyContext, op rollbackOp) {
 		if err != nil {
 			panic(op.putWrite.Key)
 		}
-		aCtx.wb.Rollback(append(rawKey, remain...))
+		aCtx.wb.Rollback(y.KeyWithTs(rawKey, mvcc.DecodeKeyTS(remain)))
 		if op.delLock != nil {
 			aCtx.wb.DeleteLock(rawKey)
 		}
@@ -1215,18 +1189,7 @@ func (a *applier) execDeleteRange(aCtx *applyContext, req *raft_cmdpb.DeleteRang
 		if bytes.Compare(item.Key(), endKey) >= 0 {
 			break
 		}
-		aCtx.wb.Delete(item.KeyCopy(nil))
-	}
-	it.Close()
-	oldStartKey := mvcc.EncodeOldKey(startKey, 0)
-	oldEndKey := mvcc.EncodeOldKey(endKey, 0)
-	it = dbreader.NewIterator(txn, false, oldStartKey, oldEndKey)
-	for it.Seek(oldStartKey); it.Valid(); it.Next() {
-		item := it.Item()
-		if bytes.Compare(item.Key(), oldEndKey) >= 0 {
-			break
-		}
-		aCtx.wb.Delete(item.KeyCopy(nil))
+		aCtx.wb.Delete(y.KeyWithTs(item.KeyCopy(nil), item.Version()+1))
 	}
 	it.Close()
 	lockIt := aCtx.engines.kv.LockStore.NewIterator()

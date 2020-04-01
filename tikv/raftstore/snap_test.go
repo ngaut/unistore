@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/coocood/badger"
+	"github.com/coocood/badger/y"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -32,12 +33,9 @@ import (
 )
 
 var (
-	snapTestKey        = []byte("tkey")
-	snapTestKeyOld     = encodeOldKey(snapTestKey, 100)
-	regionTestBegin    = []byte("ta")
-	regionTestBeginOld = []byte("ua")
-	regionTestEnd      = []byte("tz")
-	regionTestEndOld   = []byte("uz")
+	snapTestKey     = []byte("tkey")
+	regionTestBegin = []byte("ta")
+	regionTestEnd   = []byte("tz")
 )
 
 const (
@@ -75,15 +73,10 @@ func getKVCount(t *testing.T, db *mvcc.DBBundle) int {
 	count := 0
 	err := db.DB.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		it.SetAllVersions(true)
 		defer it.Close()
 		for it.Seek(regionTestBegin); it.Valid(); it.Next() {
 			if bytes.Compare(it.Item().Key(), regionTestEnd) >= 0 {
-				break
-			}
-			count++
-		}
-		for it.Seek(regionTestBeginOld); it.Valid(); it.Next() {
-			if bytes.Compare(it.Item().Key(), regionTestEndOld) >= 0 {
 				break
 			}
 			count++
@@ -117,19 +110,20 @@ func genTestRegion(regionID, storeID, peerID uint64) *metapb.Region {
 }
 
 func assertEqDB(t *testing.T, expected, actual *mvcc.DBBundle) {
-	expectedVal := getDBValue(t, expected.DB, snapTestKey)
-	actualVal := getDBValue(t, actual.DB, snapTestKey)
+	expectedVal := getDBValue(t, expected.DB, snapTestKey, 200)
+	actualVal := getDBValue(t, actual.DB, snapTestKey, 200)
 	assert.Equal(t, expectedVal, actualVal)
-	expectedVal = getDBValue(t, expected.DB, snapTestKeyOld)
-	actualVal = getDBValue(t, actual.DB, snapTestKeyOld)
+	expectedVal = getDBValue(t, expected.DB, snapTestKey, 100)
+	actualVal = getDBValue(t, actual.DB, snapTestKey, 100)
 	assert.Equal(t, expectedVal, actualVal)
 	expectedLock := expected.LockStore.Get(snapTestKey, nil)
 	actualLock := actual.LockStore.Get(snapTestKey, nil)
 	assert.Equal(t, expectedLock, actualLock)
 }
 
-func getDBValue(t *testing.T, db *badger.DB, key []byte) (val []byte) {
+func getDBValue(t *testing.T, db *badger.DB, key []byte, ts uint64) (val []byte) {
 	require.Nil(t, db.View(func(txn *badger.Txn) error {
+		txn.SetReadTS(ts)
 		item, err := txn.Get(key)
 		require.Nil(t, err, string(key))
 		val, err = item.Value()
@@ -143,14 +137,13 @@ func openDBBundle(t *testing.T, dir string) *mvcc.DBBundle {
 	opts := badger.DefaultOptions
 	opts.Dir = dir
 	opts.ValueDir = dir
+	opts.ManagedTxns = true
 	db, err := badger.Open(opts)
 	require.Nil(t, err)
 	lockStore := lockstore.NewMemStore(1024)
-	rollbackStore := lockstore.NewMemStore(1024)
 	return &mvcc.DBBundle{
-		DB:            db,
-		LockStore:     lockStore,
-		RollbackStore: rollbackStore,
+		DB:        db,
+		LockStore: lockStore,
 	}
 }
 
@@ -158,12 +151,24 @@ func fillDBBundleData(t *testing.T, dbBundle *mvcc.DBBundle) {
 	// write some data.
 	// Put an new version key and an old version key.
 	err := dbBundle.DB.Update(func(txn *badger.Txn) error {
-		value := make([]byte, 32)
-		require.Nil(t, txn.SetWithMetaSlice(snapTestKey, value, mvcc.NewDBUserMeta(150, 200)))
-		oldUseMeta := mvcc.NewDBUserMeta(50, 100).ToOldUserMeta(200)
-		require.Nil(t, txn.SetWithMetaSlice(snapTestKeyOld, make([]byte, 128), oldUseMeta))
+		e := &badger.Entry{
+			Key:      y.KeyWithTs(snapTestKey, 100),
+			UserMeta: mvcc.NewDBUserMeta(50, 100),
+			Value:    make([]byte, 128),
+		}
+		require.Nil(t, txn.SetEntry(e))
 		return nil
 	})
+	err = dbBundle.DB.Update(func(txn *badger.Txn) error {
+		e := &badger.Entry{
+			Key:      y.KeyWithTs(snapTestKey, 200),
+			UserMeta: mvcc.NewDBUserMeta(150, 200),
+			Value:    make([]byte, 32),
+		}
+		require.Nil(t, txn.SetEntry(e))
+		return nil
+	})
+
 	require.Nil(t, err)
 	lockVal := &mvcc.MvccLock{
 		MvccLockHdr: mvcc.MvccLockHdr{
@@ -171,12 +176,9 @@ func fillDBBundleData(t *testing.T, dbBundle *mvcc.DBBundle) {
 			TTL:        100,
 			Op:         byte(kvrpcpb.Op_Put),
 			PrimaryLen: uint16(len(snapTestKey)),
-			HasOldVer:  true,
 		},
 		Primary: snapTestKey,
 		Value:   make([]byte, 128),
-		OldVal:  make([]byte, 32),
-		OldMeta: mvcc.NewDBUserMeta(150, 200),
 	}
 	dbBundle.LockStore.Put(snapTestKey, lockVal.MarshalBinary())
 }
