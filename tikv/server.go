@@ -418,20 +418,8 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 }
 
 func (svr *Server) KvGC(ctx context.Context, req *kvrpcpb.GCRequest) (*kvrpcpb.GCResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvGC")
-	if err != nil {
-		return &kvrpcpb.GCResponse{Error: convertToKeyError(err)}, nil
-	}
-	defer reqCtx.finish()
-	if reqCtx.regErr != nil {
-		return &kvrpcpb.GCResponse{RegionError: reqCtx.regErr}, nil
-	}
-	log.Debug("kv GC safePoint:", extractPhysicalTime(req.SafePoint))
-	if !isMvccRegion(reqCtx.regCtx) {
-		return &kvrpcpb.GCResponse{}, nil
-	}
-	err = svr.mvccStore.GC(reqCtx, req.SafePoint)
-	return &kvrpcpb.GCResponse{Error: convertToKeyError(err)}, nil
+	svr.mvccStore.UpdateSafePoint(req.SafePoint)
+	return &kvrpcpb.GCResponse{}, nil
 }
 
 func (svr *Server) KvDeleteRange(ctx context.Context, req *kvrpcpb.DeleteRangeRequest) (*kvrpcpb.DeleteRangeResponse, error) {
@@ -624,19 +612,24 @@ func (svr *Server) Detect(stream deadlockPb.Deadlock_DetectServer) error {
 }
 
 func (svr *Server) CheckLockObserver(context.Context, *kvrpcpb.CheckLockObserverRequest) (*kvrpcpb.CheckLockObserverResponse, error) {
-	panic("implement me")
+	// TODO: implement Observer
+	return &kvrpcpb.CheckLockObserverResponse{IsClean: true}, nil
 }
 
-func (svr *Server) PhysicalScanLock(context.Context, *kvrpcpb.PhysicalScanLockRequest) (*kvrpcpb.PhysicalScanLockResponse, error) {
-	panic("implement me")
+func (svr *Server) PhysicalScanLock(ctx context.Context, req *kvrpcpb.PhysicalScanLockRequest) (*kvrpcpb.PhysicalScanLockResponse, error) {
+	resp := &kvrpcpb.PhysicalScanLockResponse{}
+	resp.Locks = svr.mvccStore.PhysicalScanLock(req.StartKey, req.MaxTs, int(req.Limit))
+	return resp, nil
 }
 
 func (svr *Server) RegisterLockObserver(context.Context, *kvrpcpb.RegisterLockObserverRequest) (*kvrpcpb.RegisterLockObserverResponse, error) {
-	panic("implement me")
+	// TODO: implement Observer
+	return &kvrpcpb.RegisterLockObserverResponse{}, nil
 }
 
 func (svr *Server) RemoveLockObserver(context.Context, *kvrpcpb.RemoveLockObserverRequest) (*kvrpcpb.RemoveLockObserverResponse, error) {
-	panic("implement me")
+	// TODO: implement Observer
+	return &kvrpcpb.RemoveLockObserverResponse{}, nil
 }
 
 func convertToKeyError(err error) *kvrpcpb.KeyError {

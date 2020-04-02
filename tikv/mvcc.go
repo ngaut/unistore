@@ -50,6 +50,8 @@ type MVCCStore struct {
 	lockStore *lockstore.MemStore
 	dbWriter  mvcc.DBWriter
 	safePoint *SafePoint
+	pdClient  pd.Client
+	closeCh   chan bool
 
 	latestTS          uint64
 	lockWaiterManager *lockwaiter.Manager
@@ -59,18 +61,24 @@ type MVCCStore struct {
 
 // NewMVCCStore creates a new MVCCStore
 func NewMVCCStore(bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint,
-	writer mvcc.DBWriter, pdClinet pd.Client) *MVCCStore {
+	writer mvcc.DBWriter, pdClient pd.Client) *MVCCStore {
 	store := &MVCCStore{
 		db:                bundle.DB,
 		dir:               dataDir,
 		lockStore:         bundle.LockStore,
 		safePoint:         safePoint,
+		pdClient:          pdClient,
+		closeCh:           make(chan bool),
 		dbWriter:          writer,
 		lockWaiterManager: lockwaiter.NewManager(),
 	}
 	store.DeadlockDetectSvr = NewDetectorServer()
-	store.DeadlockDetectCli = NewDetectorClient(store.lockWaiterManager, pdClinet)
+	store.DeadlockDetectCli = NewDetectorClient(store.lockWaiterManager, pdClient)
 	writer.Open()
+	if pdClient != nil {
+		// pdClient is nil in unit test.
+		go store.runUpdateSafePointLoop()
+	}
 	return store
 }
 
@@ -92,6 +100,7 @@ func (store *MVCCStore) getLatestTS() uint64 {
 
 func (store *MVCCStore) Close() error {
 	store.dbWriter.Close()
+	close(store.closeCh)
 
 	err := store.dumpMemLocks()
 	if err != nil {
@@ -962,7 +971,20 @@ func (store *MVCCStore) Cleanup(reqCtx *requestCtx, key []byte, startTS, current
 	return err
 }
 
-func (store *MVCCStore) ScanLock(reqCtx *requestCtx, maxSystemTS uint64) ([]*kvrpcpb.LockInfo, error) {
+func (store *MVCCStore) appendScannedLock(locks []*kvrpcpb.LockInfo, it *lockstore.Iterator, maxTS uint64) []*kvrpcpb.LockInfo {
+	lock := mvcc.DecodeLock(it.Value())
+	if lock.StartTS < maxTS {
+		locks = append(locks, &kvrpcpb.LockInfo{
+			PrimaryLock: lock.Primary,
+			LockVersion: lock.StartTS,
+			Key:         safeCopy(it.Key()),
+			LockTtl:     uint64(lock.TTL),
+		})
+	}
+	return locks
+}
+
+func (store *MVCCStore) ScanLock(reqCtx *requestCtx, maxTS uint64) ([]*kvrpcpb.LockInfo, error) {
 	var locks []*kvrpcpb.LockInfo
 	if len(reqCtx.regCtx.endKey) == 0 {
 		panic("invalid end key")
@@ -973,17 +995,21 @@ func (store *MVCCStore) ScanLock(reqCtx *requestCtx, maxSystemTS uint64) ([]*kvr
 		if exceedEndKey(it.Key(), reqCtx.regCtx.endKey) {
 			return locks, nil
 		}
-		lock := mvcc.DecodeLock(it.Value())
-		if lock.StartTS < maxSystemTS {
-			locks = append(locks, &kvrpcpb.LockInfo{
-				PrimaryLock: lock.Primary,
-				LockVersion: lock.StartTS,
-				Key:         codec.EncodeBytes(nil, it.Key()),
-				LockTtl:     uint64(lock.TTL),
-			})
-		}
+		locks = store.appendScannedLock(locks, it, maxTS)
 	}
 	return locks, nil
+}
+
+func (store *MVCCStore) PhysicalScanLock(startKey []byte, maxTS uint64, limit int) []*kvrpcpb.LockInfo {
+	var locks []*kvrpcpb.LockInfo
+	it := store.lockStore.NewIterator()
+	for it.Seek(startKey); it.Valid(); it.Next() {
+		if len(locks) == limit {
+			break
+		}
+		locks = store.appendScannedLock(locks, it, maxTS)
+	}
+	return locks
 }
 
 func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64) error {
@@ -1034,11 +1060,15 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, startTS, commitTS uint64
 	return err
 }
 
-func (store *MVCCStore) GC(reqCtx *requestCtx, safePoint uint64) error {
+func (store *MVCCStore) UpdateSafePoint(safePoint uint64) {
 	// We use the gcLock to make sure safePoint can only increase.
 	store.db.UpdateSafeTs(safePoint)
 	store.safePoint.UpdateTS(safePoint)
-	return nil
+	log.Infof("safePoint is set to %d(%v)", safePoint, tsToTime(safePoint))
+}
+
+func tsToTime(ts uint64) time.Time {
+	return time.Unix(0, int64(ts>>18)*1000000)
 }
 
 func (store *MVCCStore) StartDeadlockDetection(ctx context.Context, pdClient pd.Client,
@@ -1145,6 +1175,25 @@ func (store *MVCCStore) BatchGet(reqCtx *requestCtx, keys [][]byte, version uint
 	}
 	reqCtx.getDBReader().BatchGet(remain, version, batchGetFunc)
 	return pairs
+}
+
+func (store *MVCCStore) runUpdateSafePointLoop() {
+	var lastSafePoint uint64
+	for {
+		safePoint, err := store.pdClient.GetGCSafePoint(context.Background())
+		if err != nil {
+			log.Error("get GC safePoint error", err)
+		} else if lastSafePoint < safePoint {
+			store.UpdateSafePoint(safePoint)
+			lastSafePoint = safePoint
+		}
+		select {
+		case <-store.closeCh:
+			return
+		default:
+		}
+		time.Sleep(time.Minute)
+	}
 }
 
 type SafePoint struct {
