@@ -1179,6 +1179,7 @@ func (store *MVCCStore) BatchGet(reqCtx *requestCtx, keys [][]byte, version uint
 
 func (store *MVCCStore) runUpdateSafePointLoop() {
 	var lastSafePoint uint64
+	ticker := time.NewTicker(time.Minute)
 	for {
 		safePoint, err := store.pdClient.GetGCSafePoint(context.Background())
 		if err != nil {
@@ -1190,9 +1191,8 @@ func (store *MVCCStore) runUpdateSafePointLoop() {
 		select {
 		case <-store.closeCh:
 			return
-		default:
+		case <-ticker.C:
 		}
-		time.Sleep(time.Minute)
 	}
 }
 
