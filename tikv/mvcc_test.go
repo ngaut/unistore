@@ -31,6 +31,7 @@ import (
 	"github.com/ngaut/unistore/util/lockwaiter"
 	. "github.com/pingcap/check"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/kvproto/pkg/metapb"
 )
 
 var _ = Suite(&testMvccSuite{})
@@ -58,6 +59,15 @@ func (ts *TestStore) newReqCtxWithKeys(startKey, endKey []byte) *requestCtx {
 			latches:  new(sync.Map),
 			startKey: startKey,
 			endKey:   endKey,
+		},
+		rpcCtx: &kvrpcpb.Context{
+			RegionId:    1,
+			RegionEpoch: &metapb.RegionEpoch{Version: 1, ConfVer: 1},
+			Peer: &metapb.Peer{
+				Id:        1,
+				StoreId:   1,
+				IsLearner: false,
+			},
 		},
 		svr: ts.Svr,
 	}
@@ -367,6 +377,7 @@ func MustCommitErr(key []byte, startTs, commitTs uint64, store *TestStore) {
 func MustRollbackKey(key []byte, startTs uint64, store *TestStore) {
 	err := store.MvccStore.Rollback(store.newReqCtx(), [][]byte{key}, startTs)
 	store.c.Assert(err, IsNil)
+	store.c.Assert(store.MvccStore.lockStore.Get(key, nil), IsNil)
 	status := store.MvccStore.checkExtraTxnStatus(store.newReqCtx(), key, startTs)
 	store.c.Assert(status.isRollback, IsTrue)
 }
@@ -1349,7 +1360,7 @@ func (s *testMvccSuite) TestResolveCommit(c *C) {
 
 	// Resolve secondary key
 	MustCommit(pk, 1, 2, store)
-	err = store.MvccStore.ResolveLock(store.newReqCtx(), 1, 2)
+	err = store.MvccStore.ResolveLock(store.newReqCtx(), [][]byte{sk}, 1, 2)
 	c.Assert(err, IsNil)
 
 	// Commit secondary key, not reporting lock not found
