@@ -427,8 +427,7 @@ func MustPrewriteLockErr(pk []byte, key []byte, startTs uint64, store *TestStore
 }
 
 func MustGC(key []byte, safePoint uint64, s *TestStore) {
-	err := s.MvccStore.GC(s.newReqCtx(), safePoint)
-	s.c.Assert(err, IsNil)
+	s.MvccStore.UpdateSafePoint(safePoint)
 }
 
 func MustCleanup(key []byte, startTs, currentTs uint64, store *TestStore) {
