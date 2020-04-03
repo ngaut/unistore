@@ -16,7 +16,6 @@ package tikv
 import (
 	"errors"
 	"math"
-	"sync"
 	"testing"
 
 	"github.com/pingcap/kvproto/pkg/coprocessor"
@@ -56,12 +55,7 @@ type encodedTestKVData struct {
 }
 
 func initTestData(store *TestStore, encodedKVDatas []*encodedTestKVData) []error {
-	reqCtx := requestCtx{
-		regCtx: &regionCtx{
-			latches: new(sync.Map),
-		},
-		svr: store.Svr,
-	}
+	reqCtx := store.newReqCtx()
 	i := 0
 	for _, kvData := range encodedKVDatas {
 		mutation := makeATestMutaion(kvrpcpb.Op_Put, kvData.encodedRowKey,
@@ -72,11 +66,11 @@ func initTestData(store *TestStore, encodedKVDatas []*encodedTestKVData) []error
 			StartVersion: uint64(StartTs + i),
 			LockTtl:      TTL,
 		}
-		err := store.MvccStore.Prewrite(&reqCtx, req)
+		err := store.MvccStore.Prewrite(reqCtx, req)
 		if err != nil {
 			return []error{err}
 		}
-		commitError := store.MvccStore.Commit(&reqCtx, [][]byte{kvData.encodedRowKey},
+		commitError := store.MvccStore.Commit(reqCtx, [][]byte{kvData.encodedRowKey},
 			uint64(StartTs+i), uint64(StartTs+i+1))
 		if commitError != nil {
 			return []error{commitError}

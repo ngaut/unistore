@@ -16,14 +16,11 @@ package raftstore
 import (
 	"time"
 
-	"github.com/ngaut/unistore/config"
-
 	"github.com/coocood/badger/y"
-
-	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
-
+	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -254,13 +251,11 @@ func (w *TestRaftWriter) Close() {
 }
 
 func (w *TestRaftWriter) Write(batch mvcc.WriteBatch) error {
-	raftWriteBatch := batch.(*raftWriteBatch)
+	raftWriteBatch := batch.(*customWriteBatch)
+	raftLog := raftWriteBatch.builder.Build()
 	applier := new(applier)
 	applyCtx := newApplyContext("test", nil, w.engine, nil, NewDefaultConfig())
-	applier.execWriteCmd(applyCtx, raftlog.NewRequest(&rcpb.RaftCmdRequest{
-		Header:   new(rcpb.RaftRequestHeader),
-		Requests: raftWriteBatch.requests,
-	}))
+	applier.execWriteCmd(applyCtx, raftLog)
 	err := applyCtx.wb.WriteToKV(w.dbBundle)
 	if err != nil {
 		return err
@@ -273,11 +268,7 @@ func (w *TestRaftWriter) DeleteRange(start, end []byte, latchHandle mvcc.LatchHa
 }
 
 func (w *TestRaftWriter) NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Context) mvcc.WriteBatch {
-	return &raftWriteBatch{
-		ctx:      ctx,
-		startTS:  startTS,
-		commitTS: commitTS,
-	}
+	return NewCustomWriteBatch(startTS, commitTS, ctx)
 }
 
 func NewTestRaftWriter(dbBundle *mvcc.DBBundle, engine *Engines) mvcc.DBWriter {

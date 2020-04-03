@@ -383,7 +383,7 @@ func (svr *Server) KvScanLock(ctx context.Context, req *kvrpcpb.ScanLockRequest)
 	if !isMvccRegion(reqCtx.regCtx) {
 		return &kvrpcpb.ScanLockResponse{}, nil
 	}
-	locks, err := svr.mvccStore.ScanLock(reqCtx, req.MaxVersion)
+	locks, err := svr.mvccStore.ScanLock(reqCtx, req.MaxVersion, int(req.Limit))
 	return &kvrpcpb.ScanLockResponse{Error: convertToKeyError(err), Locks: locks}, nil
 }
 
@@ -403,7 +403,7 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 	if len(req.TxnInfos) > 0 {
 		for _, txnInfo := range req.TxnInfos {
 			log.Debugf("kv resolve lock region:%d txn:%v", reqCtx.regCtx.meta.Id, txnInfo.Txn)
-			err := svr.mvccStore.ResolveLock(reqCtx, txnInfo.Txn, txnInfo.Status)
+			err := svr.mvccStore.ResolveLock(reqCtx, nil, txnInfo.Txn, txnInfo.Status)
 			if err != nil {
 				resp.Error, resp.RegionError = convertToPBError(err)
 				break
@@ -411,7 +411,7 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 		}
 	} else {
 		log.Debugf("kv resolve lock region:%d txn:%v", reqCtx.regCtx.meta.Id, req.StartVersion)
-		err := svr.mvccStore.ResolveLock(reqCtx, req.StartVersion, req.CommitVersion)
+		err := svr.mvccStore.ResolveLock(reqCtx, req.Keys, req.StartVersion, req.CommitVersion)
 		resp.Error, resp.RegionError = convertToPBError(err)
 	}
 	return resp, nil

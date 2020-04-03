@@ -950,7 +950,7 @@ func (a *applier) execCustomLog(actx *applyContext, cl *raftlog.CustomRaftLog) (
 		cl.IterateRollback(func(key []byte, startTS uint64, deleteLock bool) {
 			actx.wb.Rollback(y.KeyWithTs(key, startTS))
 			if deleteLock {
-				actx.wb.DeleteLock(key[:len(key)-8])
+				actx.wb.DeleteLock(key)
 			}
 			cnt++
 		})
