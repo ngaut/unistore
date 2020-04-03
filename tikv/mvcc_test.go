@@ -127,7 +127,7 @@ func CleanTestStore(store *TestStore) {
 
 // PessimisticLock will add pessimistic lock on key
 func PessimisticLock(pk []byte, key []byte, startTs uint64, lockTTL uint64, forUpdateTs uint64,
-	isFirstLock bool, store *TestStore) (*lockwaiter.Waiter, error) {
+	isFirstLock bool, forceLock bool, store *TestStore) (*lockwaiter.Waiter, error) {
 	req := &kvrpcpb.PessimisticLockRequest{
 		Mutations:    []*kvrpcpb.Mutation{newMutation(kvrpcpb.Op_PessimisticLock, key, nil)},
 		PrimaryLock:  pk,
@@ -135,6 +135,7 @@ func PessimisticLock(pk []byte, key []byte, startTs uint64, lockTTL uint64, forU
 		LockTtl:      lockTTL,
 		ForUpdateTs:  forUpdateTs,
 		IsFirstLock:  isFirstLock,
+		Force:        forceLock,
 	}
 	waiter, err := store.MvccStore.PessimisticLock(store.newReqCtx(), req, &kvrpcpb.PessimisticLockResponse{})
 	return waiter, err
@@ -287,12 +288,17 @@ func MustPrewriteDelete(pk, key []byte, startTs uint64, store *TestStore) {
 }
 
 func MustAcquirePessimisticLock(pk, key []byte, startTs uint64, forUpdateTs uint64, store *TestStore) {
-	_, err := PessimisticLock(pk, key, startTs, lockTTL, forUpdateTs, false, store)
+	_, err := PessimisticLock(pk, key, startTs, lockTTL, forUpdateTs, false, false, store)
+	store.c.Assert(err, IsNil)
+}
+
+func MustAcquirePessimisticLockForce(pk, key []byte, startTs uint64, forUpdateTs uint64, store *TestStore) {
+	_, err := PessimisticLock(pk, key, startTs, lockTTL, forUpdateTs, false, true, store)
 	store.c.Assert(err, IsNil)
 }
 
 func MustAcquirePessimisticLockErr(pk, key []byte, startTs uint64, forUpdateTs uint64, store *TestStore) {
-	_, err := PessimisticLock(pk, key, startTs, lockTTL, forUpdateTs, false, store)
+	_, err := PessimisticLock(pk, key, startTs, lockTTL, forUpdateTs, false, false, store)
 	store.c.Assert(err, NotNil)
 }
 
@@ -482,7 +488,7 @@ func (s *testMvccSuite) TestPessimiticTxnTTL(c *C) {
 	val1 := []byte("val1")
 	startTs := uint64(1)
 	lockTTL := uint64(1000)
-	_, err = PessimisticLock(key1, key1, startTs, lockTTL, startTs, true, store)
+	_, err = PessimisticLock(key1, key1, startTs, lockTTL, startTs, true, false, store)
 	c.Assert(err, IsNil)
 
 	// Prewrite key1 with smaller lock ttl, lock ttl will not be changed
@@ -492,7 +498,7 @@ func (s *testMvccSuite) TestPessimiticTxnTTL(c *C) {
 
 	key2 := []byte("key2")
 	val2 := []byte("val2")
-	_, err = PessimisticLock(key2, key2, 3, 300, 3, true, store)
+	_, err = PessimisticLock(key2, key2, 3, 300, 3, true, false, store)
 	c.Assert(err, IsNil)
 
 	// Prewrite key1 with larger lock ttl, lock ttl will be updated
@@ -548,19 +554,19 @@ func (s *testMvccSuite) TestOverwritePessimisitcLock(c *C) {
 	lockTTL := uint64(100)
 	forUpdateTs := uint64(100)
 	// pessimistic lock one key
-	_, err = PessimisticLock(key, key, startTs, lockTTL, forUpdateTs, true, store)
+	_, err = PessimisticLock(key, key, startTs, lockTTL, forUpdateTs, true, false, store)
 	c.Assert(err, IsNil)
 	lock := store.MvccStore.getLock(store.newReqCtx(), key)
 	c.Assert(lock.ForUpdateTS, Equals, forUpdateTs)
 
 	// pessimistic lock this key again using larger forUpdateTs
-	_, err = PessimisticLock(key, key, startTs, lockTTL, forUpdateTs+7, true, store)
+	_, err = PessimisticLock(key, key, startTs, lockTTL, forUpdateTs+7, true, false, store)
 	c.Assert(err, IsNil)
 	lock2 := store.MvccStore.getLock(store.newReqCtx(), key)
 	c.Assert(lock2.ForUpdateTS, Equals, forUpdateTs+7)
 
 	// pessimistic lock one key using smaller forUpdateTsTs
-	_, err = PessimisticLock(key, key, startTs, lockTTL, forUpdateTs-7, true, store)
+	_, err = PessimisticLock(key, key, startTs, lockTTL, forUpdateTs-7, true, false, store)
 	c.Assert(err, IsNil)
 	lock3 := store.MvccStore.getLock(store.newReqCtx(), key)
 	c.Assert(lock3.ForUpdateTS, Equals, forUpdateTs+7)
@@ -1435,4 +1441,22 @@ func (s *testMvccSuite) TestOpCheckNotExist(c *C) {
 	MustPrewritePut(k, k, v, 7, store)
 	MustRollbackKey(k, 7, store)
 	MustPrewriteOpCheckExistOk(k, k, 8, store)
+}
+
+func (s *testMvccSuite) TestPessimisticLockForce(c *C) {
+	store, err := NewTestStore("TestPessimisticLockForce", "TestPessimisticLockForce", c)
+	c.Assert(err, IsNil)
+	defer CleanTestStore(store)
+
+	k := []byte("ta")
+	v := []byte("v")
+	v2 := []byte("v2")
+	MustPrewritePut(k, k, v, 5, store)
+	MustCommit(k, 5, 10, store)
+	MustAcquirePessimisticLockForce(k, k, 1, 1, store)
+	MustLocked(k, true, store)
+	MustPrewritePessimisticPut(k, k, v2, 1, 10, store)
+	MustCommit(k, 1, 11, store)
+	MustUnLocked(k, store)
+	MustGetVal(k, v2, 13, store)
 }

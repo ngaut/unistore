@@ -459,12 +459,14 @@ func (store *MVCCStore) buildPessimisticLock(m *kvrpcpb.Mutation, item *badger.I
 	req *kvrpcpb.PessimisticLockRequest) (*mvcc.MvccLock, error) {
 	if item != nil {
 		userMeta := mvcc.DBUserMeta(item.UserMeta())
-		if userMeta.CommitTS() > req.ForUpdateTs {
-			return nil, &ErrConflict{
-				StartTS:          req.StartVersion,
-				ConflictTS:       userMeta.StartTS(),
-				ConflictCommitTS: userMeta.CommitTS(),
-				Key:              item.KeyCopy(nil),
+		if !req.Force {
+			if userMeta.CommitTS() > req.ForUpdateTs {
+				return nil, &ErrConflict{
+					StartTS:          req.StartVersion,
+					ConflictTS:       userMeta.StartTS(),
+					ConflictCommitTS: userMeta.CommitTS(),
+					Key:              item.KeyCopy(nil),
+				}
 			}
 		}
 		if m.Assertion == kvrpcpb.Assertion_NotExist && !item.IsEmpty() {
