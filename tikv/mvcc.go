@@ -1017,16 +1017,12 @@ func (store *MVCCStore) PhysicalScanLock(startKey []byte, maxTS uint64, limit in
 	return locks
 }
 
-func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, keys [][]byte, startTS, commitTS uint64) error {
+func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, lockKeys [][]byte, startTS, commitTS uint64) error {
 	regCtx := reqCtx.regCtx
 	if len(regCtx.endKey) == 0 {
 		panic("invalid end key")
 	}
-	var lockKeys [][]byte
-	var lockVals [][]byte
-	if len(keys) > 0 {
-		lockKeys = keys
-	} else {
+	if len(lockKeys) == 0 {
 		it := store.lockStore.NewIterator()
 		for it.Seek(regCtx.startKey); it.Valid(); it.Next() {
 			if exceedEndKey(it.Key(), regCtx.endKey) {
@@ -1037,7 +1033,6 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, keys [][]byte, startTS, 
 				continue
 			}
 			lockKeys = append(lockKeys, safeCopy(it.Key()))
-			lockVals = append(lockVals, safeCopy(it.Value()))
 		}
 		if len(lockKeys) == 0 {
 			return nil
@@ -1051,18 +1046,16 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, keys [][]byte, startTS, 
 
 	var buf []byte
 	var tmpDiff int
-	for i, lockKey := range lockKeys {
+	for _, lockKey := range lockKeys {
 		buf = store.lockStore.Get(lockKey, buf)
-		// If the keys are scanned before the latch, We need to check again to make sure the lock is not changed.
-		if len(lockVals) > 0 && !bytes.Equal(buf, lockVals[i]) {
-			// The lock is changed, ignore it.
-			continue
-		}
 		if len(buf) == 0 {
 			continue
 		}
+		lock := mvcc.DecodeLock(buf)
+		if lock.StartTS != startTS {
+			continue
+		}
 		if commitTS > 0 {
-			lock := mvcc.DecodeLock(buf)
 			tmpDiff += len(lockKey) + len(lock.Value)
 			batch.Commit(lockKey, &lock)
 		} else {
