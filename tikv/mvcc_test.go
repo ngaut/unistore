@@ -1366,6 +1366,8 @@ func (s *testMvccSuite) TestResolveCommit(c *C) {
 
 	// Resolve secondary key
 	MustCommit(pk, 1, 2, store)
+	err = store.MvccStore.ResolveLock(store.newReqCtx(), [][]byte{sk}, 2, 3)
+	c.Assert(err, NotNil)
 	err = store.MvccStore.ResolveLock(store.newReqCtx(), [][]byte{sk}, 1, 2)
 	c.Assert(err, IsNil)
 
