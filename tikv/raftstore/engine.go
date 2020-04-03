@@ -424,3 +424,26 @@ func deleteLocksInBatch(db *mvcc.DBBundle, keys []y.Key, batchSize int) error {
 	}
 	return nil
 }
+
+type raftLogFilter struct {
+}
+
+func (r *raftLogFilter) Filter(key, val, userMeta []byte) badger.Decision {
+	return badger.DecisionKeep
+}
+
+var raftLogGuard = badger.Guard{
+	Prefix:   []byte{LocalPrefix, RegionRaftPrefix},
+	MatchLen: 10,
+	MinSize:  1024 * 1024,
+}
+
+func (r *raftLogFilter) Guards() []badger.Guard {
+	return []badger.Guard{
+		raftLogGuard,
+	}
+}
+
+func CreateRaftLogCompactionFilter(targetLevel int, startKey, endKey []byte) badger.CompactionFilter {
+	return &raftLogFilter{}
+}
