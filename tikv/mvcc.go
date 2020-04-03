@@ -1056,6 +1056,9 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, keys [][]byte, startTS, 
 			// The lock is changed, ignore it.
 			continue
 		}
+		if len(buf) == 0 {
+			continue
+		}
 		if commitTS > 0 {
 			lock := mvcc.DecodeLock(buf)
 			tmpDiff += len(lockKey) + len(lock.Value)
