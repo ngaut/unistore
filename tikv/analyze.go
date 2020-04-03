@@ -124,14 +124,14 @@ func (p *analyzeIndexProcessor) Process(key, value []byte) error {
 	p.rowBuf = p.rowBuf[:0]
 	for _, val := range values {
 		p.rowBuf = append(p.rowBuf, val...)
+		if p.cms != nil {
+			p.cms.InsertBytes(p.rowBuf)
+		}
 	}
 	rowData := safeCopy(p.rowBuf)
 	err = p.statsBuilder.Iterate(types.NewBytesDatum(rowData))
 	if err != nil {
 		return err
-	}
-	if p.cms != nil {
-		p.cms.InsertBytes(rowData)
 	}
 	return nil
 }
