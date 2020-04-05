@@ -309,6 +309,7 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) *b
 	if subPath == subPathRaft {
 		// Do not need to write blob for raft engine because it will be deleted soon.
 		opts.ValueThreshold = 0
+		opts.CompactionFilterFactory = raftstore.CreateRaftLogCompactionFilter
 	} else {
 		opts.ManagedTxns = true
 	}
