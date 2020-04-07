@@ -47,6 +47,7 @@ type DBBundle struct {
 	DB         *badger.DB
 	LockStore  *lockstore.MemStore
 	MemStoreMu sync.Mutex
+	StateTS    uint64
 }
 
 type DBSnapshot struct {

@@ -127,7 +127,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
+	ts, err := pdClient.GetTS(context.Background())
+	if err != nil {
+		log.Fatal(err)
+	}
+	bundle.StateTS = ts
 	var (
 		innerServer   tikv.InnerServer
 		store         *tikv.MVCCStore

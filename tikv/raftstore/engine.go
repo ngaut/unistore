@@ -16,6 +16,7 @@ package raftstore
 import (
 	"bytes"
 	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/coocood/badger"
@@ -251,10 +252,14 @@ func (wb *WriteBatch) RollbackToSafePoint() {
 func (wb *WriteBatch) WriteToKV(bundle *mvcc.DBBundle) error {
 	if len(wb.entries) > 0 {
 		start := time.Now()
+		keyVersion := atomic.AddUint64(&bundle.StateTS, 1)
 		err := bundle.DB.Update(func(txn *badger.Txn) error {
 			for _, entry := range wb.entries {
 				if len(entry.UserMeta) == 0 && len(entry.Value) == 0 {
 					entry.SetDelete()
+				}
+				if entry.Key.Version == KvTS {
+					entry.Key.Version = keyVersion
 				}
 				err1 := txn.SetEntry(entry)
 				if err1 != nil {
