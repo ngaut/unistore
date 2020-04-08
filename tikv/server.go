@@ -223,6 +223,21 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 		resp.Errors, resp.RegionError = convertToPBErrors(deadlockErr)
 		return resp, nil
 	}
+	if result.WakeupSleepTime == lockwaiter.WakeUpThisWaiter {
+		if req.Force {
+			req.WaitTimeout = lockwaiter.LockNoWait
+			_, err := svr.mvccStore.PessimisticLock(reqCtx, req, resp)
+			resp.Errors, resp.RegionError = convertToPBErrors(err)
+			if err == nil {
+				return resp, nil
+			}
+			if _, ok := err.(*ErrLocked); !ok {
+				resp.Errors, resp.RegionError = convertToPBErrors(err)
+				return resp, nil
+			}
+			log.Warnf("wakeup force lock request, try lock still failed err=%v", err)
+		}
+	}
 	// The key is rollbacked, we don't have the exact commitTS, but we can use the server's latest.
 	// Always use the store latest ts since the waiter result commitTs may not be the real conflict ts
 	conflictCommitTS := svr.mvccStore.getLatestTS()
