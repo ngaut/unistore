@@ -118,9 +118,6 @@ func (req *requestCtx) finish() {
 	if req.reader != nil {
 		req.reader.Close()
 	}
-	if req.regCtx != nil {
-		req.regCtx.refCount.Done()
-	}
 }
 
 func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb.GetResponse, error) {

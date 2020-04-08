@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
@@ -56,7 +55,7 @@ func (ts *TestStore) newReqCtx() *requestCtx {
 func (ts *TestStore) newReqCtxWithKeys(startKey, endKey []byte) *requestCtx {
 	return &requestCtx{
 		regCtx: &regionCtx{
-			latches:  new(sync.Map),
+			latches:  newLatches(),
 			startKey: startKey,
 			endKey:   endKey,
 		},
@@ -1367,7 +1366,9 @@ func (s *testMvccSuite) TestResolveCommit(c *C) {
 	// Resolve secondary key
 	MustCommit(pk, 1, 2, store)
 	err = store.MvccStore.ResolveLock(store.newReqCtx(), [][]byte{sk}, 2, 3)
-	c.Assert(err, NotNil)
+	c.Assert(err, IsNil)
+	skLock := store.MvccStore.getLock(store.newReqCtx(), sk)
+	c.Assert(skLock, NotNil)
 	err = store.MvccStore.ResolveLock(store.newReqCtx(), [][]byte{sk}, 1, 2)
 	c.Assert(err, IsNil)
 

@@ -23,7 +23,6 @@ import (
 	"unsafe"
 
 	"github.com/coocood/badger"
-	"github.com/coocood/badger/y"
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/metrics"
@@ -57,33 +56,78 @@ type regionCtx struct {
 	approximateSize int64
 	diff            int64
 
-	latches *sync.Map
-
-	refCount sync.WaitGroup
-	parent   unsafe.Pointer // Parent is used to wait for all latches being released.
-
+	latches       *latches
 	leaderChecker raftstore.LeaderChecker
 }
 
-func newRegionCtx(meta *metapb.Region, parent *regionCtx, checker raftstore.LeaderChecker) *regionCtx {
+type latches struct {
+	slots [256]map[uint64]*sync.WaitGroup
+	locks [256]sync.Mutex
+}
+
+func newLatches() *latches {
+	l := &latches{}
+	for i := 0; i < 256; i++ {
+		l.slots[i] = map[uint64]*sync.WaitGroup{}
+	}
+	return l
+}
+
+func (l *latches) acquire(keyHashes []uint64) (waitCnt int) {
+	wg := new(sync.WaitGroup)
+	wg.Add(1)
+	for _, hash := range keyHashes {
+		waitCnt += l.acquireOne(hash, wg)
+	}
+	return
+}
+
+func (l *latches) acquireOne(hash uint64, wg *sync.WaitGroup) (waitCnt int) {
+	slotID := hash >> 56
+	for {
+		m := l.slots[slotID]
+		l.locks[slotID].Lock()
+		w, ok := m[hash]
+		if !ok {
+			m[hash] = wg
+		}
+		l.locks[slotID].Unlock()
+		if ok {
+			w.Wait()
+			waitCnt++
+			continue
+		}
+		return
+	}
+}
+
+func (l *latches) release(keyHashes []uint64) {
+	var w *sync.WaitGroup
+	for _, hash := range keyHashes {
+		slotID := hash >> 56
+		l.locks[slotID].Lock()
+		m := l.slots[slotID]
+		if w == nil {
+			w = m[hash]
+		}
+		delete(m, hash)
+		l.locks[slotID].Unlock()
+	}
+	if w != nil {
+		w.Done()
+	}
+}
+
+func newRegionCtx(meta *metapb.Region, latches *latches, checker raftstore.LeaderChecker) *regionCtx {
 	regCtx := &regionCtx{
 		meta:          meta,
-		latches:       new(sync.Map),
+		latches:       latches,
 		regionEpoch:   unsafe.Pointer(meta.GetRegionEpoch()),
-		parent:        unsafe.Pointer(parent),
 		leaderChecker: checker,
 	}
 	regCtx.startKey = regCtx.rawStartKey()
 	regCtx.endKey = regCtx.rawEndKey()
-	regCtx.refCount.Add(1)
 	return regCtx
-}
-
-func (ri *regionCtx) updateRegionMeta(meta *metapb.Region) {
-	ri.meta = meta
-	ri.startKey = ri.rawStartKey()
-	ri.endKey = ri.rawEndKey()
-	ri.updateRegionEpoch(meta.GetRegionEpoch())
 }
 
 func (ri *regionCtx) getRegionEpoch() *metapb.RegionEpoch {
@@ -136,11 +180,9 @@ func (ri *regionCtx) unmarshal(data []byte) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	ri.latches = new(sync.Map)
 	ri.startKey = ri.rawStartKey()
 	ri.endKey = ri.rawEndKey()
 	ri.regionEpoch = unsafe.Pointer(ri.meta.RegionEpoch)
-	ri.refCount.Add(1)
 	return nil
 }
 
@@ -154,59 +196,20 @@ func (ri *regionCtx) marshal() []byte {
 	return data
 }
 
-func (ri *regionCtx) tryAcquireLatches(hashVals []uint64) {
-	wg := new(sync.WaitGroup)
-	wg.Add(1)
-	for _, hashVal := range hashVals {
-		for {
-			res, loaded := ri.latches.LoadOrStore(hashVal, wg)
-			if loaded {
-				resWg := res.(*sync.WaitGroup)
-				resWg.Wait()
-				continue
-			}
-			break
-		}
-	}
-}
-
 // AcquireLatches add latches for all input hashVals, the input hashVals should be
 // sorted and have no duplicates
 func (ri *regionCtx) AcquireLatches(hashVals []uint64) {
-	if len(hashVals) == 0 {
-		log.Errorf("hashVals array length equals 0")
-		return
-	}
 	start := time.Now()
-	ri.tryAcquireLatches(hashVals)
+	waitCnt := ri.latches.acquire(hashVals)
 	dur := time.Since(start)
 	metrics.LatchWait.Observe(dur.Seconds())
 	if dur > time.Millisecond*50 {
-		log.Warnf("region %d acquire %d locks takes %v", ri.meta.Id, len(hashVals), dur)
+		log.Warnf("region %d acquire %d locks takes %v, waitCnt %d", ri.meta.Id, len(hashVals), dur, waitCnt)
 	}
 }
 
 func (ri *regionCtx) ReleaseLatches(hashVals []uint64) {
-	var resWg *sync.WaitGroup
-	for _, hashVal := range hashVals {
-		res, ok := ri.latches.Load(hashVal)
-		y.Assert(ok)
-		resWg = res.(*sync.WaitGroup)
-		ri.latches.Delete(hashVal)
-	}
-	resWg.Done()
-}
-
-func (ri *regionCtx) waitParent() {
-	parent := (*regionCtx)(atomic.LoadPointer(&ri.parent))
-	if parent != nil {
-		// Wait for the parent region reference decrease to zero, so the latches would be clean.
-		parent.refCount.Wait()
-		// TODO: the txnKeysMap in parent is discarded, if a large transaction failed
-		// and the client is down, leaves many locks, we can only resolve a single key at a time.
-		// Need to find a way to address this later.
-		atomic.StorePointer(&ri.parent, nil)
-	}
+	ri.latches.release(hashVals)
 }
 
 type RegionOptions struct {
@@ -224,6 +227,7 @@ type regionManager struct {
 	storeMeta *metapb.Store
 	mu        sync.RWMutex
 	regions   map[uint64]*regionCtx
+	latches   *latches
 }
 
 func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
@@ -236,9 +240,6 @@ func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *er
 	}
 	rm.mu.RLock()
 	ri := rm.regions[ctx.RegionId]
-	if ri != nil {
-		ri.refCount.Add(1)
-	}
 	rm.mu.RUnlock()
 	if ri == nil {
 		return nil, &errorpb.Error{
@@ -250,7 +251,6 @@ func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *er
 	}
 	// Region epoch does not match.
 	if rm.isEpochStale(ri.getRegionEpoch(), ctx.GetRegionEpoch()) {
-		ri.refCount.Done()
 		return nil, &errorpb.Error{
 			Message: "stale epoch",
 			EpochNotMatch: &errorpb.EpochNotMatch{
@@ -264,7 +264,6 @@ func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *er
 			},
 		}
 	}
-	ri.waitParent()
 	return ri, nil
 }
 
@@ -285,6 +284,7 @@ func NewRaftRegionManager(store *metapb.Store, router *raftstore.RaftstoreRouter
 		regionManager: regionManager{
 			storeMeta: store,
 			regions:   make(map[uint64]*regionCtx),
+			latches:   newLatches(),
 		},
 		eventCh:  make(chan interface{}, 1024),
 		detector: detector,
@@ -366,7 +366,6 @@ func (rm *RaftRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx,
 		return nil, err
 	}
 	if err := regionCtx.leaderChecker.IsLeader(ctx, rm.router); err != nil {
-		regionCtx.refCount.Done()
 		return nil, err
 	}
 	return regionCtx, nil
@@ -380,21 +379,16 @@ func (rm *RaftRegionManager) runEventHandler() {
 	for event := range rm.eventCh {
 		switch x := event.(type) {
 		case *peerCreateEvent:
-			regCtx := newRegionCtx(x.region, nil, x.ctx.LeaderChecker)
+			regCtx := newRegionCtx(x.region, rm.latches, x.ctx.LeaderChecker)
 			rm.mu.Lock()
 			rm.regions[x.ctx.RegionId] = regCtx
 			rm.mu.Unlock()
 		case *splitRegionEvent:
-			rm.mu.RLock()
-			oldRegion := rm.regions[x.derived.Id]
-			rm.mu.RUnlock()
-			oldRegion.waitParent()
 			rm.mu.Lock()
 			for i, region := range x.regions {
-				rm.regions[region.Id] = newRegionCtx(region, oldRegion, x.peers[i].LeaderChecker)
+				rm.regions[region.Id] = newRegionCtx(region, rm.latches, x.peers[i].LeaderChecker)
 			}
 			rm.mu.Unlock()
-			oldRegion.refCount.Done()
 		case *regionConfChangeEvent:
 			rm.mu.RLock()
 			region := rm.regions[x.ctx.RegionId]
@@ -402,20 +396,12 @@ func (rm *RaftRegionManager) runEventHandler() {
 			region.updateRegionEpoch(x.epoch)
 		case *peerDestroyEvent:
 			rm.mu.Lock()
-			region := rm.regions[x.regionID]
 			delete(rm.regions, x.regionID)
 			rm.mu.Unlock()
-			// We don't need to wait for parent for a destroyed peer.
-			region.refCount.Done()
 		case *peerApplySnapEvent:
-			rm.mu.RLock()
-			oldRegion := rm.regions[x.region.Id]
-			rm.mu.RUnlock()
-			oldRegion.waitParent()
 			rm.mu.Lock()
-			rm.regions[x.region.Id] = newRegionCtx(x.region, oldRegion, x.ctx.LeaderChecker)
+			rm.regions[x.region.Id] = newRegionCtx(x.region, rm.latches, x.ctx.LeaderChecker)
 			rm.mu.Unlock()
-			oldRegion.refCount.Done()
 		case *regionRoleChangeEvent:
 			rm.mu.RLock()
 			region := rm.regions[x.regionId]
@@ -455,6 +441,7 @@ func NewStandAloneRegionManager(db *badger.DB, opts RegionOptions, pdc pd.Client
 		regionManager: regionManager{
 			regions:   make(map[uint64]*regionCtx),
 			storeMeta: new(metapb.Store),
+			latches:   newLatches(),
 		},
 	}
 	err = rm.db.View(func(txn *badger.Txn) error {
@@ -486,6 +473,7 @@ func NewStandAloneRegionManager(db *badger.DB, opts RegionOptions, pdc pd.Client
 			if err != nil {
 				return errors.Trace(err)
 			}
+			r.latches = rm.latches
 			rm.regions[r.meta.Id] = r
 			req := &pdpb.RegionHeartbeatRequest{
 				Region:          r.meta,
@@ -528,7 +516,7 @@ func (rm *StandAloneRegionManager) initStore(storeAddr string) error {
 		RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
 		Peers:       []*metapb.Peer{&metapb.Peer{Id: peerID, StoreId: storeID}},
 	}
-	rm.regions[rootRegion.Id] = newRegionCtx(rootRegion, nil, nil)
+	rm.regions[rootRegion.Id] = newRegionCtx(rootRegion, rm.latches, nil)
 	_, err = rm.pdc.Bootstrap(ctx, rm.storeMeta, rootRegion)
 	cancel()
 	if err != nil {
@@ -566,7 +554,7 @@ func (rm *StandAloneRegionManager) initStore(storeAddr string) error {
 func (rm *StandAloneRegionManager) initialSplit(root *metapb.Region) {
 	root.EndKey = codec.EncodeBytes(nil, []byte{'m'})
 	root.RegionEpoch.Version = 2
-	rm.regions[root.Id] = newRegionCtx(root, nil, nil)
+	rm.regions[root.Id] = newRegionCtx(root, rm.latches, nil)
 	preSplitStartKeys := [][]byte{{'m'}, {'n'}, {'t'}, {'u'}}
 	ids, err := rm.allocIDs(len(preSplitStartKeys) * 2)
 	if err != nil {
@@ -584,7 +572,7 @@ func (rm *StandAloneRegionManager) initialSplit(root *metapb.Region) {
 			StartKey:    codec.EncodeBytes(nil, startKey),
 			EndKey:      endKey,
 		}
-		rm.regions[newRegion.Id] = newRegionCtx(newRegion, nil, nil)
+		rm.regions[newRegion.Id] = newRegionCtx(newRegion, rm.latches, nil)
 	}
 }
 
@@ -765,7 +753,6 @@ func (rm *StandAloneRegionManager) splitCheckRegion(region *regionCtx) error {
 }
 
 func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey []byte, oldSize, leftSize int64) error {
-	oldRegionCtx.waitParent()
 	oldRegion := oldRegionCtx.meta
 	rightMeta := &metapb.Region{
 		Id:       oldRegion.Id,
@@ -777,7 +764,7 @@ func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey
 		},
 		Peers: oldRegion.Peers,
 	}
-	right := newRegionCtx(rightMeta, oldRegionCtx, nil)
+	right := newRegionCtx(rightMeta, rm.latches, nil)
 	right.approximateSize = oldSize - leftSize
 	id, err := rm.pdc.AllocID(context.Background())
 	if err != nil {
@@ -793,7 +780,7 @@ func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey
 		},
 		Peers: oldRegion.Peers,
 	}
-	left := newRegionCtx(leftMeta, oldRegionCtx, nil)
+	left := newRegionCtx(leftMeta, rm.latches, nil)
 	left.approximateSize = leftSize
 	err1 := rm.db.Update(func(txn *badger.Txn) error {
 		err := txn.Set(InternalRegionMetaKey(left.meta.Id), left.marshal())
@@ -810,7 +797,6 @@ func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey
 	rm.regions[left.meta.Id] = left
 	rm.regions[right.meta.Id] = right
 	rm.mu.Unlock()
-	oldRegionCtx.refCount.Done()
 	rm.pdc.ReportRegion(&pdpb.RegionHeartbeatRequest{
 		Region:          right.meta,
 		Leader:          right.meta.Peers[0],
