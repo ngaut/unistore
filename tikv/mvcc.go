@@ -443,14 +443,16 @@ func (store *MVCCStore) normalizeWaitTime(lockWaitTime int64) time.Duration {
 
 func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isFirstLock bool, lockWaitTime int64) (*lockwaiter.Waiter, error) {
 	if lock, ok := err.(*ErrLocked); ok {
-		keyHash := farm.Fingerprint64(lock.Key)
-		waitTimeDuration := store.normalizeWaitTime(lockWaitTime)
-		log.Debugf("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
-		waiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, keyHash, waitTimeDuration)
-		if !isFirstLock {
-			store.DeadlockDetectCli.Detect(startTS, lock.StartTS, keyHash)
+		if lockWaitTime != lockwaiter.LockNoWait {
+			keyHash := farm.Fingerprint64(lock.Key)
+			waitTimeDuration := store.normalizeWaitTime(lockWaitTime)
+			log.Debugf("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
+			waiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, keyHash, waitTimeDuration)
+			if !isFirstLock {
+				store.DeadlockDetectCli.Detect(startTS, lock.StartTS, keyHash)
+			}
+			return waiter, err
 		}
-		return waiter, err
 	}
 	return nil, err
 }
