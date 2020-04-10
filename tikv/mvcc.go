@@ -263,7 +263,7 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 	}
 	if req.Force {
 		dbMeta := mvcc.DBUserMeta(items[0].UserMeta())
-		val, err1 := items[0].Value()
+		val, err1 := items[0].ValueCopy(nil)
 		if err1 != nil {
 			return nil, err1
 		}
@@ -276,7 +276,7 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 				resp.Values = append(resp.Values, nil)
 				continue
 			}
-			val, err1 := item.Value()
+			val, err1 := item.ValueCopy(nil)
 			if err1 != nil {
 				return nil, err1
 			}
