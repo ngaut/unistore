@@ -352,7 +352,7 @@ func getValue(engine *badger.DB, key []byte) ([]byte, error) {
 		if err != nil {
 			return err
 		}
-		val, err := item.Value()
+		val, err := item.ValueCopy(nil)
 		result = val
 		return err
 	})
