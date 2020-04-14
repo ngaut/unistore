@@ -23,10 +23,12 @@ import (
 	"unsafe"
 
 	"github.com/coocood/badger"
+	"github.com/coocood/badger/y"
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/pd"
+	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -420,7 +422,7 @@ func (rm *RaftRegionManager) runEventHandler() {
 
 type StandAloneRegionManager struct {
 	regionManager
-	db         *badger.DB
+	bundle     *mvcc.DBBundle
 	pdc        pd.Client
 	clusterID  uint64
 	regionSize int64
@@ -428,12 +430,12 @@ type StandAloneRegionManager struct {
 	wg         sync.WaitGroup
 }
 
-func NewStandAloneRegionManager(db *badger.DB, opts RegionOptions, pdc pd.Client) *StandAloneRegionManager {
+func NewStandAloneRegionManager(bundle *mvcc.DBBundle, opts RegionOptions, pdc pd.Client) *StandAloneRegionManager {
 	var err error
 	clusterID := pdc.GetClusterID(context.TODO())
 	log.Infof("cluster id %v", clusterID)
 	rm := &StandAloneRegionManager{
-		db:         db,
+		bundle:     bundle,
 		pdc:        pdc,
 		clusterID:  clusterID,
 		regionSize: opts.RegionSize,
@@ -444,7 +446,7 @@ func NewStandAloneRegionManager(db *badger.DB, opts RegionOptions, pdc pd.Client
 			latches:   newLatches(),
 		},
 	}
-	err = rm.db.View(func(txn *badger.Txn) error {
+	err = rm.bundle.DB.View(func(txn *badger.Txn) error {
 		item, err1 := txn.Get(InternalStoreMetaKey)
 		if err1 != nil {
 			return err1
@@ -527,11 +529,21 @@ func (rm *StandAloneRegionManager) initStore(storeAddr string) error {
 	if err != nil {
 		log.Fatal("%+v", err)
 	}
-	err = rm.db.Update(func(txn *badger.Txn) error {
-		txn.Set(InternalStoreMetaKey, storeBuf)
+	err = rm.bundle.DB.Update(func(txn *badger.Txn) error {
+		ts := atomic.AddUint64(&rm.bundle.StateTS, 1)
+		err = txn.SetEntry(&badger.Entry{
+			Key:   y.KeyWithTs(InternalStoreMetaKey, ts),
+			Value: storeBuf,
+		})
+		if err != nil {
+			return err
+		}
 		for rid, region := range rm.regions {
 			regionBuf := region.marshal()
-			err = txn.Set(InternalRegionMetaKey(rid), regionBuf)
+			err = txn.SetEntry(&badger.Entry{
+				Key:   y.KeyWithTs(InternalRegionMetaKey(rid), ts),
+				Value: regionBuf,
+			})
 			if err != nil {
 				log.Fatal("%+v", err)
 			}
@@ -704,10 +716,14 @@ func (rm *StandAloneRegionManager) runSplitWorker() {
 }
 
 func (rm *StandAloneRegionManager) saveSize(regionsToSave []*regionCtx) {
-	err1 := rm.db.Update(func(txn *badger.Txn) error {
+	err1 := rm.bundle.DB.Update(func(txn *badger.Txn) error {
+		ts := atomic.AddUint64(&rm.bundle.StateTS, 1)
 		for _, ri := range regionsToSave {
 			ri.approximateSize += atomic.LoadInt64(&ri.diff)
-			err := txn.Set(InternalRegionMetaKey(ri.meta.Id), ri.marshal())
+			err := txn.SetEntry(&badger.Entry{
+				Key:   y.KeyWithTs(InternalRegionMetaKey(ri.meta.Id), ts),
+				Value: ri.marshal(),
+			})
 			if err != nil {
 				return err
 			}
@@ -721,7 +737,7 @@ func (rm *StandAloneRegionManager) saveSize(regionsToSave []*regionCtx) {
 
 func (rm *StandAloneRegionManager) splitCheckRegion(region *regionCtx) error {
 	s := newSampler()
-	err := rm.db.View(func(txn *badger.Txn) error {
+	err := rm.bundle.DB.View(func(txn *badger.Txn) error {
 		iter := txn.NewIterator(badger.IteratorOptions{})
 		defer iter.Close()
 		for iter.Seek(region.startKey); iter.Valid(); iter.Next() {
@@ -782,12 +798,19 @@ func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey
 	}
 	left := newRegionCtx(leftMeta, rm.latches, nil)
 	left.approximateSize = leftSize
-	err1 := rm.db.Update(func(txn *badger.Txn) error {
-		err := txn.Set(InternalRegionMetaKey(left.meta.Id), left.marshal())
+	err1 := rm.bundle.DB.Update(func(txn *badger.Txn) error {
+		ts := atomic.AddUint64(&rm.bundle.StateTS, 1)
+		err := txn.SetEntry(&badger.Entry{
+			Key:   y.KeyWithTs(InternalRegionMetaKey(left.meta.Id), ts),
+			Value: left.marshal(),
+		})
 		if err != nil {
 			return errors.Trace(err)
 		}
-		err = txn.Set(InternalRegionMetaKey(right.meta.Id), right.marshal())
+		err = txn.SetEntry(&badger.Entry{
+			Key:   y.KeyWithTs(InternalRegionMetaKey(right.meta.Id), ts),
+			Value: right.marshal(),
+		})
 		return errors.Trace(err)
 	})
 	if err1 != nil {
