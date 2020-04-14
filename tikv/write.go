@@ -191,7 +191,7 @@ func NewDBWriter(bundle *mvcc.DBBundle) mvcc.DBWriter {
 }
 
 func (writer *dbWriter) Open() {
-	writer.wg.Add(3)
+	writer.wg.Add(2)
 
 	dbCh := make(chan *writeDBBatch, batchChanSize)
 	writer.dbCh = dbCh
