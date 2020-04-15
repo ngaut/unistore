@@ -333,7 +333,8 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) *b
 		compressionPerLevel[i] = config.ParseCompression(conf.Compression[i])
 	}
 	opts.TableBuilderOptions.CompressionPerLevel = compressionPerLevel
-	opts.MaxCacheSize = conf.BlockCacheSize
+	opts.MaxBlockCacheSize = conf.BlockCacheSize
+	opts.MaxIndexCacheSize = conf.IndexCacheSize
 	opts.TableBuilderOptions.SuRFStartLevel = conf.SurfStartLevel
 	if safePoint != nil {
 		opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
