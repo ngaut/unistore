@@ -38,6 +38,22 @@ type DetectorServer struct {
 	role     int32
 }
 
+func (ds *DetectorServer) Detect(req *deadlockPb.DeadlockRequest) *deadlockPb.DeadlockResponse {
+	switch req.Tp {
+	case deadlockPb.DeadlockRequestType_Detect:
+		err := ds.Detector.Detect(req.Entry.Txn, req.Entry.WaitForTxn, req.Entry.KeyHash)
+		if err != nil {
+			resp := convertErrToResp(err, req.Entry.Txn, req.Entry.WaitForTxn, req.Entry.KeyHash)
+			return resp
+		}
+	case deadlockPb.DeadlockRequestType_CleanUpWaitFor:
+		ds.Detector.CleanUpWaitFor(req.Entry.Txn, req.Entry.WaitForTxn, req.Entry.KeyHash)
+	case deadlockPb.DeadlockRequestType_CleanUp:
+		ds.Detector.CleanUp(req.Entry.Txn)
+	}
+	return nil
+}
+
 // DetectorClient is a util used for distributed deadlock detection
 type DetectorClient struct {
 	pdClient     pd.Client
@@ -109,11 +125,6 @@ func NewDetectorClient(waiterMgr *lockwaiter.Manager, pdClient pd.Client) *Detec
 		pdClient: pdClient,
 	}
 	return newDetector
-}
-
-// Start starts the detection `send`, `recv` and `entry recycle` loop
-func (dt *DetectorClient) Start() {
-	go dt.sendReqLoop()
 }
 
 // sendReqLoop will send detection request to leader, stream connection will be rebuilt and

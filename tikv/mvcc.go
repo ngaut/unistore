@@ -1080,10 +1080,20 @@ func tsToTime(ts uint64) time.Time {
 	return time.Unix(0, int64(ts>>18)*1000000)
 }
 
-func (store *MVCCStore) StartDeadlockDetection(ctx context.Context, pdClient pd.Client,
-	innerSrv InnerServer, isRaft bool) error {
-	store.DeadlockDetectCli.Start()
-	return nil
+func (store *MVCCStore) StartDeadlockDetection(isRaft bool) {
+	if isRaft {
+		go store.DeadlockDetectCli.sendReqLoop()
+		return
+	}
+
+	go func() {
+		for req := range store.DeadlockDetectCli.sendCh {
+			resp := store.DeadlockDetectSvr.Detect(req)
+			if resp != nil {
+				store.DeadlockDetectCli.waitMgr.WakeUpForDeadlock(resp)
+			}
+		}
+	}()
 }
 
 // MvccGetByKey gets mvcc information using input key as rawKey

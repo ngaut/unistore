@@ -70,9 +70,19 @@ func (svr *Server) Stop() {
 	atomic.StoreInt32(&svr.stopped, 1)
 	for {
 		if atomic.LoadInt32(&svr.refCount) == 0 {
-			return
+			break
 		}
 		time.Sleep(time.Millisecond * 10)
+	}
+
+	if err := svr.mvccStore.Close(); err != nil {
+		log.Errorf("close mvcc store failed: %v", err)
+	}
+	if err := svr.regionManager.Close(); err != nil {
+		log.Errorf("close region manager failed: %v", err)
+	}
+	if err := svr.innerServer.Stop(); err != nil {
+		log.Errorf("close inner server failed: %v", err)
 	}
 }
 
@@ -514,6 +524,10 @@ func (svr *Server) CoprocessorStream(*coprocessor.Request, tikvpb.Tikv_Coprocess
 	return nil
 }
 
+func (svr *Server) BatchCoprocessor(*coprocessor.BatchRequest, tikvpb.Tikv_BatchCoprocessorServer) error {
+	panic("todo")
+}
+
 // Raft commands (tikv <-> tikv).
 func (svr *Server) Raft(stream tikvpb.Tikv_RaftServer) error {
 	return svr.innerServer.Raft(stream)
@@ -602,22 +616,12 @@ func (svr *Server) Detect(stream deadlockPb.Deadlock_DetectServer) error {
 			log.Warnf("detection requests received on non leader node")
 			break
 		}
-		switch req.Tp {
-		case deadlockPb.DeadlockRequestType_Detect:
-			err := svr.mvccStore.DeadlockDetectSvr.Detector.Detect(req.Entry.Txn, req.Entry.WaitForTxn, req.Entry.KeyHash)
-			if err != nil {
-				resp := convertErrToResp(err, req.Entry.Txn,
-					req.Entry.WaitForTxn, req.Entry.KeyHash)
-				sendErr := stream.Send(resp)
-				if sendErr != nil {
-					log.Errorf("send deadlock response failed, error=%v", sendErr)
-					break
-				}
+		resp := svr.mvccStore.DeadlockDetectSvr.Detect(req)
+		if resp != nil {
+			if sendErr := stream.Send(resp); sendErr != nil {
+				log.Errorf("send deadlock response failed, error=%v", sendErr)
+				break
 			}
-		case deadlockPb.DeadlockRequestType_CleanUpWaitFor:
-			svr.mvccStore.DeadlockDetectSvr.Detector.CleanUpWaitFor(req.Entry.Txn, req.Entry.WaitForTxn, req.Entry.KeyHash)
-		case deadlockPb.DeadlockRequestType_CleanUp:
-			svr.mvccStore.DeadlockDetectSvr.Detector.CleanUp(req.Entry.Txn)
 		}
 	}
 	return nil
@@ -642,6 +646,30 @@ func (svr *Server) RegisterLockObserver(context.Context, *kvrpcpb.RegisterLockOb
 func (svr *Server) RemoveLockObserver(context.Context, *kvrpcpb.RemoveLockObserverRequest) (*kvrpcpb.RemoveLockObserverResponse, error) {
 	// TODO: implement Observer
 	return &kvrpcpb.RemoveLockObserverResponse{}, nil
+}
+
+func (svr *Server) VerGet(context.Context, *kvrpcpb.VerGetRequest) (*kvrpcpb.VerGetResponse, error) {
+	panic("unimplemented")
+}
+
+func (svr *Server) VerBatchGet(context.Context, *kvrpcpb.VerBatchGetRequest) (*kvrpcpb.VerBatchGetResponse, error) {
+	panic("unimplemented")
+}
+
+func (svr *Server) VerMut(context.Context, *kvrpcpb.VerMutRequest) (*kvrpcpb.VerMutResponse, error) {
+	panic("unimplemented")
+}
+
+func (svr *Server) VerBatchMut(context.Context, *kvrpcpb.VerBatchMutRequest) (*kvrpcpb.VerBatchMutResponse, error) {
+	panic("unimplemented")
+}
+
+func (svr *Server) VerScan(context.Context, *kvrpcpb.VerScanRequest) (*kvrpcpb.VerScanResponse, error) {
+	panic("unimplemented")
+}
+
+func (svr *Server) VerDeleteRange(context.Context, *kvrpcpb.VerDeleteRangeRequest) (*kvrpcpb.VerDeleteRangeResponse, error) {
+	panic("unimplemented")
 }
 
 func convertToKeyError(err error) *kvrpcpb.KeyError {

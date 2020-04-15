@@ -112,7 +112,7 @@ func prepareTestTableData(t *testing.T, keyNumber int, tableId int64) *data {
 		rows[int64(i)] = datum
 		rowEncodedData, err := tablecodec.EncodeRow(stmtCtx, datum, colIds, nil, nil, &rowcodec.Encoder{})
 		require.Nil(t, err)
-		rowKeyEncodedData := tablecodec.EncodeRowKeyWithHandle(tableId, int64(i))
+		rowKeyEncodedData := tablecodec.EncodeRowKeyWithHandle(tableId, kv.IntHandle(i))
 		encodedTestKVDatas[i] = &encodedTestKVData{encodedRowKey: rowKeyEncodedData, encodedRowValue: rowEncodedData}
 	}
 	return &data{
@@ -124,7 +124,7 @@ func prepareTestTableData(t *testing.T, keyNumber int, tableId int64) *data {
 }
 
 func getTestPointRange(tableId int64, handle int64) kv.KeyRange {
-	startKey := tablecodec.EncodeRowKeyWithHandle(tableId, handle)
+	startKey := tablecodec.EncodeRowKeyWithHandle(tableId, kv.IntHandle(handle))
 	endKey := make([]byte, len(startKey))
 	copy(endKey, startKey)
 	convertToPrefixNext(endKey)

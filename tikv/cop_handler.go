@@ -186,7 +186,7 @@ func (e *evalContext) newRowDecoder() (*rowcodec.ChunkDecoder, error) {
 		}
 		return nil
 	}
-	return rowcodec.NewChunkDecoder(cols, handleColID, def, e.sc.TimeZone), nil
+	return rowcodec.NewChunkDecoder(cols, []int64{handleColID}, def, e.sc.TimeZone), nil
 }
 
 // decodeRelatedColumnVals decodes data to Datum slice according to the row information.
