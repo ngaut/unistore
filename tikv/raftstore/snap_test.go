@@ -58,13 +58,14 @@ func getTestDBForRegions(t *testing.T, path string, regions []uint64) *mvcc.DBBu
 			appliedIndex:   10,
 			truncatedIndex: 10,
 		}
-		require.Nil(t, putValue(kv.DB, ApplyStateKey(regionID), applyState.Marshal()))
-
+		wb := new(WriteBatch)
+		wb.Set(y.KeyWithTs(ApplyStateKey(regionID), KvTS), applyState.Marshal())
 		// Put region ifno into kv engine.
 		region := genTestRegion(regionID, 1, 1)
 		regionState := new(rspb.RegionLocalState)
 		regionState.Region = region
-		require.Nil(t, putMsg(kv.DB, RegionStateKey(regionID), regionState))
+		require.Nil(t, wb.SetMsg(y.KeyWithTs(RegionStateKey(regionID), KvTS), regionState))
+		require.Nil(t, wb.WriteToKV(kv))
 	}
 	return kv
 }

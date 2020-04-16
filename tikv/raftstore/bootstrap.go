@@ -69,12 +69,12 @@ func BootstrapStore(engines *Engines, clussterID, storeID uint64) error {
 	}
 	ident.ClusterId = clussterID
 	ident.StoreId = storeID
-	err = putMsg(engines.kv.DB, storeIdentKey, ident)
+	wb := new(WriteBatch)
+	err = wb.SetMsg(y.KeyWithTs(storeIdentKey, KvTS), ident)
 	if err != nil {
 		return err
 	}
-	engines.SyncKVWAL()
-	return nil
+	return wb.WriteToKV(engines.kv)
 }
 
 func PrepareBootstrap(engins *Engines, storeID, regionID, peerID uint64) (*metapb.Region, error) {
@@ -162,11 +162,8 @@ func ClearPrepareBootstrap(engines *Engines, regionID uint64) error {
 }
 
 func ClearPrepareBootstrapState(engines *Engines) error {
-	err := engines.kv.DB.Update(func(txn *badger.Txn) error {
-		e := &badger.Entry{Key: y.KeyWithTs(prepareBootstrapKey, KvTS)}
-		e.SetDelete()
-		return txn.SetEntry(e)
-	})
-	engines.SyncKVWAL()
+	wb := new(WriteBatch)
+	wb.Delete(y.KeyWithTs(prepareBootstrapKey, KvTS))
+	err := wb.WriteToKV(engines.kv)
 	return errors.WithStack(err)
 }

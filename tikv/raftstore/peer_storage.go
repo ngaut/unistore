@@ -359,26 +359,6 @@ func getValue(engine *badger.DB, key []byte) ([]byte, error) {
 	return result, err
 }
 
-func putMsg(engine *badger.DB, key []byte, msg proto.Message) error {
-	val, err := proto.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	return putValue(engine, key, val)
-}
-
-func putValue(engine *badger.DB, key, val []byte) error {
-	return engine.Update(func(txn *badger.Txn) error {
-		if engine.IsManaged() {
-			return txn.SetEntry(&badger.Entry{
-				Key:   y.KeyWithTs(key, KvTS),
-				Value: val,
-			})
-		}
-		return txn.Set(key, val)
-	})
-}
-
 func initRaftState(raftEngine *badger.DB, region *metapb.Region) (raftState, error) {
 	stateKey := RaftStateKey(region.Id)
 	raftState := raftState{}
@@ -392,7 +372,9 @@ func initRaftState(raftEngine *badger.DB, region *metapb.Region) (raftState, err
 			raftState.lastIndex = RaftInitLogIndex
 			raftState.term = RaftInitLogTerm
 			raftState.commit = RaftInitLogIndex
-			err = putValue(raftEngine, stateKey, raftState.Marshal())
+			wb := new(WriteBatch)
+			wb.Set(y.KeyWithTs(stateKey, RaftTS), raftState.Marshal())
+			err = wb.WriteToRaft(raftEngine)
 			if err != nil {
 				return raftState, err
 			}
