@@ -678,8 +678,8 @@ type CacheQueryStats struct {
 
 // Delete all data that is not covered by `new_region`.
 func (ps *PeerStorage) clearExtraData(newRegion *metapb.Region) {
-	oldStartKey, oldEndKey := EncStartKey(ps.region), EncEndKey(ps.region)
-	newStartKey, newEndKey := EncStartKey(newRegion), EncEndKey(newRegion)
+	oldStartKey, oldEndKey := RawStartKey(ps.region), RawEndKey(ps.region)
+	newStartKey, newEndKey := RawStartKey(newRegion), RawEndKey(newRegion)
 	regionId := newRegion.Id
 	if bytes.Compare(oldStartKey, newStartKey) < 0 {
 		ps.regionSched <- task{

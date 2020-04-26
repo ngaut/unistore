@@ -652,8 +652,8 @@ func (snapCtx *snapContext) generateSnap(regionId, redoIdx uint64, notifier chan
 
 // cleanUpOriginData clear up the region data before applying snapshot
 func (snapCtx *snapContext) cleanUpOriginData(regionState *rspb.RegionLocalState, status *JobStatus) error {
-	startKey := EncStartKey(regionState.GetRegion())
-	endKey := EncEndKey(regionState.GetRegion())
+	startKey := RawStartKey(regionState.GetRegion())
+	endKey := RawEndKey(regionState.GetRegion())
 	if err := checkAbort(status); err != nil {
 		return err
 	}

@@ -91,7 +91,7 @@ func (en *Engines) newRegionSnapshot(regionId, redoIdx uint64) (snap *regionSnap
 	}
 	lockSnap := lockstore.NewMemStore(8 << 20)
 	iter := en.kv.LockStore.NewIterator()
-	start, end := rawDataStartKey(oldRegionState.Region.StartKey), rawRegionKey(oldRegionState.Region.EndKey)
+	start, end := RawStartKey(oldRegionState.Region), RawEndKey(oldRegionState.Region)
 	for iter.Seek(start); iter.Valid() && (len(end) == 0 || bytes.Compare(iter.Key(), end) < 0); iter.Next() {
 		lockSnap.Put(iter.Key(), iter.Value())
 	}

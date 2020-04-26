@@ -31,17 +31,15 @@ import (
 func newSnapBuilder(cfFiles []*CFFile, snap *regionSnapshot, region *metapb.Region) (*snapBuilder, error) {
 	b := new(snapBuilder)
 	b.cfFiles = cfFiles
-	b.endKey = rawRegionKey(region.EndKey)
-	if len(b.endKey) > 0 {
-		b.extraEndKey = mvcc.EncodeExtraTxnStatusKey(b.endKey, 0)
-	}
+	b.endKey = RawEndKey(region)
+	b.extraEndKey = mvcc.EncodeExtraTxnStatusKey(b.endKey, 0)
 	b.txn = snap.txn
 	itOpt := badger.DefaultIteratorOptions
 	itOpt.AllVersions = true
 	b.dbIterator = b.txn.NewIterator(itOpt)
 	// extraIterator doesn't need to read all versions because startTS is encoded in the key.
 	b.extraIterator = b.txn.NewIterator(badger.DefaultIteratorOptions)
-	startKey := rawDataStartKey(region.StartKey)
+	startKey := RawStartKey(region)
 
 	b.dbIterator.Seek(startKey)
 	if b.dbIterator.Valid() && !b.reachEnd(b.dbIterator.Item().Key()) {
@@ -144,21 +142,15 @@ func (b *snapBuilder) currentKeyType() (keyType int) {
 }
 
 func (b *snapBuilder) reachEnd(key []byte) bool {
-	if len(b.endKey) == 0 {
-		return false
-	}
 	return bytes.Compare(key, b.endKey) >= 0
 }
 
 func (b *snapBuilder) reachExtraEnd(key []byte) bool {
-	if len(b.extraEndKey) == 0 {
-		return false
-	}
 	return bytes.Compare(key, b.extraEndKey) >= 0
 }
 
 func (b *snapBuilder) addLockEntry() error {
-	lockCFKey := DataKey(b.curLockKey)
+	lockCFKey := encodeRocksDBSSTKey(b.curLockKey, nil)
 	l := mvcc.DecodeLock(b.lockIterator.Value())
 	lockCFVal := new(lockCFValue)
 	lockCFVal.lockType = l.Op
@@ -168,7 +160,7 @@ func (b *snapBuilder) addLockEntry() error {
 	if len(l.Value) <= shortValueMaxLen {
 		lockCFVal.shortVal = l.Value
 	} else {
-		defaultCFKey := encodeRocksDBSSTKey(b.curLockKey, l.StartTS)
+		defaultCFKey := encodeRocksDBSSTKey(b.curLockKey, &l.StartTS)
 		err := b.defaultCFWriter.Put(defaultCFKey, l.Value)
 		if err != nil {
 			return err
@@ -251,14 +243,14 @@ func (b *snapBuilder) addExtraEntry() error {
 }
 
 func (b *snapBuilder) addSSTKey(key []byte, startTS, commitTS uint64, val []byte, writeType byte) error {
-	writeCFKey := encodeRocksDBSSTKey(key, commitTS)
+	writeCFKey := encodeRocksDBSSTKey(key, &commitTS)
 	writeCFVal := new(writeCFValue)
 	writeCFVal.writeType = writeType
 	writeCFVal.startTS = startTS
 	if len(val) <= shortValueMaxLen {
 		writeCFVal.shortValue = val
 	} else {
-		defaultCFKey := encodeRocksDBSSTKey(b.curDBKey, startTS)
+		defaultCFKey := encodeRocksDBSSTKey(b.curDBKey, &startTS)
 		err := b.defaultCFWriter.Put(defaultCFKey, val)
 		if err != nil {
 			return err

@@ -15,6 +15,7 @@ package tikv
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"time"
 
@@ -56,6 +57,9 @@ func (dt *DetectorClient) getLeaderAddr() (string, error) {
 	if err != nil {
 		log.Errorf("get first region failed, err: %v", err)
 		return "", err
+	}
+	if leaderPeer == nil {
+		return "", errors.New("no leader")
 	}
 	leaderStoreMeta, err := dt.pdClient.GetStore(ctx, leaderPeer.GetStoreId())
 	if err != nil {
