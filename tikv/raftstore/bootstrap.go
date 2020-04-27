@@ -53,14 +53,14 @@ func isRangeEmpty(engine *badger.DB, startKey, endKey []byte) (bool, error) {
 
 func BootstrapStore(engines *Engines, clussterID, storeID uint64) error {
 	ident := new(rspb.StoreIdent)
-	empty, err := isRangeEmpty(engines.kv.DB, MinKey, MaxKey)
+	empty, err := isRangeEmpty(engines.kv.DB, MinKey, MaxDataKey)
 	if err != nil {
 		return err
 	}
 	if !empty {
 		return errors.New("kv store is not empty and ahs alread had data.")
 	}
-	empty, err = isRangeEmpty(engines.raft, MinKey, MaxKey)
+	empty, err = isRangeEmpty(engines.raft, MinKey, MaxDataKey)
 	if err != nil {
 		return err
 	}

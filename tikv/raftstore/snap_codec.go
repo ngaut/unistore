@@ -36,8 +36,10 @@ type writeCFValue struct {
 	shortValue []byte
 }
 
+const rocksDBSSTKeyDataPrefix = 'z'
+
 func decodeRocksDBSSTKey(k []byte) (key []byte, ts uint64, err error) {
-	if k[0] != DataPrefix {
+	if k[0] != rocksDBSSTKeyDataPrefix {
 		return nil, 0, errors.WithStack(errBadKeyPrefix)
 	}
 	encodedKey := k[1 : len(k)-8]
@@ -53,13 +55,16 @@ func decodeRocksDBSSTKey(k []byte) (key []byte, ts uint64, err error) {
 	return key, ts, nil
 }
 
-func encodeRocksDBSSTKey(k []byte, ts uint64) []byte {
+func encodeRocksDBSSTKey(k []byte, ts *uint64) []byte {
 	const encGroupSize = 8
 	encodedKeySize := (len(k)/encGroupSize + 1) * (encGroupSize + 1)
 	buf := make([]byte, 0, 1+encodedKeySize+8)
-	buf = append(buf, DataPrefix)
+	buf = append(buf, rocksDBSSTKeyDataPrefix)
 	buf = codec.EncodeBytes(buf, k)
-	return codec.EncodeUintDesc(buf, ts)
+	if ts != nil {
+		buf = codec.EncodeUintDesc(buf, *ts)
+	}
+	return buf
 }
 
 func decodeWriteCFValue(b []byte) *writeCFValue {

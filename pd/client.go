@@ -266,6 +266,7 @@ func (c *client) doRequest(ctx context.Context, f func(context.Context, pdpb.PDC
 		if err == nil {
 			return nil
 		}
+		log.Error(err)
 
 		c.schedulerUpdateLeader()
 		select {
