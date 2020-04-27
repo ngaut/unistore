@@ -25,6 +25,7 @@ import (
 	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
+	pd "github.com/pingcap/pd/v4/client"
 	"google.golang.org/grpc"
 )
 
@@ -37,8 +38,6 @@ type Client interface {
 	IsBootstrapped(ctx context.Context) (bool, error)
 	PutStore(ctx context.Context, store *metapb.Store) error
 	GetStore(ctx context.Context, storeID uint64) (*metapb.Store, error)
-	GetAllStores(ctx context.Context, excludeTombstone bool) ([]*metapb.Store, error)
-	GetClusterConfig(ctx context.Context) (*metapb.Cluster, error)
 	GetRegion(ctx context.Context, key []byte) (*metapb.Region, *metapb.Peer, error)
 	GetRegionByID(ctx context.Context, regionID uint64) (*metapb.Region, *metapb.Peer, error)
 	ReportRegion(*pdpb.RegionHeartbeatRequest)
@@ -47,7 +46,7 @@ type Client interface {
 	ReportBatchSplit(ctx context.Context, regions []*metapb.Region) error
 	GetGCSafePoint(ctx context.Context) (uint64, error)
 	StoreHeartbeat(ctx context.Context, stats *pdpb.StoreStats) error
-	GetTS(ctx context.Context) (uint64, error)
+	GetTS(ctx context.Context) (int64, int64, error)
 	SetRegionHeartbeatResponseHandler(h func(*pdpb.RegionHeartbeatResponse))
 	Close()
 }
@@ -468,13 +467,13 @@ func (c *client) GetStore(ctx context.Context, storeID uint64) (*metapb.Store, e
 	return resp.Store, nil
 }
 
-func (c *client) GetAllStores(ctx context.Context, excludeTombstone bool) ([]*metapb.Store, error) {
+func (c *client) GetAllStores(ctx context.Context, opts ...pd.GetStoreOption) ([]*metapb.Store, error) {
 	var resp *pdpb.GetAllStoresResponse
 	err := c.doRequest(ctx, func(ctx context.Context, client pdpb.PDClient) error {
 		var err1 error
 		resp, err1 = client.GetAllStores(ctx, &pdpb.GetAllStoresRequest{
 			Header:                 c.requestHeader(),
-			ExcludeTombstoneStores: excludeTombstone,
+			ExcludeTombstoneStores: true,
 		})
 		return err1
 	})
@@ -636,7 +635,7 @@ func (c *client) StoreHeartbeat(ctx context.Context, stats *pdpb.StoreStats) err
 	return nil
 }
 
-func (c *client) GetTS(ctx context.Context) (uint64, error) {
+func (c *client) GetTS(ctx context.Context) (int64, int64, error) {
 	var resp *pdpb.TsoResponse
 	err := c.doRequest(ctx, func(ctx context.Context, client pdpb.PDClient) error {
 		tsoClient, err := client.Tso(ctx)
@@ -654,12 +653,12 @@ func (c *client) GetTS(ctx context.Context) (uint64, error) {
 		return err
 	})
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		return 0, errors.New(herr.String())
+		return 0, 0, errors.New(herr.String())
 	}
-	return uint64(resp.Timestamp.Physical)<<18 + uint64(resp.Timestamp.Logical), nil
+	return resp.Timestamp.Physical, resp.Timestamp.Logical, nil
 }
 
 func (c *client) ReportRegion(request *pdpb.RegionHeartbeatRequest) {

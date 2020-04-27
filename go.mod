@@ -13,17 +13,18 @@ require (
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/pingcap/check v0.0.0-20200212061837-5e12011dc712
 	github.com/pingcap/errors v0.11.5-0.20190809092503-95897b64e011
-	github.com/pingcap/kvproto v0.0.0-20200228095611-2cf9a243b8d5
-	github.com/pingcap/parser v0.0.0-20200305120128-bde9faa0df84
-	github.com/pingcap/tidb v1.1.0-beta.0.20200309111804-d8264d47f760
-	github.com/pingcap/tipb v0.0.0-20200212061130-c4d518eb1d60
+	github.com/pingcap/kvproto v0.0.0-20200420075417-e0c6e8842f22
+	github.com/pingcap/parser v0.0.0-20200424075042-8222d8b724a4
+	github.com/pingcap/pd/v4 v4.0.0-rc.1.0.20200422143320-428acd53eba2
+	github.com/pingcap/tidb v1.1.0-beta.0.20200426023724-82bb3ced7497
+	github.com/pingcap/tipb v0.0.0-20200417094153-7316d94df1ee
 	github.com/prometheus/client_golang v1.0.0
 	github.com/shirou/gopsutil v2.19.10+incompatible
 	github.com/stretchr/testify v1.4.0
 	github.com/uber-go/atomic v1.3.2
 	github.com/zhangjinpeng1987/raft v0.0.0-20190624145930-deeb32d6553d
 	go.etcd.io/bbolt v1.3.3 // indirect
-	golang.org/x/net v0.0.0-20200226121028-0de0cce0169b
+	golang.org/x/net v0.0.0-20200324143707-d3edc9973b7e
 	golang.org/x/time v0.0.0-20190308202827-9d24e82272b4
 	google.golang.org/grpc v1.25.1
 	gopkg.in/mgo.v2 v2.0.0-20180705113604-9856a29383ce // indirect

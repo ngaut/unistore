@@ -28,7 +28,7 @@ test:
 	$(GOTEST) -cover $(PACKAGES)
 
 build:
-	$(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/unistore-server unistore-server/main.go
+	$(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/unistore-server cmd/unistore-server/main.go
 
 linux:
 	GOOS=linux $(GOBUILD) -ldflags "-X main.gitHash=`git rev-parse HEAD`" -o bin/unistore-server-linux unistore-server/main.go
