@@ -27,6 +27,7 @@
 package tikv
 
 import (
+	"fmt"
 	"math"
 	"time"
 
@@ -247,6 +248,11 @@ func (e *analyzeColumnsExec) Process(key, value []byte) error {
 	row := e.chk.GetRow(0)
 	for i, tp := range e.evalCtx.fieldTps {
 		d := row.GetDatum(i, tp)
+		if d.IsNull() {
+			e.req.AppendNull(i)
+			continue
+		}
+
 		value, err := tablecodec.EncodeValue(e.evalCtx.sc, nil, d)
 		if err != nil {
 			return err

@@ -168,20 +168,44 @@ func (svr *Server) KvScan(ctx context.Context, req *kvrpcpb.ScanRequest) (*kvrpc
 	if !isMvccRegion(reqCtx.regCtx) {
 		return &kvrpcpb.ScanResponse{}, nil
 	}
-	startKey := req.GetStartKey()
-	endKey := reqCtx.regCtx.rawEndKey()
+
+	var startKey, endKey []byte
+	if req.Reverse {
+		startKey = req.EndKey
+		if len(startKey) == 0 {
+			startKey = reqCtx.regCtx.rawStartKey()
+		}
+		endKey = req.StartKey
+	} else {
+		startKey = req.StartKey
+		endKey = req.EndKey
+		if len(endKey) == 0 {
+			endKey = reqCtx.regCtx.rawEndKey()
+		}
+		if len(endKey) == 0 {
+			// Don't scan internal keys.
+			endKey = InternalKeyPrefix
+		}
+	}
+
 	err = svr.mvccStore.CheckRangeLock(req.GetVersion(), startKey, endKey)
 	if err != nil {
 		return &kvrpcpb.ScanResponse{Pairs: []*kvrpcpb.KvPair{{Error: convertToKeyError(err)}}}, nil
 	}
+
 	var scanProc = &kvScanProcessor{}
 	reader := reqCtx.getDBReader()
-	err = reader.Scan(startKey, endKey, int(req.GetLimit()), req.GetVersion(), scanProc)
+	if req.Reverse {
+		err = reader.ReverseScan(startKey, endKey, int(req.GetLimit()), req.GetVersion(), scanProc)
+	} else {
+		err = reader.Scan(startKey, endKey, int(req.GetLimit()), req.GetVersion(), scanProc)
+	}
 	if err != nil {
 		scanProc.pairs = append(scanProc.pairs[:0], &kvrpcpb.KvPair{
 			Error: convertToKeyError(err),
 		})
 	}
+
 	return &kvrpcpb.ScanResponse{
 		Pairs: scanProc.pairs,
 	}, nil
@@ -515,6 +539,8 @@ func (svr *Server) Coprocessor(ctx context.Context, req *coprocessor.Request) (*
 		return svr.handleCopDAGRequest(reqCtx, req), nil
 	case kv.ReqTypeAnalyze:
 		return svr.handleCopAnalyzeRequest(reqCtx, req), nil
+	case kv.ReqTypeChecksum:
+		return svr.handleCopChecksumRequest(reqCtx, req), nil
 	}
 	return &coprocessor.Response{OtherError: fmt.Sprintf("unsupported request type %d", req.GetTp())}, nil
 }
@@ -542,7 +568,7 @@ func (svr *Server) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
 
 // Region commands.
 func (svr *Server) SplitRegion(ctx context.Context, req *kvrpcpb.SplitRegionRequest) (*kvrpcpb.SplitRegionResponse, error) {
-	return svr.innerServer.SplitRegion(req), nil
+	return svr.regionManager.SplitRegion(req), nil
 }
 
 func (svr *Server) ReadIndex(context.Context, *kvrpcpb.ReadIndexRequest) (*kvrpcpb.ReadIndexResponse, error) {
@@ -763,9 +789,5 @@ func extractRegionError(err error) *errorpb.Error {
 }
 
 func isMvccRegion(regCtx *regionCtx) bool {
-	if len(regCtx.startKey) == 0 {
-		return false
-	}
-	first := regCtx.startKey[0]
-	return first == 't' || first == 'm'
+	return true
 }

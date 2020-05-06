@@ -5,7 +5,9 @@ require (
 	github.com/coocood/badger v1.5.1-0.20200416022742-7ec37e0c6b9a
 	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2
+	github.com/gogo/protobuf v1.3.1
 	github.com/golang/protobuf v1.3.4
+	github.com/google/btree v1.0.0
 	github.com/juju/errors v0.0.0-20181118221551-089d3ea4e4d5
 	github.com/juju/loggo v0.0.0-20180524022052-584905176618 // indirect
 	github.com/juju/testing v0.0.0-20180920084828-472a3e8b2073 // indirect
@@ -13,10 +15,10 @@ require (
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/pingcap/check v0.0.0-20200212061837-5e12011dc712
 	github.com/pingcap/errors v0.11.5-0.20190809092503-95897b64e011
-	github.com/pingcap/kvproto v0.0.0-20200420075417-e0c6e8842f22
-	github.com/pingcap/parser v0.0.0-20200424075042-8222d8b724a4
+	github.com/pingcap/kvproto v0.0.0-20200424032552-6650270c39c3
+	github.com/pingcap/parser v0.0.0-20200507022230-f3bf29096657
 	github.com/pingcap/pd/v4 v4.0.0-rc.1.0.20200422143320-428acd53eba2
-	github.com/pingcap/tidb v1.1.0-beta.0.20200426023724-82bb3ced7497
+	github.com/pingcap/tidb v1.1.0-beta.0.20200512120335-d3074e9bc7ca
 	github.com/pingcap/tipb v0.0.0-20200417094153-7316d94df1ee
 	github.com/prometheus/client_golang v1.0.0
 	github.com/shirou/gopsutil v2.19.10+incompatible
@@ -30,6 +32,8 @@ require (
 	gopkg.in/mgo.v2 v2.0.0-20180705113604-9856a29383ce // indirect
 )
 
-replace go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.0.0-20190226085253-137eac022b64
+replace (
+	go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.0.0-20190226085253-137eac022b64
+)
 
 go 1.13
