@@ -27,7 +27,6 @@
 package tikv
 
 import (
-	"fmt"
 	"math"
 	"time"
 
