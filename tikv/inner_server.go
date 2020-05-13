@@ -16,7 +16,6 @@ package tikv
 import (
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/tikv/mvcc"
-	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 )
 
@@ -27,7 +26,6 @@ type InnerServer interface {
 	Raft(stream tikvpb.Tikv_RaftServer) error
 	BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error
 	Snapshot(stream tikvpb.Tikv_SnapshotServer) error
-	SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse
 }
 
 type StandAlongInnerServer struct {
@@ -50,10 +48,6 @@ func (is *StandAlongInnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) e
 
 func (is *StandAlongInnerServer) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
 	return nil
-}
-
-func (is *StandAlongInnerServer) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse {
-	return &kvrpcpb.SplitRegionResponse{}
 }
 
 func (is *StandAlongInnerServer) Setup(pdClient pd.Client) {}

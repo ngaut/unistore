@@ -165,23 +165,44 @@ func (svr *Server) KvScan(ctx context.Context, req *kvrpcpb.ScanRequest) (*kvrpc
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.ScanResponse{RegionError: reqCtx.regErr}, nil
 	}
-	if !isMvccRegion(reqCtx.regCtx) {
-		return &kvrpcpb.ScanResponse{}, nil
+
+	var startKey, endKey []byte
+	if req.Reverse {
+		startKey = req.EndKey
+		if len(startKey) == 0 {
+			startKey = reqCtx.regCtx.rawStartKey()
+		}
+		endKey = req.StartKey
+	} else {
+		startKey = req.StartKey
+		endKey = req.EndKey
+		if len(endKey) == 0 {
+			endKey = reqCtx.regCtx.rawEndKey()
+		}
+		if len(endKey) == 0 {
+			// Don't scan internal keys.
+			endKey = InternalKeyPrefix
+		}
 	}
-	startKey := req.GetStartKey()
-	endKey := reqCtx.regCtx.rawEndKey()
+
 	err = svr.mvccStore.CheckRangeLock(req.GetVersion(), startKey, endKey)
 	if err != nil {
 		return &kvrpcpb.ScanResponse{Pairs: []*kvrpcpb.KvPair{{Error: convertToKeyError(err)}}}, nil
 	}
+
 	var scanProc = &kvScanProcessor{}
 	reader := reqCtx.getDBReader()
-	err = reader.Scan(startKey, endKey, int(req.GetLimit()), req.GetVersion(), scanProc)
+	if req.Reverse {
+		err = reader.ReverseScan(startKey, endKey, int(req.GetLimit()), req.GetVersion(), scanProc)
+	} else {
+		err = reader.Scan(startKey, endKey, int(req.GetLimit()), req.GetVersion(), scanProc)
+	}
 	if err != nil {
 		scanProc.pairs = append(scanProc.pairs[:0], &kvrpcpb.KvPair{
 			Error: convertToKeyError(err),
 		})
 	}
+
 	return &kvrpcpb.ScanResponse{
 		Pairs: scanProc.pairs,
 	}, nil
@@ -402,9 +423,6 @@ func (svr *Server) KvScanLock(ctx context.Context, req *kvrpcpb.ScanLockRequest)
 		return &kvrpcpb.ScanLockResponse{RegionError: reqCtx.regErr}, nil
 	}
 	log.Debug("kv scan lock")
-	if !isMvccRegion(reqCtx.regCtx) {
-		return &kvrpcpb.ScanLockResponse{}, nil
-	}
 	locks, err := svr.mvccStore.ScanLock(reqCtx, req.MaxVersion, int(req.Limit))
 	return &kvrpcpb.ScanLockResponse{Error: convertToKeyError(err), Locks: locks}, nil
 }
@@ -417,9 +435,6 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 	defer reqCtx.finish()
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.ResolveLockResponse{RegionError: reqCtx.regErr}, nil
-	}
-	if !isMvccRegion(reqCtx.regCtx) {
-		return &kvrpcpb.ResolveLockResponse{}, nil
 	}
 	resp := &kvrpcpb.ResolveLockResponse{}
 	if len(req.TxnInfos) > 0 {
@@ -452,9 +467,6 @@ func (svr *Server) KvDeleteRange(ctx context.Context, req *kvrpcpb.DeleteRangeRe
 	defer reqCtx.finish()
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.DeleteRangeResponse{RegionError: reqCtx.regErr}, nil
-	}
-	if !isMvccRegion(reqCtx.regCtx) {
-		return &kvrpcpb.DeleteRangeResponse{}, nil
 	}
 	err = svr.mvccStore.dbWriter.DeleteRange(req.StartKey, req.EndKey, reqCtx.regCtx)
 	if err != nil {
@@ -515,6 +527,8 @@ func (svr *Server) Coprocessor(ctx context.Context, req *coprocessor.Request) (*
 		return svr.handleCopDAGRequest(reqCtx, req), nil
 	case kv.ReqTypeAnalyze:
 		return svr.handleCopAnalyzeRequest(reqCtx, req), nil
+	case kv.ReqTypeChecksum:
+		return svr.handleCopChecksumRequest(reqCtx, req), nil
 	}
 	return &coprocessor.Response{OtherError: fmt.Sprintf("unsupported request type %d", req.GetTp())}, nil
 }
@@ -542,7 +556,7 @@ func (svr *Server) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
 
 // Region commands.
 func (svr *Server) SplitRegion(ctx context.Context, req *kvrpcpb.SplitRegionRequest) (*kvrpcpb.SplitRegionResponse, error) {
-	return svr.innerServer.SplitRegion(req), nil
+	return svr.regionManager.SplitRegion(req), nil
 }
 
 func (svr *Server) ReadIndex(context.Context, *kvrpcpb.ReadIndexRequest) (*kvrpcpb.ReadIndexResponse, error) {
@@ -760,12 +774,4 @@ func extractRegionError(err error) *errorpb.Error {
 		return raftError.RequestErr
 	}
 	return nil
-}
-
-func isMvccRegion(regCtx *regionCtx) bool {
-	if len(regCtx.startKey) == 0 {
-		return false
-	}
-	first := regCtx.startKey[0]
-	return first == 't' || first == 'm'
 }

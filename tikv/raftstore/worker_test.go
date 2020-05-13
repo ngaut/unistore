@@ -22,6 +22,7 @@ import (
 
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
+	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -155,7 +156,7 @@ func TestPendingApplies(t *testing.T) {
 	mgr := NewSnapManager(snapPath, nil)
 	wg := new(sync.WaitGroup)
 	worker := newWorker("snap-manager", wg)
-	regionRunner := newRegionTaskHandler(engines, mgr, 0, time.Duration(time.Second*0))
+	regionRunner := newRegionTaskHandler(&config.DefaultConf, engines, mgr, 0, time.Duration(time.Second*0))
 	worker.start(regionRunner)
 	genAndApplySnap := func(regionId uint64) {
 		tx := make(chan *eraftpb.Snapshot, 1)

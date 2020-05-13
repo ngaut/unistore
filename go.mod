@@ -2,32 +2,32 @@ module github.com/ngaut/unistore
 
 require (
 	github.com/BurntSushi/toml v0.3.1
-	github.com/coocood/badger v1.5.1-0.20200416022742-7ec37e0c6b9a
+	github.com/coocood/badger v1.5.1-0.20200513123315-c07e9ab20d9e
 	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2
+	github.com/gogo/protobuf v1.3.1
 	github.com/golang/protobuf v1.3.4
+	github.com/google/btree v1.0.0
 	github.com/juju/errors v0.0.0-20181118221551-089d3ea4e4d5
-	github.com/juju/loggo v0.0.0-20180524022052-584905176618 // indirect
-	github.com/juju/testing v0.0.0-20180920084828-472a3e8b2073 // indirect
+	github.com/juju/testing v0.0.0-20200510222523-6c8c298c77a0 // indirect
 	github.com/ngaut/log v0.0.0-20180314031856-b8e36e7ba5ac
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/pingcap/check v0.0.0-20200212061837-5e12011dc712
 	github.com/pingcap/errors v0.11.5-0.20190809092503-95897b64e011
-	github.com/pingcap/kvproto v0.0.0-20200420075417-e0c6e8842f22
-	github.com/pingcap/parser v0.0.0-20200424075042-8222d8b724a4
+	github.com/pingcap/kvproto v0.0.0-20200428135407-0f5ffe459677
+	github.com/pingcap/parser v0.0.0-20200507022230-f3bf29096657
 	github.com/pingcap/pd/v4 v4.0.0-rc.1.0.20200422143320-428acd53eba2
-	github.com/pingcap/tidb v1.1.0-beta.0.20200426023724-82bb3ced7497
+	github.com/pingcap/tidb v1.1.0-beta.0.20200513065557-5a0787dfa915
 	github.com/pingcap/tipb v0.0.0-20200417094153-7316d94df1ee
 	github.com/prometheus/client_golang v1.0.0
 	github.com/shirou/gopsutil v2.19.10+incompatible
+	github.com/shurcooL/vfsgen v0.0.0-20181202132449-6a9ea43bcacd // indirect
 	github.com/stretchr/testify v1.4.0
 	github.com/uber-go/atomic v1.3.2
 	github.com/zhangjinpeng1987/raft v0.0.0-20190624145930-deeb32d6553d
-	go.etcd.io/bbolt v1.3.3 // indirect
 	golang.org/x/net v0.0.0-20200324143707-d3edc9973b7e
 	golang.org/x/time v0.0.0-20190308202827-9d24e82272b4
 	google.golang.org/grpc v1.25.1
-	gopkg.in/mgo.v2 v2.0.0-20180705113604-9856a29383ce // indirect
 )
 
 replace go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.0.0-20190226085253-137eac022b64

@@ -15,12 +15,14 @@ package tikv
 
 import (
 	"bytes"
+	"fmt"
 	"time"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/juju/errors"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/parser/model"
 	"github.com/pingcap/parser/mysql"
 	"github.com/pingcap/parser/terror"
 	"github.com/pingcap/tidb/expression"
@@ -31,6 +33,7 @@ import (
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/codec"
+	"github.com/pingcap/tidb/util/collate"
 	"github.com/pingcap/tidb/util/rowcodec"
 	"github.com/pingcap/tipb/go-tipb"
 )
@@ -43,6 +46,19 @@ type dagContext struct {
 	keyRanges []*coprocessor.KeyRange
 	evalCtx   *evalContext
 	startTS   uint64
+}
+
+func (svr *Server) handleCopChecksumRequest(reqCtx *requestCtx, req *coprocessor.Request) *coprocessor.Response {
+	resp := &tipb.ChecksumResponse{
+		Checksum:   1,
+		TotalKvs:   1,
+		TotalBytes: 1,
+	}
+	data, err := resp.Marshal()
+	if err != nil {
+		return &coprocessor.Response{OtherError: fmt.Sprintf("marshal checksum response error: %v", err)}
+	}
+	return &coprocessor.Response{Data: data}
 }
 
 func (svr *Server) handleCopDAGRequest(reqCtx *requestCtx, req *coprocessor.Request) *coprocessor.Response {
@@ -58,7 +74,7 @@ func (svr *Server) handleCopDAGRequest(reqCtx *requestCtx, req *coprocessor.Requ
 		return buildResp(nil, nil, err, dagCtx.evalCtx.sc.GetWarnings(), time.Since(startTime))
 	}
 	chunks, err := closureExec.execute()
-	return buildResp(chunks, nil, err, dagCtx.evalCtx.sc.GetWarnings(), time.Since(startTime))
+	return buildResp(chunks, closureExec.counts, err, dagCtx.evalCtx.sc.GetWarnings(), time.Since(startTime))
 }
 
 func (svr *Server) buildDAG(reqCtx *requestCtx, req *coprocessor.Request) (*dagContext, *tipb.DAGRequest, error) {
@@ -214,10 +230,15 @@ const (
 
 // flagsToStatementContext creates a StatementContext from a `tipb.SelectRequest.Flags`.
 func flagsToStatementContext(flags uint64) *stmtctx.StatementContext {
-	sc := &stmtctx.StatementContext{
-		IgnoreTruncate:    (flags & FlagIgnoreTruncate) > 0,
-		TruncateAsWarning: (flags & FlagTruncateAsWarning) > 0,
-	}
+	sc := new(stmtctx.StatementContext)
+	sc.IgnoreTruncate = (flags & model.FlagIgnoreTruncate) > 0
+	sc.TruncateAsWarning = (flags & model.FlagTruncateAsWarning) > 0
+	sc.InInsertStmt = (flags & model.FlagInInsertStmt) > 0
+	sc.InSelectStmt = (flags & model.FlagInSelectStmt) > 0
+	sc.InDeleteStmt = (flags & model.FlagInUpdateOrDeleteStmt) > 0
+	sc.OverflowAsWarning = (flags & model.FlagOverflowAsWarning) > 0
+	sc.IgnoreZeroInDate = (flags & model.FlagIgnoreZeroInDate) > 0
+	sc.DividedByZeroAsWarning = (flags & model.FlagDividedByZeroAsWarning) > 0
 	return sc
 }
 
@@ -234,16 +255,12 @@ func buildResp(chunks []tipb.Chunk, counts []int64, err error, warnings []stmtct
 			selResp.Warnings = append(selResp.Warnings, toPBError(warnings[i].Err))
 		}
 	}
-	if err != nil {
-		if locked, ok := errors.Cause(err).(*ErrLocked); ok {
-			resp.Locked = &kvrpcpb.LockInfo{
-				Key:         locked.Key,
-				PrimaryLock: locked.Primary,
-				LockVersion: locked.StartTS,
-				LockTtl:     locked.TTL,
-			}
-		} else {
-			resp.OtherError = err.Error()
+	if locked, ok := errors.Cause(err).(*ErrLocked); ok {
+		resp.Locked = &kvrpcpb.LockInfo{
+			Key:         locked.Key,
+			PrimaryLock: locked.Primary,
+			LockVersion: locked.StartTS,
+			LockTtl:     locked.TTL,
 		}
 	}
 	resp.ExecDetails = &kvrpcpb.ExecDetails{
@@ -263,11 +280,15 @@ func toPBError(err error) *tipb.Error {
 		return nil
 	}
 	perr := new(tipb.Error)
-	switch x := err.(type) {
+	e := errors.Cause(err)
+	switch y := e.(type) {
 	case *terror.Error:
-		sqlErr := x.ToSQLError()
-		perr.Code = int32(sqlErr.Code)
-		perr.Msg = sqlErr.Message
+		tmp := y.ToSQLError()
+		perr.Code = int32(tmp.Code)
+		perr.Msg = tmp.Message
+	case *mysql.SQLError:
+		perr.Code = int32(y.Code)
+		perr.Msg = y.Message
 	default:
 		perr.Code = int32(1)
 		perr.Msg = err.Error()
@@ -346,6 +367,6 @@ func fieldTypeFromPBColumn(col *tipb.ColumnInfo) *types.FieldType {
 		Flen:    int(col.GetColumnLen()),
 		Decimal: int(col.GetDecimal()),
 		Elems:   col.Elems,
-		Collate: mysql.Collations[uint8(col.GetCollation())],
+		Collate: mysql.Collations[uint8(collate.RestoreCollationIDIfNeeded(col.GetCollation()))],
 	}
 }

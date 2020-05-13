@@ -120,9 +120,13 @@ func (r *DBReader) GetIter() *badger.Iterator {
 func (r *DBReader) GetExtraIter() *badger.Iterator {
 	if r.extraIter == nil {
 		rbStartKey := append([]byte{}, r.startKey...)
-		rbStartKey[0]++
+		if len(rbStartKey) != 0 {
+			rbStartKey[0]++
+		}
 		rbEndKey := append([]byte{}, r.endKey...)
-		rbEndKey[0]++
+		if len(rbEndKey) != 0 {
+			rbEndKey[0]++
+		}
 		r.extraIter = NewIterator(r.txn, false, rbStartKey, rbEndKey)
 	}
 	return r.extraIter
@@ -173,17 +177,22 @@ type ScanProcessor interface {
 	SkipValue() bool
 }
 
-func (r *DBReader) Scan(startKey, endKey []byte, limit int, startTS uint64, proc ScanProcessor) error {
+func exceedEndKey(current, endKey []byte) bool {
 	if len(endKey) == 0 {
-		panic("invalid end key")
+		return false
 	}
+	return bytes.Compare(current, endKey) >= 0
+}
+
+func (r *DBReader) Scan(startKey, endKey []byte, limit int, startTS uint64, proc ScanProcessor) error {
+	r.txn.SetReadTS(startTS)
 	skipValue := proc.SkipValue()
 	iter := r.GetIter()
 	var cnt int
 	for iter.Seek(startKey); iter.Valid(); iter.Next() {
 		item := iter.Item()
 		key := item.Key()
-		if bytes.Compare(key, endKey) >= 0 {
+		if exceedEndKey(key, endKey) {
 			break
 		}
 		var err error
@@ -218,7 +227,7 @@ func (r *DBReader) GetKeyByStartTs(startKey, endKey []byte, startTs uint64) ([]b
 	for iter.Seek(startKey); iter.Valid(); iter.Next() {
 		curItem := iter.Item()
 		curKey := curItem.Key()
-		if bytes.Compare(curKey, endKey) >= 0 {
+		if len(endKey) != 0 && bytes.Compare(curKey, endKey) >= 0 {
 			break
 		}
 		meta := mvcc.DBUserMeta(curItem.UserMeta())

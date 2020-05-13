@@ -24,6 +24,7 @@ import (
 
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
+	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore"
@@ -118,7 +119,7 @@ func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
 	engines := raftstore.NewEngines(dbBundle, dbBundle.DB, kvPath, raftPath)
 	writer := raftstore.NewTestRaftWriter(dbBundle, engines)
 
-	store := NewMVCCStore(dbBundle, dbPath, safePoint, writer, nil)
+	store := NewMVCCStore(&config.DefaultConf, dbBundle, dbPath, safePoint, writer, nil)
 	svr := NewServer(nil, store, nil)
 	return &TestStore{
 		MvccStore: store,

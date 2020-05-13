@@ -23,6 +23,7 @@ import (
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/pingcap/parser/model"
 	"github.com/pingcap/parser/mysql"
+	"github.com/pingcap/parser/terror"
 	"github.com/pingcap/tidb/expression"
 	"github.com/pingcap/tidb/expression/aggregation"
 	"github.com/pingcap/tidb/kv"
@@ -32,6 +33,7 @@ import (
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/codec"
+	"github.com/pingcap/tidb/util/collate"
 	mockpkg "github.com/pingcap/tidb/util/mock"
 	"github.com/pingcap/tidb/util/rowcodec"
 	"github.com/pingcap/tipb/go-tipb"
@@ -134,6 +136,9 @@ func (svr *Server) newClosureExecutor(dagCtx *dagContext, dagReq *tipb.DAGReques
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
+	if dagReq.GetCollectRangeCounts() {
+		e.counts = make([]int64, len(ranges))
+	}
 	e.kvRanges = ranges
 	e.scanCtx.chk = chunk.NewChunkWithCapacity(e.fieldTps, 32)
 	if e.idxScanCtx == nil {
@@ -162,6 +167,28 @@ func (e *closureExecutor) initIdxScanCtx() {
 		e.idxScanCtx.pkStatus = pkColIsSigned
 		e.idxScanCtx.columnLen--
 	}
+
+	colInfos := make([]rowcodec.ColInfo, e.idxScanCtx.columnLen)
+	for i := range colInfos {
+		col := e.columnInfos[i]
+		colInfos[i] = rowcodec.ColInfo{
+			ID:         col.ColumnId,
+			Tp:         col.Tp,
+			Flag:       col.Flag,
+			IsPKHandle: col.GetPkHandle(),
+			Collate:    collate.CollationID2Name(col.Collation),
+		}
+	}
+	e.idxScanCtx.colInfos = colInfos
+
+	colIDs := make(map[int64]int, len(colInfos))
+	for i, col := range colInfos {
+		colIDs[col.ID] = i
+	}
+	e.scanCtx.newCollationIds = colIDs
+
+	// We don't need to decode handle here, and colIDs >= 0 always.
+	e.scanCtx.newCollationRd = rowcodec.NewByteDecoder(colInfos, []int64{-1}, nil, nil)
 }
 
 func (svr *Server) isCountAgg(pbAgg *tipb.Aggregation) bool {
@@ -270,6 +297,8 @@ type closureExecutor struct {
 	oldChunks []tipb.Chunk
 	oldRowBuf []byte
 	processor closureProcessor
+
+	counts []int64
 }
 
 type closureProcessor interface {
@@ -283,11 +312,15 @@ type scanCtx struct {
 	chk     *chunk.Chunk
 	desc    bool
 	decoder *rowcodec.ChunkDecoder
+
+	newCollationRd  *rowcodec.BytesDecoder
+	newCollationIds map[int64]int
 }
 
 type idxScanCtx struct {
 	pkStatus  int
 	columnLen int
+	colInfos  []rowcodec.ColInfo
 }
 
 type aggCtx struct {
@@ -310,7 +343,7 @@ func (e *closureExecutor) execute() ([]tipb.Chunk, error) {
 		return nil, errors.Trace(err)
 	}
 	dbReader := e.reqCtx.getDBReader()
-	for _, ran := range e.kvRanges {
+	for i, ran := range e.kvRanges {
 		if e.unique && ran.IsPoint() {
 			val, err := dbReader.Get(ran.StartKey, e.startTS)
 			if err != nil {
@@ -319,15 +352,23 @@ func (e *closureExecutor) execute() ([]tipb.Chunk, error) {
 			if len(val) == 0 {
 				continue
 			}
+			if e.counts != nil {
+				e.counts[i]++
+			}
 			err = e.processor.Process(ran.StartKey, val)
 			if err != nil {
 				return nil, errors.Trace(err)
 			}
 		} else {
+			oldCnt := e.rowCount
 			if e.scanCtx.desc {
 				err = dbReader.ReverseScan(ran.StartKey, ran.EndKey, math.MaxInt64, e.startTS, e.processor)
 			} else {
 				err = dbReader.Scan(ran.StartKey, ran.EndKey, math.MaxInt64, e.startTS, e.processor)
+			}
+			delta := int64(e.rowCount - oldCnt)
+			if e.counts != nil {
+				e.counts[i] += delta
 			}
 			if err != nil {
 				return nil, errors.Trace(err)
@@ -455,25 +496,51 @@ func (e *closureExecutor) processSelection() (gotRow bool, err error) {
 	row := chk.GetRow(chk.NumRows() - 1)
 	gotRow = true
 	for _, expr := range e.selectionCtx.conditions {
+		wc := e.sc.WarningCount()
 		d, err := expr.Eval(row)
 		if err != nil {
 			return false, errors.Trace(err)
 		}
+
 		if d.IsNull() {
 			gotRow = false
 		} else {
-			i, err := d.ToBool(e.sc)
+			isBool, err := d.ToBool(e.sc)
+			isBool, err = expression.HandleOverflowOnSelection(e.sc, isBool, err)
 			if err != nil {
 				return false, errors.Trace(err)
 			}
-			gotRow = i != 0
+			gotRow = isBool != 0
 		}
 		if !gotRow {
+			if e.sc.WarningCount() > wc {
+				// Deep-copy error object here, because the data it referenced is going to be truncated.
+				warns := e.sc.TruncateWarnings(int(wc))
+				for i, warn := range warns {
+					warns[i].Err = e.copyError(warn.Err)
+				}
+				e.sc.AppendWarnings(warns)
+			}
 			chk.TruncateTo(chk.NumRows() - 1)
 			break
 		}
 	}
 	return
+}
+
+func (e *closureExecutor) copyError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var ret error
+	x := errors.Cause(err)
+	switch y := x.(type) {
+	case *terror.Error:
+		ret = y.ToSQLError()
+	default:
+		ret = errors.New(err.Error())
+	}
+	return ret
 }
 
 func (e *closureExecutor) tableScanProcessCore(key, value []byte) error {
@@ -514,6 +581,47 @@ func (e *indexScanProcessor) Finish() error {
 }
 
 func (e *closureExecutor) indexScanProcessCore(key, value []byte) error {
+	if len(value) > tablecodec.MaxOldEncodeValueLen {
+		return e.indexScanProcessNewCollation(key, value)
+	}
+	return e.indexScanProcessOldCollation(key, value)
+}
+
+func (e *closureExecutor) indexScanProcessNewCollation(key, value []byte) error {
+	colLen := e.idxScanCtx.columnLen
+	pkStatus := e.idxScanCtx.pkStatus
+	chk := e.scanCtx.chk
+	rd := e.scanCtx.newCollationRd
+	colIDs := e.scanCtx.newCollationIds
+
+	vLen := len(value)
+	tailLen := int(value[0])
+	values, err := rd.DecodeToBytesNoHandle(colIDs, value[1:vLen-tailLen])
+	if err != nil {
+		return errors.Trace(err)
+	}
+	decoder := codec.NewDecoder(chk, e.sc.TimeZone)
+	for i, colVal := range values {
+		_, err = decoder.DecodeOne(colVal, i, e.fieldTps[i])
+		if err != nil {
+			return errors.Trace(err)
+		}
+	}
+
+	if tailLen < 8 {
+		if pkStatus != pkColNotExists {
+			_, err = decoder.DecodeOne(key[len(key)-9:], colLen, e.fieldTps[colLen])
+			if err != nil {
+				return errors.Trace(err)
+			}
+		}
+	} else if pkStatus != pkColNotExists {
+		chk.AppendInt64(colLen, int64(binary.BigEndian.Uint64(value[vLen-tailLen:])))
+	}
+	return nil
+}
+
+func (e *closureExecutor) indexScanProcessOldCollation(key, value []byte) error {
 	colLen := e.idxScanCtx.columnLen
 	pkStatus := e.idxScanCtx.pkStatus
 	chk := e.scanCtx.chk
@@ -609,10 +717,11 @@ func (e *topNProcessor) Process(key, value []byte) (err error) {
 	ctx := e.topNCtx
 	row := e.scanCtx.chk.GetRow(0)
 	for i, expr := range ctx.orderByExprs {
-		ctx.sortRow.key[i], err = expr.Eval(row)
+		d, err := expr.Eval(row)
 		if err != nil {
 			return errors.Trace(err)
 		}
+		d.Copy(&ctx.sortRow.key[i])
 	}
 	e.scanCtx.chk.Reset()
 

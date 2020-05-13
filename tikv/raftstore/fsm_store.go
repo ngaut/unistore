@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
 	"github.com/coocood/badger"
@@ -356,11 +357,12 @@ type workers struct {
 }
 
 type raftBatchSystem struct {
-	ctx     *GlobalContext
-	router  *router
-	workers *workers
-	closeCh chan struct{}
-	wg      *sync.WaitGroup
+	ctx       *GlobalContext
+	router    *router
+	workers   *workers
+	closeCh   chan struct{}
+	wg        *sync.WaitGroup
+	globalCfg *config.Config
 }
 
 func (bs *raftBatchSystem) start(
@@ -443,7 +445,7 @@ func (bs *raftBatchSystem) startWorkers(peers []*peerFsm) {
 	engines := ctx.engine
 	cfg := ctx.cfg
 	workers.splitCheckWorker.start(newSplitCheckRunner(engines.kv.DB, router, cfg.SplitCheck))
-	workers.regionWorker.start(newRegionTaskHandler(engines, ctx.snapMgr, cfg.SnapApplyBatchSize, cfg.CleanStalePeerDelay))
+	workers.regionWorker.start(newRegionTaskHandler(bs.globalCfg, engines, ctx.snapMgr, cfg.SnapApplyBatchSize, cfg.CleanStalePeerDelay))
 	workers.raftLogGCWorker.start(&raftLogGCTaskHandler{})
 	workers.compactWorker.start(&compactTaskHandler{engine: engines.kv.DB})
 	workers.pdWorker.start(newPDTaskHandler(ctx.store.Id, ctx.pdClient, bs.router))
@@ -468,13 +470,14 @@ func (bs *raftBatchSystem) shutDown() {
 	workers.wg.Wait()
 }
 
-func createRaftBatchSystem(cfg *Config) (*router, *raftBatchSystem) {
-	storeSender, storeFsm := newStoreFsm(cfg)
+func createRaftBatchSystem(globalCfg *config.Config, raftCfg *Config) (*router, *raftBatchSystem) {
+	storeSender, storeFsm := newStoreFsm(raftCfg)
 	router := newRouter(storeSender, storeFsm)
 	raftBatchSystem := &raftBatchSystem{
-		router:  router,
-		closeCh: make(chan struct{}),
-		wg:      new(sync.WaitGroup),
+		router:    router,
+		closeCh:   make(chan struct{}),
+		wg:        new(sync.WaitGroup),
+		globalCfg: globalCfg,
 	}
 	return router, raftBatchSystem
 }

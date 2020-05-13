@@ -53,6 +53,8 @@ type MVCCStore struct {
 	pdClient  pd.Client
 	closeCh   chan bool
 
+	conf *config.Config
+
 	latestTS          uint64
 	lockWaiterManager *lockwaiter.Manager
 	DeadlockDetectCli *DetectorClient
@@ -60,7 +62,7 @@ type MVCCStore struct {
 }
 
 // NewMVCCStore creates a new MVCCStore
-func NewMVCCStore(bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint,
+func NewMVCCStore(conf *config.Config, bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint,
 	writer mvcc.DBWriter, pdClient pd.Client) *MVCCStore {
 	store := &MVCCStore{
 		db:                bundle.DB,
@@ -70,7 +72,8 @@ func NewMVCCStore(bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint,
 		pdClient:          pdClient,
 		closeCh:           make(chan bool),
 		dbWriter:          writer,
-		lockWaiterManager: lockwaiter.NewManager(),
+		conf:              conf,
+		lockWaiterManager: lockwaiter.NewManager(conf),
 	}
 	store.DeadlockDetectSvr = NewDetectorServer()
 	store.DeadlockDetectCli = NewDetectorClient(store.lockWaiterManager, pdClient)
@@ -435,8 +438,8 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 }
 
 func (store *MVCCStore) normalizeWaitTime(lockWaitTime int64) time.Duration {
-	if lockWaitTime > config.GetGlobalConf().PessimisticTxn.WaitForLockTimeout {
-		lockWaitTime = config.GetGlobalConf().PessimisticTxn.WaitForLockTimeout
+	if lockWaitTime > store.conf.PessimisticTxn.WaitForLockTimeout {
+		lockWaitTime = store.conf.PessimisticTxn.WaitForLockTimeout
 	}
 	return time.Duration(lockWaitTime) * time.Millisecond
 }
@@ -799,7 +802,7 @@ const (
 func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint64) error {
 	sortKeys(keys)
 	hashVals := keysToHashVals(keys...)
-	log.Warnf("%d rollback %v", startTS, hashVals)
+	log.Debugf("%d rollback %v", startTS, hashVals)
 	regCtx := reqCtx.regCtx
 	batch := store.dbWriter.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
 
@@ -930,10 +933,6 @@ func (store *MVCCStore) CheckKeysLock(startTS uint64, keys ...[]byte) error {
 }
 
 func (store *MVCCStore) CheckRangeLock(startTS uint64, startKey, endKey []byte) error {
-	if len(endKey) == 0 {
-		panic("invalid end key")
-	}
-
 	it := store.lockStore.NewIterator()
 	for it.Seek(startKey); it.Valid(); it.Next() {
 		if exceedEndKey(it.Key(), endKey) {
@@ -990,10 +989,6 @@ func (store *MVCCStore) appendScannedLock(locks []*kvrpcpb.LockInfo, it *locksto
 
 func (store *MVCCStore) ScanLock(reqCtx *requestCtx, maxTS uint64, limit int) ([]*kvrpcpb.LockInfo, error) {
 	var locks []*kvrpcpb.LockInfo
-	if len(reqCtx.regCtx.endKey) == 0 {
-		panic("invalid end key")
-	}
-
 	it := store.lockStore.NewIterator()
 	for it.Seek(reqCtx.regCtx.startKey); it.Valid(); it.Next() {
 		if exceedEndKey(it.Key(), reqCtx.regCtx.endKey) {
@@ -1021,9 +1016,6 @@ func (store *MVCCStore) PhysicalScanLock(startKey []byte, maxTS uint64, limit in
 
 func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, lockKeys [][]byte, startTS, commitTS uint64) error {
 	regCtx := reqCtx.regCtx
-	if len(regCtx.endKey) == 0 {
-		panic("invalid end key")
-	}
 	if len(lockKeys) == 0 {
 		it := store.lockStore.NewIterator()
 		for it.Seek(regCtx.startKey); it.Valid(); it.Next() {
@@ -1087,10 +1079,15 @@ func (store *MVCCStore) StartDeadlockDetection(isRaft bool) {
 	}
 
 	go func() {
-		for req := range store.DeadlockDetectCli.sendCh {
-			resp := store.DeadlockDetectSvr.Detect(req)
-			if resp != nil {
-				store.DeadlockDetectCli.waitMgr.WakeUpForDeadlock(resp)
+		for {
+			select {
+			case req := <-store.DeadlockDetectCli.sendCh:
+				resp := store.DeadlockDetectSvr.Detect(req)
+				if resp != nil {
+					store.DeadlockDetectCli.waitMgr.WakeUpForDeadlock(resp)
+				}
+			case <-store.closeCh:
+				return
 			}
 		}
 	}()
@@ -1133,10 +1130,14 @@ func (store *MVCCStore) getExtraMvccInfo(rawkey []byte,
 	rbEndKey := mvcc.EncodeExtraTxnStatusKey(rawkey, 0)
 	for it.Seek(rbStartKey); it.Valid(); it.Next() {
 		item := it.Item()
-		if bytes.Compare(item.Key(), rbEndKey) > 0 {
+		if len(rbEndKey) != 0 && bytes.Compare(item.Key(), rbEndKey) > 0 {
 			break
 		}
-		rollbackTs := mvcc.DecodeKeyTS(item.Key())
+		key := item.Key()
+		if len(key) == 0 || (key[0] != tableExtraPrefix && key[0] != metaExtraPrefix) {
+			continue
+		}
+		rollbackTs := mvcc.DecodeKeyTS(key)
 		curRecord := &kvrpcpb.MvccWrite{
 			Type:     kvrpcpb.Op_Rollback,
 			StartTs:  rollbackTs,

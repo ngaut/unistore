@@ -29,7 +29,8 @@ import (
 )
 
 type raftDBWriter struct {
-	router *router
+	router           *router
+	useCustomRaftLog bool
 }
 
 func (writer *raftDBWriter) Open() {
@@ -158,7 +159,7 @@ func (wb *raftWriteBatch) PessimisticRollback(key []byte) {
 }
 
 func (writer *raftDBWriter) NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Context) mvcc.WriteBatch {
-	if config.GetGlobalConf().RaftStore.CustomRaftLog {
+	if writer.useCustomRaftLog {
 		return NewCustomWriteBatch(startTS, commitTS, ctx)
 	}
 	return &raftWriteBatch{
@@ -233,8 +234,11 @@ func (writer *raftDBWriter) DeleteRange(startKey, endKey []byte, latchHandle mvc
 	return nil // TODO: stub
 }
 
-func NewDBWriter(router *RaftstoreRouter) mvcc.DBWriter {
-	return &raftDBWriter{router: router.router}
+func NewDBWriter(conf *config.Config, router *RaftstoreRouter) mvcc.DBWriter {
+	return &raftDBWriter{
+		router:           router.router,
+		useCustomRaftLog: conf.RaftStore.CustomRaftLog,
+	}
 }
 
 // TestRaftWriter is used to mock raft write related prewrite and commit operations without

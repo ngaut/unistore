@@ -32,13 +32,15 @@ var (
 )
 
 type Manager struct {
-	mu            sync.Mutex
-	waitingQueues map[uint64]*queue
+	mu                  sync.Mutex
+	waitingQueues       map[uint64]*queue
+	wakeUpDelayDuration int64
 }
 
-func NewManager() *Manager {
+func NewManager(conf *config.Config) *Manager {
 	return &Manager{
-		waitingQueues: map[uint64]*queue{},
+		waitingQueues:       map[uint64]*queue{},
+		wakeUpDelayDuration: conf.PessimisticTxn.WakeUpDelayDuration,
 	}
 }
 
@@ -72,14 +74,15 @@ func (q *queue) removeWaiter(w *Waiter) {
 }
 
 type Waiter struct {
-	deadlineTime  time.Time
-	timer         *time.Timer
-	ch            chan WaitResult
-	startTS       uint64
-	LockTS        uint64
-	KeyHash       uint64
-	CommitTs      uint64
-	wakeupDelayed bool
+	deadlineTime        time.Time
+	timer               *time.Timer
+	ch                  chan WaitResult
+	wakeUpDelayDuration int64
+	startTS             uint64
+	LockTS              uint64
+	KeyHash             uint64
+	CommitTs            uint64
+	wakeupDelayed       bool
 }
 
 // WakeupWaitTime is the implementation of variable "wake-up-delay-duration"
@@ -109,7 +112,7 @@ func (w *Waiter) Wait() WaitResult {
 			if result.WakeupSleepTime == WakeupDelayTimeout {
 				w.CommitTs = result.CommitTS
 				w.wakeupDelayed = true
-				delaySleepDuration := time.Duration(config.GetGlobalConf().PessimisticTxn.WakeUpDelayDuration) * time.Millisecond
+				delaySleepDuration := time.Duration(w.wakeUpDelayDuration) * time.Millisecond
 				if time.Now().Add(delaySleepDuration).Before(w.deadlineTime) {
 					if w.timer.Stop() {
 						w.timer.Reset(delaySleepDuration)
@@ -134,12 +137,13 @@ func (lw *Manager) NewWaiter(startTS, lockTS, keyHash uint64, timeout time.Durat
 	q := new(queue)
 	q.waiters = make([]*Waiter, 0, 8)
 	waiter := &Waiter{
-		deadlineTime: time.Now().Add(timeout),
-		timer:        time.NewTimer(timeout),
-		ch:           make(chan WaitResult, 32),
-		startTS:      startTS,
-		LockTS:       lockTS,
-		KeyHash:      keyHash,
+		deadlineTime:        time.Now().Add(timeout),
+		wakeUpDelayDuration: lw.wakeUpDelayDuration,
+		timer:               time.NewTimer(timeout),
+		ch:                  make(chan WaitResult, 32),
+		startTS:             startTS,
+		LockTS:              lockTS,
+		KeyHash:             keyHash,
 	}
 	q.waiters = append(q.waiters, waiter)
 	lw.mu.Lock()

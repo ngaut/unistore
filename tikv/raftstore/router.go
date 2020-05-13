@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
@@ -111,6 +113,21 @@ func (r *RaftstoreRouter) SendCommand(req *raft_cmdpb.RaftCmdRequest, cb *Callba
 		Callback: cb,
 	}
 	return r.router.sendRaftCommand(msg)
+}
+
+func (r *RaftstoreRouter) SplitRegion(ctx *kvrpcpb.Context, keys [][]byte) ([]*metapb.Region, error) {
+	cb := NewCallback()
+	msg := &MsgSplitRegion{
+		RegionEpoch: ctx.RegionEpoch,
+		SplitKeys:   keys,
+		Callback:    cb,
+	}
+	err := r.router.send(ctx.RegionId, Msg{Type: MsgTypeSplitRegion, Data: msg})
+	if err != nil {
+		return nil, err
+	}
+	cb.wg.Wait()
+	return cb.resp.GetAdminResponse().GetSplits().GetRegions(), nil
 }
 
 var errPeerNotFound = errors.New("peer not found")

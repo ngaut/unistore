@@ -40,7 +40,7 @@ import (
 )
 
 var (
-	InternalKeyPrefix        = []byte(`i`)
+	InternalKeyPrefix        = []byte{0xff}
 	InternalRegionMetaPrefix = append(InternalKeyPrefix, "region"...)
 	InternalStoreMetaKey     = append(InternalKeyPrefix, "store"...)
 	InternalSafePointKey     = append(InternalKeyPrefix, "safepoint"...)
@@ -222,6 +222,7 @@ type RegionOptions struct {
 
 type RegionManager interface {
 	GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error)
+	SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse
 	Close() error
 }
 
@@ -271,6 +272,48 @@ func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *er
 
 func (rm *regionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
 	return lhs.GetConfVer() != rhs.GetConfVer() || lhs.GetVersion() != rhs.GetVersion()
+}
+
+func (rm *regionManager) loadFromLocal(bundle *mvcc.DBBundle, f func(*regionCtx)) error {
+	err := bundle.DB.View(func(txn *badger.Txn) error {
+		item, err1 := txn.Get(InternalStoreMetaKey)
+		if err1 != nil {
+			return err1
+		}
+		val, err1 := item.Value()
+		if err1 != nil {
+			return err1
+		}
+		err1 = rm.storeMeta.Unmarshal(val)
+		if err1 != nil {
+			return err1
+		}
+		// load region meta
+		opts := badger.DefaultIteratorOptions
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		prefix := InternalRegionMetaPrefix
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			val, err1 = item.Value()
+			if err1 != nil {
+				return err1
+			}
+			r := new(regionCtx)
+			err := r.unmarshal(val)
+			if err != nil {
+				return errors.Trace(err)
+			}
+			r.latches = rm.latches
+			rm.regions[r.meta.Id] = r
+			f(r)
+		}
+		return nil
+	})
+	if err == badger.ErrKeyNotFound {
+		err = nil
+	}
+	return err
 }
 
 type RaftRegionManager struct {
@@ -420,6 +463,18 @@ func (rm *RaftRegionManager) runEventHandler() {
 	}
 }
 
+func (rm *RaftRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse {
+	splitKeys := make([][]byte, 0, len(req.SplitKeys))
+	for _, rawKey := range req.SplitKeys {
+		splitKeys = append(splitKeys, codec.EncodeBytes(nil, rawKey))
+	}
+	regions, err := rm.router.SplitRegion(req.GetContext(), splitKeys)
+	if err != nil {
+		return &kvrpcpb.SplitRegionResponse{RegionError: &errorpb.Error{Message: err.Error()}}
+	}
+	return &kvrpcpb.SplitRegionResponse{Regions: regions}
+}
+
 type StandAloneRegionManager struct {
 	regionManager
 	bundle     *mvcc.DBBundle
@@ -446,49 +501,14 @@ func NewStandAloneRegionManager(bundle *mvcc.DBBundle, opts RegionOptions, pdc p
 			latches:   newLatches(),
 		},
 	}
-	err = rm.bundle.DB.View(func(txn *badger.Txn) error {
-		item, err1 := txn.Get(InternalStoreMetaKey)
-		if err1 != nil {
-			return err1
+	err = rm.loadFromLocal(bundle, func(r *regionCtx) {
+		req := &pdpb.RegionHeartbeatRequest{
+			Region:          r.meta,
+			Leader:          r.meta.Peers[0],
+			ApproximateSize: uint64(r.approximateSize),
 		}
-		val, err1 := item.Value()
-		if err1 != nil {
-			return err1
-		}
-		err1 = rm.storeMeta.Unmarshal(val)
-		if err1 != nil {
-			return err1
-		}
-		// load region meta
-		opts := badger.DefaultIteratorOptions
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		prefix := InternalRegionMetaPrefix
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			val, err1 = item.Value()
-			if err1 != nil {
-				return err1
-			}
-			r := new(regionCtx)
-			err = r.unmarshal(val)
-			if err != nil {
-				return errors.Trace(err)
-			}
-			r.latches = rm.latches
-			rm.regions[r.meta.Id] = r
-			req := &pdpb.RegionHeartbeatRequest{
-				Region:          r.meta,
-				Leader:          r.meta.Peers[0],
-				ApproximateSize: uint64(r.approximateSize),
-			}
-			rm.pdc.ReportRegion(req)
-		}
-		return nil
+		rm.pdc.ReportRegion(req)
 	})
-	if err != nil && err != badger.ErrKeyNotFound {
-		log.Fatal(err)
-	}
 	if rm.storeMeta.Id == 0 {
 		err = rm.initStore(opts.StoreAddr)
 		if err != nil {
@@ -833,6 +853,10 @@ func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey
 	log.Infof("region %d split to left %d with size %d and right %d with size %d",
 		oldRegion.Id, left.meta.Id, left.approximateSize, right.meta.Id, right.approximateSize)
 	return nil
+}
+
+func (rm *StandAloneRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse {
+	return &kvrpcpb.SplitRegionResponse{}
 }
 
 func (rm *StandAloneRegionManager) Close() error {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/options"
+	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
@@ -21,9 +22,42 @@ const (
 	subPathKV   = "kv"
 )
 
-func New(conf *config.Config, pdClient pd.Client) (*tikv.Server, error) {
-	config.SetGlobalConf(conf)
+func init() {
+	log.SetLevel(log.LOG_LEVEL_INFO)
+}
 
+func NewMock(conf *config.Config, clusterID uint64) (*tikv.Server, *tikv.MockRegionManager, *tikv.MockPD, error) {
+	physical, logical := tikv.GetTS()
+	ts := uint64(physical)<<18 + uint64(logical)
+
+	safePoint := &tikv.SafePoint{}
+	db, err := createDB(subPathKV, safePoint, &conf.Engine)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	bundle := &mvcc.DBBundle{
+		DB:        db,
+		LockStore: lockstore.NewMemStore(8 << 20),
+		StateTS:   ts,
+	}
+
+	rm, err := tikv.NewMockRegionManager(bundle, clusterID, tikv.RegionOptions{
+		StoreAddr:  conf.Server.StoreAddr,
+		PDAddr:     conf.Server.PDAddr,
+		RegionSize: conf.Server.RegionSize,
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	pdClient := tikv.NewMockPD(rm)
+	svr, err := setupStandAlongInnerServer(bundle, safePoint, rm, pdClient, conf)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return svr, rm, pdClient, nil
+}
+
+func New(conf *config.Config, pdClient pd.Client) (*tikv.Server, error) {
 	physical, logical, err := pdClient.GetTS(context.Background())
 	if err != nil {
 		return nil, err
@@ -43,7 +77,17 @@ func New(conf *config.Config, pdClient pd.Client) (*tikv.Server, error) {
 	if conf.Server.Raft {
 		return setupRaftServer(bundle, safePoint, pdClient, conf)
 	}
-	return setupStandAlongInnerServer(bundle, safePoint, pdClient, conf)
+
+	rm := tikv.NewStandAloneRegionManager(bundle, getRegionOptions(conf), pdClient)
+	return setupStandAlongInnerServer(bundle, safePoint, rm, pdClient, conf)
+}
+
+func getRegionOptions(conf *config.Config) tikv.RegionOptions {
+	return tikv.RegionOptions{
+		StoreAddr:  conf.Server.StoreAddr,
+		PDAddr:     conf.Server.PDAddr,
+		RegionSize: conf.Server.RegionSize,
+	}
 }
 
 func setupRaftServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient pd.Client, conf *config.Config) (*tikv.Server, error) {
@@ -79,11 +123,11 @@ func setupRaftServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient 
 
 	engines := raftstore.NewEngines(bundle, raftDB, kvPath, raftPath)
 
-	innerServer := raftstore.NewRaftInnerServer(engines, raftConf)
+	innerServer := raftstore.NewRaftInnerServer(conf, engines, raftConf)
 	innerServer.Setup(pdClient)
 	router := innerServer.GetRaftstoreRouter()
 	storeMeta := innerServer.GetStoreMeta()
-	store := tikv.NewMVCCStore(bundle, dbPath, safePoint, raftstore.NewDBWriter(router), pdClient)
+	store := tikv.NewMVCCStore(conf, bundle, dbPath, safePoint, raftstore.NewDBWriter(conf, router), pdClient)
 	rm := tikv.NewRaftRegionManager(storeMeta, router, store.DeadlockDetectSvr)
 	innerServer.SetPeerEventObserver(rm)
 
@@ -96,18 +140,11 @@ func setupRaftServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient 
 	return tikv.NewServer(rm, store, innerServer), nil
 }
 
-func setupStandAlongInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient pd.Client, conf *config.Config) (*tikv.Server, error) {
-	regionOpts := tikv.RegionOptions{
-		StoreAddr:  conf.Server.StoreAddr,
-		PDAddr:     conf.Server.PDAddr,
-		RegionSize: conf.Server.RegionSize,
-	}
-
+func setupStandAlongInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, rm tikv.RegionManager, pdClient pd.Client, conf *config.Config) (*tikv.Server, error) {
 	innerServer := tikv.NewStandAlongInnerServer(bundle)
 	innerServer.Setup(pdClient)
-	store := tikv.NewMVCCStore(bundle, conf.Engine.DBPath, safePoint, tikv.NewDBWriter(bundle), pdClient)
+	store := tikv.NewMVCCStore(conf, bundle, conf.Engine.DBPath, safePoint, tikv.NewDBWriter(bundle), pdClient)
 	store.DeadlockDetectSvr.ChangeRole(tikv.Leader)
-	rm := tikv.NewStandAloneRegionManager(bundle, regionOpts, pdClient)
 
 	if err := innerServer.Start(pdClient); err != nil {
 		return nil, err
@@ -167,5 +204,6 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*
 		opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
 	}
 	opts.CompactL0WhenClose = conf.CompactL0WhenClose
+	opts.VolatileMode = conf.VolatileMode
 	return badger.Open(opts)
 }
