@@ -180,6 +180,15 @@ func (e *closureExecutor) initIdxScanCtx() {
 		}
 	}
 	e.idxScanCtx.colInfos = colInfos
+
+	colIDs := make(map[int64]int, len(colInfos))
+	for i, col := range colInfos {
+		colIDs[col.ID] = i
+	}
+	e.scanCtx.newCollationIds = colIDs
+
+	// We don't need to decode handle here, and colIDs >= 0 always.
+	e.scanCtx.newCollationRd = rowcodec.NewByteDecoder(colInfos, []int64{-1}, nil, nil)
 }
 
 func (svr *Server) isCountAgg(pbAgg *tipb.Aggregation) bool {
@@ -303,6 +312,9 @@ type scanCtx struct {
 	chk     *chunk.Chunk
 	desc    bool
 	decoder *rowcodec.ChunkDecoder
+
+	newCollationRd  *rowcodec.BytesDecoder
+	newCollationIds map[int64]int
 }
 
 type idxScanCtx struct {
@@ -578,15 +590,10 @@ func (e *closureExecutor) indexScanProcessCore(key, value []byte) error {
 func (e *closureExecutor) indexScanProcessNewCollation(key, value []byte) error {
 	colLen := e.idxScanCtx.columnLen
 	pkStatus := e.idxScanCtx.pkStatus
-	columns := e.idxScanCtx.colInfos
 	chk := e.scanCtx.chk
+	rd := e.scanCtx.newCollationRd
+	colIDs := e.scanCtx.newCollationIds
 
-	colIDs := make(map[int64]int, len(columns))
-	for i, col := range columns {
-		colIDs[col.ID] = i
-	}
-	// We don't need to decode handle here, and colIDs >= 0 always.
-	rd := rowcodec.NewByteDecoder(columns, []int64{-1}, nil, nil)
 	vLen := len(value)
 	tailLen := int(value[0])
 	values, err := rd.DecodeToBytesNoHandle(colIDs, value[1:vLen-tailLen])

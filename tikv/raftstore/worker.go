@@ -803,6 +803,7 @@ type regionTaskHandler struct {
 
 func newRegionTaskHandler(conf *config.Config, engines *Engines, mgr *SnapManager, batchSize uint64, cleanStalePeerDelay time.Duration) *regionTaskHandler {
 	return &regionTaskHandler{
+		conf: conf,
 		ctx: &snapContext{
 			engiens:             engines,
 			mgr:                 mgr,
