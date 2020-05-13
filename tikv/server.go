@@ -165,9 +165,6 @@ func (svr *Server) KvScan(ctx context.Context, req *kvrpcpb.ScanRequest) (*kvrpc
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.ScanResponse{RegionError: reqCtx.regErr}, nil
 	}
-	if !isMvccRegion(reqCtx.regCtx) {
-		return &kvrpcpb.ScanResponse{}, nil
-	}
 
 	var startKey, endKey []byte
 	if req.Reverse {
@@ -426,9 +423,6 @@ func (svr *Server) KvScanLock(ctx context.Context, req *kvrpcpb.ScanLockRequest)
 		return &kvrpcpb.ScanLockResponse{RegionError: reqCtx.regErr}, nil
 	}
 	log.Debug("kv scan lock")
-	if !isMvccRegion(reqCtx.regCtx) {
-		return &kvrpcpb.ScanLockResponse{}, nil
-	}
 	locks, err := svr.mvccStore.ScanLock(reqCtx, req.MaxVersion, int(req.Limit))
 	return &kvrpcpb.ScanLockResponse{Error: convertToKeyError(err), Locks: locks}, nil
 }
@@ -441,9 +435,6 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 	defer reqCtx.finish()
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.ResolveLockResponse{RegionError: reqCtx.regErr}, nil
-	}
-	if !isMvccRegion(reqCtx.regCtx) {
-		return &kvrpcpb.ResolveLockResponse{}, nil
 	}
 	resp := &kvrpcpb.ResolveLockResponse{}
 	if len(req.TxnInfos) > 0 {
@@ -476,9 +467,6 @@ func (svr *Server) KvDeleteRange(ctx context.Context, req *kvrpcpb.DeleteRangeRe
 	defer reqCtx.finish()
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.DeleteRangeResponse{RegionError: reqCtx.regErr}, nil
-	}
-	if !isMvccRegion(reqCtx.regCtx) {
-		return &kvrpcpb.DeleteRangeResponse{}, nil
 	}
 	err = svr.mvccStore.dbWriter.DeleteRange(req.StartKey, req.EndKey, reqCtx.regCtx)
 	if err != nil {
@@ -786,8 +774,4 @@ func extractRegionError(err error) *errorpb.Error {
 		return raftError.RequestErr
 	}
 	return nil
-}
-
-func isMvccRegion(regCtx *regionCtx) bool {
-	return true
 }

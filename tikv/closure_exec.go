@@ -521,17 +521,12 @@ func (e *closureExecutor) copyError(err error) error {
 		return nil
 	}
 	var ret error
-	switch x := err.(type) {
+	x := errors.Cause(err)
+	switch y := x.(type) {
 	case *terror.Error:
-		ret = x.ToSQLError()
+		ret = y.ToSQLError()
 	default:
-		e := errors.Cause(err)
-		switch y := e.(type) {
-		case *terror.Error:
-			ret = y.ToSQLError()
-		default:
-			ret = errors.New(err.Error())
-		}
+		ret = errors.New(err.Error())
 	}
 	return ret
 }
