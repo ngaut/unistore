@@ -280,25 +280,18 @@ func toPBError(err error) *tipb.Error {
 		return nil
 	}
 	perr := new(tipb.Error)
-	switch x := err.(type) {
+	e := errors.Cause(err)
+	switch y := e.(type) {
 	case *terror.Error:
-		sqlErr := x.ToSQLError()
-		perr.Code = int32(sqlErr.Code)
-		perr.Msg = sqlErr.Message
+		tmp := y.ToSQLError()
+		perr.Code = int32(tmp.Code)
+		perr.Msg = tmp.Message
+	case *mysql.SQLError:
+		perr.Code = int32(y.Code)
+		perr.Msg = y.Message
 	default:
-		e := errors.Cause(err)
-		switch y := e.(type) {
-		case *terror.Error:
-			tmp := y.ToSQLError()
-			perr.Code = int32(tmp.Code)
-			perr.Msg = tmp.Message
-		case *mysql.SQLError:
-			perr.Code = int32(y.Code)
-			perr.Msg = y.Message
-		default:
-			perr.Code = int32(1)
-			perr.Msg = err.Error()
-		}
+		perr.Code = int32(1)
+		perr.Msg = err.Error()
 	}
 	return perr
 }
