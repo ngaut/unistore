@@ -58,8 +58,8 @@ github.com/chzyer/test v0.0.0-20180213035817-a1ea475d72b1/go.mod h1:Q3SI9o4m/ZMn
 github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDkc90ppPyw=
 github.com/codahale/hdrhistogram v0.0.0-20161010025455-3a0bb77429bd h1:qMd81Ts1T2OTKmB4acZcyKaMtRnY5Y44NuXGX2GFJ1w=
 github.com/codahale/hdrhistogram v0.0.0-20161010025455-3a0bb77429bd/go.mod h1:sE/e/2PUdi/liOCUjSTXgM1o87ZssimdTWN964YiIeI=
-github.com/coocood/badger v1.5.1-0.20200416022742-7ec37e0c6b9a h1:RBg9qee300+trcu1uxihZ6BzB3EfqEtWAAzpFb6M0ZE=
-github.com/coocood/badger v1.5.1-0.20200416022742-7ec37e0c6b9a/go.mod h1:9undH6RrUSFAWSfu0ZsVYcWpkmqTzYatPF6X696aro4=
+github.com/coocood/badger v1.5.1-0.20200513123315-c07e9ab20d9e h1:yGewEnmbivCBMtU86ULayn1kyHmSrXsXE8AD3bQt/+g=
+github.com/coocood/badger v1.5.1-0.20200513123315-c07e9ab20d9e/go.mod h1:9undH6RrUSFAWSfu0ZsVYcWpkmqTzYatPF6X696aro4=
 github.com/coocood/bbloom v0.0.0-20190830030839-58deb6228d64 h1:W1SHiII3e0jVwvaQFglwu3kS9NLxOeTpvik7MbKCyuQ=
 github.com/coocood/bbloom v0.0.0-20190830030839-58deb6228d64/go.mod h1:F86k/6c7aDUdwSUevnLpHS/3Q9hzYCE99jGk2xsHnt0=
 github.com/coocood/rtutil v0.0.0-20190304133409-c84515f646f2 h1:NnLfQ77q0G4k2Of2c1ceQ0ec6MkLQyDp+IGdVM0D8XM=

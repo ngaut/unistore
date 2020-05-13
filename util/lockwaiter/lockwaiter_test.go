@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ngaut/log"
+	"github.com/ngaut/unistore/config"
 	. "github.com/pingcap/check"
 	deadlockPb "github.com/pingcap/kvproto/pkg/deadlock"
 )
@@ -32,7 +33,7 @@ var _ = Suite(&testLockwaiter{})
 type testLockwaiter struct{}
 
 func (t *testLockwaiter) TestLockwaiterBasic(c *C) {
-	mgr := NewManager()
+	mgr := NewManager(&config.DefaultConf)
 
 	keyHash := uint64(100)
 	mgr.NewWaiter(1, 2, keyHash, 10)
@@ -83,7 +84,7 @@ func (t *testLockwaiter) TestLockwaiterBasic(c *C) {
 }
 
 func (t *testLockwaiter) TestLockwaiterConcurrent(c *C) {
-	mgr := NewManager()
+	mgr := NewManager(&config.DefaultConf)
 	wg := &sync.WaitGroup{}
 	endWg := &sync.WaitGroup{}
 	waitForTxn := uint64(100)

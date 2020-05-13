@@ -22,10 +22,11 @@ const (
 	subPathKV   = "kv"
 )
 
-func NewMock(conf *config.Config, clusterID uint64) (*tikv.Server, *tikv.MockRegionManager, *tikv.MockPD, error) {
-	config.SetGlobalConf(conf)
-	log.SetLevelByString(conf.Server.LogLevel)
+func init() {
+	log.SetLevel(log.LOG_LEVEL_INFO)
+}
 
+func NewMock(conf *config.Config, clusterID uint64) (*tikv.Server, *tikv.MockRegionManager, *tikv.MockPD, error) {
 	physical, logical := tikv.GetTS()
 	ts := uint64(physical)<<18 + uint64(logical)
 
@@ -57,8 +58,6 @@ func NewMock(conf *config.Config, clusterID uint64) (*tikv.Server, *tikv.MockReg
 }
 
 func New(conf *config.Config, pdClient pd.Client) (*tikv.Server, error) {
-	config.SetGlobalConf(conf)
-
 	physical, logical, err := pdClient.GetTS(context.Background())
 	if err != nil {
 		return nil, err
@@ -124,11 +123,11 @@ func setupRaftServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient 
 
 	engines := raftstore.NewEngines(bundle, raftDB, kvPath, raftPath)
 
-	innerServer := raftstore.NewRaftInnerServer(engines, raftConf)
+	innerServer := raftstore.NewRaftInnerServer(conf, engines, raftConf)
 	innerServer.Setup(pdClient)
 	router := innerServer.GetRaftstoreRouter()
 	storeMeta := innerServer.GetStoreMeta()
-	store := tikv.NewMVCCStore(bundle, dbPath, safePoint, raftstore.NewDBWriter(router), pdClient)
+	store := tikv.NewMVCCStore(conf, bundle, dbPath, safePoint, raftstore.NewDBWriter(conf, router), pdClient)
 	rm := tikv.NewRaftRegionManager(storeMeta, router, store.DeadlockDetectSvr)
 	innerServer.SetPeerEventObserver(rm)
 
@@ -144,7 +143,7 @@ func setupRaftServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient 
 func setupStandAlongInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, rm tikv.RegionManager, pdClient pd.Client, conf *config.Config) (*tikv.Server, error) {
 	innerServer := tikv.NewStandAlongInnerServer(bundle)
 	innerServer.Setup(pdClient)
-	store := tikv.NewMVCCStore(bundle, conf.Engine.DBPath, safePoint, tikv.NewDBWriter(bundle), pdClient)
+	store := tikv.NewMVCCStore(conf, bundle, conf.Engine.DBPath, safePoint, tikv.NewDBWriter(bundle), pdClient)
 	store.DeadlockDetectSvr.ChangeRole(tikv.Leader)
 
 	if err := innerServer.Start(pdClient); err != nil {
@@ -205,5 +204,6 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*
 		opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
 	}
 	opts.CompactL0WhenClose = conf.CompactL0WhenClose
+	opts.VolatileMode = conf.VolatileMode
 	return badger.Open(opts)
 }

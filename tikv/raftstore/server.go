@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/ngaut/log"
+	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
@@ -29,6 +30,7 @@ import (
 type RaftInnerServer struct {
 	engines       *Engines
 	raftConfig    *Config
+	globalConfig  *config.Config
 	storeMeta     metapb.Store
 	eventObserver PeerEventObserver
 
@@ -81,8 +83,12 @@ func (ris *RaftInnerServer) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
 	return err
 }
 
-func NewRaftInnerServer(engines *Engines, raftConfig *Config) *RaftInnerServer {
-	return &RaftInnerServer{engines: engines, raftConfig: raftConfig}
+func NewRaftInnerServer(globalConfig *config.Config, engines *Engines, raftConfig *Config) *RaftInnerServer {
+	return &RaftInnerServer{
+		engines:      engines,
+		raftConfig:   raftConfig,
+		globalConfig: globalConfig,
+	}
 }
 
 func (ris *RaftInnerServer) Setup(pdClient pd.Client) {
@@ -97,7 +103,7 @@ func (ris *RaftInnerServer) Setup(pdClient pd.Client) {
 	// TODO: create cop endpoint
 
 	cfg := ris.raftConfig
-	router, batchSystem := createRaftBatchSystem(cfg)
+	router, batchSystem := createRaftBatchSystem(ris.globalConfig, cfg)
 
 	ris.router = router // TODO: init with local reader
 	ris.snapManager = NewSnapManager(cfg.SnapPath, router)

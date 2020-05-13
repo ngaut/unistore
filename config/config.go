@@ -73,6 +73,9 @@ type Engine struct {
 	Compression       []string `toml:"compression"` // Compression types for each level
 	IngestCompression string   `toml:"ingest-compression"`
 
+	// Only used in tests.
+	VolatileMode bool
+
 	CompactL0WhenClose bool `toml:"compact-l0-when-close"`
 }
 
@@ -154,14 +157,4 @@ func ParseDuration(durationStr string) time.Duration {
 		log.Fatalf("invalid duration=%v", durationStr)
 	}
 	return dur
-}
-
-var globalConf = DefaultConf
-
-func GetGlobalConf() *Config {
-	return &globalConf
-}
-
-func SetGlobalConf(c *Config) {
-	globalConf = *c
 }

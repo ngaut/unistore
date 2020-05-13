@@ -795,11 +795,13 @@ type regionTaskHandler struct {
 	builderFile *os.File
 	builder     *table.Builder
 
+	conf *config.Config
+
 	tableFiles  []*os.File
 	applyStates []regionApplyState
 }
 
-func newRegionTaskHandler(engines *Engines, mgr *SnapManager, batchSize uint64, cleanStalePeerDelay time.Duration) *regionTaskHandler {
+func newRegionTaskHandler(conf *config.Config, engines *Engines, mgr *SnapManager, batchSize uint64, cleanStalePeerDelay time.Duration) *regionTaskHandler {
 	return &regionTaskHandler{
 		ctx: &snapContext{
 			engiens:             engines,
@@ -822,7 +824,7 @@ func (r *regionTaskHandler) resetBuilder() error {
 	if r.builderFile, err = r.tempFile(); err != nil {
 		return err
 	}
-	compressionType := config.ParseCompression(config.GetGlobalConf().Engine.IngestCompression)
+	compressionType := config.ParseCompression(r.conf.Engine.IngestCompression)
 	if r.builder == nil {
 		r.builder = r.ctx.engiens.kv.DB.NewExternalTableBuilder(r.builderFile, compressionType, r.ctx.mgr.limiter)
 		r.builder.SetIsManaged()
@@ -854,7 +856,7 @@ func (r *regionTaskHandler) handleApplyResult(result ApplyResult) error {
 
 func (r *regionTaskHandler) finishApply() error {
 	log.Infof("apply snapshot ingesting %d tables", len(r.tableFiles))
-	compression := config.ParseCompression(config.GetGlobalConf().Engine.IngestCompression)
+	compression := config.ParseCompression(r.conf.Engine.IngestCompression)
 	externalFiles := make([]badger.ExternalTableSpec, len(r.tableFiles))
 	for i, file := range r.tableFiles {
 		externalFiles[i] = badger.ExternalTableSpec{Compression: compression, Filename: file.Name()}

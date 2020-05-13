@@ -53,6 +53,8 @@ type MVCCStore struct {
 	pdClient  pd.Client
 	closeCh   chan bool
 
+	conf *config.Config
+
 	latestTS          uint64
 	lockWaiterManager *lockwaiter.Manager
 	DeadlockDetectCli *DetectorClient
@@ -60,7 +62,7 @@ type MVCCStore struct {
 }
 
 // NewMVCCStore creates a new MVCCStore
-func NewMVCCStore(bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint,
+func NewMVCCStore(conf *config.Config, bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint,
 	writer mvcc.DBWriter, pdClient pd.Client) *MVCCStore {
 	store := &MVCCStore{
 		db:                bundle.DB,
@@ -70,7 +72,8 @@ func NewMVCCStore(bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint,
 		pdClient:          pdClient,
 		closeCh:           make(chan bool),
 		dbWriter:          writer,
-		lockWaiterManager: lockwaiter.NewManager(),
+		conf:              conf,
+		lockWaiterManager: lockwaiter.NewManager(conf),
 	}
 	store.DeadlockDetectSvr = NewDetectorServer()
 	store.DeadlockDetectCli = NewDetectorClient(store.lockWaiterManager, pdClient)
@@ -435,8 +438,8 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 }
 
 func (store *MVCCStore) normalizeWaitTime(lockWaitTime int64) time.Duration {
-	if lockWaitTime > config.GetGlobalConf().PessimisticTxn.WaitForLockTimeout {
-		lockWaitTime = config.GetGlobalConf().PessimisticTxn.WaitForLockTimeout
+	if lockWaitTime > store.conf.PessimisticTxn.WaitForLockTimeout {
+		lockWaitTime = store.conf.PessimisticTxn.WaitForLockTimeout
 	}
 	return time.Duration(lockWaitTime) * time.Millisecond
 }
@@ -1076,10 +1079,15 @@ func (store *MVCCStore) StartDeadlockDetection(isRaft bool) {
 	}
 
 	go func() {
-		for req := range store.DeadlockDetectCli.sendCh {
-			resp := store.DeadlockDetectSvr.Detect(req)
-			if resp != nil {
-				store.DeadlockDetectCli.waitMgr.WakeUpForDeadlock(resp)
+		for {
+			select {
+			case req := <-store.DeadlockDetectCli.sendCh:
+				resp := store.DeadlockDetectSvr.Detect(req)
+				if resp != nil {
+					store.DeadlockDetectCli.waitMgr.WakeUpForDeadlock(resp)
+				}
+			case <-store.closeCh:
+				return
 			}
 		}
 	}()
