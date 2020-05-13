@@ -177,6 +177,8 @@ func (rm *MockRegionManager) Bootstrap(stores []*metapb.Store, region *metapb.Re
 	regions := make([]*regionCtx, 0, 5)
 	rm.mu.Lock()
 
+	// We must in TiDB's tests if we got more than one store.
+	// So we use the first one to check requests and put others into stores map.
 	rm.storeMeta = stores[0]
 	for _, s := range stores {
 		rm.stores[s.Id] = s
