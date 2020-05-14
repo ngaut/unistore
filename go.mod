@@ -2,7 +2,7 @@ module github.com/ngaut/unistore
 
 require (
 	github.com/BurntSushi/toml v0.3.1
-	github.com/coocood/badger v1.5.1-0.20200513123315-c07e9ab20d9e
+	github.com/coocood/badger v1.5.1-0.20200514084903-87baa3603f95
 	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2
 	github.com/gogo/protobuf v1.3.1
@@ -10,11 +10,11 @@ require (
 	github.com/google/btree v1.0.0
 	github.com/juju/errors v0.0.0-20181118221551-089d3ea4e4d5
 	github.com/juju/testing v0.0.0-20200510222523-6c8c298c77a0 // indirect
-	github.com/ngaut/log v0.0.0-20180314031856-b8e36e7ba5ac
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/pingcap/check v0.0.0-20200212061837-5e12011dc712
 	github.com/pingcap/errors v0.11.5-0.20190809092503-95897b64e011
 	github.com/pingcap/kvproto v0.0.0-20200428135407-0f5ffe459677
+	github.com/pingcap/log v0.0.0-20200511115504-543df19646ad
 	github.com/pingcap/parser v0.0.0-20200507022230-f3bf29096657
 	github.com/pingcap/pd/v4 v4.0.0-rc.1.0.20200422143320-428acd53eba2
 	github.com/pingcap/tidb v1.1.0-beta.0.20200513065557-5a0787dfa915
@@ -25,6 +25,7 @@ require (
 	github.com/stretchr/testify v1.4.0
 	github.com/uber-go/atomic v1.3.2
 	github.com/zhangjinpeng1987/raft v0.0.0-20190624145930-deeb32d6553d
+	go.uber.org/zap v1.14.1
 	golang.org/x/net v0.0.0-20200324143707-d3edc9973b7e
 	golang.org/x/time v0.0.0-20190308202827-9d24e82272b4
 	google.golang.org/grpc v1.25.1

@@ -30,7 +30,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ngaut/log"
+	"github.com/pingcap/log"
+	"go.uber.org/zap"
 )
 
 // Detector detects deadlock.
@@ -171,7 +172,7 @@ func (d *Detector) CleanUpWaitFor(txn, waitForTxn, keyHash uint64) {
 func (d *Detector) activeExpire(nowTime time.Time) {
 	if nowTime.Sub(d.lastActiveExpire) > d.expireInterval &&
 		d.totalSize >= d.urgentSize {
-		log.Infof("detector will do activeExpire, current size=%v", d.totalSize)
+		log.Info("detector will do activeExpire", zap.Uint64("size", d.totalSize))
 		for txn, l := range d.waitForMap {
 			var nextVal *list.Element
 			for cur := l.txns.Front(); cur != nil; cur = nextVal {
@@ -187,6 +188,6 @@ func (d *Detector) activeExpire(nowTime time.Time) {
 			}
 		}
 		d.lastActiveExpire = nowTime
-		log.Infof("detector activeExpire finished, current size=%v", d.totalSize)
+		log.Info("detector activeExpire finished", zap.Uint64("size", d.totalSize))
 	}
 }

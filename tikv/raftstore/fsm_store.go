@@ -25,7 +25,6 @@ import (
 
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/rocksdb"
@@ -35,6 +34,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/pingcap/log"
 )
 
 type storeMeta struct {
@@ -187,7 +187,7 @@ func (d *storeMsgHandler) handleMsg(msg Msg) {
 	switch msg.Type {
 	case MsgTypeStoreRaftMessage:
 		if err := d.onRaftMessage(msg.Data.(*rspb.RaftMessage)); err != nil {
-			log.Errorf("handle raft message failed storeID %d, %v", d.id, err)
+			log.S().Errorf("handle raft message failed storeID %d, %v", d.id, err)
 		}
 	case MsgTypeStoreSnapshotStats:
 		d.storeHeartbeatPD()
@@ -287,7 +287,7 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 			}
 			ctx.peerEventObserver.OnPeerCreate(peer.peer.getEventContext(), region)
 			if localState.State == rspb.PeerState_Merging {
-				log.Infof("region %d is merging", regionID)
+				log.S().Infof("region %d is merging", regionID)
 				mergingCount++
 				peer.setPendingMergeState(localState.MergeState)
 			}
@@ -311,7 +311,7 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 
 	// schedule applying snapshot after raft write batch were written.
 	for _, region := range applyingRegions {
-		log.Infof("region %d is applying snapshot", region.Id)
+		log.S().Infof("region %d is applying snapshot", region.Id)
 		peer, err := createPeerFsm(storeID, ctx.cfg, ctx.regionTaskSender, ctx.engine, region)
 		if err != nil {
 			return nil, err
@@ -321,7 +321,7 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 		meta.regions[region.Id] = region
 		regionPeers = append(regionPeers, peer)
 	}
-	log.Infof("start store %d, region_count %d, tombstone_count %d, applying_count %d, merge_count %d, takes %v",
+	log.S().Infof("start store %d, region_count %d, tombstone_count %d, applying_count %d, merge_count %d, takes %v",
 		storeID, totalCount, tombStoneCount, applyingCount, mergingCount, time.Since(t))
 	return regionPeers, nil
 }
@@ -514,12 +514,12 @@ func (d *storeMsgHandler) checkMsg(msg *rspb.RaftMessage) (bool, error) {
 				return false, nil
 			}
 			meta.pendingVotes = append(meta.pendingVotes, msg)
-			log.Infof("region %d doesn't exist yet, wait for it to be split.", regionID)
+			log.S().Infof("region %d doesn't exist yet, wait for it to be split.", regionID)
 			return true, nil
 		}
 		return false, errors.Errorf("region %d not exists but not tombstone: %s", regionID, localState)
 	}
-	log.Debugf("region %d in tombstone state: %s", regionID, localState)
+	log.S().Debugf("region %d in tombstone state: %s", regionID, localState)
 	region := localState.Region
 	regionEpoch := region.RegionEpoch
 	if localState.MergeState != nil {
@@ -528,7 +528,7 @@ func (d *storeMsgHandler) checkMsg(msg *rspb.RaftMessage) (bool, error) {
 	}
 	// The region in this peer is already destroyed
 	if IsEpochStale(fromEpoch, regionEpoch) {
-		log.Infof("tombstone peer receives a stale message. region_id:%d, from_region_epoch:%s, current_region_epoch:%s, msg_type:%s",
+		log.S().Infof("tombstone peer receives a stale message. region_id:%d, from_region_epoch:%s, current_region_epoch:%s, msg_type:%s",
 			regionID, fromEpoch, regionEpoch, msgType)
 		notExist := findPeer(region, fromStoreID) == nil
 		handleStaleMsg(d.ctx.trans, msg, regionEpoch, isVoteMsg && notExist, nil)
@@ -546,16 +546,16 @@ func (d *storeMsgHandler) onRaftMessage(msg *rspb.RaftMessage) error {
 	if err := d.ctx.router.send(regionID, Msg{Type: MsgTypeRaftMessage, Data: msg}); err == nil {
 		return nil
 	}
-	log.Debugf("handle raft message. from_peer:%d, to_peer:%d, store:%d, region:%d, msg_type:%s",
+	log.S().Debugf("handle raft message. from_peer:%d, to_peer:%d, store:%d, region:%d, msg_type:%s",
 		msg.FromPeer.Id, msg.ToPeer.Id, d.storeFsm.id, regionID, msg.Message.MsgType)
 	if msg.ToPeer.StoreId != d.ctx.store.Id {
-		log.Warnf("store not match, ignore it. store_id:%d, to_store_id:%d, region_id:%d",
+		log.S().Warnf("store not match, ignore it. store_id:%d, to_store_id:%d, region_id:%d",
 			d.ctx.store.Id, msg.ToPeer.StoreId, regionID)
 		return nil
 	}
 
 	if msg.RegionEpoch == nil {
-		log.Errorf("missing region epoch in raft message, ignore it. region_id:%d", regionID)
+		log.S().Errorf("missing region epoch in raft message, ignore it. region_id:%d", regionID)
 		return nil
 	}
 	if msg.IsTombstone || msg.MergeTarget != nil {
@@ -599,7 +599,7 @@ func (d *storeMsgHandler) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage
 		return true, nil
 	}
 	if !isInitialMsg(msg.Message) {
-		log.Debugf("target peer %s doesn't exist", msg.ToPeer)
+		log.S().Debugf("target peer %s doesn't exist", msg.ToPeer)
 		return false, nil
 	}
 
@@ -614,7 +614,7 @@ func (d *storeMsgHandler) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage
 		if bytes.Compare(existRegion.StartKey, msg.EndKey) >= 0 {
 			break
 		}
-		log.Debugf("msg %s is overlapped with exist region %s", msg, existRegion)
+		log.S().Debugf("msg %s is overlapped with exist region %s", msg, existRegion)
 		if isFirstVoteMessage(msg.Message) {
 			meta.pendingVotes = append(meta.pendingVotes, msg)
 		}
@@ -733,7 +733,7 @@ func (d *storeMsgHandler) scheduleGCSnap(regionID uint64, keys []SnapKeyWithSend
 		// The snapshot exists because MsgAppend has been rejected. So the
 		// peer must have been exist. But now it's disconnected, so the peer
 		// has to be destroyed instead of being created.
-		log.Infof("region %d is disconnected, remove snaps %v", regionID, keys)
+		log.S().Infof("region %d is disconnected, remove snaps %v", regionID, keys)
 		for _, pair := range keys {
 			key := pair.SnapKey
 			isSending := pair.IsSending
@@ -755,7 +755,7 @@ func (d *storeMsgHandler) scheduleGCSnap(regionID uint64, keys []SnapKeyWithSend
 
 func (d *storeMsgHandler) onSnapMgrGC() {
 	if err := d.handleSnapMgrGC(); err != nil {
-		log.Errorf("handle snap GC failed store_id %d, err %s", d.storeFsm.id, err)
+		log.S().Errorf("handle snap GC failed store_id %d, err %s", d.storeFsm.id, err)
 	}
 	d.ticker.scheduleStore(StoreTickSnapGC)
 }
@@ -773,7 +773,7 @@ func (d *storeMsgHandler) onComputeHashTick() {
 	if peer == nil {
 		return
 	}
-	log.Infof("schedule consistency check for region %d, store %d", targetRegion.Id, peer.StoreId)
+	log.S().Infof("schedule consistency check for region %d, store %d", targetRegion.Id, peer.StoreId)
 	d.storeFsm.consistencyCheckTime[targetRegion.Id] = time.Now()
 	request := newAdminRequest(targetRegion.Id, peer)
 	request.AdminRequest = &raft_cmdpb.AdminRequest{

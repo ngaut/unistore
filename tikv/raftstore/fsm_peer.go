@@ -21,13 +21,13 @@ import (
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
 	"github.com/coocood/badger/y"
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/zhangjinpeng1987/raft"
 )
@@ -68,7 +68,7 @@ func createPeerFsm(storeID uint64, cfg *Config, sched chan<- task,
 	if metaPeer == nil {
 		return nil, errors.Errorf("find no peer for store %d in region %v", storeID, region)
 	}
-	log.Infof("region %v create peer with ID %d", region, metaPeer.Id)
+	log.S().Infof("region %v create peer with ID %d", region, metaPeer.Id)
 	peer, err := NewPeer(storeID, cfg, engines, region, sched, metaPeer)
 	if err != nil {
 		return nil, err
@@ -85,7 +85,7 @@ func createPeerFsm(storeID uint64, cfg *Config, sched chan<- task,
 func replicatePeerFsm(storeID uint64, cfg *Config, sched chan<- task,
 	engines *Engines, regionID uint64, metaPeer *metapb.Peer) (*peerFsm, error) {
 	// We will remove tombstone key when apply snapshot
-	log.Infof("[region %v] replicates peer with ID %d", regionID, metaPeer.GetId())
+	log.S().Infof("[region %v] replicates peer with ID %d", regionID, metaPeer.GetId())
 	region := &metapb.Region{
 		Id:          regionID,
 		RegionEpoch: &metapb.RegionEpoch{},
@@ -162,7 +162,7 @@ func (d *peerMsgHandler) HandleMsgs(msgs ...Msg) {
 		case MsgTypeRaftMessage:
 			raftMsg := msg.Data.(*rspb.RaftMessage)
 			if err := d.onRaftMsg(raftMsg); err != nil {
-				log.Errorf("%s handle raft message error %v", d.peer.Tag, err)
+				log.S().Errorf("%s handle raft message error %v", d.peer.Tag, err)
 			}
 		case MsgTypeRaftCmd:
 			raftCMD := msg.Data.(*MsgRaftCmd)
@@ -180,7 +180,7 @@ func (d *peerMsgHandler) HandleMsgs(msgs ...Msg) {
 			d.onSignificantMsg(msg.Data.(*MsgSignificant))
 		case MsgTypeSplitRegion:
 			split := msg.Data.(*MsgSplitRegion)
-			log.Infof("%s on split with %v", d.peer.Tag, split.SplitKeys)
+			log.S().Infof("%s on split with %v", d.peer.Tag, split.SplitKeys)
 			d.onPrepareSplitRegion(split.RegionEpoch, split.SplitKeys, split.Callback)
 		case MsgTypeComputeResult:
 			result := msg.Data.(*MsgComputeHashResult)
@@ -265,25 +265,25 @@ func (d *peerMsgHandler) onGCSnap(snaps []SnapKeyWithSending) {
 		if snapKeyWithSending.IsSending {
 			snap, err := d.ctx.snapMgr.GetSnapshotForSending(key)
 			if err != nil {
-				log.Errorf("%s failed to load snapshot for %s %v", d.tag(), key, err)
+				log.S().Errorf("%s failed to load snapshot for %s %v", d.tag(), key, err)
 				continue
 			}
 			if key.Term < compactedTerm || key.Index < compactedIdx {
-				log.Infof("%s snap file %s has been compacted, delete", d.tag(), key)
+				log.S().Infof("%s snap file %s has been compacted, delete", d.tag(), key)
 				d.ctx.snapMgr.DeleteSnapshot(key, snap, false)
 			} else if fi, err1 := snap.Meta(); err1 == nil {
 				modTime := fi.ModTime()
 				if time.Since(modTime) > d.ctx.cfg.SnapGcTimeout {
-					log.Infof("%s snap file %s has been expired, delete", d.tag(), key)
+					log.S().Infof("%s snap file %s has been expired, delete", d.tag(), key)
 					d.ctx.snapMgr.DeleteSnapshot(key, snap, false)
 				}
 			}
 		} else if key.Term <= compactedTerm &&
 			(key.Index < compactedIdx || (key.Index == compactedIdx && !isApplyingSnap)) {
-			log.Infof("%s snap file %s has been applied, delete", d.tag(), key)
+			log.S().Infof("%s snap file %s has been applied, delete", d.tag(), key)
 			a, err := d.ctx.snapMgr.GetSnapshotForApplying(key)
 			if err != nil {
-				log.Errorf("%s failed to load snapshot for %s %v", d.tag(), key, err)
+				log.S().Errorf("%s failed to load snapshot for %s %v", d.tag(), key, err)
 				continue
 			}
 			d.ctx.snapMgr.DeleteSnapshot(key, a, false)
@@ -310,10 +310,10 @@ func (d *peerMsgHandler) reportSnapshotStatus(toPeerID uint64, status raft.Snaps
 	toPeer := d.peer.getPeerFromCache(toPeerID)
 	if toPeer == nil {
 		// If to_peer is gone, ignore this snapshot status
-		log.Warnf("%s peer %d not found, ignore snapshot status %v", d.tag(), toPeerID, status)
+		log.S().Warnf("%s peer %d not found, ignore snapshot status %v", d.tag(), toPeerID, status)
 		return
 	}
-	log.Infof("%s report snapshot status %s %v", d.tag(), toPeer, status)
+	log.S().Infof("%s report snapshot status %s %v", d.tag(), toPeer, status)
 	d.peer.RaftGroup.ReportSnapshot(toPeerID, status)
 }
 
@@ -378,7 +378,7 @@ func (d *peerMsgHandler) onApplyResult(res *applyTaskRes) {
 		y.Assert(res.destroyPeerID == d.peerID())
 		d.destroyPeer(false)
 	} else {
-		log.Debugf("%s async apply finished %v", d.tag(), res)
+		log.S().Debugf("%s async apply finished %v", d.tag(), res)
 		var readyToMerge *uint32
 		readyToMerge, res.execResults = d.onReadyResult(res.merged, res.execResults)
 		if readyToMerge != nil {
@@ -399,7 +399,7 @@ func (d *peerMsgHandler) onApplyResult(res *applyTaskRes) {
 }
 
 func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
-	log.Debugf("%s handle raft message %s from %d to %d",
+	log.S().Debugf("%s handle raft message %s from %d to %d",
 		d.tag(), msg.GetMessage().GetMsgType(), msg.GetFromPeer().GetId(), msg.GetToPeer().GetId())
 	if !d.validateRaftMessage(msg) {
 		return nil
@@ -458,14 +458,14 @@ func (d *peerMsgHandler) validateRaftMessage(msg *rspb.RaftMessage) bool {
 	regionID := msg.GetRegionId()
 	from := msg.GetFromPeer()
 	to := msg.GetToPeer()
-	log.Debugf("[region %d] handle raft message %s from %d to %d", regionID, msg, from.GetId(), to.GetId())
+	log.S().Debugf("[region %d] handle raft message %s from %d to %d", regionID, msg, from.GetId(), to.GetId())
 	if to.GetStoreId() != d.storeID() {
-		log.Warnf("[region %d] store not match, to store id %d, mine %d, ignore it",
+		log.S().Warnf("[region %d] store not match, to store id %d, mine %d, ignore it",
 			regionID, to.GetStoreId(), d.storeID())
 		return false
 	}
 	if msg.RegionEpoch == nil {
-		log.Errorf("[region %d] missing epoch in raft message, ignore it", regionID)
+		log.S().Errorf("[region %d] missing epoch in raft message, ignore it", regionID)
 		return false
 	}
 	return true
@@ -505,11 +505,11 @@ func (d *peerMsgHandler) checkMessage(msg *rspb.RaftMessage) bool {
 	}
 	target := msg.GetToPeer()
 	if target.Id < d.peerID() {
-		log.Infof("%s target peer ID %d is less than %d, msg maybe stale", d.tag(), target.Id, d.peerID())
+		log.S().Infof("%s target peer ID %d is less than %d, msg maybe stale", d.tag(), target.Id, d.peerID())
 		return true
 	} else if target.Id > d.peerID() {
 		if job := d.peer.MaybeDestroy(); job != nil {
-			log.Infof("%s is stale as received a larger peer %s, destroying", d.tag(), target)
+			log.S().Infof("%s is stale as received a larger peer %s, destroying", d.tag(), target)
 			if d.handleDestroyPeer(job) {
 				storeMsg := NewMsg(MsgTypeStoreRaftMessage, msg)
 				d.ctx.router.sendStore(storeMsg)
@@ -528,7 +528,7 @@ func handleStaleMsg(trans Transport, msg *rspb.RaftMessage, curEpoch *metapb.Reg
 	msgType := msg.Message.GetMsgType()
 
 	if !needGC {
-		log.Infof("[region %d] raft message %s is stale, current %v ignore it",
+		log.S().Infof("[region %d] raft message %s is stale, current %v ignore it",
 			regionID, msgType, curEpoch)
 		return
 	}
@@ -544,7 +544,7 @@ func handleStaleMsg(trans Transport, msg *rspb.RaftMessage, curEpoch *metapb.Reg
 		gcMsg.IsTombstone = true
 	}
 	if err := trans.Send(gcMsg); err != nil {
-		log.Errorf("[region %d] send message failed %v", regionID, err)
+		log.S().Errorf("[region %d] send message failed %v", regionID, err)
 	}
 }
 
@@ -558,11 +558,11 @@ func (d *peerMsgHandler) handleGCPeerMsg(msg *rspb.RaftMessage) {
 		return
 	}
 	if !PeerEqual(d.peer.Meta, msg.ToPeer) {
-		log.Infof("%s receive stale gc msg, ignore", d.tag())
+		log.S().Infof("%s receive stale gc msg, ignore", d.tag())
 		return
 	}
 	// TODO: ask pd to guarantee we are stale now.
-	log.Infof("%s peer %s receives gc message, trying to remove", d.tag(), msg.ToPeer)
+	log.S().Infof("%s peer %s receives gc message, trying to remove", d.tag(), msg.ToPeer)
 	if job := d.peer.MaybeDestroy(); job != nil {
 		d.handleDestroyPeer(job)
 	}
@@ -592,7 +592,7 @@ func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) (*SnapKey, error) 
 		}
 	}
 	if !contains {
-		log.Infof("%s %s doesn't contains peer %d, skip", d.tag(), snapRegion, peerID)
+		log.S().Infof("%s %s doesn't contains peer %d, skip", d.tag(), snapRegion, peerID)
 		return &key, nil
 	}
 	var regionsToDestroy []uint64
@@ -605,7 +605,7 @@ func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) (*SnapKey, error) 
 	meta := d.ctx.storeMeta
 	if !RegionEqual(meta.regions[d.regionID()], d.region()) {
 		if !d.peer.isInitialized() {
-			log.Infof("%s stale delegate detected, skip", d.tag())
+			log.S().Infof("%s stale delegate detected, skip", d.tag())
 			return &key, nil
 		} else {
 			panic(fmt.Sprintf("%s meta corrupted %s != %s", d.tag(), meta.regions[d.regionID()], d.region()))
@@ -616,7 +616,7 @@ func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) (*SnapKey, error) 
 			bytes.Compare(region.EndKey, snapRegion.StartKey) > 0 &&
 			// Same region can overlap, we will apply the latest version of snapshot.
 			region.Id != snapRegion.Id {
-			log.Infof("pending region overlapped regionID %d peerID %d region %s snap %s",
+			log.S().Infof("pending region overlapped regionID %d peerID %d region %s snap %s",
 				d.regionID(), d.peerID(), region, snap)
 			return &key, nil
 		}
@@ -633,7 +633,7 @@ func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) (*SnapKey, error) 
 
 	existRegions := d.findOverlapRegions(meta, snapRegion)
 	for _, existRegion := range existRegions {
-		log.Infof("%s region overlapped %s %s", d.tag(), existRegion, snapRegion)
+		log.S().Infof("%s region overlapped %s %s", d.tag(), existRegion, snapRegion)
 		if ready && maybeDestroySource(meta, d.regionID(), existRegion.Id, snapRegion.RegionEpoch) {
 			// The snapshot that we decide to whether destroy peer based on must can be applied.
 			// So here not to destroy peer immediately, or the snapshot maybe dropped in later
@@ -677,7 +677,7 @@ func (d *peerMsgHandler) handleDestroyPeer(job *DestroyPeerJob) bool {
 		d.ctx.applyMsgs.appendMsg(job.RegionId, NewPeerMsg(MsgTypeApplyDestroy, job.RegionId, nil))
 	}
 	if job.AsyncRemove {
-		log.Infof("[region %d] %d is destroyed asynchronously", job.RegionId, job.Peer.Id)
+		log.S().Infof("[region %d] %d is destroyed asynchronously", job.RegionId, job.Peer.Id)
 		return false
 	}
 	d.destroyPeer(false)
@@ -685,7 +685,7 @@ func (d *peerMsgHandler) handleDestroyPeer(job *DestroyPeerJob) bool {
 }
 
 func (d *peerMsgHandler) destroyPeer(mergeByTarget bool) {
-	log.Infof("%s starts destroy [merged_by_target: %v]", d.tag(), mergeByTarget)
+	log.S().Infof("%s starts destroy [merged_by_target: %v]", d.tag(), mergeByTarget)
 	regionID := d.regionID()
 	// We can't destroy a peer which is applying snapshot.
 	y.Assert(!d.peer.IsApplyingSnapshot())
@@ -780,7 +780,7 @@ func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
 	// adding the redundant peer.
 	if d.peer.IsLeader() {
 		// Notify pd immediately.
-		log.Infof("%s notify pd with change peer region %s", d.tag(), d.region())
+		log.S().Infof("%s notify pd with change peer region %s", d.tag(), d.region())
 		d.peer.HeartbeatPd(d.ctx.pdTaskSender)
 	}
 	myPeerID := d.peerID()
@@ -825,7 +825,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 	if isLeader {
 		d.peer.HeartbeatPd(d.ctx.pdTaskSender)
 		// Notify pd immediately to let it update the region meta.
-		log.Infof("%s notify pd with split count %d", d.tag(), len(regions))
+		log.S().Infof("%s notify pd with split count %d", d.tag(), len(regions))
 		// Now pd only uses ReportBatchSplit for history operation show,
 		// so we send it independently here.
 		d.ctx.pdTaskSender <- task{
@@ -853,7 +853,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 		}
 
 		// Insert new regions and validation
-		log.Infof("[region %d] inserts new region %s", regionID, newRegion)
+		log.S().Infof("[region %d] inserts new region %s", regionID, newRegion)
 		if r, ok := meta.regions[newRegionID]; ok {
 			// Suppose a new node is added by conf change and the snapshot comes slowly.
 			// Then, the region splits and the first vote message comes to the new node
@@ -956,13 +956,13 @@ func (d *peerMsgHandler) onReadyApplySnapshot(applyResult *ApplySnapResult) {
 	prevRegion := applyResult.PrevRegion
 	region := applyResult.Region
 
-	log.Infof("%s snapshot for region %s is applied", d.tag(), region)
+	log.S().Infof("%s snapshot for region %s is applied", d.tag(), region)
 	d.ctx.storeMetaLock.Lock()
 	defer d.ctx.storeMetaLock.Unlock()
 	meta := d.ctx.storeMeta
 	initialized := len(prevRegion.Peers) > 0
 	if initialized {
-		log.Infof("%s region changed from %s -> %s after applying snapshot", d.tag(), prevRegion, region)
+		log.S().Infof("%s region changed from %s -> %s after applying snapshot", d.tag(), prevRegion, region)
 		meta.regionRanges.Delete(prevRegion.EndKey)
 	}
 	if !meta.regionRanges.Put(region.EndKey, regionIDToBytes(region.Id)) {
@@ -1070,7 +1070,7 @@ func (d *peerMsgHandler) proposeRaftCommand(rlog raftlog.RaftLog, cb *Callback) 
 	}
 	msg := rlog.GetRaftCmdRequest()
 	if err := d.checkMergeProposal(msg); err != nil {
-		log.Warnf("%s failed to process merge, message %s, err %v", d.tag(), msg, err)
+		log.S().Warnf("%s failed to process merge, message %s, err %v", d.tag(), msg, err)
 		cb.Done(ErrResp(err))
 		return
 	}
@@ -1260,19 +1260,19 @@ func (d *peerMsgHandler) onPrepareSplitRegion(regionEpoch *metapb.RegionEpoch, s
 func (d *peerMsgHandler) validateSplitRegion(epoch *metapb.RegionEpoch, splitKeys [][]byte) error {
 	if len(splitKeys) == 0 {
 		err := errors.Errorf("%s no split key is specified", d.tag())
-		log.Error(err)
+		log.S().Error(err)
 		return err
 	}
 	for _, key := range splitKeys {
 		if len(key) == 0 {
 			err := errors.Errorf("%s split key should not be empty", d.tag())
-			log.Error(err)
+			log.S().Error(err)
 			return err
 		}
 	}
 	if !d.peer.IsLeader() {
 		// region on this store is no longer leader, skipped.
-		log.Infof("%s not leader, skip", d.tag())
+		log.S().Infof("%s not leader, skip", d.tag())
 		return &ErrNotLeader{
 			RegionId: d.regionID(),
 			Leader:   d.peer.getPeerFromCache(d.peer.LeaderId()),
@@ -1286,7 +1286,7 @@ func (d *peerMsgHandler) validateSplitRegion(epoch *metapb.RegionEpoch, splitKey
 	// Here we just need to check `version` because `conf_ver` will be update
 	// to the latest value of the peer, and then send to PD.
 	if latestEpoch.Version != epoch.Version {
-		log.Infof("%s epoch changed, retry later, prev_epoch: %s, epoch %s",
+		log.S().Infof("%s epoch changed, retry later, prev_epoch: %s, epoch %s",
 			d.tag(), latestEpoch, epoch)
 		return &ErrEpochNotMatch{
 			Message: fmt.Sprintf("%s epoch changed %s != %s, retry later", d.tag(), latestEpoch, epoch),
@@ -1310,12 +1310,12 @@ func (d *peerMsgHandler) onCompactionDeclinedBytes(declinedBytes uint64) {
 
 func (d *peerMsgHandler) onScheduleHalfSplitRegion(regionEpoch *metapb.RegionEpoch) {
 	if !d.peer.IsLeader() {
-		log.Warnf("%s not leader, skip", d.tag())
+		log.S().Warnf("%s not leader, skip", d.tag())
 		return
 	}
 	region := d.region()
 	if IsEpochStale(regionEpoch, region.RegionEpoch) {
-		log.Warnf("%s receive a stale halfsplit message", d.tag())
+		log.S().Warnf("%s receive a stale halfsplit message", d.tag())
 		return
 	}
 	d.ctx.splitCheckTaskSender <- task{
@@ -1365,11 +1365,11 @@ func (d *peerMsgHandler) onCheckPeerStaleStateTick() {
 	switch state {
 	case StaleStateValid:
 	case StaleStateLeaderMissing:
-		log.Warnf("%s leader missing longer than abnormal_leader_missing_duration %v",
+		log.S().Warnf("%s leader missing longer than abnormal_leader_missing_duration %v",
 			d.tag(), d.ctx.cfg.AbnormalLeaderMissingDuration)
 	case StaleStateToValidate:
 		// for peer B in case 1 above
-		log.Warnf("%s leader missing longer than max_leader_missing_duration %v. To check with pd whether it's still valid",
+		log.S().Warnf("%s leader missing longer than max_leader_missing_duration %v. To check with pd whether it's still valid",
 			d.tag(), d.ctx.cfg.AbnormalLeaderMissingDuration)
 		d.ctx.pdTaskSender <- task{
 			tp: taskTypePDValidatePeer,
@@ -1383,7 +1383,7 @@ func (d *peerMsgHandler) onCheckPeerStaleStateTick() {
 
 func (d *peerMsgHandler) onReadyComputeHash(region *metapb.Region, index uint64, snap *mvcc.DBSnapshot) {
 	d.peer.ConsistencyState.LastCheckTime = time.Now()
-	log.Infof("%s schedule compute hash task", d.tag())
+	log.S().Infof("%s schedule compute hash task", d.tag())
 	d.ctx.computeHashTaskSender <- task{
 		tp: taskTypeComputeHash,
 		data: &computeHashTask{
@@ -1411,30 +1411,30 @@ func (d *peerMsgHandler) verifyAndStoreHash(expectedIndex uint64, expectedHash [
 	state := d.peer.ConsistencyState
 	index := state.Index
 	if expectedIndex < index {
-		log.Warnf("%s has scheduled a new hash, skip, index: %d, expected_index: %d, ",
+		log.S().Warnf("%s has scheduled a new hash, skip, index: %d, expected_index: %d, ",
 			d.tag(), d.peer.ConsistencyState.Index, expectedIndex)
 		return false
 	}
 	if expectedIndex == index {
 		if len(state.Hash) == 0 {
-			log.Warnf("%s duplicated consistency check detected, skip.", d.tag())
+			log.S().Warnf("%s duplicated consistency check detected, skip.", d.tag())
 			return false
 		}
 		if !bytes.Equal(state.Hash, expectedHash) {
 			panic(fmt.Sprintf("%s hash at %d not correct want %v, got %v",
 				d.tag(), index, expectedHash, state.Hash))
 		}
-		log.Infof("%s consistency check pass, index %d", d.tag(), index)
+		log.S().Infof("%s consistency check pass, index %d", d.tag(), index)
 		state.Hash = nil
 		return false
 	}
 	if state.Index != 0 && len(state.Hash) > 0 {
 		// Maybe computing is too slow or computed result is dropped due to channel full.
 		// If computing is too slow, miss count will be increased twice.
-		log.Warnf("%s hash belongs to wrong index, skip, index: %d, expected_index: %d",
+		log.S().Warnf("%s hash belongs to wrong index, skip, index: %d, expected_index: %d",
 			d.tag(), index, expectedIndex)
 	}
-	log.Infof("%s save hash for consistency check later, index: %d", d.tag(), index)
+	log.S().Infof("%s save hash for consistency check later, index: %d", d.tag(), index)
 	state.Index = expectedIndex
 	state.Hash = expectedHash
 	return true
@@ -1443,7 +1443,7 @@ func (d *peerMsgHandler) verifyAndStoreHash(expectedIndex uint64, expectedHash [
 func maybeDestroySource(meta *storeMeta, targetID, sourceID uint64, epoch *metapb.RegionEpoch) bool {
 	if mergeTargets, ok := meta.pendingMergeTargets[targetID]; ok {
 		if targetEpoch, ok1 := mergeTargets[sourceID]; ok1 {
-			log.Infof("[region %d] checking source %d epoch: %s, merge target epoch: %s",
+			log.S().Infof("[region %d] checking source %d epoch: %s, merge target epoch: %s",
 				targetID, sourceID, epoch, targetEpoch)
 			// The target peer will move on, namely, it will apply a snapshot generated after merge,
 			// so destroy source peer.

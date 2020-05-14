@@ -17,11 +17,11 @@ import (
 	"encoding/binary"
 
 	"github.com/coocood/badger"
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
+	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/util/codec"
 )
 
@@ -57,7 +57,7 @@ func RestoreLockStore(offset uint64, bundle *mvcc.DBBundle, raftDB *badger.DB) e
 		}
 	})
 	if iterCnt > 0 {
-		log.Info("restore lock store iterated", iterCnt, "entries fromm offset", offset)
+		log.S().Info("restore lock store iterated", iterCnt, "entries fromm offset", offset)
 	}
 	if err != nil {
 		return err
@@ -90,7 +90,7 @@ func restoreAppliedEntry(entry *eraftpb.Entry, txn *badger.Txn, lockStore *locks
 		case *rollbackOp:
 		case *raft_cmdpb.DeleteRangeRequest:
 		default:
-			log.Fatalf("invalid input op=%v", x)
+			log.S().Fatalf("invalid input op=%v", x)
 		}
 	}
 	return nil
@@ -125,7 +125,7 @@ func isRaftLogApplied(key []byte, appliedIndices map[uint64]uint64, txn *badger.
 		if err != nil {
 			return false, err
 		}
-		log.Info("region", regionID, "appliedIdx", appliedIdx)
+		log.S().Info("region", regionID, "appliedIdx", appliedIdx)
 		appliedIndices[regionID] = appliedIdx
 	}
 	idx := binary.BigEndian.Uint64(key[11:])
@@ -136,7 +136,7 @@ func loadAppliedIdx(regionID uint64, txn *badger.Txn) (uint64, error) {
 	item, err := txn.Get(ApplyStateKey(regionID))
 	if err != nil {
 		if err == badger.ErrKeyNotFound {
-			log.Info("region", regionID, "applied idx not found")
+			log.S().Info("region", regionID, "applied idx not found")
 			return 0, nil
 		}
 		return 0, err

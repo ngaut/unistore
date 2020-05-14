@@ -20,7 +20,6 @@ import (
 
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
@@ -30,6 +29,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/uber-go/atomic"
 )
@@ -426,7 +426,7 @@ func (ac *applyContext) flush() {
 
 /// Calls the callback of `cmd` when the Region is removed.
 func notifyRegionRemoved(regionID, peerID uint64, cmd pendingCmd) {
-	log.Debugf("region %d is removed, peerID %d, index %d, term %d", regionID, peerID, cmd.index, cmd.term)
+	log.S().Debugf("region %d is removed, peerID %d, index %d, term %d", regionID, peerID, cmd.index, cmd.term)
 	notifyReqRegionRemoved(regionID, cmd.cb)
 }
 
@@ -436,7 +436,7 @@ func notifyReqRegionRemoved(regionID uint64, cb *Callback) {
 
 /// Calls the callback of `cmd` when it can not be processed further.
 func notifyStaleCommand(regionID, peerID, term uint64, cmd pendingCmd) {
-	log.Infof("command is stale, skip. regionID %d, peerID %d, index %d, term %d",
+	log.S().Infof("command is stale, skip. regionID %d, peerID %d, index %d, term %d",
 		regionID, peerID, cmd.index, cmd.term)
 	notifyStaleReq(term, cmd.cb)
 }
@@ -598,7 +598,7 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 		if expectedIndex != entry.Index {
 			// Msg::CatchUpLogs may have arrived before Msg::Apply.
 			if expectedIndex > entry.GetIndex() && a.isMerging {
-				log.Infof("skip log as it's already applied. region_id %d, peer_id %d, index %d",
+				log.S().Infof("skip log as it's already applied. region_id %d, peer_id %d, index %d",
 					a.region.Id, a.id, entry.Index)
 				continue
 			}
@@ -744,7 +744,7 @@ func (a *applier) processRaftCmd(aCtx *applyContext, index, term uint64, rlog ra
 	if result.tp == applyResultTypeWaitMergeResource {
 		return result
 	}
-	log.Debugf("applied command. region_id %d, peer_id %d, index %d", a.region.Id, a.id, index)
+	log.S().Debugf("applied command. region_id %d, peer_id %d, index %d", a.region.Id, a.id, index)
 
 	// TODO: if we have exec_result, maybe we should return this callback too. Outer
 	// store will call it after handing exec result.
@@ -774,9 +774,9 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 		// clear dirty values.
 		aCtx.wb.RollbackToSafePoint()
 		if _, ok := err.(*ErrEpochNotMatch); ok {
-			log.Debugf("epoch not match region_id %d, peer_id %d, err %v", a.region.Id, a.id, err)
+			log.S().Debugf("epoch not match region_id %d, peer_id %d, err %v", a.region.Id, a.id, err)
 		} else {
-			log.Errorf("execute raft command region_id %d, peer_id %d, err %v", a.region.Id, a.id, err)
+			log.S().Errorf("execute raft command region_id %d, peer_id %d, err %v", a.region.Id, a.id, err)
 		}
 		resp = ErrResp(err)
 	}
@@ -852,7 +852,7 @@ func (a *applier) execAdminCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdReques
 	adminReq := req.AdminRequest
 	cmdType := adminReq.CmdType
 	if cmdType != raft_cmdpb.AdminCmdType_CompactLog && cmdType != raft_cmdpb.AdminCmdType_CommitMerge {
-		log.Infof("%s execute admin command. term %d, index %d, command %s",
+		log.S().Infof("%s execute admin command. term %d, index %d, command %s",
 			a.tag, aCtx.execCtx.term, aCtx.execCtx.index, adminReq)
 	}
 	var adminResp *raft_cmdpb.AdminResponse
@@ -911,7 +911,7 @@ func (a *applier) execWriteCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 			a.execDeleteRange(aCtx, x)
 			rangeDeleted = true
 		default:
-			log.Fatalf("invalid input op=%v", x)
+			log.S().Fatalf("invalid input op=%v", x)
 		}
 	}
 	resps := make([]raft_cmdpb.Response, len(requests))
@@ -1079,7 +1079,7 @@ func createWriteCmdOps(requests []*raft_cmdpb.Request) (ops []interface{}) {
 			// Don't panic here in case there are old entries need to be applied.
 			// It's also safe to skip them here, because a restart must have happened,
 			// hence there is no callback to be called.
-			log.Warnf("skip read-only command %s", req)
+			log.S().Warnf("skip read-only command %s", req)
 		default:
 			panic("unreachable")
 		}
@@ -1213,7 +1213,7 @@ func (a *applier) execChangePeer(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	if err != nil {
 		return
 	}
-	log.Infof("%s exec ConfChange, peer_id %d, type %s, epoch %s",
+	log.S().Infof("%s exec ConfChange, peer_id %d, type %s, epoch %s",
 		a.tag, peer.Id, changeType, region.RegionEpoch)
 
 	// TODO: we should need more check, like peer validation, duplicated id, etc.
@@ -1227,7 +1227,7 @@ func (a *applier) execChangePeer(aCtx *applyContext, req *raft_cmdpb.AdminReques
 			if !p.IsLearner || p.Id != peer.Id {
 				errMsg := fmt.Sprintf("%s can't add duplicated peer, peer %s, region %s",
 					a.tag, p, a.region)
-				log.Error(errMsg)
+				log.S().Error(errMsg)
 				err = errors.New(errMsg)
 				return
 			}
@@ -1237,13 +1237,13 @@ func (a *applier) execChangePeer(aCtx *applyContext, req *raft_cmdpb.AdminReques
 			// TODO: Do we allow adding peer in same node?
 			region.Peers = append(region.Peers, peer)
 		}
-		log.Infof("%s add peer successfully, peer %s, region %s", a.tag, peer, a.region)
+		log.S().Infof("%s add peer successfully, peer %s, region %s", a.tag, peer, a.region)
 	case eraftpb.ConfChangeType_RemoveNode:
 		if p := removePeer(region, storeID); p != nil {
 			if !PeerEqual(p, peer) {
 				errMsg := fmt.Sprintf("%s ignore remove unmatched peer, expected_peer %s, got_peer %s",
 					a.tag, peer, p)
-				log.Error(errMsg)
+				log.S().Error(errMsg)
 				err = errors.New(errMsg)
 				return
 			}
@@ -1256,21 +1256,21 @@ func (a *applier) execChangePeer(aCtx *applyContext, req *raft_cmdpb.AdminReques
 		} else {
 			errMsg := fmt.Sprintf("%s removing missing peers, peer %s, region %s",
 				a.tag, peer, a.region)
-			log.Error(errMsg)
+			log.S().Error(errMsg)
 			err = errors.New(errMsg)
 			return
 		}
-		log.Infof("%s remove peer successfully, peer %s, region %s", a.tag, peer, a.region)
+		log.S().Infof("%s remove peer successfully, peer %s, region %s", a.tag, peer, a.region)
 	case eraftpb.ConfChangeType_AddLearnerNode:
 		if findPeer(region, storeID) != nil {
 			errMsg := fmt.Sprintf("%s can't add duplicated learner, peer %s, region %s",
 				a.tag, peer, a.region)
-			log.Error(errMsg)
+			log.S().Error(errMsg)
 			err = errors.New(errMsg)
 			return
 		}
 		region.Peers = append(region.Peers, peer)
-		log.Infof("%s add learner successfully, peer %s, region %s", a.tag, peer, a.region)
+		log.S().Infof("%s add learner successfully, peer %s, region %s", a.tag, peer, a.region)
 	}
 	state := rspb.PeerState_Normal
 	if a.pendingRemove {
@@ -1348,7 +1348,7 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	if err != nil {
 		return
 	}
-	log.Infof("%s split region %s, keys %v", a.tag, a.region, keys)
+	log.S().Infof("%s split region %s, keys %v", a.tag, a.region, keys)
 	derived.RegionEpoch.Version += uint64(newRegionCnt)
 	// Note that the split requests only contain ids for new regions, so we need
 	// to handle new regions and old region separately.
@@ -1416,16 +1416,16 @@ func (a *applier) execCompactLog(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	applyState := &aCtx.execCtx.applyState
 	firstIndex := firstIndex(*applyState)
 	if compactIndex <= firstIndex {
-		log.Debugf("%s compact index <= first index, no need to compact", a.tag)
+		log.S().Debugf("%s compact index <= first index, no need to compact", a.tag)
 		return
 	}
 	if a.isMerging {
-		log.Debugf("%s in merging mode, skip compact", a.tag)
+		log.S().Debugf("%s in merging mode, skip compact", a.tag)
 		return
 	}
 	compactTerm := req.CompactLog.CompactTerm
 	if compactTerm == 0 {
-		log.Infof("%s compact term missing, skip", a.tag)
+		log.S().Infof("%s compact term missing, skip", a.tag)
 		// old format compact log command, safe to ignore.
 		err = errors.New("command format is outdated, please upgrade leader")
 		return
@@ -1473,7 +1473,7 @@ func newApplierFromPeer(peer *peerFsm) *applier {
 
 /// Handles peer registration. When a peer is created, it will register an applier.
 func (a *applier) handleRegistration(reg *registration) {
-	log.Infof("%s re-register to applier, term %d", a.tag, reg.term)
+	log.S().Infof("%s re-register to applier, term %d", a.tag, reg.term)
 	y.Assert(a.id == reg.id)
 	a.term = reg.term
 	a.clearAllCommandsAsStale()
@@ -1540,7 +1540,7 @@ func (a *applier) destroy(aCtx *applyContext) {
 			aCtx.flush()
 		}
 	}
-	log.Infof("%s remove applier", a.tag)
+	log.S().Infof("%s remove applier", a.tag)
 	a.stopped = true
 	for _, cmd := range a.pendingCmds.normals {
 		notifyRegionRemoved(a.region.Id, a.id, cmd)

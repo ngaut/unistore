@@ -19,12 +19,12 @@ import (
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/pd"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/pingcap/log"
 	"github.com/shirou/gopsutil/disk"
 )
 
@@ -66,7 +66,7 @@ func (r *pdTaskHandler) handle(t task) {
 	case taskTypePDDestroyPeer:
 		r.onDestroyPeer(t.data.(*pdDestroyPeerTask))
 	default:
-		log.Error("unsupported task type:", t.tp)
+		log.S().Error("unsupported task type:", t.tp)
 	}
 }
 
@@ -111,7 +111,7 @@ func (r *pdTaskHandler) onRegionHeartbeatResponse(resp *pdpb.RegionHeartbeatResp
 func (r *pdTaskHandler) onAskSplit(t *pdAskSplitTask) {
 	resp, err := r.pdClient.AskSplit(context.TODO(), t.region)
 	if err != nil {
-		log.Error(err)
+		log.S().Error(err)
 		return
 	}
 	aq := &raft_cmdpb.AdminRequest{
@@ -129,7 +129,7 @@ func (r *pdTaskHandler) onAskSplit(t *pdAskSplitTask) {
 func (r *pdTaskHandler) onAskBatchSplit(t *pdAskBatchSplitTask) {
 	resp, err := r.pdClient.AskBatchSplit(context.TODO(), t.region, len(t.splitKeys))
 	if err != nil {
-		log.Error(err)
+		log.S().Error(err)
 		return
 	}
 	srs := make([]*raft_cmdpb.SplitRequest, len(resp.Ids))
@@ -194,7 +194,7 @@ func (r *pdTaskHandler) onHeartbeat(t *pdRegionHeartbeatTask) {
 func (r *pdTaskHandler) onStoreHeartbeat(t *pdStoreHeartbeatTask) {
 	diskStat, err := disk.Usage(t.path)
 	if err != nil {
-		log.Error(err)
+		log.S().Error(err)
 		return
 	}
 
@@ -234,20 +234,20 @@ func (r *pdTaskHandler) onReportBatchSplit(t *pdReportBatchSplitTask) {
 func (r *pdTaskHandler) onValidatePeer(t *pdValidatePeerTask) {
 	resp, _, err := r.pdClient.GetRegionByID(context.TODO(), t.region.GetId())
 	if err != nil {
-		log.Error("get region failed:", err)
+		log.S().Error("get region failed:", err)
 		return
 	}
 	if IsEpochStale(resp.GetRegionEpoch(), t.region.GetRegionEpoch()) {
-		log.Infof("local region epoch is greater than region epoch in PD ignore validate peer. regionID: %v, peerID: %v, localRegionEpoch: %s, pdRegionEpoch: %s", t.region.GetId(), t.peer.GetId(), t.region.GetRegionEpoch(), resp.GetRegionEpoch())
+		log.S().Infof("local region epoch is greater than region epoch in PD ignore validate peer. regionID: %v, peerID: %v, localRegionEpoch: %s, pdRegionEpoch: %s", t.region.GetId(), t.peer.GetId(), t.region.GetRegionEpoch(), resp.GetRegionEpoch())
 		return
 	}
 	for _, peer := range resp.GetPeers() {
 		if peer.GetId() == t.peer.GetId() {
-			log.Infof("peer is still valid a member of region. regionID: %v, peerID: %v, pdRegion: %s", t.region.GetId(), t.peer.GetId(), resp)
+			log.S().Infof("peer is still valid a member of region. regionID: %v, peerID: %v, pdRegion: %s", t.region.GetId(), t.peer.GetId(), resp)
 			return
 		}
 	}
-	log.Infof("peer is not a valid member of region, to be destroyed soon. regionID: %v, peerID: %v, pdRegion: %s", t.region.GetId(), t.peer.GetId(), resp)
+	log.S().Infof("peer is not a valid member of region, to be destroyed soon. regionID: %v, peerID: %v, pdRegion: %s", t.region.GetId(), t.peer.GetId(), resp)
 	if t.mergeSource != nil {
 		r.sendMergeFail(*t.mergeSource, t.peer)
 	} else {

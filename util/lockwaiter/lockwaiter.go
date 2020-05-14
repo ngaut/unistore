@@ -18,9 +18,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/config"
 	"github.com/pingcap/kvproto/pkg/deadlock"
+	"github.com/pingcap/log"
+	"go.uber.org/zap"
 )
 
 // Used for pessimistic lock wait time
@@ -183,7 +184,7 @@ func (lw *Manager) WakeUp(txn, commitTS uint64, keyHashes []uint64) {
 			default:
 			}
 		}
-		log.Debug("wakeup", len(waiters), "txns blocked by txn", txn, " keyHashes=", keyHashes)
+		log.S().Debug("wakeup", len(waiters), "txns blocked by txn", txn, " keyHashes=", keyHashes)
 	}
 	// wake up delay waiters, this will not remove waiter from queue
 	if len(wakeUpDelayWaiters) > 0 {
@@ -224,7 +225,7 @@ func (lw *Manager) WakeUpForDeadlock(resp *deadlock.DeadlockResponse) {
 		for i, curWaiter := range q.waiters {
 			// there should be no duplicated waiters
 			if curWaiter.startTS == resp.Entry.Txn && curWaiter.KeyHash == resp.Entry.KeyHash {
-				log.Infof("deadlock detection response got for entry=%v", resp.Entry)
+				log.Info("deadlock detection response got", zap.Stringer("entry", &resp.Entry))
 				waiter = curWaiter
 				q.waiters = append(q.waiters[:i], q.waiters[i+1:]...)
 				break
@@ -237,7 +238,7 @@ func (lw *Manager) WakeUpForDeadlock(resp *deadlock.DeadlockResponse) {
 	lw.mu.Unlock()
 	if waiter != nil {
 		waiter.ch <- WaitResult{DeadlockResp: resp}
-		log.Infof("wakeup txn=%v blocked by txn=%v because of deadlock, keyHash=%v, deadlockKeyHash=%v",
+		log.S().Infof("wakeup txn=%v blocked by txn=%v because of deadlock, keyHash=%v, deadlockKeyHash=%v",
 			resp.Entry.Txn, resp.Entry.WaitForTxn, resp.Entry.KeyHash, resp.DeadlockKeyHash)
 	}
 }

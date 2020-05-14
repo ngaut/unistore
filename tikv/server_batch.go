@@ -17,8 +17,9 @@ import (
 	"context"
 	"io"
 
-	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
+	"github.com/pingcap/log"
+	"go.uber.org/zap"
 )
 
 type respIDPair struct {
@@ -57,7 +58,7 @@ func (h *batchRequestHandler) start() error {
 	ctx, cancel := context.WithCancel(h.stream.Context())
 	go func() {
 		if err := h.dispatchBatchRequest(ctx); err != nil {
-			log.Warn(err)
+			log.Warn("dispatch batch request failed", zap.Error(err))
 		}
 		close(h.closeCh)
 	}()
@@ -70,7 +71,7 @@ func (h *batchRequestHandler) start() error {
 func (h *batchRequestHandler) handleRequest(id uint64, req *tikvpb.BatchCommandsRequest_Request) {
 	resp, err := h.svr.handleBatchRequest(h.stream.Context(), req)
 	if err != nil {
-		log.Warn(err)
+		log.Warn("handle batch request failed", zap.Error(err))
 		return
 	}
 	h.respCh <- respIDPair{id: id, resp: resp}

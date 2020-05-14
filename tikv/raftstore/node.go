@@ -20,12 +20,12 @@ import (
 
 	"github.com/coocood/badger"
 	"github.com/golang/protobuf/proto"
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/pd"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/util/codec"
 )
 
@@ -79,7 +79,7 @@ func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, sna
 	}
 	newCluster := firstRegion != nil
 	if newCluster {
-		log.Infof("try bootstrap cluster, storeID: %d, region: %s", storeID, firstRegion)
+		log.S().Infof("try bootstrap cluster, storeID: %d, region: %s", storeID, firstRegion)
 		newCluster, err = n.BootstrapCluster(ctx, engines, firstRegion)
 		if err != nil {
 			return err
@@ -95,7 +95,7 @@ func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, sna
 	}
 
 	if newCluster {
-		log.Info("pre-split regions")
+		log.S().Info("pre-split regions")
 		cb := NewCallback()
 		msg := &MsgSplitRegion{
 			RegionEpoch: firstRegion.GetRegionEpoch(),
@@ -191,7 +191,7 @@ func (n *Node) checkClusterBootstrapped(ctx context.Context) (bool, error) {
 		if err == nil {
 			return bootstrapped, nil
 		}
-		log.Warnf("check cluster bootstrapped failed, err: %v", err)
+		log.S().Warnf("check cluster bootstrapped failed, err: %v", err)
 		time.Sleep(time.Second * CheckClusterBootstrapRetrySeconds)
 	}
 	return false, errors.New("check cluster bootstrapped failed")
@@ -202,12 +202,12 @@ func (n *Node) prepareBootstrapCluster(ctx context.Context, engines *Engines, st
 	if err != nil {
 		return nil, err
 	}
-	log.Infof("alloc first region id, regionID: %d, clusterID: %d, storeID: %d", regionID, n.clusterID, storeID)
+	log.S().Infof("alloc first region id, regionID: %d, clusterID: %d, storeID: %d", regionID, n.clusterID, storeID)
 	peerID, err := n.allocID(ctx)
 	if err != nil {
 		return nil, err
 	}
-	log.Infof("alloc first peer id for first region, peerID: %d, regionID: %d", peerID, regionID)
+	log.S().Infof("alloc first peer id for first region, peerID: %d, regionID: %d", peerID, regionID)
 
 	return PrepareBootstrap(engines, storeID, regionID, peerID)
 }
@@ -221,38 +221,38 @@ func (n *Node) BootstrapCluster(ctx context.Context, engines *Engines, firstRegi
 
 		res, err := n.pdClient.Bootstrap(ctx, n.store, firstRegion)
 		if err != nil {
-			log.Errorf("bootstrap cluster failed, clusterID: %d, err: %v", n.clusterID, err)
+			log.S().Errorf("bootstrap cluster failed, clusterID: %d, err: %v", n.clusterID, err)
 			continue
 		}
 		resErr := res.GetHeader().GetError()
 		if resErr == nil {
-			log.Infof("bootstrap cluster ok, clusterID: %d", n.clusterID)
+			log.S().Infof("bootstrap cluster ok, clusterID: %d", n.clusterID)
 			return true, ClearPrepareBootstrapState(engines)
 		}
 		if resErr.GetType() == pdpb.ErrorType_ALREADY_BOOTSTRAPPED {
 			region, _, err := n.pdClient.GetRegion(ctx, []byte{})
 			if err != nil {
-				log.Errorf("get first region failed, err: %v", err)
+				log.S().Errorf("get first region failed, err: %v", err)
 				continue
 			}
 			if region.GetId() == regionID {
 				return false, ClearPrepareBootstrapState(engines)
 			}
-			log.Infof("cluster is already bootstrapped, clusterID: %v", n.clusterID)
+			log.S().Infof("cluster is already bootstrapped, clusterID: %v", n.clusterID)
 			return false, ClearPrepareBootstrap(engines, regionID)
 		}
-		log.Errorf("bootstrap cluster, clusterID: %v, err: %v", n.clusterID, err)
+		log.S().Errorf("bootstrap cluster, clusterID: %v, err: %v", n.clusterID, err)
 	}
 	return false, errors.New("bootstrap cluster failed")
 }
 
 func (n *Node) startNode(engines *Engines, trans Transport, snapMgr *SnapManager, pdWorker *worker) error {
-	log.Infof("start raft store node, storeID: %d", n.store.GetId())
+	log.S().Infof("start raft store node, storeID: %d", n.store.GetId())
 	return n.system.start(n.store, n.cfg, engines, trans, n.pdClient, snapMgr, pdWorker, n.observer)
 }
 
 func (n *Node) stopNode(storeID uint64) {
-	log.Infof("stop raft store thread, storeID: %d", storeID)
+	log.S().Infof("stop raft store thread, storeID: %d", storeID)
 	n.system.shutDown()
 }
 

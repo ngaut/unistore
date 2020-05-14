@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/coocood/badger/options"
-	"github.com/ngaut/log"
+	"github.com/pingcap/log"
 )
 
 type Config struct {
@@ -154,7 +154,7 @@ func ParseDuration(durationStr string) time.Duration {
 		dur, err = time.ParseDuration(durationStr + "s")
 	}
 	if err != nil || dur < 0 {
-		log.Fatalf("invalid duration=%v", durationStr)
+		log.S().Fatalf("invalid duration=%v", durationStr)
 	}
 	return dur
 }

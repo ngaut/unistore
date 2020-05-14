@@ -17,9 +17,9 @@ import (
 	"context"
 	"sync"
 
-	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
+	"github.com/pingcap/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 )

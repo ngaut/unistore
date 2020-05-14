@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ngaut/log"
+	"github.com/pingcap/log"
 )
 
 const (
@@ -270,8 +270,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.RaftElectionTimeoutTicks != 10 {
-		log.Warnf("Election timeout ticks needs to be same across all the cluster, " +
-			"otherwise it may lead to inconsistency.")
+		log.Warn("Election timeout ticks needs to be same across all the cluster, otherwise it may lead to inconsistency.")
 	}
 
 	if c.RaftElectionTimeoutTicks <= c.RaftHeartbeatTicks {
