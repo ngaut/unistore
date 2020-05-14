@@ -17,7 +17,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/ngaut/log"
+	"github.com/pingcap/log"
 )
 
 type arenaAddr uint64
@@ -73,7 +73,7 @@ func newArenaLocator(blockSize int) *arena {
 
 func (a *arena) get(addr arenaAddr, size int) []byte {
 	if addr.blockIdx() >= len(a.blocks) {
-		log.Fatalf("arena.get out of range. len(blocks)=%v, addr.blockIdx()=%v, addr.blockOffset()=%v, size=%v", len(a.blocks), addr.blockIdx(), addr.blockOffset(), size)
+		log.S().Fatalf("arena.get out of range. len(blocks)=%v, addr.blockIdx()=%v, addr.blockOffset()=%v, size=%v", len(a.blocks), addr.blockIdx(), addr.blockOffset(), size)
 	}
 	return a.blocks[addr.blockIdx()].get(addr.blockOffset(), size)
 }

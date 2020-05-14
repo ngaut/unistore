@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/ngaut/unistore/util/lockwaiter"
@@ -31,7 +30,9 @@ import (
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
+	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/kv"
+	"go.uber.org/zap"
 )
 
 var _ tikvpb.TikvServer = new(Server)
@@ -76,13 +77,13 @@ func (svr *Server) Stop() {
 	}
 
 	if err := svr.mvccStore.Close(); err != nil {
-		log.Errorf("close mvcc store failed: %v", err)
+		log.Error("close mvcc store failed", zap.Error(err))
 	}
 	if err := svr.regionManager.Close(); err != nil {
-		log.Errorf("close region manager failed: %v", err)
+		log.Error("close region manager failed", zap.Error(err))
 	}
 	if err := svr.innerServer.Stop(); err != nil {
-		log.Errorf("close inner server failed: %v", err)
+		log.Error("close inner server failed", zap.Error(err))
 	}
 }
 
@@ -244,7 +245,7 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 		return resp, nil
 	}
 	if result.DeadlockResp != nil {
-		log.Errorf("deadlock found for entry=%v", result.DeadlockResp.Entry)
+		log.Error("deadlock found", zap.Stringer("entry", &result.DeadlockResp.Entry))
 		errLocked := err.(*ErrLocked)
 		deadlockErr := &ErrDeadlock{
 			LockKey:         errLocked.Key,
@@ -266,7 +267,7 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 				resp.Errors, resp.RegionError = convertToPBErrors(err)
 				return resp, nil
 			}
-			log.Warnf("wakeup force lock request, try lock still failed err=%v", err)
+			log.Warn("wakeup force lock request, try lock still failed", zap.Error(err))
 		}
 	}
 	// The key is rollbacked, we don't have the exact commitTS, but we can use the server's latest.
@@ -377,7 +378,7 @@ func (svr *Server) KvCleanup(ctx context.Context, req *kvrpcpb.CleanupRequest) (
 	if committed, ok := err.(ErrAlreadyCommitted); ok {
 		resp.CommitVersion = uint64(committed)
 	} else if err != nil {
-		log.Error(err)
+		log.Error("cleanup failed", zap.Error(err))
 		resp.Error, resp.RegionError = convertToPBError(err)
 	}
 	return resp, nil
@@ -439,7 +440,7 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 	resp := &kvrpcpb.ResolveLockResponse{}
 	if len(req.TxnInfos) > 0 {
 		for _, txnInfo := range req.TxnInfos {
-			log.Debugf("kv resolve lock region:%d txn:%v", reqCtx.regCtx.meta.Id, txnInfo.Txn)
+			log.S().Debugf("kv resolve lock region:%d txn:%v", reqCtx.regCtx.meta.Id, txnInfo.Txn)
 			err := svr.mvccStore.ResolveLock(reqCtx, nil, txnInfo.Txn, txnInfo.Status)
 			if err != nil {
 				resp.Error, resp.RegionError = convertToPBError(err)
@@ -447,7 +448,7 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 			}
 		}
 	} else {
-		log.Debugf("kv resolve lock region:%d txn:%v", reqCtx.regCtx.meta.Id, req.StartVersion)
+		log.S().Debugf("kv resolve lock region:%d txn:%v", reqCtx.regCtx.meta.Id, req.StartVersion)
 		err := svr.mvccStore.ResolveLock(reqCtx, req.Keys, req.StartVersion, req.CommitVersion)
 		resp.Error, resp.RegionError = convertToPBError(err)
 	}
@@ -470,7 +471,7 @@ func (svr *Server) KvDeleteRange(ctx context.Context, req *kvrpcpb.DeleteRangeRe
 	}
 	err = svr.mvccStore.dbWriter.DeleteRange(req.StartKey, req.EndKey, reqCtx.regCtx)
 	if err != nil {
-		log.Error(err)
+		log.Error("delete range failed", zap.Error(err))
 	}
 	return &kvrpcpb.DeleteRangeResponse{}, nil
 }
@@ -627,13 +628,13 @@ func (svr *Server) Detect(stream deadlockPb.Deadlock_DetectServer) error {
 			return err
 		}
 		if !svr.mvccStore.DeadlockDetectSvr.IsLeader() {
-			log.Warnf("detection requests received on non leader node")
+			log.Warn("detection requests received on non leader node")
 			break
 		}
 		resp := svr.mvccStore.DeadlockDetectSvr.Detect(req)
 		if resp != nil {
 			if sendErr := stream.Send(resp); sendErr != nil {
-				log.Errorf("send deadlock response failed, error=%v", sendErr)
+				log.Error("send deadlock response failed", zap.Error(sendErr))
 				break
 			}
 		}

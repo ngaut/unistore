@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"os"
 	"sort"
@@ -28,7 +29,6 @@ import (
 	"github.com/coocood/badger"
 	"github.com/dgryski/go-farm"
 	"github.com/juju/errors"
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
@@ -36,11 +36,13 @@ import (
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/util/lockwaiter"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/sessionctx/stmtctx"
 	"github.com/pingcap/tidb/store/tikv/oracle"
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/pingcap/tidb/util/rowcodec"
+	"go.uber.org/zap"
 )
 
 // MVCCStore is a wrapper of badger.DB to provide MVCC functions.
@@ -107,7 +109,7 @@ func (store *MVCCStore) Close() error {
 
 	err := store.dumpMemLocks()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("dump mem locks failed", zap.Error(err))
 	}
 	return nil
 }
@@ -449,7 +451,7 @@ func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isF
 		if lockWaitTime != lockwaiter.LockNoWait {
 			keyHash := farm.Fingerprint64(lock.Key)
 			waitTimeDuration := store.normalizeWaitTime(lockWaitTime)
-			log.Debugf("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
+			log.S().Debugf("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
 			waiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, keyHash, waitTimeDuration)
 			if !isFirstLock {
 				store.DeadlockDetectCli.Detect(startTS, lock.StartTS, keyHash)
@@ -671,7 +673,7 @@ func (store *MVCCStore) buildPrewriteLock(reqCtx *requestCtx, m *kvrpcpb.Mutatio
 		} else {
 			reqCtx.buf, err = encodeFromOldRow(m.Value, reqCtx.buf)
 			if err != nil {
-				log.Errorf("err:%v m.Value:%v m.Key:%q m.Op:%d", err, m.Value, m.Key, m.Op)
+				log.Error("encode data failed", zap.Binary("value", m.Value), zap.Binary("key", m.Key), zap.Stringer("op", m.Op), zap.Error(err))
 				return nil, err
 			}
 		}
@@ -742,13 +744,13 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 			if checkErr == nil {
 				continue
 			}
-			log.Errorf("Commit failed for key=%v startTS=%v, no correspond lock found, lock=%v, error=%v",
-				key, startTS, lock, lockErr)
+			log.Error("commit failed, no correspond lock found",
+				zap.Binary("key", key), zap.Uint64("start ts", startTS), zap.String("lock", fmt.Sprintf("%v", lock)), zap.Error(lockErr))
 			return lockErr
 		}
 		if commitTS < lock.MinCommitTS {
-			log.Infof("trying to commit with smaller commitTs=%v than minCommitTs=%v, key=%v",
-				commitTS, lock.MinCommitTS, key)
+			log.Info("trying to commit with smaller commitTs than minCommitTs",
+				zap.Uint64("commit ts", commitTS), zap.Uint64("min commit ts", lock.MinCommitTS), zap.Binary("key", key))
 			return &ErrCommitExpire{
 				StartTs:     startTS,
 				CommitTs:    commitTS,
@@ -757,7 +759,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 			}
 		}
 		if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
-			log.Warnf("commit a pessimistic lock with Lock type key=%v, startTS=%v, commitTS=%v", key, startTS, commitTS)
+			log.Warn("commit a pessimistic lock with Lock type", zap.Binary("key", key), zap.Uint64("start ts", startTS), zap.Uint64("commit ts", commitTS))
 			lock.Op = uint8(kvrpcpb.Op_Lock)
 		}
 		isPessimisticTxn = lock.ForUpdateTS > 0
@@ -802,7 +804,7 @@ const (
 func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint64) error {
 	sortKeys(keys)
 	hashVals := keysToHashVals(keys...)
-	log.Debugf("%d rollback %v", startTS, hashVals)
+	log.S().Debugf("%d rollback %v", startTS, hashVals)
 	regCtx := reqCtx.regCtx
 	batch := store.dbWriter.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
 
@@ -1065,7 +1067,7 @@ func (store *MVCCStore) UpdateSafePoint(safePoint uint64) {
 	// We use the gcLock to make sure safePoint can only increase.
 	store.db.UpdateSafeTs(safePoint)
 	store.safePoint.UpdateTS(safePoint)
-	log.Infof("safePoint is set to %d(%v)", safePoint, tsToTime(safePoint))
+	log.Info("safePoint is updated to", zap.Uint64("ts", safePoint), zap.Time("time", tsToTime(safePoint)))
 }
 
 func tsToTime(ts uint64) time.Time {
@@ -1203,7 +1205,7 @@ func (store *MVCCStore) runUpdateSafePointLoop() {
 	for {
 		safePoint, err := store.pdClient.GetGCSafePoint(context.Background())
 		if err != nil {
-			log.Error("get GC safePoint error", err)
+			log.Error("get GC safePoint error", zap.Error(err))
 		} else if lastSafePoint < safePoint {
 			store.UpdateSafePoint(safePoint)
 			lastSafePoint = safePoint

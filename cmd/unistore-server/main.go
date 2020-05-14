@@ -29,12 +29,14 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/y"
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/server"
 	"github.com/pingcap/kvproto/pkg/deadlock"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
+	"github.com/pingcap/log"
+	"github.com/zhangjinpeng1987/raft"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 )
@@ -89,31 +91,45 @@ func loadCmdConf(conf *config.Config) {
 	}
 }
 
+type raftLogger struct {
+	*zap.SugaredLogger
+}
+
+func (l raftLogger) Warning(v ...interface{}) {
+	l.Warn(v...)
+}
+func (l raftLogger) Warningf(format string, v ...interface{}) {
+	l.Warnf(format, v...)
+}
+
 func main() {
 	flag.Parse()
 	conf := loadConfig()
 	loadCmdConf(conf)
 	runtime.GOMAXPROCS(conf.Server.MaxProcs)
 	runtime.SetMutexProfileFraction(10)
-	if conf.Server.LogfilePath != "" {
-		err := log.SetOutputByName(conf.Server.LogfilePath)
-		if err != nil {
-			panic(err)
-		}
+	logger, p, err := log.InitLogger(&log.Config{
+		Level: conf.Server.LogLevel,
+		File: log.FileLogConfig{
+			Filename: conf.Server.LogfilePath,
+		},
+	})
+	if err != nil {
+		panic(err)
 	}
-	log.Info("gitHash:", gitHash)
-	log.SetLevelByString(conf.Server.LogLevel)
-	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
-	log.Infof("conf %v", conf)
+	log.ReplaceGlobals(logger, p)
+	raft.SetLogger(raftLogger{logger.Sugar()})
+	log.S().Infof("gitHash: %s", gitHash)
+	log.S().Infof("conf %v", conf)
 
 	pdClient, err := pd.NewClient(strings.Split(conf.Server.PDAddr, ","), "")
 	if err != nil {
-		log.Fatal(err)
+		log.S().Fatal(err)
 	}
 
 	tikvServer, err := server.New(conf, pdClient)
 	if err != nil {
-		log.Fatal(err)
+		log.S().Fatal(err)
 	}
 
 	var alivePolicy = keepalive.EnforcementPolicy{
@@ -132,22 +148,22 @@ func main() {
 	l, err := net.Listen("tcp", listenAddr)
 	deadlock.RegisterDeadlockServer(grpcServer, tikvServer)
 	if err != nil {
-		log.Fatal(err)
+		log.S().Fatal(err)
 	}
 	handleSignal(grpcServer)
 	go func() {
-		log.Infof("listening on %v", conf.Server.StatusAddr)
+		log.S().Infof("listening on %v", conf.Server.StatusAddr)
 		http.HandleFunc("/status", func(writer http.ResponseWriter, request *http.Request) {
 			writer.WriteHeader(http.StatusOK)
 		})
 		err := http.ListenAndServe(conf.Server.StatusAddr, nil)
 		if err != nil {
-			log.Fatal(err)
+			log.S().Fatal(err)
 		}
 	}()
 	err = grpcServer.Serve(l)
 	if err != nil {
-		log.Fatal(err)
+		log.S().Fatal(err)
 	}
 	tikvServer.Stop()
 	log.Info("Server stopped.")
@@ -187,7 +203,7 @@ func handleSignal(grpcServer *grpc.Server) {
 		syscall.SIGQUIT)
 	go func() {
 		sig := <-sigCh
-		log.Infof("Got signal [%s] to exit.", sig)
+		log.S().Infof("Got signal [%s] to exit.", sig)
 		grpcServer.Stop()
 	}()
 }

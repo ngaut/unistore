@@ -27,7 +27,6 @@ import (
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/table"
 	"github.com/coocood/badger/y"
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/dbreader"
@@ -39,7 +38,9 @@ import (
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
+	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/util/codec"
+	"go.uber.org/zap"
 )
 
 type taskType int64
@@ -271,15 +272,15 @@ func (r *splitCheckHandler) handle(t task) {
 	regionId := region.Id
 	_, startKey, err := codec.DecodeBytes(region.StartKey, nil)
 	if err != nil {
-		log.Errorf("failed to decode region key %x, err:%v", region.StartKey, err)
+		log.S().Errorf("failed to decode region key %x, err:%v", region.StartKey, err)
 		return
 	}
 	_, endKey, err := codec.DecodeBytes(region.EndKey, nil)
 	if err != nil {
-		log.Errorf("failed to decode region key %x, err:%v", region.EndKey, err)
+		log.S().Errorf("failed to decode region key %x, err:%v", region.EndKey, err)
 		return
 	}
-	log.Debugf("executing split check task: [regionId: %d, startKey: %s, endKey: %s]", regionId,
+	log.S().Debugf("executing split check task: [regionId: %d, startKey: %s, endKey: %s]", regionId,
 		hex.EncodeToString(startKey), hex.EncodeToString(endKey))
 	txn := r.engine.NewTransaction(false)
 	reader := dbreader.NewDBReader(startKey, endKey, txn)
@@ -307,10 +308,10 @@ func (r *splitCheckHandler) handle(t task) {
 		}
 		err = r.router.send(regionId, msg)
 		if err != nil {
-			log.Warnf("failed to send check result: [regionId: %d, err: %v]", regionId, err)
+			log.Warn("failed to send check result", zap.Uint64("region id", regionId), zap.Error(err))
 		}
 	} else {
-		log.Debugf("no need to send, split key not found: [regionId: %v]", regionId)
+		log.Debug("no need to send, split key not found", zap.Uint64("region id", regionId))
 	}
 }
 
@@ -635,7 +636,7 @@ type snapContext struct {
 // handleGen handles the task of generating snapshot of the Region. It calls `generateSnap` to do the actual work.
 func (snapCtx *snapContext) handleGen(regionId, redoIdx uint64, notifier chan<- *eraftpb.Snapshot) {
 	if err := snapCtx.generateSnap(regionId, redoIdx, notifier); err != nil {
-		log.Errorf("failed to generate snapshot!!!, [regionId: %d, err : %v]", regionId, err)
+		log.Error("failed to generate snapshot!!!", zap.Uint64("region id", regionId), zap.Error(err))
 	}
 }
 
@@ -669,7 +670,7 @@ func (snapCtx *snapContext) cleanUpOriginData(regionState *rspb.RegionLocalState
 
 // applySnap applies snapshot data of the Region.
 func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builder *table.Builder) (ApplyResult, error) {
-	log.Infof("begin apply snap data. [regionId: %d]", regionId)
+	log.Info("begin apply snap data", zap.Uint64("region id", regionId))
 	var result ApplyResult
 	if err := checkAbort(status); err != nil {
 		return result, err
@@ -708,7 +709,7 @@ func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builde
 	regionState.State = rspb.PeerState_Normal
 	result.RegionState = regionState
 
-	log.Infof("applying new data. [regionId: %d, timeTakes: %v]", regionId, time.Now().Sub(t))
+	log.Info("applying new data", zap.Uint64("region id", regionId), zap.Duration("takes", time.Since(t)))
 	return result, nil
 }
 
@@ -720,10 +721,10 @@ func (snapCtx *snapContext) handleApply(regionId uint64, status *JobStatus, buil
 	case nil:
 		atomic.SwapUint32(status, JobStatus_Finished)
 	case applySnapAbortError:
-		log.Warnf("applying snapshot is aborted. [regionId: %d]", regionId)
+		log.Warn("applying snapshot is aborted", zap.Uint64("region id", regionId))
 		y.Assert(atomic.SwapUint32(status, JobStatus_Cancelled) == JobStatus_Cancelling)
 	default:
-		log.Errorf("failed to apply snap!!!. err: %v", err)
+		log.Error("failed to apply snap!!!", zap.Error(err))
 		atomic.SwapUint32(status, JobStatus_Failed)
 	}
 	return result, err
@@ -756,8 +757,8 @@ func (snapCtx *snapContext) insertPendingDeleteRange(regionId uint64, startKey, 
 		return false
 	}
 	snapCtx.cleanUpOverlapRanges(startKey, endKey)
-	log.Infof("register deleting data in range. [regionId: %d, startKey: %s, endKey: %s]", regionId,
-		hex.EncodeToString(startKey), hex.EncodeToString(endKey))
+	log.Info("register deleting data in range",
+		zap.Uint64("region id", regionId), zap.String("start key", hex.EncodeToString(startKey)), zap.String("end key", hex.EncodeToString(endKey)))
 	timeout := time.Now().Add(snapCtx.cleanStalePeerDelay)
 	snapCtx.pendingDeleteRanges.insert(regionId, startKey, endKey, timeout)
 	return true
@@ -767,17 +768,17 @@ func (snapCtx *snapContext) insertPendingDeleteRange(regionId uint64, startKey, 
 func (snapCtx *snapContext) cleanUpRange(regionId uint64, startKey, endKey []byte, useDeleteFiles bool) {
 	if useDeleteFiles {
 		if err := deleteAllFilesInRange(snapCtx.engiens.kv, startKey, endKey); err != nil {
-			log.Errorf("failed to delete files in range, [regionId: %d, startKey: %s, endKey: %s, err: %v]", regionId,
-				hex.EncodeToString(startKey), hex.EncodeToString(endKey), err)
+			log.Error("failed to delete files in range", zap.Uint64("region id", regionId), zap.String("start key",
+				hex.EncodeToString(startKey)), zap.String("end key", hex.EncodeToString(endKey)), zap.Error(err))
 			return
 		}
 	}
 	if err := deleteRange(snapCtx.engiens.kv, startKey, endKey); err != nil {
-		log.Errorf("failed to delete data in range, [regionId: %d, startKey: %s, endKey: %s, err: %v]", regionId,
-			hex.EncodeToString(startKey), hex.EncodeToString(endKey), err)
+		log.Error("failed to delete data in range", zap.Uint64("region id", regionId), zap.String("start key",
+			hex.EncodeToString(startKey)), zap.String("end key", hex.EncodeToString(endKey)), zap.Error(err))
 	} else {
-		log.Infof("succeed in deleting data in range. [regionId: %d, startKey: %s, endKey: %s]", regionId,
-			hex.EncodeToString(startKey), hex.EncodeToString(endKey))
+		log.Info("succeed in deleting data in range", zap.Uint64("region id", regionId), zap.String("start key",
+			hex.EncodeToString(startKey)), zap.String("end key", hex.EncodeToString(endKey)))
 	}
 }
 
@@ -856,7 +857,7 @@ func (r *regionTaskHandler) handleApplyResult(result ApplyResult) error {
 }
 
 func (r *regionTaskHandler) finishApply() error {
-	log.Infof("apply snapshot ingesting %d tables", len(r.tableFiles))
+	log.S().Infof("apply snapshot ingesting %d tables", len(r.tableFiles))
 	compression := config.ParseCompression(r.conf.Engine.IngestCompression)
 	externalFiles := make([]badger.ExternalTableSpec, len(r.tableFiles))
 	for i, file := range r.tableFiles {
@@ -864,7 +865,7 @@ func (r *regionTaskHandler) finishApply() error {
 	}
 	n, err := r.ctx.engiens.kv.DB.IngestExternalFiles(externalFiles)
 	if err != nil {
-		log.Errorf("ingest sst failed (first %d files succeeded): %s", n, err)
+		log.S().Errorf("ingest sst failed (first %d files succeeded): %s", n, err)
 	}
 
 	wb := r.ctx.wb
@@ -882,10 +883,10 @@ func (r *regionTaskHandler) finishApply() error {
 	}
 
 	if err := wb.WriteToKV(r.ctx.engiens.kv); err != nil {
-		log.Errorf("update region status failed: %s", err)
+		log.Error("update region status failed", zap.Error(err))
 	}
 
-	log.Infof("apply snapshot ingested %d tables", len(r.tableFiles))
+	log.S().Infof("apply snapshot ingested %d tables", len(r.tableFiles))
 
 	for _, f := range r.tableFiles {
 		os.Remove(f.Name())
@@ -908,22 +909,22 @@ func (r *regionTaskHandler) handlePendingApplies() {
 		apply := r.pendingApplies[0]
 		r.pendingApplies = r.pendingApplies[1:]
 		if err := r.resetBuilder(); err != nil {
-			log.Error(err)
+			log.S().Error(err)
 			continue
 		}
 
 		task := apply.data.(*regionTask)
 		result, err := r.ctx.handleApply(task.regionId, task.status, r.builder)
 		if err != nil {
-			log.Error(err)
+			log.S().Error(err)
 			continue
 		}
 		if err := r.handleApplyResult(result); err != nil {
-			log.Error(err)
+			log.S().Error(err)
 		}
 	}
 	if err := r.finishApply(); err != nil {
-		log.Error(err)
+		log.S().Error(err)
 	}
 }
 
@@ -988,7 +989,7 @@ func (r *raftLogGCTaskHandler) gcRaftLog(raftDb *badger.DB, regionId, startIdx, 
 	}
 
 	if firstIdx >= endIdx {
-		log.Infof("no need to gc, [regionId: %d]", regionId)
+		log.Info("no need to gc", zap.Uint64("region id", regionId))
 		return 0, nil
 	}
 
@@ -1022,12 +1023,12 @@ func (r *raftLogGCTaskHandler) reportCollected(collected uint64) {
 
 func (r *raftLogGCTaskHandler) handle(t task) {
 	logGcTask := t.data.(*raftLogGCTask)
-	log.Debugf("execute gc log. [regionId: %d, endIndex: %d]", logGcTask.regionID, logGcTask.endIdx)
+	log.Debug("execute gc log", zap.Uint64("region id", logGcTask.regionID), zap.Uint64("end index", logGcTask.endIdx))
 	collected, err := r.gcRaftLog(logGcTask.raftEngine, logGcTask.regionID, logGcTask.startIdx, logGcTask.endIdx)
 	if err != nil {
-		log.Errorf("failed to gc. [regionId: %d, collected: %d, err: %v]", logGcTask.regionID, collected, err)
+		log.Error("failed to gc", zap.Uint64("region id", logGcTask.regionID), zap.Uint64("collected", collected), zap.Error(err))
 	} else {
-		log.Debugf("collected log entries. [regionId: %d, entryCount: %d]", logGcTask.regionID, collected)
+		log.Debug("collected log entries", zap.Uint64("region id", logGcTask.regionID), zap.Uint64("count", collected))
 	}
 	r.reportCollected(collected)
 }

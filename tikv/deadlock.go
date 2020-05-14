@@ -19,12 +19,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/util/lockwaiter"
 	deadlockPb "github.com/pingcap/kvproto/pkg/deadlock"
+	"github.com/pingcap/log"
 )
 
 // Follower will send detection rpc to Leader
@@ -71,7 +72,7 @@ func (dt *DetectorClient) getLeaderAddr() (string, error) {
 	ctx := context.Background()
 	_, leaderPeer, err := dt.pdClient.GetRegion(ctx, []byte{})
 	if err != nil {
-		log.Errorf("get first region failed, err: %v", err)
+		log.Error("get first region failed", zap.Error(err))
 		return "", err
 	}
 	if leaderPeer == nil {
@@ -79,21 +80,21 @@ func (dt *DetectorClient) getLeaderAddr() (string, error) {
 	}
 	leaderStoreMeta, err := dt.pdClient.GetStore(ctx, leaderPeer.GetStoreId())
 	if err != nil {
-		log.Errorf("get store=%d failed, err=%v", leaderPeer.GetStoreId(), err)
+		log.Error("get store failed", zap.Uint64("id", leaderPeer.GetStoreId()), zap.Error(err))
 		return "", err
 	}
-	log.Warnf("getLeaderAddr leader_peer=%v addr=%s", leaderPeer, leaderStoreMeta.GetAddress())
+	log.Warn("getLeaderAddr", zap.Stringer("leader peer", leaderPeer), zap.String("addr", leaderStoreMeta.GetAddress()))
 	return leaderStoreMeta.GetAddress(), nil
 }
 
 // rebuildStreamClient builds connection to the first region leader,
 // it's not thread safe and should be called only by `DetectorClient.Start` or `DetectorClient.SendReqLoop`
 func (dt *DetectorClient) rebuildStreamClient() error {
-	leaderArr, err := dt.getLeaderAddr()
+	leaderAddr, err := dt.getLeaderAddr()
 	if err != nil {
 		return err
 	}
-	cc, err := grpc.Dial(leaderArr, grpc.WithInsecure())
+	cc, err := grpc.Dial(leaderAddr, grpc.WithInsecure())
 	if err != nil {
 		return err
 	}
@@ -107,7 +108,7 @@ func (dt *DetectorClient) rebuildStreamClient() error {
 		cancel()
 		return err
 	}
-	log.Infof("build stream client successfully, leaderAddr=%s", leaderArr)
+	log.Info("build stream client successfully", zap.String("leader addr", leaderAddr))
 	dt.streamCli = stream
 	dt.streamCancel = cancel
 	go dt.recvLoop(dt.streamCli)
@@ -139,7 +140,7 @@ func (dt *DetectorClient) sendReqLoop() {
 		if dt.streamCli == nil {
 			rebuildErr = dt.rebuildStreamClient()
 			if rebuildErr != nil {
-				log.Errorf("rebuild connection to first region failed, err=%v", rebuildErr)
+				log.Error("rebuild connection to first region failed", zap.Error(rebuildErr))
 				time.Sleep(3 * time.Second)
 				continue
 			}
@@ -147,7 +148,7 @@ func (dt *DetectorClient) sendReqLoop() {
 		req = <-dt.sendCh
 		err = dt.streamCli.Send(req)
 		if err != nil {
-			log.Warnf("send err=%v, invalid current stream and try to rebuild connection", err)
+			log.Warn("send failed, invalid current stream and try to rebuild connection", zap.Error(err))
 			dt.streamCancel()
 			dt.streamCli = nil
 		}
@@ -163,7 +164,7 @@ func (dt *DetectorClient) recvLoop(streamCli deadlockPb.Deadlock_DetectClient) {
 	for {
 		resp, err = streamCli.Recv()
 		if err != nil {
-			log.Warnf("recv from failed, err=%v, stop receive", err)
+			log.Warn("recv from failed, stop receive", zap.Error(err))
 			break
 		}
 		// here only detection request will get response from leader

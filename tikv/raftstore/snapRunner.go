@@ -20,10 +20,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ngaut/log"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
+	"github.com/pingcap/log"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 )
@@ -55,7 +56,7 @@ func (r *snapRunner) handle(t task) {
 
 func (r *snapRunner) send(t sendSnapTask) {
 	if n := atomic.LoadInt64(&r.sendingCount); n > int64(r.config.ConcurrentSendSnapLimit) {
-		log.Warnf("too many sending snapshot tasks, drop send snap [to: %v, snap: %v]", t.addr, t.msg)
+		log.Warn("too many sending snapshot tasks, drop send snap", zap.String("to", t.addr), zap.Stringer("snap", t.msg))
 		t.callback(errors.New("too many sending snapshot tasks"))
 		return
 	}
@@ -124,13 +125,13 @@ func (r *snapRunner) sendSnap(addr string, msg *raft_serverpb.RaftMessage) error
 		return err
 	}
 
-	log.Infof("sent snapshot. regionID: %v, snapKey: %v, size: %v, duration: %s", snapKey.RegionID, snapKey, snap.TotalSize(), time.Since(start))
+	log.Info("sent snapshot", zap.Uint64("region id", snapKey.RegionID), zap.Stringer("snap key", snapKey), zap.Uint64("size", snap.TotalSize()), zap.Duration("duration", time.Since(start)))
 	return nil
 }
 
 func (r *snapRunner) recv(t recvSnapTask) {
 	if n := atomic.LoadInt64(&r.receivingCount); n > int64(r.config.ConcurrentRecvSnapLimit) {
-		log.Warnf("too many recving snapshot tasks, ignore")
+		log.Warn("too many recving snapshot tasks, ignore")
 		t.callback(errors.New("too many recving snapshot tasks"))
 		return
 	}
@@ -163,7 +164,7 @@ func (r *snapRunner) recvSnap(stream tikvpb.Tikv_SnapshotServer) (*raft_serverpb
 		return nil, errors.Errorf("%v failed to create snapshot file: %v", snapKey, err)
 	}
 	if snap.Exists() {
-		log.Infof("snapshot file already exists, skip receiving. snapKey: %v, file: %v", snapKey, snap.Path())
+		log.Info("snapshot file already exists, skip receiving", zap.Stringer("snap key", snapKey), zap.String("file", snap.Path()))
 		stream.SendAndClose(&raft_serverpb.Done{})
 		return head.GetMessage(), nil
 	}

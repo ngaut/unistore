@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/config"
 	. "github.com/pingcap/check"
 	deadlockPb "github.com/pingcap/kvproto/pkg/deadlock"
+	"github.com/pingcap/log"
 )
 
 func TestT(t *testing.T) {
@@ -125,10 +125,10 @@ func (t *testLockwaiter) TestLockwaiterConcurrent(c *C) {
 	for i := uint64(0); i < numbers; i++ {
 		keyHashes = keyHashes[:0]
 		if i%2 == 0 {
-			log.Infof("wakeup i=%v", i)
+			log.S().Infof("wakeup i=%v", i)
 			mgr.WakeUp(waitForTxn, commitTs, append(keyHashes, i*10))
 		} else {
-			log.Infof("deadlock wakeup i=%v", i)
+			log.S().Infof("deadlock wakeup i=%v", i)
 			resp.DeadlockKeyHash = deadlockKeyHash
 			resp.Entry.Txn = i
 			resp.Entry.WaitForTxn = waitForTxn

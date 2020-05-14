@@ -20,11 +20,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
+	"github.com/pingcap/log"
+	"go.uber.org/zap"
 )
 
 type RaftInnerServer struct {
@@ -183,7 +184,7 @@ func (dumper *lockStoreDumper) run() {
 				time.Sleep(5 * time.Second)
 				err := dumper.engines.kv.LockStore.DumpToFile(filepath.Join(dumper.engines.kvPath, LockstoreFileName), meta)
 				if err != nil {
-					log.Errorf("dump lock store failed with err %v", err)
+					log.Error("dump lock store failed", zap.Error(err))
 					continue
 				}
 				lastFileNum = currentFileNum

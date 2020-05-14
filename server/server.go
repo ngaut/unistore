@@ -8,7 +8,6 @@ import (
 
 	"github.com/coocood/badger"
 	"github.com/coocood/badger/options"
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
@@ -21,10 +20,6 @@ const (
 	subPathRaft = "raft"
 	subPathKV   = "kv"
 )
-
-func init() {
-	log.SetLevel(log.LOG_LEVEL_INFO)
-}
 
 func NewMock(conf *config.Config, clusterID uint64) (*tikv.Server, *tikv.MockRegionManager, *tikv.MockPD, error) {
 	physical, logical := tikv.GetTS()

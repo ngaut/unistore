@@ -24,13 +24,13 @@ import (
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/pingcap/log"
 	"github.com/zhangjinpeng1987/raft"
 )
 
@@ -405,14 +405,14 @@ func (p *Peer) nextProposalIndex() uint64 {
 /// Tries to destroy itself. Returns a job (if needed) to do more cleaning tasks.
 func (p *Peer) MaybeDestroy() *DestroyPeerJob {
 	if p.PendingRemove {
-		log.Infof("%v is being destroyed, skip", p.Tag)
+		log.S().Infof("%v is being destroyed, skip", p.Tag)
 		return nil
 	}
 	initialized := p.peerStorage.isInitialized()
 	asyncRemove := false
 	if p.IsApplyingSnapshot() {
 		if !p.Store().CancelApplyingSnap() {
-			log.Infof("%v stale peer %v is applying snapshot", p.Tag, p.Meta.Id)
+			log.S().Infof("%v stale peer %v is applying snapshot", p.Tag, p.Meta.Id)
 			return nil
 		}
 		// There is no tasks in apply/local read worker.
@@ -438,7 +438,7 @@ func (p *Peer) MaybeDestroy() *DestroyPeerJob {
 func (p *Peer) Destroy(engine *Engines, keepData bool) error {
 	start := time.Now()
 	region := p.Region()
-	log.Infof("%v begin to destroy", p.Tag)
+	log.S().Infof("%v begin to destroy", p.Tag)
 
 	// Set Tombstone state explicitly
 	kvWB := new(WriteBatch)
@@ -464,7 +464,7 @@ func (p *Peer) Destroy(engine *Engines, keepData bool) error {
 		// If we meet panic when deleting data and raft log, the dirty data
 		// will be cleared by a newer snapshot applying or restart.
 		if err := p.Store().ClearData(); err != nil {
-			log.Errorf("%v failed to schedule clear data task %v", p.Tag, err)
+			log.S().Errorf("%v failed to schedule clear data task %v", p.Tag, err)
 		}
 	}
 
@@ -481,7 +481,7 @@ func (p *Peer) Destroy(engine *Engines, keepData bool) error {
 	}
 	p.applyProposals = nil
 
-	log.Infof("%v destroy itself, takes %v", p.Tag, time.Now().Sub(start))
+	log.S().Infof("%v destroy itself, takes %v", p.Tag, time.Now().Sub(start))
 	return nil
 }
 
@@ -638,7 +638,7 @@ func (p *Peer) CollectPendingPeers() []*metapb.Peer {
 				if _, ok := p.PeersStartPendingTime[id]; !ok {
 					now := time.Now()
 					p.PeersStartPendingTime[id] = now
-					log.Debugf("%v peer %v start pending at %v", p.Tag, id, now)
+					log.S().Debugf("%v peer %v start pending at %v", p.Tag, id, now)
 				}
 			}
 		}
@@ -672,7 +672,7 @@ func (p *Peer) AnyNewPeerCatchUp(peerId uint64) bool {
 			if progress.Match >= truncatedIdx {
 				delete(p.PeersStartPendingTime, peerId)
 				elapsed := time.Since(startPendingTime)
-				log.Debugf("%v peer %v has caught up logs, elapsed: %v", p.Tag, peerId, elapsed)
+				log.S().Debugf("%v peer %v has caught up logs, elapsed: %v", p.Tag, peerId, elapsed)
 				return true
 			}
 		}
@@ -789,7 +789,7 @@ func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, kvWB
 		// If we continue to handle all the messages, it may cause too many messages because
 		// leader will send all the remaining messages to this follower, which can lead
 		// to full message queue under high load.
-		log.Debugf("%v still applying snapshot, skip further handling", p.Tag)
+		log.S().Debugf("%v still applying snapshot, skip further handling", p.Tag)
 		return nil
 	}
 
@@ -797,12 +797,12 @@ func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, kvWB
 		messages := p.pendingMessages
 		p.pendingMessages = nil
 		if err := p.Send(trans, messages); err != nil {
-			log.Warnf("%v clear snapshot pengding messages err: %v", p.Tag, err)
+			log.S().Warnf("%v clear snapshot pengding messages err: %v", p.Tag, err)
 		}
 	}
 
 	if p.HasPendingSnapshot() && !p.ReadyToHandlePendingSnap() {
-		log.Debugf("%v [apply_id: %v, last_applying_idx: %v] is not ready to apply snapshot.", p.Tag, p.Store().AppliedIndex(), p.LastApplyingIdx)
+		log.S().Debugf("%v [apply_id: %v, last_applying_idx: %v] is not ready to apply snapshot.", p.Tag, p.Store().AppliedIndex(), p.LastApplyingIdx)
 		return nil
 	}
 
@@ -818,7 +818,7 @@ func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, kvWB
 		return nil
 	}
 
-	log.Debugf("%v handle raft ready", p.Tag)
+	log.S().Debugf("%v handle raft ready", p.Tag)
 
 	ready := p.RaftGroup.ReadySince(p.LastApplyingIdx)
 	// TODO: workaround for:
@@ -833,7 +833,7 @@ func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, kvWB
 	// For more details, check raft thesis 10.2.1.
 	if p.IsLeader() {
 		if err := p.Send(trans, ready.Messages); err != nil {
-			log.Warnf("%v leader send message err: %v", p.Tag, err)
+			log.S().Warnf("%v leader send message err: %v", p.Tag, err)
 		}
 		ready.Messages = ready.Messages[:0]
 	}
@@ -865,7 +865,7 @@ func (p *Peer) PostRaftReadyPersistent(trans Transport, applyMsgs *applyMsgs, re
 			}
 		}
 		if !PeerEqual(pr, p.Meta) {
-			log.Infof("%v meta changed in applying snapshot, before %v, after %v", p.Tag, p.Meta, pr)
+			log.S().Infof("%v meta changed in applying snapshot, before %v, after %v", p.Tag, p.Meta, pr)
 			p.Meta = pr
 		}
 	}
@@ -876,7 +876,7 @@ func (p *Peer) PostRaftReadyPersistent(trans Transport, applyMsgs *applyMsgs, re
 			ready.Messages = nil
 		} else {
 			if err := p.Send(trans, ready.Messages); err != nil {
-				log.Warnf("%v follower send messages err: %v", p.Tag, err)
+				log.S().Warnf("%v follower send messages err: %v", p.Tag, err)
 			}
 		}
 	}
@@ -969,7 +969,7 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	if toPeer == nil {
 		return fmt.Errorf("failed to lookup recipient peer %v in region %v", msg.To, p.regionId)
 	}
-	log.Debugf("%v, send raft msg %v from %v to %v", p.Tag, msg.MsgType, fromPeer.Id, toPeer.Id)
+	log.S().Debugf("%v, send raft msg %v from %v to %v", p.Tag, msg.MsgType, fromPeer.Id, toPeer.Id)
 
 	sendMsg.FromPeer = &fromPeer
 	sendMsg.ToPeer = toPeer
@@ -1285,12 +1285,12 @@ func (p *Peer) checkConfChange(cfg *Config, cmd *raft_cmdpb.RaftCmdRequest) erro
 	// Check the request itself is valid or not.
 	if (changeType == eraftpb.ConfChangeType_AddNode && peer.IsLearner) ||
 		(changeType == eraftpb.ConfChangeType_AddLearnerNode && !peer.IsLearner) {
-		log.Warnf("%s conf change type: %v, but got peer %v", p.Tag, changeType, peer)
+		log.S().Warnf("%s conf change type: %v, but got peer %v", p.Tag, changeType, peer)
 		return fmt.Errorf("invalid conf change request")
 	}
 
 	if changeType == eraftpb.ConfChangeType_RemoveNode && !cfg.AllowRemoveLeader && peer.Id == p.PeerId() {
-		log.Warnf("%s rejects remove leader request %v", p.Tag, changePeer)
+		log.S().Warnf("%s rejects remove leader request %v", p.Tag, changePeer)
 		return fmt.Errorf("ignore remove leader")
 	}
 
@@ -1331,7 +1331,7 @@ func (p *Peer) checkConfChange(cfg *Config, cmd *raft_cmdpb.RaftCmdRequest) erro
 		return nil
 	}
 
-	log.Infof("%v rejects unsafe conf chagne request %v, total %v, healthy %v, "+
+	log.S().Infof("%v rejects unsafe conf chagne request %v, total %v, healthy %v, "+
 		"quorum after change %v", p.Tag, changePeer, total, healthy, quorumAfterChange)
 
 	return fmt.Errorf("unsafe to perform conf change %v, total %v, healthy %v, quorum after chagne %v",
@@ -1343,7 +1343,7 @@ func Quorum(total int) int {
 }
 
 func (p *Peer) transferLeader(peer *metapb.Peer) {
-	log.Infof("%v transfer leader to %v", p.Tag, peer)
+	log.S().Infof("%v transfer leader to %v", p.Tag, peer)
 
 	p.RaftGroup.TransferLeader(peer.GetId())
 }
@@ -1362,7 +1362,7 @@ func (p *Peer) readyToTransferLeader(cfg *Config, peer *metapb.Peer) bool {
 		}
 	}
 	if p.RecentAddedPeer.Contains(peerId) {
-		log.Debugf("%v reject tranfer leader to %v due to the peer was added recently", p.Tag, peer)
+		log.S().Debugf("%v reject tranfer leader to %v due to the peer was added recently", p.Tag, peer)
 		return false
 	}
 
@@ -1395,7 +1395,7 @@ func (p *Peer) preReadIndex() error {
 func (p *Peer) readIndex(cfg *Config, req *raft_cmdpb.RaftCmdRequest, errResp *raft_cmdpb.RaftCmdResponse, cb *Callback) bool {
 	err := p.preReadIndex()
 	if err != nil {
-		log.Debugf("%v prevents unsafe read index, err: %v", p.Tag, err)
+		log.S().Debugf("%v prevents unsafe read index, err: %v", p.Tag, err)
 		BindRespError(errResp, err)
 		cb.Done(errResp)
 		return false
@@ -1553,13 +1553,13 @@ func (p *Peer) ProposeNormal(cfg *Config, rlog raftlog.RaftLog) (uint64, error) 
 	// TODO: validate request for unexpected changes.
 	ctx, err := p.PrePropose(cfg, rlog)
 	if err != nil {
-		log.Warnf("%v skip proposal: %v", p.Tag, err)
+		log.S().Warnf("%v skip proposal: %v", p.Tag, err)
 		return 0, err
 	}
 	data := rlog.Marshal()
 
 	if uint64(len(data)) > cfg.RaftEntryMaxSize {
-		log.Errorf("entry is too large, entry size %v", len(data))
+		log.S().Errorf("entry is too large, entry size %v", len(data))
 		return 0, &ErrRaftEntryTooLarge{RegionId: p.regionId, EntrySize: uint64(len(data))}
 	}
 
@@ -1587,7 +1587,7 @@ func (p *Peer) ProposeTransferLeader(cfg *Config, req *raft_cmdpb.RaftCmdRequest
 		p.transferLeader(peer)
 		transferred = true
 	} else {
-		log.Infof("%v transfer leader message %v ignored directly", p.Tag, req)
+		log.S().Infof("%v transfer leader message %v ignored directly", p.Tag, req)
 		transferred = false
 	}
 
@@ -1609,7 +1609,7 @@ func (p *Peer) ProposeConfChange(cfg *Config, req *raft_cmdpb.RaftCmdRequest) (u
 	}
 
 	if p.RaftGroup.Raft.PendingConfIndex > p.Store().AppliedIndex() {
-		log.Infof("%v there is a pending conf change, try later", p.Tag)
+		log.S().Infof("%v there is a pending conf change, try later", p.Tag)
 		return 0, fmt.Errorf("%v there is a pending conf change, try later", p.Tag)
 	}
 
@@ -1628,7 +1628,7 @@ func (p *Peer) ProposeConfChange(cfg *Config, req *raft_cmdpb.RaftCmdRequest) (u
 	cc.NodeId = changePeer.Peer.Id
 	cc.Context = data
 
-	log.Infof("%v propose conf change %v peer %v", p.Tag, cc.ChangeType, cc.NodeId)
+	log.S().Infof("%v propose conf change %v peer %v", p.Tag, cc.ChangeType, cc.NodeId)
 
 	proposeIndex := p.nextProposalIndex()
 	var proposalCtx ProposalContext = ProposalContext_SyncLog
@@ -1682,7 +1682,7 @@ func (p *Peer) inspectLease() LeaseState {
 	// nil means now.
 	state := p.leaderLease.Inspect(nil)
 	if state == LeaseState_Expired {
-		log.Debugf("%v leader lease is expired %v", p.Tag, p.leaderLease)
+		log.S().Debugf("%v leader lease is expired %v", p.Tag, p.leaderLease)
 		p.leaderLease.Expire()
 	}
 	return state
@@ -1763,7 +1763,7 @@ func NewReadExecutor(checkEpoch bool) *ReadExecutor {
 func (r *ReadExecutor) Execute(msg *raft_cmdpb.RaftCmdRequest, region *metapb.Region) *raft_cmdpb.RaftCmdResponse {
 	if r.checkEpoch {
 		if err := CheckRegionEpoch(msg, region, true); err != nil {
-			log.Debugf("[region %v] epoch not match, err: %v", region.Id, err)
+			log.S().Debugf("[region %v] epoch not match, err: %v", region.Id, err)
 			return ErrResp(err)
 		}
 	}

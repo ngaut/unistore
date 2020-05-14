@@ -25,9 +25,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ngaut/log"
 	"github.com/pingcap/errors"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/pingcap/log"
 )
 
 type SnapEntry int
@@ -258,14 +258,14 @@ func (sm *SnapManager) GetSnapshotForApplying(snapKey SnapKey) (Snapshot, error)
 }
 
 func (sm *SnapManager) Register(key SnapKey, entry SnapEntry) {
-	log.Debugf("register key:%s, entry:%d", key, entry)
+	log.S().Debugf("register key:%s, entry:%d", key, entry)
 	sm.registryLock.Lock()
 	defer sm.registryLock.Unlock()
 	entries, ok := sm.registry[key]
 	if ok {
 		for _, e := range entries {
 			if e == entry {
-				log.Warnf("%s is registered more than 1 time", key)
+				log.S().Warnf("%s is registered more than 1 time", key)
 				return
 			}
 		}
@@ -276,7 +276,7 @@ func (sm *SnapManager) Register(key SnapKey, entry SnapEntry) {
 }
 
 func (sm *SnapManager) Deregister(key SnapKey, entry SnapEntry) {
-	log.Debugf("deregister key:%s, entry:%s", key, entry)
+	log.S().Debugf("deregister key:%s, entry:%s", key, entry)
 	sm.registryLock.Lock()
 	defer sm.registryLock.Unlock()
 	var handled bool
@@ -299,7 +299,7 @@ func (sm *SnapManager) Deregister(key SnapKey, entry SnapEntry) {
 			return
 		}
 	}
-	log.Warnf("stale deregister key:%s, entry:%s", key, entry)
+	log.S().Warnf("stale deregister key:%s, entry:%s", key, entry)
 }
 
 func (sm *SnapManager) Stats() SnapStats {
@@ -332,13 +332,13 @@ func (sm *SnapManager) DeleteSnapshot(key SnapKey, snapshot Snapshot, checkEntry
 	if checkEntry {
 		if e, ok := sm.registry[key]; ok {
 			if len(e) > 0 {
-				log.Infof("skip to delete %s since it's registered more than 1, registered entries %v",
+				log.S().Infof("skip to delete %s since it's registered more than 1, registered entries %v",
 					snapshot.Path(), e)
 				return false
 			}
 		}
 	} else if _, ok := sm.registry[key]; ok {
-		log.Infof("skip to delete %s since it's registered.", snapshot.Path())
+		log.S().Infof("skip to delete %s since it's registered.", snapshot.Path())
 		return false
 	}
 	snapshot.Delete()

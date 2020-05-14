@@ -22,10 +22,11 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
+	"github.com/pingcap/log"
 	pd "github.com/pingcap/pd/v4/client"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
 
@@ -97,7 +98,7 @@ func NewClient(pdAddrs []string, tag string) (Client, error) {
 			urls = append(urls, "http://"+addr)
 		}
 	}
-	log.Infof("[%s][pd] create pd client with endpoints %v", tag, urls)
+	log.Info("[pd] client created", zap.String("tag", tag), zap.Strings("endpoints", urls))
 
 	c := &client{
 		urls:                     urls,
@@ -125,7 +126,7 @@ func NewClient(pdAddrs []string, tag string) (Client, error) {
 	}
 
 	c.clusterID = members.GetHeader().GetClusterId()
-	log.Infof("[%s][pd] init cluster id %v", tag, c.clusterID)
+	log.Info("[pd] init cluster id", zap.String("tag", tag), zap.Uint64("id", c.clusterID))
 	c.wg.Add(2)
 	go c.checkLeaderLoop()
 	go c.heartbeatStreamLoop()
@@ -157,7 +158,7 @@ func (c *client) checkLeaderLoop() {
 		}
 
 		if _, err := c.updateLeader(); err != nil {
-			log.Errorf("[pd] failed updateLeader, err: %s", err)
+			log.Error("[pd] failed updateLeader", zap.Error(err))
 		}
 	}
 }
@@ -204,7 +205,7 @@ func (c *client) switchLeader(addrs []string) error {
 		return nil
 	}
 
-	log.Infof("[pd] switch leader, new-leader: %s, old-leader: %s", addr, oldLeader)
+	log.Info("[pd] switch leader", zap.String("new leader", addr), zap.String("old leader", oldLeader))
 	if _, err := c.getOrCreateConn(addr); err != nil {
 		return err
 	}
@@ -265,7 +266,7 @@ func (c *client) doRequest(ctx context.Context, f func(context.Context, pdpb.PDC
 		if err == nil {
 			return nil
 		}
-		log.Error(err)
+		log.Error("do request failed", zap.Error(err))
 
 		c.schedulerUpdateLeader()
 		select {
@@ -307,7 +308,7 @@ func (c *client) heartbeatStreamLoop() {
 		go c.receiveRegionHeartbeat(stream, errCh, wg)
 		select {
 		case err := <-errCh:
-			log.Warnf("[%s][pd] heartbeat stream get error: %s ", c.tag, err)
+			log.Warn("[pd] heartbeat stream failed", zap.String("tag", c.tag), zap.Error(err))
 			cancel()
 			c.schedulerUpdateLeader()
 			time.Sleep(retryInterval)

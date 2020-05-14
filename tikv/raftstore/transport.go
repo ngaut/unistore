@@ -16,10 +16,11 @@ package raftstore
 import (
 	"sync"
 
-	"github.com/ngaut/log"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/pingcap/log"
 	"github.com/zhangjinpeng1987/raft"
+	"go.uber.org/zap"
 )
 
 type ServerTransport struct {
@@ -52,11 +53,11 @@ func (t *ServerTransport) SendStore(storeID uint64, msg *raft_serverpb.RaftMessa
 		return
 	}
 	if _, ok := t.resolving.Load(storeID); ok {
-		log.Debugf("store address is being resolved, msg dropped. storeID: %v, msg: %s", storeID, msg)
+		log.Debug("store address is being resolved, msg dropped", zap.Uint64("store id", storeID), zap.Stringer("msg", msg))
 		t.ReportUnreachable(msg)
 		return
 	}
-	log.Debug("begin to resolve store address. storeID: %v", storeID)
+	log.Debug("begin to resolve store address", zap.Uint64("store id", storeID))
 	t.resolving.Store(storeID, struct{}{})
 	t.Resolve(storeID, msg)
 }
@@ -66,7 +67,7 @@ func (t *ServerTransport) Resolve(storeID uint64, msg *raft_serverpb.RaftMessage
 		// clear resolving
 		t.resolving.Delete(storeID)
 		if err != nil {
-			log.Errorf("resolve store address failed. storeID: %v, err: %v", storeID, err)
+			log.Error("resolve store address failed", zap.Uint64("store id", storeID), zap.Error(err))
 			t.ReportUnreachable(msg)
 			return
 		}
@@ -89,7 +90,7 @@ func (t *ServerTransport) WriteData(storeID uint64, addr string, msg *raft_serve
 		return
 	}
 	if err := t.raftClient.Send(storeID, addr, msg); err != nil {
-		log.Errorf("send raft msg err. err: %v", err)
+		log.Error("send raft msg err", zap.Error(err))
 	}
 }
 
@@ -117,13 +118,13 @@ func (t *ServerTransport) ReportSnapshotStatus(msg *raft_serverpb.RaftMessage, s
 	regionID := msg.GetRegionId()
 	toPeerID := msg.GetToPeer().GetId()
 	toStoreID := msg.GetToPeer().GetStoreId()
-	log.Debugf("send snapshot. toPeerID: %v, regionID: %v, status: %v", toPeerID, regionID, status)
+	log.Debug("send snapshot", zap.Uint64("to peer", toPeerID), zap.Uint64("region id", regionID), zap.Int("status", int(status)))
 	if err := t.router.send(regionID, NewMsg(MsgTypeSignificantMsg, &MsgSignificant{
 		Type:           MsgSignificantTypeStatus,
 		ToPeerID:       toPeerID,
 		SnapshotStatus: status,
 	})); err != nil {
-		log.Errorf("report snapshot to peer fails. toPeerID: %v, toStoreID: %v, regionID: %v, err: %v", toPeerID, toStoreID, regionID, err)
+		log.Error("report snapshot to peer fails", zap.Uint64("to peer", toPeerID), zap.Uint64("to store", toStoreID), zap.Uint64("region id", regionID), zap.Error(err))
 	}
 }
 
@@ -139,7 +140,7 @@ func (t *ServerTransport) ReportUnreachable(msg *raft_serverpb.RaftMessage) {
 		Type:     MsgSignificantTypeUnreachable,
 		ToPeerID: toPeerID,
 	})); err != nil {
-		log.Errorf("report peer unreachable failed. regionID: %v, toStoreID: %v, toPeerID: %v, err: %v", regionID, toStoreID, toPeerID, err)
+		log.Error("report peer unreachable failed", zap.Uint64("to peer", toPeerID), zap.Uint64("to store", toStoreID), zap.Uint64("region id", regionID), zap.Error(err))
 	}
 }
 

@@ -19,8 +19,9 @@ import (
 	"io"
 	"os"
 
-	"github.com/ngaut/log"
 	"github.com/pingcap/errors"
+	"github.com/pingcap/log"
+	"go.uber.org/zap"
 )
 
 func (ls *MemStore) LoadFromFile(fileName string) (meta []byte, err error) {
@@ -53,7 +54,7 @@ func (ls *MemStore) LoadFromFile(fileName string) (meta []byte, err error) {
 		cnt++
 		ls.Put(keyBuf, valBuf)
 	}
-	log.Infof("loaded lockstore with %d entries", cnt)
+	log.Info("loaded lockstore", zap.Int("entries", cnt))
 	return meta, nil
 }
 
@@ -124,6 +125,6 @@ func (ls *MemStore) DumpToFile(fileName string, meta []byte) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	log.Infof("dumped lockstore with %d entries", cnt)
+	log.Info("dumped lockstore", zap.Int("entries", cnt))
 	return errors.Trace(os.Rename(tmpFileName, fileName))
 }

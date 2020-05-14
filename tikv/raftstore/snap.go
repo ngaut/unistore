@@ -29,13 +29,13 @@ import (
 	"github.com/coocood/badger/y"
 	"github.com/ngaut/unistore/tikv/mvcc"
 
-	"github.com/ngaut/log"
 	"github.com/ngaut/unistore/rocksdb"
 	"github.com/ngaut/unistore/util"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/pingcap/log"
 )
 
 type CFName = string
@@ -324,9 +324,9 @@ func NewSnap(dir string, key SnapKey, sizeTrack *int64, isSending, toBuild bool,
 			if !toBuild {
 				return nil, err
 			}
-			log.Warnf("failed to load existent snapshot meta when try to build %s: %v", s.Path(), err)
+			log.S().Warnf("failed to load existent snapshot meta when try to build %s: %v", s.Path(), err)
 			if !retryDeleteSnapshot(deleter, key, s) {
-				log.Warnf("failed to delete snapshot %s because it's already registered elsewhere", s.Path())
+				log.S().Warnf("failed to delete snapshot %s because it's already registered elsewhere", s.Path())
 				return nil, err
 			}
 		}
@@ -585,9 +585,9 @@ func (s *Snap) Build(dbSnap *regionSnapshot, region *metapb.Region, snapData *rs
 		if err == nil {
 			return nil
 		}
-		log.Errorf("[region %d] file %s is corrupted, will rebuild: %v", region.Id, s.Path(), err)
+		log.S().Errorf("[region %d] file %s is corrupted, will rebuild: %v", region.Id, s.Path(), err)
 		if !retryDeleteSnapshot(deleter, s.key, s) {
-			log.Errorf("[region %d] failed to delete corrupted snapshot %s because it's already registered elsewhere",
+			log.S().Errorf("[region %d] failed to delete corrupted snapshot %s because it's already registered elsewhere",
 				region.Id, s.Path())
 			return err
 		}
@@ -605,7 +605,7 @@ func (s *Snap) Build(dbSnap *regionSnapshot, region *metapb.Region, snapData *rs
 	if err != nil {
 		return err
 	}
-	log.Infof("region %d scan snapshot %s, key count %d, size %d", region.Id, s.Path(), builder.kvCount, builder.size)
+	log.S().Infof("region %d scan snapshot %s, key count %d, size %d", region.Id, s.Path(), builder.kvCount, builder.size)
 	err = s.saveCFFiles()
 	if err != nil {
 		return err
@@ -643,7 +643,7 @@ func (s *Snap) Exists() bool {
 }
 
 func (s *Snap) Delete() {
-	log.Debugf("deleting %s", s.Path())
+	log.S().Debugf("deleting %s", s.Path())
 	for _, cfFile := range s.CFFiles {
 		_, err := util.DeleteFileIfExists(cfFile.ClonePath)
 		if err != nil {
@@ -691,7 +691,7 @@ func (s *Snap) TotalSize() (total uint64) {
 }
 
 func (s *Snap) Save() error {
-	log.Debugf("saving to %s", s.MetaFile.Path)
+	log.S().Debugf("saving to %s", s.MetaFile.Path)
 	for _, cfFile := range s.CFFiles {
 		if cfFile.Size == 0 {
 			// skip empty cf file.

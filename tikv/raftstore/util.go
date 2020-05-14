@@ -25,11 +25,11 @@ import (
 	"github.com/ngaut/unistore/tikv/mvcc"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/ngaut/log"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
+	"github.com/pingcap/log"
 )
 
 const RaftInvalidIndex uint64 = 0
@@ -354,7 +354,7 @@ func CheckRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, inc
 	// KeyNotInRegion error.
 	if (checkConfVer && fromEpoch.ConfVer != currentEpoch.ConfVer) ||
 		(checkVer && fromEpoch.Version != currentEpoch.Version) {
-		log.Debugf("epoch not match, region id %v, from epoch %v, current epoch %v",
+		log.S().Debugf("epoch not match, region id %v, from epoch %v, current epoch %v",
 			region.Id, fromEpoch, currentEpoch)
 
 		regions := []*metapb.Region{}
