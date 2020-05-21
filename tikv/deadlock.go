@@ -70,20 +70,20 @@ type DetectorClient struct {
 func (dt *DetectorClient) getLeaderAddr() (string, error) {
 	// find first region from pd, get the first region leader
 	ctx := context.Background()
-	_, leaderPeer, err := dt.pdClient.GetRegion(ctx, []byte{})
+	region, err := dt.pdClient.GetRegion(ctx, []byte{})
 	if err != nil {
 		log.Error("get first region failed", zap.Error(err))
 		return "", err
 	}
-	if leaderPeer == nil {
+	if region.Leader == nil {
 		return "", errors.New("no leader")
 	}
-	leaderStoreMeta, err := dt.pdClient.GetStore(ctx, leaderPeer.GetStoreId())
+	leaderStoreMeta, err := dt.pdClient.GetStore(ctx, region.Leader.GetStoreId())
 	if err != nil {
-		log.Error("get store failed", zap.Uint64("id", leaderPeer.GetStoreId()), zap.Error(err))
+		log.Error("get store failed", zap.Uint64("id", region.Leader.GetStoreId()), zap.Error(err))
 		return "", err
 	}
-	log.Warn("getLeaderAddr", zap.Stringer("leader peer", leaderPeer), zap.String("addr", leaderStoreMeta.GetAddress()))
+	log.Warn("getLeaderAddr", zap.Stringer("leader peer", region.Leader), zap.String("addr", leaderStoreMeta.GetAddress()))
 	return leaderStoreMeta.GetAddress(), nil
 }
 

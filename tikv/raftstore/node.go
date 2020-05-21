@@ -230,12 +230,12 @@ func (n *Node) BootstrapCluster(ctx context.Context, engines *Engines, firstRegi
 			return true, ClearPrepareBootstrapState(engines)
 		}
 		if resErr.GetType() == pdpb.ErrorType_ALREADY_BOOTSTRAPPED {
-			region, _, err := n.pdClient.GetRegion(ctx, []byte{})
+			region, err := n.pdClient.GetRegion(ctx, []byte{})
 			if err != nil {
 				log.S().Errorf("get first region failed, err: %v", err)
 				continue
 			}
-			if region.GetId() == regionID {
+			if region.Meta.GetId() == regionID {
 				return false, ClearPrepareBootstrapState(engines)
 			}
 			log.S().Infof("cluster is already bootstrapped, clusterID: %v", n.clusterID)
