@@ -18,7 +18,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
-	pd "github.com/pingcap/pd/v4/client"
+	pdclient "github.com/pingcap/pd/v4/client"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/util/codec"
@@ -562,12 +562,12 @@ func (pd *MockPD) GetStore(ctx context.Context, storeID uint64) (*metapb.Store, 
 	return proto.Clone(pd.rm.stores[storeID]).(*metapb.Store), nil
 }
 
-func (pd *MockPD) GetRegion(ctx context.Context, key []byte) (*pd.Region, error) {
+func (pd *MockPD) GetRegion(ctx context.Context, key []byte) (*pdclient.Region, error) {
 	r, p := pd.rm.GetRegionByKey(key)
-	return &pd.Region{Meta: r, Leader: p}, nil
+	return &pdclient.Region{Meta: r, Leader: p}, nil
 }
 
-func (pd *MockPD) GetRegionByID(ctx context.Context, regionID uint64) (*pd.Region, error) {
+func (pd *MockPD) GetRegionByID(ctx context.Context, regionID uint64) (*pdclient.Region, error) {
 	pd.rm.mu.RLock()
 	defer pd.rm.mu.RUnlock()
 
@@ -575,7 +575,7 @@ func (pd *MockPD) GetRegionByID(ctx context.Context, regionID uint64) (*pd.Regio
 	if r == nil {
 		return nil, nil
 	}
-	return &pd.Region{Meta: proto.Clone(r.meta).(*metapb.Region), Leader: proto.Clone(r.meta.Peers[0]).(*metapb.Peer)}, nil
+	return &pdclient.Region{Meta: proto.Clone(r.meta).(*metapb.Region), Leader: proto.Clone(r.meta.Peers[0]).(*metapb.Peer)}, nil
 }
 
 func (pd *MockPD) ReportRegion(*pdpb.RegionHeartbeatRequest) {}
@@ -640,12 +640,12 @@ func GetTS() (int64, int64) {
 	return tsMu.physicalTS, tsMu.logicalTS
 }
 
-func (pd *MockPD) GetPrevRegion(ctx context.Context, key []byte) (*pd.Region, error) {
+func (pd *MockPD) GetPrevRegion(ctx context.Context, key []byte) (*pdclient.Region, error) {
 	r, p := pd.rm.GetRegionByEndKey(key)
-	return &pd.Region{Meta: r, Leader: p}, nil
+	return &pdclient.Region{Meta: r, Leader: p}, nil
 }
 
-func (pd *MockPD) GetAllStores(ctx context.Context, opts ...pd.GetStoreOption) ([]*metapb.Store, error) {
+func (pd *MockPD) GetAllStores(ctx context.Context, opts ...pdclient.GetStoreOption) ([]*metapb.Store, error) {
 	return pd.rm.GetAllStores(), nil
 }
 

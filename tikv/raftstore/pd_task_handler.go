@@ -232,16 +232,16 @@ func (r *pdTaskHandler) onReportBatchSplit(t *pdReportBatchSplitTask) {
 }
 
 func (r *pdTaskHandler) onValidatePeer(t *pdValidatePeerTask) {
-	resp, _, err := r.pdClient.GetRegionByID(context.TODO(), t.region.GetId())
+	resp, err := r.pdClient.GetRegionByID(context.TODO(), t.region.GetId())
 	if err != nil {
 		log.S().Error("get region failed:", err)
 		return
 	}
-	if IsEpochStale(resp.GetRegionEpoch(), t.region.GetRegionEpoch()) {
-		log.S().Infof("local region epoch is greater than region epoch in PD ignore validate peer. regionID: %v, peerID: %v, localRegionEpoch: %s, pdRegionEpoch: %s", t.region.GetId(), t.peer.GetId(), t.region.GetRegionEpoch(), resp.GetRegionEpoch())
+	if IsEpochStale(resp.Meta.GetRegionEpoch(), t.region.GetRegionEpoch()) {
+		log.S().Infof("local region epoch is greater than region epoch in PD ignore validate peer. regionID: %v, peerID: %v, localRegionEpoch: %s, pdRegionEpoch: %s", t.region.GetId(), t.peer.GetId(), t.region.GetRegionEpoch(), resp.Meta.GetRegionEpoch())
 		return
 	}
-	for _, peer := range resp.GetPeers() {
+	for _, peer := range resp.Meta.GetPeers() {
 		if peer.GetId() == t.peer.GetId() {
 			log.S().Infof("peer is still valid a member of region. regionID: %v, peerID: %v, pdRegion: %s", t.region.GetId(), t.peer.GetId(), resp)
 			return
@@ -251,7 +251,7 @@ func (r *pdTaskHandler) onValidatePeer(t *pdValidatePeerTask) {
 	if t.mergeSource != nil {
 		r.sendMergeFail(*t.mergeSource, t.peer)
 	} else {
-		r.sendDestroyPeer(t.region, t.peer, resp)
+		r.sendDestroyPeer(t.region, t.peer, resp.Meta)
 	}
 }
 
