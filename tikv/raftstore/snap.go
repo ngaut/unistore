@@ -25,7 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/coocood/badger/table"
+	"github.com/coocood/badger/table/sstable"
 	"github.com/coocood/badger/y"
 	"github.com/ngaut/unistore/tikv/mvcc"
 
@@ -108,11 +108,11 @@ type ApplyOptions struct {
 	DBBundle *mvcc.DBBundle
 	Region   *metapb.Region
 	Abort    *uint32
-	Builder  *table.Builder
+	Builder  *sstable.Builder
 	WB       *WriteBatch
 }
 
-func newApplyOptions(db *mvcc.DBBundle, region *metapb.Region, abort *uint32, builder *table.Builder, wb *WriteBatch) *ApplyOptions {
+func newApplyOptions(db *mvcc.DBBundle, region *metapb.Region, abort *uint32, builder *sstable.Builder, wb *WriteBatch) *ApplyOptions {
 	return &ApplyOptions{
 		DBBundle: db,
 		Region:   region,

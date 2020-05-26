@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/coocood/badger"
-	"github.com/coocood/badger/table"
+	"github.com/coocood/badger/table/sstable"
 	"github.com/coocood/badger/y"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/lockstore"
@@ -669,7 +669,7 @@ func (snapCtx *snapContext) cleanUpOriginData(regionState *rspb.RegionLocalState
 }
 
 // applySnap applies snapshot data of the Region.
-func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builder *table.Builder) (ApplyResult, error) {
+func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builder *sstable.Builder) (ApplyResult, error) {
 	log.Info("begin apply snap data", zap.Uint64("region id", regionId))
 	var result ApplyResult
 	if err := checkAbort(status); err != nil {
@@ -714,7 +714,7 @@ func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builde
 }
 
 // handleApply tries to apply the snapshot of the specified Region. It calls `applySnap` to do the actual work.
-func (snapCtx *snapContext) handleApply(regionId uint64, status *JobStatus, builder *table.Builder) (ApplyResult, error) {
+func (snapCtx *snapContext) handleApply(regionId uint64, status *JobStatus, builder *sstable.Builder) (ApplyResult, error) {
 	atomic.CompareAndSwapUint32(status, JobStatus_Pending, JobStatus_Running)
 	result, err := snapCtx.applySnap(regionId, status, builder)
 	switch err.(type) {
@@ -794,7 +794,7 @@ type regionTaskHandler struct {
 	pendingApplies []task
 
 	builderFile *os.File
-	builder     *table.Builder
+	builder     *sstable.Builder
 
 	conf *config.Config
 
@@ -858,10 +858,9 @@ func (r *regionTaskHandler) handleApplyResult(result ApplyResult) error {
 
 func (r *regionTaskHandler) finishApply() error {
 	log.S().Infof("apply snapshot ingesting %d tables", len(r.tableFiles))
-	compression := config.ParseCompression(r.conf.Engine.IngestCompression)
 	externalFiles := make([]badger.ExternalTableSpec, len(r.tableFiles))
 	for i, file := range r.tableFiles {
-		externalFiles[i] = badger.ExternalTableSpec{Compression: compression, Filename: file.Name()}
+		externalFiles[i] = badger.ExternalTableSpec{Filename: file.Name()}
 	}
 	n, err := r.ctx.engiens.kv.DB.IngestExternalFiles(externalFiles)
 	if err != nil {
