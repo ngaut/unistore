@@ -16,43 +16,138 @@ package raftstore
 import (
 	"context"
 	"sync"
+	"time"
 
+	"github.com/ngaut/unistore/pd"
+	"github.com/pingcap/errors"
+	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 )
 
 type raftConn struct {
-	streamMu sync.Mutex
-	stream   tikvpb.Tikv_RaftClient
-	ctx      context.Context
-	cancel   context.CancelFunc
+	msgCh           chan *raft_serverpb.RaftMessage
+	ctx             context.Context
+	cancel          context.CancelFunc
+	nextRetryTime   time.Time
+	lastResolveTime time.Time
+	addr            string
+	storeID         uint64
+	cfg             *Config
+
+	pdCli        pd.Client
+	batch        *tikvpb.BatchRaftMessage
+	stream       tikvpb.Tikv_BatchRaftClient
+	streamCancel context.CancelFunc
 }
 
-func newRaftConn(addr string, cfg *Config) (*raftConn, error) {
+func newRaftConn(storeID uint64, cfg *Config, pdCli pd.Client) *raftConn {
+	ctx, cancel := context.WithCancel(context.Background())
+	rc := &raftConn{
+		msgCh:   make(chan *raft_serverpb.RaftMessage, 256),
+		ctx:     ctx,
+		cancel:  cancel,
+		storeID: storeID,
+		cfg:     cfg,
+		pdCli:   pdCli,
+		batch:   new(tikvpb.BatchRaftMessage),
+	}
+	go rc.runSender()
+	return rc
+}
+
+const maxBatchSize = 128
+
+func (c *raftConn) runSender() {
+	for {
+		select {
+		case msg := <-c.msgCh:
+			c.senderHandleMsg(msg)
+		case <-c.ctx.Done():
+			log.Info("raftConn done")
+			return
+		}
+	}
+}
+
+func (c *raftConn) senderHandleMsg(msg *raft_serverpb.RaftMessage) {
+	c.resetBatchRaftMsg()
+	batch := c.batch
+	batch.Msgs = append(batch.Msgs, msg)
+	chLen := len(c.msgCh)
+	for i := 0; i < chLen && len(batch.Msgs) < maxBatchSize; i++ {
+		batch.Msgs = append(batch.Msgs, <-c.msgCh)
+	}
+	var err error
+	if c.stream == nil {
+		if time.Now().Before(c.nextRetryTime) {
+			// drop the messages directly.
+			return
+		}
+		err = c.newStream()
+		if err != nil {
+			c.nextRetryTime = time.Now().Add(time.Second)
+			log.Warn("failed to create raft stream", zap.Error(err))
+			return
+		}
+		log.Info("new raft stream")
+	}
+	err = c.stream.Send(batch)
+	if err != nil {
+		c.streamCancel()
+		c.stream = nil
+		log.Warn("failed to send batch raft message", zap.Error(err))
+	}
+}
+
+func (c *raftConn) resetBatchRaftMsg() {
+	for i := 0; i < len(c.batch.Msgs); i++ {
+		c.batch.Msgs[i] = nil
+	}
+	c.batch.Msgs = c.batch.Msgs[:0]
+}
+
+const resolveRefreshInterval = time.Second * 60
+
+func (c *raftConn) resolveAddr() (string, error) {
+	if c.addr != "" && time.Since(c.lastResolveTime) < resolveRefreshInterval {
+		return c.addr, nil
+	}
+	addr, err := getStoreAddr(c.storeID, c.pdCli)
+	if err != nil {
+		return "", err
+	}
+	c.addr = addr
+	c.lastResolveTime = time.Now()
+	return c.addr, nil
+}
+
+func (c *raftConn) newStream() error {
+	addr, err := c.resolveAddr()
+	if err != nil {
+		return err
+	}
 	cc, err := grpc.Dial(addr, grpc.WithInsecure(),
-		grpc.WithInitialWindowSize(int32(cfg.GrpcInitialWindowSize)),
+		grpc.WithInitialWindowSize(int32(c.cfg.GrpcInitialWindowSize)),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                cfg.GrpcKeepAliveTime,
-			Timeout:             cfg.GrpcKeepAliveTimeout,
+			Time:                c.cfg.GrpcKeepAliveTime,
+			Timeout:             c.cfg.GrpcKeepAliveTimeout,
 			PermitWithoutStream: true,
 		}))
 	if err != nil {
-		return nil, err
+		return err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	stream, err := tikvpb.NewTikvClient(cc).Raft(ctx)
+	ctx, cancelFunc := context.WithCancel(c.ctx)
+	c.stream, err = tikvpb.NewTikvClient(cc).BatchRaft(ctx)
 	if err != nil {
-		cancel()
-		return nil, err
+		return err
 	}
-	return &raftConn{
-		stream: stream,
-		ctx:    ctx,
-		cancel: cancel,
-	}, nil
+	c.streamCancel = cancelFunc
+	return err
 }
 
 func (c *raftConn) Stop() {
@@ -60,89 +155,77 @@ func (c *raftConn) Stop() {
 }
 
 func (c *raftConn) Send(msg *raft_serverpb.RaftMessage) error {
-	c.streamMu.Lock()
-	defer c.streamMu.Unlock()
-	return c.stream.Send(msg)
+	select {
+	case c.msgCh <- msg:
+		return nil
+	case <-c.ctx.Done():
+		return c.ctx.Err()
+	}
 }
 
 type connKey struct {
-	addr  string
-	index int
+	storeID uint64
+	index   int
 }
 
 type RaftClient struct {
 	config *Config
 	sync.RWMutex
 	conns map[connKey]*raftConn
-	addrs map[uint64]string
+	pdCli pd.Client
 }
 
-func newRaftClient(config *Config) *RaftClient {
+func newRaftClient(config *Config, pdCli pd.Client) *RaftClient {
 	return &RaftClient{
 		config: config,
 		conns:  make(map[connKey]*raftConn),
-		addrs:  make(map[uint64]string),
+		pdCli:  pdCli,
 	}
 }
 
-func (c *RaftClient) getConn(addr string, regionID uint64) (*raftConn, error) {
-	c.RLock()
-	key := connKey{addr, int(regionID % c.config.GrpcRaftConnNum)}
+func (c *RaftClient) getConn(storeID, regionID uint64) *raftConn {
+	key := connKey{storeID, int(regionID % c.config.GrpcRaftConnNum)}
+	c.Lock()
+	defer c.Unlock()
 	conn, ok := c.conns[key]
 	if ok {
-		c.RUnlock()
-		return conn, nil
+		return conn
 	}
-	c.RUnlock()
-	newConn, err := newRaftConn(addr, c.config)
-	if err != nil {
-		return nil, err
-	}
-	c.Lock()
-	defer c.Unlock()
-	if conn, ok := c.conns[key]; ok {
-		newConn.Stop()
-		return conn, nil
-	}
-	c.conns[key] = newConn
-	return newConn, nil
+	conn = newRaftConn(storeID, c.config, c.pdCli)
+	c.conns[key] = conn
+	return conn
 }
 
-func (c *RaftClient) Send(storeID uint64, addr string, msg *raft_serverpb.RaftMessage) error {
-	conn, err := c.getConn(addr, msg.GetRegionId())
-	if err != nil {
-		return err
-	}
-	err = conn.Send(msg)
-	if err == nil {
-		return nil
-	}
-
-	log.Error("raft client failed to send")
-	c.Lock()
-	defer c.Unlock()
-	conn.Stop()
-	key := connKey{addr, int(msg.GetRegionId() % c.config.GrpcRaftConnNum)}
-	delete(c.conns, key)
-	if oldAddr, ok := c.addrs[storeID]; ok && oldAddr == addr {
-		delete(c.addrs, storeID)
-	}
-	return err
-}
-
-func (c *RaftClient) GetAddr(storeID uint64) string {
-	c.RLock()
-	defer c.RUnlock()
-	v, _ := c.addrs[storeID]
-	return v
-}
-
-func (c *RaftClient) InsertAddr(storeID uint64, addr string) {
-	c.Lock()
-	defer c.Unlock()
-	c.addrs[storeID] = addr
+func (c *RaftClient) Send(msg *raft_serverpb.RaftMessage) {
+	storeID := msg.GetToPeer().GetStoreId()
+	conn := c.getConn(storeID, msg.GetRegionId())
+	conn.Send(msg)
 }
 
 func (c *RaftClient) Flush() {
 	// Not support BufferHint
+}
+
+func (c *RaftClient) Stop() {
+	c.Lock()
+	defer c.Unlock()
+	for k, conn := range c.conns {
+		delete(c.conns, k)
+		conn.Stop()
+	}
+}
+
+func getStoreAddr(id uint64, pdCli pd.Client) (string, error) {
+	store, err := pdCli.GetStore(context.TODO(), id)
+	if err != nil {
+		return "", err
+	}
+	if store.GetState() == metapb.StoreState_Tombstone {
+		return "", errors.Errorf("store %d has been removed", id)
+	}
+	addr := store.GetAddress()
+	if addr == "" {
+		return "", errors.Errorf("invalid empty address for store %d", id)
+	}
+	return addr, nil
 }

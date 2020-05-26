@@ -35,14 +35,14 @@ type RaftInnerServer struct {
 	storeMeta     metapb.Store
 	eventObserver PeerEventObserver
 
-	node          *Node
-	snapManager   *SnapManager
-	router        *router
-	batchSystem   *raftBatchSystem
-	pdWorker      *worker
-	resolveWorker *worker
-	snapWorker    *worker
-	lsDumper      *lockStoreDumper
+	node        *Node
+	snapManager *SnapManager
+	router      *router
+	batchSystem *raftBatchSystem
+	pdWorker    *worker
+	snapWorker  *worker
+	lsDumper    *lockStoreDumper
+	raftCli     *RaftClient
 }
 
 func (ris *RaftInnerServer) Raft(stream tikvpb.Tikv_RaftServer) error {
@@ -95,7 +95,6 @@ func NewRaftInnerServer(globalConfig *config.Config, engines *Engines, raftConfi
 func (ris *RaftInnerServer) Setup(pdClient pd.Client) {
 	var wg sync.WaitGroup
 	ris.pdWorker = newWorker("pd-worker", &wg)
-	ris.resolveWorker = newWorker("resolver", &wg)
 	ris.snapWorker = newWorker("snap-worker", &wg)
 
 	// TODO: create local reader
@@ -131,17 +130,14 @@ func (ris *RaftInnerServer) SetPeerEventObserver(ob PeerEventObserver) {
 func (ris *RaftInnerServer) Start(pdClient pd.Client) error {
 	ris.node = NewNode(ris.batchSystem, &ris.storeMeta, ris.raftConfig, pdClient, ris.eventObserver)
 
-	raftClient := newRaftClient(ris.raftConfig)
-	resolveSender := ris.resolveWorker.sender
-	trans := NewServerTransport(raftClient, ris.snapWorker.sender, ris.router, resolveSender)
-
-	resolveRunner := newResolverRunner(pdClient)
-	ris.resolveWorker.start(resolveRunner)
+	raftClient := newRaftClient(ris.raftConfig, pdClient)
+	trans := NewServerTransport(raftClient, ris.snapWorker.sender, ris.router)
 	err := ris.node.Start(context.TODO(), ris.engines, trans, ris.snapManager, ris.pdWorker, ris.router)
 	if err != nil {
 		return err
 	}
-	snapRunner := newSnapRunner(ris.snapManager, ris.raftConfig, ris.router)
+	ris.raftCli = raftClient
+	snapRunner := newSnapRunner(ris.snapManager, ris.raftConfig, ris.router, pdClient)
 	ris.snapWorker.start(snapRunner)
 	go ris.lsDumper.run()
 	return nil
@@ -150,7 +146,7 @@ func (ris *RaftInnerServer) Start(pdClient pd.Client) error {
 func (ris *RaftInnerServer) Stop() error {
 	ris.snapWorker.stop()
 	ris.node.stop()
-	ris.resolveWorker.stop()
+	ris.raftCli.Stop()
 	if err := ris.engines.raft.Close(); err != nil {
 		return err
 	}

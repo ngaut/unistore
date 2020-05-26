@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ngaut/unistore/pd"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
@@ -35,13 +36,15 @@ type snapRunner struct {
 	router         *router
 	sendingCount   int64
 	receivingCount int64
+	pdCli          pd.Client
 }
 
-func newSnapRunner(snapManager *SnapManager, config *Config, router *router) *snapRunner {
+func newSnapRunner(snapManager *SnapManager, config *Config, router *router, pdCli pd.Client) *snapRunner {
 	return &snapRunner{
 		config:      config,
 		snapManager: snapManager,
 		router:      router,
+		pdCli:       pdCli,
 	}
 }
 
@@ -56,19 +59,19 @@ func (r *snapRunner) handle(t task) {
 
 func (r *snapRunner) send(t sendSnapTask) {
 	if n := atomic.LoadInt64(&r.sendingCount); n > int64(r.config.ConcurrentSendSnapLimit) {
-		log.Warn("too many sending snapshot tasks, drop send snap", zap.String("to", t.addr), zap.Stringer("snap", t.msg))
+		log.Warn("too many sending snapshot tasks, drop send snap", zap.Uint64("to", t.storeID), zap.Stringer("snap", t.msg))
 		t.callback(errors.New("too many sending snapshot tasks"))
 		return
 	}
 
 	atomic.AddInt64(&r.sendingCount, 1)
 	defer atomic.AddInt64(&r.sendingCount, -1)
-	t.callback(r.sendSnap(t.addr, t.msg))
+	t.callback(r.sendSnap(t.storeID, t.msg))
 }
 
 const snapChunkLen = 1024 * 1024
 
-func (r *snapRunner) sendSnap(addr string, msg *raft_serverpb.RaftMessage) error {
+func (r *snapRunner) sendSnap(storeID uint64, msg *raft_serverpb.RaftMessage) error {
 	start := time.Now()
 	msgSnap := msg.GetMessage().GetSnapshot()
 	snapKey, err := SnapKeyFromSnap(msgSnap)
@@ -85,6 +88,11 @@ func (r *snapRunner) sendSnap(addr string, msg *raft_serverpb.RaftMessage) error
 	}
 	if !snap.Exists() {
 		return errors.Errorf("missing snap file: %v", snap.Path())
+	}
+	// Send snap shot is a low frequent operation, we can afford resolving the store address every time.
+	addr, err := getStoreAddr(storeID, r.pdCli)
+	if err != nil {
+		return err
 	}
 
 	cc, err := grpc.Dial(addr, grpc.WithInsecure(),
