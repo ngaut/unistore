@@ -2,7 +2,7 @@ module github.com/ngaut/unistore
 
 require (
 	github.com/BurntSushi/toml v0.3.1
-	github.com/coocood/badger v1.5.1-0.20200526054436-226126a77c16
+	github.com/coocood/badger v1.5.1-0.20200528065104-c02ac3616d04
 	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2
 	github.com/gogo/protobuf v1.3.1

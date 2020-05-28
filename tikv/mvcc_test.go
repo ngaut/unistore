@@ -1387,16 +1387,16 @@ func (s *testMvccSuite) TestResolveCommit(c *C) {
 	// The error path
 	kvTxn := store.MvccStore.db.NewTransaction(true)
 	e := &badger.Entry{
-		Key: y.KeyWithTs(sk, 2),
+		Key: y.KeyWithTs(sk, 3),
 	}
 	e.SetDelete()
 	err = kvTxn.SetEntry(e)
 	c.Assert(err, IsNil)
 	err = kvTxn.Commit()
 	c.Assert(err, IsNil)
-	MustCommitErr(sk, 1, 2, store)
+	MustCommitErr(sk, 1, 3, store)
 	MustAcquirePessimisticLock(sk, sk, 5, 5, store)
-	MustCommitErr(sk, 1, 2, store)
+	MustCommitErr(sk, 1, 3, store)
 }
 
 func MustLoad(startTS, commitTS uint64, store *TestStore, pairs ...string) {
