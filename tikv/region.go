@@ -452,7 +452,7 @@ func (rm *RaftRegionManager) runEventHandler() {
 			rm.mu.RLock()
 			region := rm.regions[x.regionId]
 			rm.mu.RUnlock()
-			if bytes.Compare(region.startKey, []byte{}) == 0 {
+			if bytes.Compare(region.startKey, []byte{}) == 0 && len(region.meta.Peers) > 0 {
 				newRole := Follower
 				if x.newState == raft.StateLeader {
 					newRole = Leader

@@ -14,8 +14,6 @@
 package raftstore
 
 import (
-	"sync"
-
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
@@ -24,77 +22,29 @@ import (
 )
 
 type ServerTransport struct {
-	raftClient        *RaftClient
-	router            *router
-	resolverScheduler chan<- task
-	snapScheduler     chan<- task
-	resolving         sync.Map
+	raftClient    *RaftClient
+	router        *router
+	snapScheduler chan<- task
 }
 
-func NewServerTransport(raftClient *RaftClient, snapScheduler chan<- task, router *router, resolverScheduler chan<- task) *ServerTransport {
+func NewServerTransport(raftClient *RaftClient, snapScheduler chan<- task, router *router) *ServerTransport {
 	return &ServerTransport{
-		raftClient:        raftClient,
-		router:            router,
-		resolverScheduler: resolverScheduler,
-		snapScheduler:     snapScheduler,
+		raftClient:    raftClient,
+		router:        router,
+		snapScheduler: snapScheduler,
 	}
 }
 
 func (t *ServerTransport) Send(msg *raft_serverpb.RaftMessage) error {
-	storeID := msg.GetToPeer().GetStoreId()
-	t.SendStore(storeID, msg)
+	if msg.GetMessage().GetSnapshot() != nil {
+		t.SendSnapshotSock(msg)
+	} else {
+		t.raftClient.Send(msg)
+	}
 	return nil
 }
 
-func (t *ServerTransport) SendStore(storeID uint64, msg *raft_serverpb.RaftMessage) {
-	addr := t.raftClient.GetAddr(storeID)
-	if addr != "" {
-		t.WriteData(storeID, addr, msg)
-		return
-	}
-	if _, ok := t.resolving.Load(storeID); ok {
-		log.Debug("store address is being resolved, msg dropped", zap.Uint64("store id", storeID), zap.Stringer("msg", msg))
-		t.ReportUnreachable(msg)
-		return
-	}
-	log.Debug("begin to resolve store address", zap.Uint64("store id", storeID))
-	t.resolving.Store(storeID, struct{}{})
-	t.Resolve(storeID, msg)
-}
-
-func (t *ServerTransport) Resolve(storeID uint64, msg *raft_serverpb.RaftMessage) {
-	callback := func(addr string, err error) {
-		// clear resolving
-		t.resolving.Delete(storeID)
-		if err != nil {
-			log.Error("resolve store address failed", zap.Uint64("store id", storeID), zap.Error(err))
-			t.ReportUnreachable(msg)
-			return
-		}
-		t.raftClient.InsertAddr(storeID, addr)
-		t.WriteData(storeID, addr, msg)
-		t.raftClient.Flush()
-	}
-	t.resolverScheduler <- task{
-		tp: taskTypeResolveAddr,
-		data: resolveAddrTask{
-			storeID:  storeID,
-			callback: callback,
-		},
-	}
-}
-
-func (t *ServerTransport) WriteData(storeID uint64, addr string, msg *raft_serverpb.RaftMessage) {
-	if msg.GetMessage().GetSnapshot() != nil {
-		t.SendSnapshotSock(addr, msg)
-		return
-	}
-	if err := t.raftClient.Send(storeID, addr, msg); err != nil {
-		log.Error("send raft msg err", zap.Error(err))
-	}
-}
-
-func (t *ServerTransport) SendSnapshotSock(addr string, msg *raft_serverpb.RaftMessage) {
+func (t *ServerTransport) SendSnapshotSock(msg *raft_serverpb.RaftMessage) {
 	callback := func(err error) {
 		if err != nil {
 			t.ReportSnapshotStatus(msg, raft.SnapshotFailure)
@@ -106,7 +56,7 @@ func (t *ServerTransport) SendSnapshotSock(addr string, msg *raft_serverpb.RaftM
 	task := task{
 		tp: taskTypeSnapSend,
 		data: sendSnapTask{
-			addr:     addr,
+			storeID:  msg.GetToPeer().GetStoreId(),
 			msg:      msg,
 			callback: callback,
 		},

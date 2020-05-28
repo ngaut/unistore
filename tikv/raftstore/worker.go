@@ -175,13 +175,8 @@ type checkAndCompactTask struct {
 	tombStonePercentThreshold uint64
 }
 
-type resolveAddrTask struct {
-	storeID  uint64
-	callback func(addr string, err error)
-}
-
 type sendSnapTask struct {
-	addr     string
+	storeID  uint64
 	msg      *raft_serverpb.RaftMessage
 	callback func(error)
 }
