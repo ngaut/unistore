@@ -140,7 +140,7 @@ func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.GetResponse{RegionError: reqCtx.regErr}, nil
 	}
-	err = svr.mvccStore.CheckKeysLock(req.GetVersion(), req.Key)
+	err = svr.mvccStore.CheckKeysLock(req.GetVersion(), req.Context.ResolvedLocks, req.Key)
 	if err != nil {
 		return &kvrpcpb.GetResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -166,61 +166,10 @@ func (svr *Server) KvScan(ctx context.Context, req *kvrpcpb.ScanRequest) (*kvrpc
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.ScanResponse{RegionError: reqCtx.regErr}, nil
 	}
-
-	var startKey, endKey []byte
-	if req.Reverse {
-		startKey = req.EndKey
-		if len(startKey) == 0 {
-			startKey = reqCtx.regCtx.rawStartKey()
-		}
-		endKey = req.StartKey
-	} else {
-		startKey = req.StartKey
-		endKey = req.EndKey
-		if len(endKey) == 0 {
-			endKey = reqCtx.regCtx.rawEndKey()
-		}
-		if len(endKey) == 0 {
-			// Don't scan internal keys.
-			endKey = InternalKeyPrefix
-		}
-	}
-
-	err = svr.mvccStore.CheckRangeLock(req.GetVersion(), startKey, endKey)
-	if err != nil {
-		return &kvrpcpb.ScanResponse{Pairs: []*kvrpcpb.KvPair{{Error: convertToKeyError(err)}}}, nil
-	}
-
-	var scanProc = &kvScanProcessor{}
-	reader := reqCtx.getDBReader()
-	if req.Reverse {
-		err = reader.ReverseScan(startKey, endKey, int(req.GetLimit()), req.GetVersion(), scanProc)
-	} else {
-		err = reader.Scan(startKey, endKey, int(req.GetLimit()), req.GetVersion(), scanProc)
-	}
-	if err != nil {
-		scanProc.pairs = append(scanProc.pairs[:0], &kvrpcpb.KvPair{
-			Error: convertToKeyError(err),
-		})
-	}
-
+	pairs := svr.mvccStore.Scan(reqCtx, req)
 	return &kvrpcpb.ScanResponse{
-		Pairs: scanProc.pairs,
+		Pairs: pairs,
 	}, nil
-}
-
-type kvScanProcessor struct {
-	skipVal
-	buf   []byte
-	pairs []*kvrpcpb.KvPair
-}
-
-func (p *kvScanProcessor) Process(key, value []byte) (err error) {
-	p.pairs = append(p.pairs, &kvrpcpb.KvPair{
-		Key:   safeCopy(key),
-		Value: safeCopy(value),
-	})
-	return nil
 }
 
 func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.PessimisticLockRequest) (*kvrpcpb.PessimisticLockResponse, error) {

@@ -908,7 +908,10 @@ func isVisibleKey(key []byte, startTS uint64) bool {
 	return startTS >= ts
 }
 
-func checkLock(lock mvcc.MvccLock, key []byte, startTS uint64) error {
+func checkLock(lock mvcc.MvccLock, key []byte, startTS uint64, resolved []uint64) error {
+	if isResolved(startTS, resolved) {
+		return nil
+	}
 	lockVisible := lock.StartTS < startTS
 	isWriteLock := lock.Op == uint8(kvrpcpb.Op_Put) || lock.Op == uint8(kvrpcpb.Op_Del)
 	isPrimaryGet := startTS == maxSystemTS && bytes.Equal(lock.Primary, key)
@@ -918,7 +921,7 @@ func checkLock(lock mvcc.MvccLock, key []byte, startTS uint64) error {
 	return nil
 }
 
-func (store *MVCCStore) CheckKeysLock(startTS uint64, keys ...[]byte) error {
+func (store *MVCCStore) CheckKeysLock(startTS uint64, resolved []uint64, keys ...[]byte) error {
 	var buf []byte
 	for _, key := range keys {
 		buf = store.lockStore.Get(key, buf)
@@ -926,7 +929,7 @@ func (store *MVCCStore) CheckKeysLock(startTS uint64, keys ...[]byte) error {
 			continue
 		}
 		lock := mvcc.DecodeLock(buf)
-		err := checkLock(lock, key, startTS)
+		err := checkLock(lock, key, startTS, resolved)
 		if err != nil {
 			return err
 		}
@@ -934,14 +937,14 @@ func (store *MVCCStore) CheckKeysLock(startTS uint64, keys ...[]byte) error {
 	return nil
 }
 
-func (store *MVCCStore) CheckRangeLock(startTS uint64, startKey, endKey []byte) error {
+func (store *MVCCStore) CheckRangeLock(startTS uint64, startKey, endKey []byte, resolved []uint64) error {
 	it := store.lockStore.NewIterator()
 	for it.Seek(startKey); it.Valid(); it.Next() {
 		if exceedEndKey(it.Key(), endKey) {
 			break
 		}
 		lock := mvcc.DecodeLock(it.Value())
-		err := checkLock(lock, it.Key(), startTS)
+		err := checkLock(lock, it.Key(), startTS, resolved)
 		if err != nil {
 			return err
 		}
@@ -1179,7 +1182,7 @@ func (store *MVCCStore) BatchGet(reqCtx *requestCtx, keys [][]byte, version uint
 	pairs := make([]*kvrpcpb.KvPair, 0, len(keys))
 	remain := make([][]byte, 0, len(keys))
 	for _, key := range keys {
-		err := store.CheckKeysLock(version, key)
+		err := store.CheckKeysLock(version, reqCtx.rpcCtx.ResolvedLocks, key)
 		if err != nil {
 			pairs = append(pairs, &kvrpcpb.KvPair{Key: key, Error: convertToKeyError(err)})
 		} else {
@@ -1197,6 +1200,110 @@ func (store *MVCCStore) BatchGet(reqCtx *requestCtx, keys [][]byte, version uint
 	}
 	reqCtx.getDBReader().BatchGet(remain, version, batchGetFunc)
 	return pairs
+}
+
+func (store *MVCCStore) collectRangeLock(startTS uint64, startKey, endKey []byte, resolved []uint64) []*kvrpcpb.KvPair {
+	var pairs []*kvrpcpb.KvPair
+	it := store.lockStore.NewIterator()
+	for it.Seek(startKey); it.Valid(); it.Next() {
+		if exceedEndKey(it.Key(), endKey) {
+			break
+		}
+		lock := mvcc.DecodeLock(it.Value())
+		err := checkLock(lock, it.Key(), startTS, resolved)
+		if err != nil {
+			pairs = append(pairs, &kvrpcpb.KvPair{
+				Error: convertToKeyError(err),
+				Key:   safeCopy(it.Key()),
+			})
+		}
+	}
+	return pairs
+}
+
+func isResolved(startTS uint64, resolved []uint64) bool {
+	for _, v := range resolved {
+		if startTS == v {
+			return true
+		}
+	}
+	return false
+}
+
+type kvScanProcessor struct {
+	skipVal
+	buf   []byte
+	pairs []*kvrpcpb.KvPair
+}
+
+func (p *kvScanProcessor) Process(key, value []byte) (err error) {
+	p.pairs = append(p.pairs, &kvrpcpb.KvPair{
+		Key:   safeCopy(key),
+		Value: safeCopy(value),
+	})
+	return nil
+}
+
+func (store *MVCCStore) Scan(reqCtx *requestCtx, req *kvrpcpb.ScanRequest) []*kvrpcpb.KvPair {
+	var startKey, endKey []byte
+	if req.Reverse {
+		startKey = req.EndKey
+		if len(startKey) == 0 {
+			startKey = reqCtx.regCtx.rawStartKey()
+		}
+		endKey = req.StartKey
+	} else {
+		startKey = req.StartKey
+		endKey = req.EndKey
+		if len(endKey) == 0 {
+			endKey = reqCtx.regCtx.rawEndKey()
+		}
+		if len(endKey) == 0 {
+			// Don't scan internal keys.
+			endKey = InternalKeyPrefix
+		}
+	}
+	lockPairs := store.collectRangeLock(req.GetVersion(), startKey, endKey, req.Context.ResolvedLocks)
+
+	var scanProc = &kvScanProcessor{}
+	reader := reqCtx.getDBReader()
+	var err error
+	if req.Reverse {
+		err = reader.ReverseScan(startKey, endKey, int(req.GetLimit()), req.GetVersion(), scanProc)
+	} else {
+		err = reader.Scan(startKey, endKey, int(req.GetLimit()), req.GetVersion(), scanProc)
+	}
+	if err != nil {
+		scanProc.pairs = append(scanProc.pairs[:0], &kvrpcpb.KvPair{
+			Error: convertToKeyError(err),
+		})
+		return scanProc.pairs
+	}
+	pairs := append(scanProc.pairs, lockPairs...)
+	sort.Slice(pairs, func(i, j int) bool {
+		cmp := bytes.Compare(pairs[i].Key, pairs[j].Key)
+		if req.Reverse {
+			cmp = -cmp
+		}
+		if cmp < 0 {
+			return true
+		} else if cmp > 0 {
+			return false
+		}
+		return pairs[i].Error != nil
+	})
+	validPairs := pairs[:0]
+	var prevErr *kvrpcpb.KvPair
+	for _, pair := range pairs {
+		if prevErr != nil && bytes.Equal(prevErr.Key, pair.Key) {
+			continue
+		}
+		if pair.Error != nil {
+			prevErr = pair
+		}
+		validPairs = append(validPairs, pair)
+	}
+	return validPairs
 }
 
 func (store *MVCCStore) runUpdateSafePointLoop() {

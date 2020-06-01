@@ -34,6 +34,7 @@ type MockRegionManager struct {
 	id            uint64
 	clusterID     uint64
 	regionSize    int64
+	closed        uint32
 }
 
 func NewMockRegionManager(bundle *mvcc.DBBundle, clusterID uint64, opts RegionOptions) (*MockRegionManager, error) {
@@ -71,7 +72,10 @@ func NewMockRegionManager(bundle *mvcc.DBBundle, clusterID uint64, opts RegionOp
 	return rm, err
 }
 
-func (rm *MockRegionManager) Close() error { return nil }
+func (rm *MockRegionManager) Close() error {
+	atomic.StoreUint32(&rm.closed, 1)
+	return nil
+}
 
 func (rm *MockRegionManager) AllocID() uint64 {
 	return atomic.AddUint64(&rm.id, 1)
@@ -448,6 +452,9 @@ func (rm *MockRegionManager) split(regionID, newRegionID uint64, key []byte, pee
 }
 
 func (rm *MockRegionManager) saveRegions(regions []*regionCtx) error {
+	if atomic.LoadUint32(&rm.closed) == 1 {
+		return nil
+	}
 	return rm.bundle.DB.Update(func(txn *badger.Txn) error {
 		ts := atomic.AddUint64(&rm.bundle.StateTS, 1)
 		for _, r := range regions {

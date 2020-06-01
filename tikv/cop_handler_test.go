@@ -180,6 +180,7 @@ func newDagContext(store *TestStore, keyRanges []kv.KeyRange, dagReq *tipb.DAGRe
 					EndKey:   nil,
 				},
 			},
+			rpcCtx: &kvrpcpb.Context{},
 		},
 		dagReq:  dagReq,
 		evalCtx: &evalContext{sc: sc},
