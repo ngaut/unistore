@@ -385,7 +385,7 @@ func (e *closureExecutor) execute() ([]tipb.Chunk, error) {
 func (e *closureExecutor) checkRangeLock() error {
 	if !e.ignoreLock && !e.lockChecked {
 		for _, ran := range e.kvRanges {
-			err := e.mvccStore.CheckRangeLock(e.startTS, ran.StartKey, ran.EndKey)
+			err := e.mvccStore.CheckRangeLock(e.startTS, ran.StartKey, ran.EndKey, e.reqCtx.rpcCtx.ResolvedLocks)
 			if err != nil {
 				return err
 			}

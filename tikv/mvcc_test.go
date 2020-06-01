@@ -409,7 +409,7 @@ func MustGetErr(key []byte, startTs uint64, store *TestStore) {
 }
 
 func kvGet(key []byte, readTs uint64, store *TestStore) ([]byte, error) {
-	err := store.MvccStore.CheckKeysLock(readTs, key)
+	err := store.MvccStore.CheckKeysLock(readTs, nil, key)
 	if err != nil {
 		return nil, err
 	}
