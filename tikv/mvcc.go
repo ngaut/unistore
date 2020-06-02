@@ -1125,6 +1125,14 @@ func (store *MVCCStore) MvccGetByKey(reqCtx *requestCtx, key []byte) (*kvrpcpb.M
 	sort.Slice(mvccInfo.Writes, func(i, j int) bool {
 		return mvccInfo.Writes[i].CommitTs > mvccInfo.Writes[j].CommitTs
 	})
+	mvccInfo.Values = make([]*kvrpcpb.MvccValue, len(mvccInfo.Writes))
+	for i := 0; i < len(mvccInfo.Writes); i++ {
+		write := mvccInfo.Writes[i]
+		mvccInfo.Values[i] = &kvrpcpb.MvccValue{
+			StartTs: write.StartTs,
+			Value:   write.ShortValue,
+		}
+	}
 	return mvccInfo, nil
 }
 
