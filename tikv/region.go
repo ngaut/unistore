@@ -130,6 +130,10 @@ func newRegionCtx(meta *metapb.Region, latches *latches, checker raftstore.Leade
 	}
 	regCtx.startKey = regCtx.rawStartKey()
 	regCtx.endKey = regCtx.rawEndKey()
+	if len(regCtx.endKey) == 0 {
+		// Avoid reading internal meta data.
+		regCtx.endKey = InternalKeyPrefix
+	}
 	return regCtx
 }
 
