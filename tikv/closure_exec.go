@@ -33,7 +33,6 @@ import (
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/codec"
-	"github.com/pingcap/tidb/util/collate"
 	mockpkg "github.com/pingcap/tidb/util/mock"
 	"github.com/pingcap/tidb/util/rowcodec"
 	"github.com/pingcap/tipb/go-tipb"
@@ -173,10 +172,8 @@ func (e *closureExecutor) initIdxScanCtx() {
 		col := e.columnInfos[i]
 		colInfos[i] = rowcodec.ColInfo{
 			ID:         col.ColumnId,
-			Tp:         col.Tp,
-			Flag:       col.Flag,
+			Ft:         e.fieldTps[i],
 			IsPKHandle: col.GetPkHandle(),
-			Collate:    collate.CollationID2Name(col.Collation),
 		}
 	}
 	e.idxScanCtx.colInfos = colInfos
