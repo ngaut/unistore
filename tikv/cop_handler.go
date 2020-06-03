@@ -177,12 +177,8 @@ func (e *evalContext) newRowDecoder() (*rowcodec.ChunkDecoder, error) {
 		ft := e.fieldTps[i]
 		col := rowcodec.ColInfo{
 			ID:         info.ColumnId,
-			Tp:         int32(ft.Tp),
-			Flag:       int32(ft.Flag),
 			IsPKHandle: info.PkHandle,
-			Flen:       ft.Flen,
-			Decimal:    ft.Decimal,
-			Elems:      ft.Elems,
+			Ft:         ft,
 		}
 		cols = append(cols, col)
 		if info.PkHandle {

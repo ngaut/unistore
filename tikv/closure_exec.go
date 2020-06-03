@@ -33,7 +33,6 @@ import (
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/codec"
-	"github.com/pingcap/tidb/util/collate"
 	mockpkg "github.com/pingcap/tidb/util/mock"
 	"github.com/pingcap/tidb/util/rowcodec"
 	"github.com/pingcap/tipb/go-tipb"
@@ -171,12 +170,11 @@ func (e *closureExecutor) initIdxScanCtx() {
 	colInfos := make([]rowcodec.ColInfo, e.idxScanCtx.columnLen)
 	for i := range colInfos {
 		col := e.columnInfos[i]
+		ft := e.fieldTps[i]
 		colInfos[i] = rowcodec.ColInfo{
 			ID:         col.ColumnId,
-			Tp:         col.Tp,
-			Flag:       col.Flag,
 			IsPKHandle: col.GetPkHandle(),
-			Collate:    collate.CollationID2Name(col.Collation),
+			Ft:         ft,
 		}
 	}
 	e.idxScanCtx.colInfos = colInfos
