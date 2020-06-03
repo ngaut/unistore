@@ -39,8 +39,8 @@ import (
 
 func NewDBReader(startKey, endKey []byte, txn *badger.Txn) *DBReader {
 	return &DBReader{
-		startKey: startKey,
-		endKey:   endKey,
+		StartKey: startKey,
+		EndKey:   endKey,
 		txn:      txn,
 	}
 }
@@ -59,8 +59,8 @@ func NewIterator(txn *badger.Txn, reverse bool, startKey, endKey []byte) *badger
 
 // DBReader reads data from DB, for read-only requests, the locks must already be checked before DBReader is created.
 type DBReader struct {
-	startKey  []byte
-	endKey    []byte
+	StartKey  []byte
+	EndKey    []byte
 	txn       *badger.Txn
 	iter      *badger.Iterator
 	extraIter *badger.Iterator
@@ -112,18 +112,18 @@ func (r *DBReader) Get(key []byte, startTS uint64) ([]byte, error) {
 
 func (r *DBReader) GetIter() *badger.Iterator {
 	if r.iter == nil {
-		r.iter = NewIterator(r.txn, false, r.startKey, r.endKey)
+		r.iter = NewIterator(r.txn, false, r.StartKey, r.EndKey)
 	}
 	return r.iter
 }
 
 func (r *DBReader) GetExtraIter() *badger.Iterator {
 	if r.extraIter == nil {
-		rbStartKey := append([]byte{}, r.startKey...)
+		rbStartKey := append([]byte{}, r.StartKey...)
 		if len(rbStartKey) != 0 {
 			rbStartKey[0]++
 		}
-		rbEndKey := append([]byte{}, r.endKey...)
+		rbEndKey := append([]byte{}, r.EndKey...)
 		if len(rbEndKey) != 0 {
 			rbEndKey[0]++
 		}
@@ -134,7 +134,7 @@ func (r *DBReader) GetExtraIter() *badger.Iterator {
 
 func (r *DBReader) getReverseIter() *badger.Iterator {
 	if r.revIter == nil {
-		r.revIter = NewIterator(r.txn, true, r.startKey, r.endKey)
+		r.revIter = NewIterator(r.txn, true, r.StartKey, r.EndKey)
 	}
 	return r.revIter
 }
