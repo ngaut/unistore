@@ -19,12 +19,12 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/coocood/badger"
-	"github.com/coocood/badger/y"
 	"github.com/cznic/mathutil"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/pingcap/badger"
+	"github.com/pingcap/badger/y"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 )
 

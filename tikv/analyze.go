@@ -30,10 +30,10 @@ import (
 	"math"
 	"time"
 
-	"github.com/coocood/badger/y"
 	"github.com/golang/protobuf/proto"
 	"github.com/juju/errors"
 	"github.com/ngaut/unistore/tikv/dbreader"
+	"github.com/pingcap/badger/y"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
 	"github.com/pingcap/parser/ast"
 	"github.com/pingcap/parser/charset"

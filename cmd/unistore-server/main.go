@@ -27,11 +27,11 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/coocood/badger"
-	"github.com/coocood/badger/y"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/server"
+	"github.com/pingcap/badger"
+	"github.com/pingcap/badger/y"
 	"github.com/pingcap/kvproto/pkg/deadlock"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"

@@ -22,7 +22,7 @@ import (
 
 	"github.com/ngaut/unistore/lockstore"
 
-	"github.com/coocood/badger"
+	"github.com/pingcap/badger"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/stretchr/testify/require"
 )

@@ -26,7 +26,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/coocood/badger"
 	"github.com/dgryski/go-farm"
 	"github.com/juju/errors"
 	"github.com/ngaut/unistore/config"
@@ -35,6 +34,7 @@ import (
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/util/lockwaiter"
+	"github.com/pingcap/badger"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/sessionctx/stmtctx"

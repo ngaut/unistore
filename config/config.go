@@ -16,7 +16,7 @@ package config
 import (
 	"time"
 
-	"github.com/coocood/badger/options"
+	"github.com/pingcap/badger/options"
 	"github.com/pingcap/log"
 )
 

@@ -2,7 +2,6 @@ module github.com/ngaut/unistore
 
 require (
 	github.com/BurntSushi/toml v0.3.1
-	github.com/coocood/badger v1.5.1-0.20200528065104-c02ac3616d04
 	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2
 	github.com/gogo/protobuf v1.3.1
@@ -10,6 +9,7 @@ require (
 	github.com/google/btree v1.0.0
 	github.com/juju/errors v0.0.0-20181118221551-089d3ea4e4d5
 	github.com/pierrec/lz4 v2.0.5+incompatible
+	github.com/pingcap/badger v1.5.1-0.20200604041313-19c397305fcc
 	github.com/pingcap/check v0.0.0-20200212061837-5e12011dc712
 	github.com/pingcap/errors v0.11.5-0.20190809092503-95897b64e011
 	github.com/pingcap/kvproto v0.0.0-20200518112156-d4aeb467de29
