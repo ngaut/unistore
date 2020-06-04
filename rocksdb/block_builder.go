@@ -22,7 +22,7 @@
 
 package rocksdb
 
-import "github.com/coocood/badger/y"
+import "github.com/pingcap/badger/y"
 
 // 1-byte type + 32-bit crc
 const blockTrailerSize = 5

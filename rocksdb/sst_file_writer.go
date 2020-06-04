@@ -37,7 +37,7 @@ package rocksdb
 import (
 	"os"
 
-	"github.com/coocood/badger/y"
+	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 )
 

@@ -19,14 +19,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/coocood/badger"
-	"github.com/coocood/badger/y"
 	"github.com/cznic/mathutil"
 	"github.com/golang/protobuf/proto"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/pingcap/badger"
+	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 )

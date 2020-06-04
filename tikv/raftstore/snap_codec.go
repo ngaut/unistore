@@ -14,7 +14,7 @@
 package raftstore
 
 import (
-	"github.com/coocood/badger/y"
+	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tidb/util/codec"
 )

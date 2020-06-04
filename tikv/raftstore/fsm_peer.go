@@ -20,8 +20,8 @@ import (
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
-	"github.com/coocood/badger/y"
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"

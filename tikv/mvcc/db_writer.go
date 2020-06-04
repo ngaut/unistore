@@ -16,8 +16,8 @@ package mvcc
 import (
 	"sync"
 
-	"github.com/coocood/badger"
 	"github.com/ngaut/unistore/lockstore"
+	"github.com/pingcap/badger"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 )
 

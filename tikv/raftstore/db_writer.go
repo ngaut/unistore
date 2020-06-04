@@ -16,11 +16,11 @@ package raftstore
 import (
 	"time"
 
-	"github.com/coocood/badger/y"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"

@@ -26,8 +26,8 @@ import (
 	"math"
 	"os"
 
-	"github.com/coocood/badger/fileutil"
-	"github.com/coocood/badger/y"
+	"github.com/pingcap/badger/fileutil"
+	"github.com/pingcap/badger/y"
 )
 
 const (

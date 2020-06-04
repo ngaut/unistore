@@ -20,8 +20,8 @@ import (
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
-	"github.com/coocood/badger"
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/pingcap/badger"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	rfpb "github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/stretchr/testify/assert"

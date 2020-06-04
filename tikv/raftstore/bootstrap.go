@@ -16,9 +16,9 @@ package raftstore
 import (
 	"bytes"
 
-	"github.com/coocood/badger"
-	"github.com/coocood/badger/y"
 	"github.com/ngaut/unistore/tikv/dbreader"
+	"github.com/pingcap/badger"
+	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"

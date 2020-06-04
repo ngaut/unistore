@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coocood/badger"
-	"github.com/coocood/badger/y"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/pingcap/badger"
+	"github.com/pingcap/badger/y"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/stretchr/testify/assert"

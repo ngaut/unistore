@@ -18,8 +18,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/coocood/badger/y"
 	"github.com/dgryski/go-farm"
+	"github.com/pingcap/badger/y"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 )
 
