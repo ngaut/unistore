@@ -1239,7 +1239,6 @@ func isResolved(startTS uint64, resolved []uint64) bool {
 }
 
 type kvScanProcessor struct {
-	skipVal
 	buf   []byte
 	pairs []*kvrpcpb.KvPair
 }
@@ -1250,6 +1249,10 @@ func (p *kvScanProcessor) Process(key, value []byte) (err error) {
 		Value: safeCopy(value),
 	})
 	return nil
+}
+
+func (p *kvScanProcessor) SkipValue() bool {
+	return false
 }
 
 func (store *MVCCStore) Scan(reqCtx *requestCtx, req *kvrpcpb.ScanRequest) []*kvrpcpb.KvPair {
