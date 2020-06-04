@@ -20,8 +20,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pingcap/tidb/store/mockstore/unistore/cophandler"
-
 	"github.com/juju/errors"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/raftstore"
@@ -32,6 +30,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
+	"github.com/pingcap/tidb/store/mockstore/unistore/cophandler"
 	"go.uber.org/zap"
 )
 
