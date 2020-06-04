@@ -15,11 +15,12 @@ package tikv
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/pingcap/tidb/store/mockstore/unistore/cophandler"
 
 	"github.com/juju/errors"
 	"github.com/ngaut/unistore/tikv/dbreader"
@@ -31,7 +32,6 @@ import (
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
-	"github.com/pingcap/tidb/kv"
 	"go.uber.org/zap"
 )
 
@@ -472,15 +472,7 @@ func (svr *Server) Coprocessor(ctx context.Context, req *coprocessor.Request) (*
 	if reqCtx.regErr != nil {
 		return &coprocessor.Response{RegionError: reqCtx.regErr}, nil
 	}
-	switch req.Tp {
-	case kv.ReqTypeDAG:
-		return svr.handleCopDAGRequest(reqCtx, req), nil
-	case kv.ReqTypeAnalyze:
-		return svr.handleCopAnalyzeRequest(reqCtx, req), nil
-	case kv.ReqTypeChecksum:
-		return svr.handleCopChecksumRequest(reqCtx, req), nil
-	}
-	return &coprocessor.Response{OtherError: fmt.Sprintf("unsupported request type %d", req.GetTp())}, nil
+	return cophandler.HandleCopRequest(reqCtx.getDBReader(), svr.mvccStore.lockStore, req), nil
 }
 
 func (svr *Server) CoprocessorStream(*coprocessor.Request, tikvpb.Tikv_CoprocessorStreamServer) error {
