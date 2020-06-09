@@ -1246,8 +1246,8 @@ type kvScanProcessor struct {
 }
 
 func (p *kvScanProcessor) Process(key, value []byte) (err error) {
-	p.scanCnt++
 	if p.sampleStep > 0 {
+		p.scanCnt++
 		if (p.scanCnt-1)%p.sampleStep != 0 {
 			return nil
 		}
