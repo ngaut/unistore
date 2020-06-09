@@ -1239,11 +1239,19 @@ func isResolved(startTS uint64, resolved []uint64) bool {
 }
 
 type kvScanProcessor struct {
-	buf   []byte
-	pairs []*kvrpcpb.KvPair
+	buf        []byte
+	pairs      []*kvrpcpb.KvPair
+	sampleStep uint32
+	scanCnt    uint32
 }
 
 func (p *kvScanProcessor) Process(key, value []byte) (err error) {
+	p.scanCnt++
+	if p.sampleStep > 0 {
+		if (p.scanCnt-1)%p.sampleStep != 0 {
+			return nil
+		}
+	}
 	p.pairs = append(p.pairs, &kvrpcpb.KvPair{
 		Key:   safeCopy(key),
 		Value: safeCopy(value),
@@ -1274,15 +1282,22 @@ func (store *MVCCStore) Scan(reqCtx *requestCtx, req *kvrpcpb.ScanRequest) []*kv
 			endKey = InternalKeyPrefix
 		}
 	}
-	lockPairs := store.collectRangeLock(req.GetVersion(), startKey, endKey, req.Context.ResolvedLocks)
-
-	var scanProc = &kvScanProcessor{}
+	var lockPairs []*kvrpcpb.KvPair
+	limit := req.GetLimit()
+	if req.SampleStep == 0 {
+		lockPairs = store.collectRangeLock(req.GetVersion(), startKey, endKey, req.Context.ResolvedLocks)
+	} else {
+		limit = req.SampleStep * limit
+	}
+	var scanProc = &kvScanProcessor{
+		sampleStep: req.SampleStep,
+	}
 	reader := reqCtx.getDBReader()
 	var err error
 	if req.Reverse {
-		err = reader.ReverseScan(startKey, endKey, int(req.GetLimit()), req.GetVersion(), scanProc)
+		err = reader.ReverseScan(startKey, endKey, int(limit), req.GetVersion(), scanProc)
 	} else {
-		err = reader.Scan(startKey, endKey, int(req.GetLimit()), req.GetVersion(), scanProc)
+		err = reader.Scan(startKey, endKey, int(limit), req.GetVersion(), scanProc)
 	}
 	if err != nil {
 		scanProc.pairs = append(scanProc.pairs[:0], &kvrpcpb.KvPair{

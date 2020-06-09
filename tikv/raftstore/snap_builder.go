@@ -205,6 +205,10 @@ func (b *snapBuilder) addDBEntry() error {
 	if len(val) == 0 {
 		writeType = byte(kvrpcpb.Op_Del)
 	}
+	if len(meta) == 0 {
+		// delete range entry.
+		meta = mvcc.NewDBUserMeta(item.Version(), item.Version())
+	}
 	err = b.addSSTKey(b.curDBKey, meta.StartTS(), meta.CommitTS(), val, writeType)
 	if err != nil {
 		return err

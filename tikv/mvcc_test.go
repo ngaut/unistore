@@ -1475,3 +1475,37 @@ func (s *testMvccSuite) TestPessimisticLockForce(c *C) {
 	MustUnLocked(k, store)
 	MustGetVal(k, v2, 13, store)
 }
+
+func (s *testMvccSuite) TestScanSampleStep(c *C) {
+	store, err := NewTestStore("TestScanSampleStep", "TestScanSampleStep", c)
+	c.Assert(err, IsNil)
+	defer CleanTestStore(store)
+	for i := 0; i < 1000; i++ {
+		k := genScanSampleStepKey(i)
+		MustPrewritePut(k, k, k, 1, store)
+		MustCommit(k, 1, 2, store)
+	}
+	sampleStep := 10
+	scanReq := &kvrpcpb.ScanRequest{
+		StartKey:   genScanSampleStepKey(100),
+		EndKey:     genScanSampleStepKey(900),
+		Limit:      100,
+		Version:    2,
+		SampleStep: uint32(sampleStep),
+	}
+	pairs := store.MvccStore.Scan(store.newReqCtx(), scanReq)
+	c.Assert(len(pairs), Equals, 80)
+	for i, pair := range pairs {
+		c.Assert(genScanSampleStepKey(100+i*sampleStep), BytesEquals, pair.Key)
+	}
+	scanReq.Limit = 20
+	pairs = store.MvccStore.Scan(store.newReqCtx(), scanReq)
+	c.Assert(len(pairs), Equals, 20)
+	for i, pair := range pairs {
+		c.Assert(genScanSampleStepKey(100+i*sampleStep), BytesEquals, pair.Key)
+	}
+}
+
+func genScanSampleStepKey(i int) []byte {
+	return []byte(fmt.Sprintf("t%0.4d", i))
+}
