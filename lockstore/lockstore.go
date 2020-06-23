@@ -51,7 +51,10 @@ type node struct {
 	nodeHeader
 	// Height of the nexts.
 
-	nexts [maxHeight]uint64
+	// node is a variable length struct.
+	// The nextsBase is the first element of nexts slice,
+	// it act as the base pointer we do pointer arithmetic in `next` and `setNext`.
+	nextsBase uint64
 }
 
 type entry struct {
@@ -66,12 +69,25 @@ func (e *entry) getValue(arena *arena) []byte {
 	return nil
 }
 
+func (n *node) nexts(level int) uint64 {
+	return *n.nextsAddr(level)
+}
+
+func (n *node) setNexts(level int, val uint64) {
+	*n.nextsAddr(level) = val
+}
+
+func (n *node) nextsAddr(idx int) *uint64 {
+	offset := uintptr(idx) * unsafe.Sizeof(n.nextsBase)
+	return (*uint64)(unsafe.Pointer(uintptr(unsafe.Pointer(&n.nextsBase)) + offset))
+}
+
 func (n *node) getNextAddr(level int) arenaAddr {
-	return arenaAddr(atomic.LoadUint64(&n.nexts[level]))
+	return arenaAddr(atomic.LoadUint64(n.nextsAddr(level)))
 }
 
 func (n *node) setNextAddr(level int, addr arenaAddr) {
-	atomic.StoreUint64(&n.nexts[level], uint64(addr))
+	atomic.StoreUint64(n.nextsAddr(level), uint64(addr))
 }
 
 func (n *node) entryLen() int {
@@ -95,12 +111,21 @@ func (n *node) getValue(a *arena) []byte {
 }
 
 func NewMemStore(arenaBlockSize int) *MemStore {
-	return &MemStore{
+	ls := &MemStore{
 		height:   1,
-		head:     new(node),
 		arenaPtr: unsafe.Pointer(newArenaLocator(arenaBlockSize)),
 		rand:     rand.NewSource(time.Now().Unix()).(rand.Source64),
 	}
+	ls.setHeadNode()
+	return ls
+}
+
+func (ls *MemStore) setHeadNode() {
+	n := ls.newNode(ls.getArena(), nil, nil, maxHeight)
+	for i := 0; i < maxHeight; i++ {
+		n.setNexts(i, 0)
+	}
+	ls.head = n
 }
 
 func (ls *MemStore) getHeight() int {
@@ -301,9 +326,9 @@ func (ls *MemStore) PutWithHint(key []byte, v []byte, hint *Hint) bool {
 	// create a node in the level above because it would have discovered the node in the base level.
 	for i := 0; i < height; i++ {
 		if hint.next[i] != nil {
-			x.nexts[i] = uint64(hint.next[i].addr)
+			x.setNexts(i, uint64(hint.next[i].addr))
 		} else {
-			x.nexts[i] = uint64(nullArenaAddr)
+			x.setNexts(i, uint64(nullArenaAddr))
 		}
 		if hint.prev[i] == nil {
 			hint.prev[i] = ls.head
@@ -319,8 +344,8 @@ func (ls *MemStore) replace(key, v []byte, hint *Hint, old *node) {
 	x := ls.newNode(ls.getArena(), key, v, int(old.height))
 	arena := ls.getArena()
 	for i := 0; i < int(old.height); i++ {
-		nextAddr := atomic.LoadUint64(&old.nexts[i])
-		x.nexts[i] = nextAddr
+		nextAddr := atomic.LoadUint64(old.nextsAddr(i))
+		x.setNexts(i, nextAddr)
 		if nextAddr != uint64(nullArenaAddr) {
 			hint.next[i] = ls.getNode(arena, arenaAddr(nextAddr))
 		} else {
