@@ -404,6 +404,11 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 }
 
 func (svr *Server) KvGC(ctx context.Context, req *kvrpcpb.GCRequest) (*kvrpcpb.GCResponse, error) {
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvGC")
+	if err != nil {
+		return &kvrpcpb.GCResponse{Error: convertToKeyError(err)}, nil
+	}
+	defer reqCtx.finish()
 	svr.mvccStore.UpdateSafePoint(req.SafePoint)
 	return &kvrpcpb.GCResponse{}, nil
 }
@@ -497,6 +502,11 @@ func (svr *Server) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
 
 // Region commands.
 func (svr *Server) SplitRegion(ctx context.Context, req *kvrpcpb.SplitRegionRequest) (*kvrpcpb.SplitRegionResponse, error) {
+	reqCtx, err := newRequestCtx(svr, req.Context, "SplitRegion")
+	if err != nil {
+		return &kvrpcpb.SplitRegionResponse{RegionError: &errorpb.Error{Message: err.Error()}}, nil
+	}
+	defer reqCtx.finish()
 	return svr.regionManager.SplitRegion(req), nil
 }
 
