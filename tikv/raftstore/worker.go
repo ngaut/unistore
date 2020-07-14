@@ -29,7 +29,7 @@ import (
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
-	"github.com/pingcap/badger/table"
+	"github.com/pingcap/badger/table/sstable"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -664,7 +664,7 @@ func (snapCtx *snapContext) cleanUpOriginData(regionState *rspb.RegionLocalState
 }
 
 // applySnap applies snapshot data of the Region.
-func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builder *table.Builder) (ApplyResult, error) {
+func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builder *sstable.Builder) (ApplyResult, error) {
 	log.Info("begin apply snap data", zap.Uint64("region id", regionId))
 	var result ApplyResult
 	if err := checkAbort(status); err != nil {
@@ -709,7 +709,7 @@ func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builde
 }
 
 // handleApply tries to apply the snapshot of the specified Region. It calls `applySnap` to do the actual work.
-func (snapCtx *snapContext) handleApply(regionId uint64, status *JobStatus, builder *table.Builder) (ApplyResult, error) {
+func (snapCtx *snapContext) handleApply(regionId uint64, status *JobStatus, builder *sstable.Builder) (ApplyResult, error) {
 	atomic.CompareAndSwapUint32(status, JobStatus_Pending, JobStatus_Running)
 	result, err := snapCtx.applySnap(regionId, status, builder)
 	switch err.(type) {
@@ -789,7 +789,7 @@ type regionTaskHandler struct {
 	pendingApplies []task
 
 	builderFile *os.File
-	builder     *table.Builder
+	builder     *sstable.Builder
 
 	conf *config.Config
 
