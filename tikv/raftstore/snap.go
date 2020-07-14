@@ -25,12 +25,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ngaut/unistore/tikv/mvcc"
-	"github.com/pingcap/badger/table"
-	"github.com/pingcap/badger/y"
-
 	"github.com/ngaut/unistore/rocksdb"
+	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/util"
+	"github.com/pingcap/badger/table/sstable"
+	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -108,11 +107,11 @@ type ApplyOptions struct {
 	DBBundle *mvcc.DBBundle
 	Region   *metapb.Region
 	Abort    *uint32
-	Builder  *table.Builder
+	Builder  *sstable.Builder
 	WB       *WriteBatch
 }
 
-func newApplyOptions(db *mvcc.DBBundle, region *metapb.Region, abort *uint32, builder *table.Builder, wb *WriteBatch) *ApplyOptions {
+func newApplyOptions(db *mvcc.DBBundle, region *metapb.Region, abort *uint32, builder *sstable.Builder, wb *WriteBatch) *ApplyOptions {
 	return &ApplyOptions{
 		DBBundle: db,
 		Region:   region,
