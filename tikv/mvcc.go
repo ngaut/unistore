@@ -368,9 +368,17 @@ func (store *MVCCStore) TxnHeartBeat(reqCtx *requestCtx, req *kvrpcpb.TxnHeartBe
 	return 0, errors.New("lock doesn't exists")
 }
 
-// CheckTxnStatus returns the txn status based on request primary key txn info
+// TxnStatus is the result of `CheckTxnStatus` API.
+type TxnStatus struct {
+	ttl         uint64
+	commitTS    uint64
+	action      kvrpcpb.Action
+	asyncCommit bool
+	secondaries [][]byte
+}
+
 func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
-	req *kvrpcpb.CheckTxnStatusRequest) (ttl, commitTS uint64, action kvrpcpb.Action, err error) {
+	req *kvrpcpb.CheckTxnStatusRequest) (txnStatusRes TxnStatus, err error) {
 	hashVals := keysToHashVals(req.PrimaryKey)
 	regCtx := reqCtx.regCtx
 	regCtx.AcquireLatches(hashVals)
@@ -380,12 +388,18 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	if lock != nil && lock.StartTS == req.LockTs {
 		// If the lock has already outdated, clean up it.
 		if uint64(oracle.ExtractPhysical(lock.StartTS))+uint64(lock.TTL) < uint64(oracle.ExtractPhysical(req.CurrentTs)) {
-			batch.Rollback(req.PrimaryKey, true)
-			return 0, 0, kvrpcpb.Action_TTLExpireRollback, store.dbWriter.Write(batch)
+			if !lock.UseAsyncCommit {
+				batch.Rollback(req.PrimaryKey, true)
+				return TxnStatus{0, 0, kvrpcpb.Action_TTLExpireRollback, false, nil}, store.dbWriter.Write(batch)
+			}
+			log.S().Debugf("async commit startTS=%v secondaries=%v minCommitTS=%v", lock.StartTS, lock.Secondaries, lock.MinCommitTS)
+			return TxnStatus{0, 0, kvrpcpb.Action_NoAction, lock.UseAsyncCommit, lock.Secondaries}, nil
 		}
 		// If this is a large transaction and the lock is active, push forward the minCommitTS.
 		// lock.minCommitTS == 0 may be a secondary lock, or not a large transaction.
-		if lock.MinCommitTS > 0 {
+		// For async commit protocol, the minCommitTS is always greater than zero, but async commit will not be a large transaction.
+		action := kvrpcpb.Action_NoAction
+		if lock.MinCommitTS > 0 && !lock.UseAsyncCommit {
 			action = kvrpcpb.Action_MinCommitTSPushed
 			// We *must* guarantee the invariance lock.minCommitTS >= callerStartTS + 1
 			if lock.MinCommitTS < req.CallerStartTs+1 {
@@ -399,27 +413,26 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 				}
 				batch.PessimisticLock(req.PrimaryKey, lock)
 				if err = store.dbWriter.Write(batch); err != nil {
-					return 0, 0, action, err
+					return TxnStatus{0, 0, action, false, nil}, err
 				}
 			}
 		}
-		return uint64(lock.TTL), 0, action, nil
+		return TxnStatus{uint64(lock.TTL), 0, action, lock.UseAsyncCommit, lock.Secondaries}, nil
 	}
 
 	// The current transaction lock not exists, check the transaction commit info
-	commitTS, err = store.checkCommitted(reqCtx.getDBReader(), req.PrimaryKey, req.LockTs)
+	commitTS, err := store.checkCommitted(reqCtx.getDBReader(), req.PrimaryKey, req.LockTs)
 	if commitTS > 0 {
-		return
+		return TxnStatus{0, commitTS, kvrpcpb.Action_NoAction, false, nil}, nil
 	}
 	// Check if the transaction already rollbacked
 	status := store.checkExtraTxnStatus(reqCtx, req.PrimaryKey, req.LockTs)
 	if status.isRollback {
-		action = kvrpcpb.Action_NoAction
-		return
+		return TxnStatus{0, 0, kvrpcpb.Action_NoAction, false, nil}, nil
 	}
 	if status.isOpLockCommitted() {
 		commitTS = status.commitTS
-		return
+		return TxnStatus{0, commitTS, kvrpcpb.Action_NoAction, false, nil}, nil
 	}
 	// If current transaction is not prewritted before, it may be pessimistic lock.
 	// When pessimistic txn rollback statement, it may not leave a 'rollbacked' tombstone.
@@ -430,10 +443,9 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	if req.RollbackIfNotExist {
 		batch.Rollback(req.PrimaryKey, false)
 		err = store.dbWriter.Write(batch)
-		action = kvrpcpb.Action_LockNotExistRollback
-		return
+		return TxnStatus{0, 0, kvrpcpb.Action_LockNotExistRollback, false, nil}, nil
 	}
-	return 0, 0, action, &ErrTxnNotFound{
+	return TxnStatus{0, 0, kvrpcpb.Action_NoAction, false, nil}, &ErrTxnNotFound{
 		PrimaryKey: req.PrimaryKey,
 		StartTS:    req.LockTs,
 	}
@@ -535,7 +547,6 @@ func (store *MVCCStore) prewriteOptimistic(reqCtx *requestCtx, mutations []*kvrp
 	if err != nil {
 		return err
 	}
-	batch := store.dbWriter.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
 	for i, m := range mutations {
 		item := items[i]
 		if item != nil {
@@ -562,13 +573,9 @@ func (store *MVCCStore) prewriteOptimistic(reqCtx *requestCtx, mutations []*kvrp
 			}
 			continue
 		}
-		lock, err1 := store.buildPrewriteLock(reqCtx, m, items[i], req)
-		if err1 != nil {
-			return err1
-		}
-		batch.Prewrite(m.Key, lock)
+		// TODO add memory lock for async commit protocol.
 	}
-	return store.dbWriter.Write(batch)
+	return store.prewriteMutations(reqCtx, mutations, req, items)
 }
 
 func (store *MVCCStore) prewritePessimistic(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, req *kvrpcpb.PrewriteRequest) error {
@@ -600,20 +607,42 @@ func (store *MVCCStore) prewritePessimistic(reqCtx *requestCtx, mutations []*kvr
 			if !valid {
 				// Safe to set TTL to zero because the transaction of the lock is committed
 				// or rollbacked or must be rollbacked.
-				return BuildLockErr(m.Key, lock.Primary, lock.StartTS, 0, lock.Op)
+				return BuildLockErr(m.Key, lock.Primary, lock.StartTS, 0, lock.Op, lock.MinCommitTS)
 			}
 			if lockMatch {
 				// Duplicate command.
 				return nil
 			}
 		}
+		// TODO add memory lock for async commit protocol.
 	}
 	items, err := store.getDBItems(reqCtx, mutations)
 	if err != nil {
 		return err
 	}
-	batch := store.dbWriter.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
+	return store.prewriteMutations(reqCtx, mutations, req, items)
+}
+
+func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation,
+	req *kvrpcpb.PrewriteRequest, items []*badger.Item) error {
+	batch := store.dbWriter.NewWriteBatch(req.StartVersion, 0, reqCtx.rpcCtx)
+	var minCommitTS uint64
+	if req.UseAsyncCommit {
+		// Get minCommitTS for async commit protocol. After all keys are locked in memory lock.
+		physical, logical, tsErr := store.pdClient.GetTS(context.Background())
+		if tsErr != nil {
+			return tsErr
+		}
+		minCommitTS = uint64(physical)<<18 + uint64(logical)
+		reqCtx.asyncMinCommitTS = minCommitTS
+	}
 	for i, m := range mutations {
+		if m.Op == kvrpcpb.Op_CheckNotExists {
+			continue
+		}
+		if req.UseAsyncCommit && minCommitTS > req.MinCommitTs {
+			req.MinCommitTs = minCommitTS
+		}
 		lock, err1 := store.buildPrewriteLock(reqCtx, m, items[i], req)
 		if err1 != nil {
 			return err1
@@ -651,13 +680,16 @@ func (store *MVCCStore) buildPrewriteLock(reqCtx *requestCtx, m *kvrpcpb.Mutatio
 	req *kvrpcpb.PrewriteRequest) (*mvcc.MvccLock, error) {
 	lock := &mvcc.MvccLock{
 		MvccLockHdr: mvcc.MvccLockHdr{
-			StartTS:     req.StartVersion,
-			TTL:         uint32(req.LockTtl),
-			PrimaryLen:  uint16(len(req.PrimaryLock)),
-			MinCommitTS: req.MinCommitTs,
+			StartTS:        req.StartVersion,
+			TTL:            uint32(req.LockTtl),
+			PrimaryLen:     uint16(len(req.PrimaryLock)),
+			MinCommitTS:    req.MinCommitTs,
+			UseAsyncCommit: req.UseAsyncCommit,
+			SecondaryNum:   uint32(len(req.Secondaries)),
 		},
-		Primary: req.PrimaryLock,
-		Value:   m.Value,
+		Primary:     req.PrimaryLock,
+		Value:       m.Value,
+		Secondaries: req.Secondaries,
 	}
 	var err error
 	lock.Op = uint8(m.Op)
@@ -704,7 +736,7 @@ func (store *MVCCStore) checkConflictInLockStore(
 		// Same ts, no need to overwrite.
 		return &lock, nil
 	}
-	return nil, BuildLockErr(mutation.Key, lock.Primary, lock.StartTS, uint64(lock.TTL), lock.Op)
+	return nil, BuildLockErr(mutation.Key, lock.Primary, lock.StartTS, uint64(lock.TTL), lock.Op, lock.MinCommitTS)
 }
 
 const maxSystemTS uint64 = math.MaxUint64
@@ -849,7 +881,7 @@ func (store *MVCCStore) rollbackKeyReadLock(reqCtx *requestCtx, batch mvcc.Write
 		}
 		if lock.StartTS == startTS {
 			if currentTs > 0 && uint64(oracle.ExtractPhysical(lock.StartTS))+uint64(lock.TTL) >= uint64(oracle.ExtractPhysical(currentTs)) {
-				return rollbackStatusLocked, BuildLockErr(key, key, lock.StartTS, uint64(lock.TTL), lock.Op)
+				return rollbackStatusLocked, BuildLockErr(key, key, lock.StartTS, uint64(lock.TTL), lock.Op, lock.MinCommitTS)
 			}
 			// We can not simply delete the lock because the prewrite may be sent multiple times.
 			// To prevent that we update it a rollback lock.
@@ -912,11 +944,11 @@ func checkLock(lock mvcc.MvccLock, key []byte, startTS uint64, resolved []uint64
 	if isResolved(startTS, resolved) {
 		return nil
 	}
-	lockVisible := lock.StartTS < startTS
+	lockVisible := lock.StartTS <= startTS
 	isWriteLock := lock.Op == uint8(kvrpcpb.Op_Put) || lock.Op == uint8(kvrpcpb.Op_Del)
 	isPrimaryGet := startTS == maxSystemTS && bytes.Equal(lock.Primary, key)
 	if lockVisible && isWriteLock && !isPrimaryGet {
-		return BuildLockErr(key, lock.Primary, lock.StartTS, uint64(lock.TTL), lock.Op)
+		return BuildLockErr(key, lock.Primary, lock.StartTS, uint64(lock.TTL), lock.Op, lock.MinCommitTS)
 	}
 	return nil
 }
