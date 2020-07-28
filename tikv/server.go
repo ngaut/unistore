@@ -87,14 +87,15 @@ func (svr *Server) Stop() {
 }
 
 type requestCtx struct {
-	svr       *Server
-	regCtx    *regionCtx
-	regErr    *errorpb.Error
-	buf       []byte
-	reader    *dbreader.DBReader
-	method    string
-	startTime time.Time
-	rpcCtx    *kvrpcpb.Context
+	svr              *Server
+	regCtx           *regionCtx
+	regErr           *errorpb.Error
+	buf              []byte
+	reader           *dbreader.DBReader
+	method           string
+	startTime        time.Time
+	rpcCtx           *kvrpcpb.Context
+	asyncMinCommitTS uint64
 }
 
 func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCtx, error) {
@@ -269,8 +270,14 @@ func (svr *Server) KvCheckTxnStatus(ctx context.Context, req *kvrpcpb.CheckTxnSt
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.CheckTxnStatusResponse{RegionError: reqCtx.regErr}, nil
 	}
-	lockTTL, commitTS, action, err := svr.mvccStore.CheckTxnStatus(reqCtx, req)
-	resp := &kvrpcpb.CheckTxnStatusResponse{LockTtl: lockTTL, CommitVersion: commitTS, Action: action}
+	txnStatus, err := svr.mvccStore.CheckTxnStatus(reqCtx, req)
+	resp := &kvrpcpb.CheckTxnStatusResponse{
+		LockTtl:        txnStatus.ttl,
+		CommitVersion:  txnStatus.commitTS,
+		Action:         txnStatus.action,
+		UseAsyncCommit: txnStatus.asyncCommit,
+		Secondaries:    txnStatus.secondaries,
+	}
 	resp.Error, resp.RegionError = convertToPBError(err)
 	return resp, nil
 }
@@ -286,6 +293,9 @@ func (svr *Server) KvPrewrite(ctx context.Context, req *kvrpcpb.PrewriteRequest)
 	}
 	err = svr.mvccStore.Prewrite(reqCtx, req)
 	resp := &kvrpcpb.PrewriteResponse{}
+	if reqCtx.asyncMinCommitTS > 0 {
+		resp.MinCommitTs = reqCtx.asyncMinCommitTS
+	}
 	resp.Errors, resp.RegionError = convertToPBErrors(err)
 	return resp, nil
 }
@@ -646,11 +656,12 @@ func convertToKeyError(err error) *kvrpcpb.KeyError {
 	case *ErrLocked:
 		return &kvrpcpb.KeyError{
 			Locked: &kvrpcpb.LockInfo{
-				Key:         x.Key,
 				PrimaryLock: x.Primary,
+				Key:         x.Key,
 				LockVersion: x.StartTS,
 				LockTtl:     x.TTL,
 				LockType:    kvrpcpb.Op(x.LockType),
+				MinCommitTs: x.minCommitTS,
 			},
 		}
 	case ErrRetryable:

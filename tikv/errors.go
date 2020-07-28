@@ -22,21 +22,23 @@ import (
 // ErrLocked is returned when trying to Read/Write on a locked key. Client should
 // backoff or cleanup the lock then retry.
 type ErrLocked struct {
-	Key      []byte
-	Primary  []byte
-	StartTS  uint64
-	TTL      uint64
-	LockType uint8
+	Key         []byte
+	Primary     []byte
+	StartTS     uint64
+	TTL         uint64
+	LockType    uint8
+	minCommitTS uint64
 }
 
 // BuildLockErr generates ErrKeyLocked objects
-func BuildLockErr(key []byte, primaryKey []byte, startTS uint64, TTL uint64, lockType uint8) *ErrLocked {
+func BuildLockErr(key []byte, primaryKey []byte, startTS uint64, TTL uint64, lockType uint8, minCommitTS uint64) *ErrLocked {
 	errLocked := &ErrLocked{
-		Key:      key,
-		Primary:  primaryKey,
-		StartTS:  startTS,
-		TTL:      TTL,
-		LockType: lockType,
+		Key:         key,
+		Primary:     primaryKey,
+		StartTS:     startTS,
+		TTL:         TTL,
+		LockType:    lockType,
+		minCommitTS: minCommitTS,
 	}
 	return errLocked
 }

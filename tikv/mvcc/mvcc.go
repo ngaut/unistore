@@ -27,25 +27,37 @@ type DBUserMeta []byte
 
 const dbUserMetaLen = 16
 
-// DecodeLock decodes data to lock, the primary and value is copied.
+// DecodeLock decodes data to lock, the primary and value is copied, the secondaries are copied if async commit is enabled.
 func DecodeLock(data []byte) (l MvccLock) {
 	l.MvccLockHdr = *(*MvccLockHdr)(unsafe.Pointer(&data[0]))
 	cursor := mvccLockHdrSize
 	lockBuf := append([]byte{}, data[cursor:]...)
 	l.Primary = lockBuf[:l.PrimaryLen]
-	l.Value = lockBuf[l.PrimaryLen:]
+	cursor = int(l.PrimaryLen)
+	if l.MvccLockHdr.SecondaryNum > 0 {
+		l.Secondaries = make([][]byte, l.MvccLockHdr.SecondaryNum)
+		for i := uint32(0); i < l.MvccLockHdr.SecondaryNum; i++ {
+			keyLen := binary.LittleEndian.Uint16(lockBuf[cursor:])
+			cursor += 2
+			l.Secondaries[i] = lockBuf[cursor : cursor+int(keyLen)]
+			cursor += int(keyLen)
+		}
+	}
+	l.Value = lockBuf[cursor:]
 	return
 }
 
 // MvccLockHdr holds fixed size fields for MvccLock.
 type MvccLockHdr struct {
-	StartTS     uint64
-	ForUpdateTS uint64
-	MinCommitTS uint64
-	TTL         uint32
-	Op          uint8
-	HasOldVer   bool
-	PrimaryLen  uint16
+	StartTS        uint64
+	ForUpdateTS    uint64
+	MinCommitTS    uint64
+	TTL            uint32
+	Op             uint8
+	HasOldVer      bool
+	PrimaryLen     uint16
+	UseAsyncCommit bool
+	SecondaryNum   uint32
 }
 
 const mvccLockHdrSize = int(unsafe.Sizeof(MvccLockHdr{}))
@@ -53,20 +65,35 @@ const mvccLockHdrSize = int(unsafe.Sizeof(MvccLockHdr{}))
 // MvccLock is the structure for MVCC lock.
 type MvccLock struct {
 	MvccLockHdr
-	Primary []byte
-	Value   []byte
+	Primary     []byte
+	Value       []byte
+	Secondaries [][]byte
 }
 
 // MarshalBinary implements encoding.BinaryMarshaler interface.
 func (l *MvccLock) MarshalBinary() []byte {
 	lockLen := mvccLockHdrSize + len(l.Primary) + len(l.Value)
 	length := lockLen
+	if l.MvccLockHdr.SecondaryNum > 0 {
+		for _, secondaryKey := range l.Secondaries {
+			length += 2
+			length += len(secondaryKey)
+		}
+	}
 	buf := make([]byte, length)
 	hdr := (*MvccLockHdr)(unsafe.Pointer(&buf[0]))
 	*hdr = l.MvccLockHdr
 	cursor := mvccLockHdrSize
 	copy(buf[cursor:], l.Primary)
 	cursor += len(l.Primary)
+	if l.MvccLockHdr.SecondaryNum > 0 {
+		for _, secondaryKey := range l.Secondaries {
+			binary.LittleEndian.PutUint16(buf[cursor:], uint16(len(secondaryKey)))
+			cursor += 2
+			copy(buf[cursor:], secondaryKey)
+			cursor += len(secondaryKey)
+		}
+	}
 	copy(buf[cursor:], l.Value)
 	cursor += len(l.Value)
 	return buf

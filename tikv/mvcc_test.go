@@ -119,7 +119,16 @@ func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
 	engines := raftstore.NewEngines(dbBundle, dbBundle.DB, kvPath, raftPath)
 	writer := raftstore.NewTestRaftWriter(dbBundle, engines)
 
-	store := NewMVCCStore(&config.DefaultConf, dbBundle, dbPath, safePoint, writer, nil)
+	rm, err := NewMockRegionManager(dbBundle, 1, RegionOptions{
+		StoreAddr:  "127.0.0.1:10086",
+		PDAddr:     "127.0.0.1:2379",
+		RegionSize: 96 * 1024 * 1024,
+	})
+	if err != nil {
+		return nil, err
+	}
+	pdClient := NewMockPD(rm)
+	store := NewMVCCStore(&config.DefaultConf, dbBundle, dbPath, safePoint, writer, pdClient)
 	svr := NewServer(nil, store, nil)
 	return &TestStore{
 		MvccStore: store,
@@ -153,13 +162,15 @@ func PessimisticLock(pk []byte, key []byte, startTs uint64, lockTTL uint64, forU
 
 // PrewriteOptimistic raises optimistic prewrite requests on store
 func PrewriteOptimistic(pk []byte, key []byte, value []byte, startTs uint64, lockTTL uint64,
-	minCommitTs uint64, store *TestStore) error {
+	minCommitTs uint64, useAsyncCommit bool, secondaries [][]byte, store *TestStore) error {
 	prewriteReq := &kvrpcpb.PrewriteRequest{
-		Mutations:    []*kvrpcpb.Mutation{newMutation(kvrpcpb.Op_Put, key, value)},
-		PrimaryLock:  pk,
-		StartVersion: startTs,
-		LockTtl:      lockTTL,
-		MinCommitTs:  minCommitTs,
+		Mutations:      []*kvrpcpb.Mutation{newMutation(kvrpcpb.Op_Put, key, value)},
+		PrimaryLock:    pk,
+		StartVersion:   startTs,
+		LockTtl:        lockTTL,
+		MinCommitTs:    minCommitTs,
+		UseAsyncCommit: useAsyncCommit,
+		Secondaries:    secondaries,
 	}
 	return store.MvccStore.prewriteOptimistic(store.newReqCtx(), prewriteReq.Mutations, prewriteReq)
 }
@@ -196,8 +207,9 @@ func CheckTxnStatus(pk []byte, lockTs uint64, callerStartTs uint64,
 		CurrentTs:          currentTs,
 		RollbackIfNotExist: rollbackIfNotExists,
 	}
-	resTTL, resCommitTs, action, err := store.MvccStore.CheckTxnStatus(store.newReqCtx(), req)
-	return resTTL, resCommitTs, action, err
+	//resTTL, resCommitTs, action, err := store.MvccStore.CheckTxnStatus(store.newReqCtx(), req)
+	txnStatus, err := store.MvccStore.CheckTxnStatus(store.newReqCtx(), req)
+	return txnStatus.ttl, txnStatus.commitTS, txnStatus.action, err
 }
 
 func MustLocked(key []byte, pessimistic bool, store *TestStore) {
@@ -227,14 +239,14 @@ func MustPrewritePut(pk, key []byte, val []byte, startTs uint64, store *TestStor
 }
 
 func MustPrewritePutLockErr(pk, key []byte, val []byte, startTs uint64, store *TestStore) {
-	err := PrewriteOptimistic(pk, key, val, startTs, lockTTL, startTs, store)
+	err := PrewriteOptimistic(pk, key, val, startTs, lockTTL, startTs, false, [][]byte{}, store)
 	store.c.Assert(err, NotNil)
 	lockedErr := err.(*ErrLocked)
 	store.c.Assert(lockedErr, NotNil)
 }
 
 func MustPrewritePutErr(pk, key []byte, val []byte, startTs uint64, store *TestStore) {
-	err := PrewriteOptimistic(pk, key, val, startTs, lockTTL, startTs, store)
+	err := PrewriteOptimistic(pk, key, val, startTs, lockTTL, startTs, false, [][]byte{}, store)
 	store.c.Assert(err, NotNil)
 }
 
@@ -327,7 +339,15 @@ func MustPessimisticRollback(key []byte, startTs uint64, forUpdateTs uint64, sto
 
 func MustPrewriteOptimistic(pk []byte, key []byte, value []byte, startTs uint64, lockTTL uint64,
 	minCommitTs uint64, store *TestStore) {
-	store.c.Assert(PrewriteOptimistic(pk, key, value, startTs, lockTTL, minCommitTs, store), IsNil)
+	store.c.Assert(PrewriteOptimistic(pk, key, value, startTs, lockTTL, minCommitTs, false, [][]byte{}, store), IsNil)
+	lock := store.MvccStore.getLock(store.newReqCtx(), key)
+	store.c.Assert(uint64(lock.TTL), Equals, lockTTL)
+	store.c.Assert(bytes.Compare(lock.Value, value), Equals, 0)
+}
+
+func MustPrewriteOptimisticAsyncCommit(pk []byte, key []byte, value []byte, startTs uint64, lockTTL uint64,
+	minCommitTs uint64, secondaries [][]byte, store *TestStore) {
+	store.c.Assert(PrewriteOptimistic(pk, key, value, startTs, lockTTL, minCommitTs, true, secondaries, store), IsNil)
 	lock := store.MvccStore.getLock(store.newReqCtx(), key)
 	store.c.Assert(uint64(lock.TTL), Equals, lockTTL)
 	store.c.Assert(bytes.Compare(lock.Value, value), Equals, 0)
@@ -607,7 +627,7 @@ func (s *testMvccSuite) TestCheckTxnStatus(c *C) {
 	val := []byte("val")
 	lockTTL := uint64(100)
 	minCommitTs := uint64(20)
-	err = PrewriteOptimistic(pk, pk, val, startTs, lockTTL, minCommitTs, store)
+	err = PrewriteOptimistic(pk, pk, val, startTs, lockTTL, minCommitTs, false, [][]byte{}, store)
 	c.Assert(err, Equals, ErrAlreadyRollback)
 
 	// Prewrite a large txn
@@ -1343,7 +1363,7 @@ func (s *testMvccSuite) TestPessimisticLock(c *C) {
 	// Currently not checked, so prewrite will success, and commit pessimistic lock will success
 	MustAcquirePessimisticLock(k, k, 40, 40, store)
 	MustLocked(k, true, store)
-	store.c.Assert(PrewriteOptimistic(k, k, v, 40, lockTTL, 40, store), IsNil)
+	store.c.Assert(PrewriteOptimistic(k, k, v, 40, lockTTL, 40, false, [][]byte{}, store), IsNil)
 	MustLocked(k, true, store)
 	MustCommit(k, 40, 41, store)
 	MustUnLocked(k, store)
@@ -1508,4 +1528,34 @@ func (s *testMvccSuite) TestScanSampleStep(c *C) {
 
 func genScanSampleStepKey(i int) []byte {
 	return []byte(fmt.Sprintf("t%0.4d", i))
+}
+
+func (s *testMvccSuite) TestAsyncCommitPrewrite(c *C) {
+	store, err := NewTestStore("TestAsyncCommitPrewrite", "TestAsyncCommitPrewrite", c)
+	c.Assert(err, IsNil)
+	defer CleanTestStore(store)
+
+	pk := []byte("tpk")
+	pkVal := []byte("tpkVal")
+	secKey1 := []byte("tSecKey1")
+	secVal1 := []byte("secVal1")
+	secKey2 := []byte("tSecKey2")
+	secVal2 := []byte("secVal2")
+
+	MustPrewriteOptimisticAsyncCommit(pk, pk, pkVal, 1, 100, 0, [][]byte{secKey1, secKey2}, store)
+	MustPrewriteOptimisticAsyncCommit(pk, secKey1, secVal1, 1, 100, 0, [][]byte{}, store)
+	MustPrewriteOptimisticAsyncCommit(pk, secKey2, secVal2, 1, 100, 0, [][]byte{}, store)
+	pkLock := store.MvccStore.getLock(store.newReqCtx(), pk)
+	store.c.Assert(pkLock.MvccLockHdr.SecondaryNum, Equals, uint32(2))
+	store.c.Assert(bytes.Compare(pkLock.Secondaries[0], secKey1), Equals, 0)
+	store.c.Assert(bytes.Compare(pkLock.Secondaries[1], secKey2), Equals, 0)
+	store.c.Assert(pkLock.UseAsyncCommit, Equals, true)
+	store.c.Assert(pkLock.MinCommitTS, Greater, uint64(0))
+
+	secLock := store.MvccStore.getLock(store.newReqCtx(), secKey2)
+	store.c.Assert(secLock.MvccLockHdr.SecondaryNum, Equals, uint32(0))
+	store.c.Assert(len(secLock.Secondaries), Equals, 0)
+	store.c.Assert(secLock.UseAsyncCommit, Equals, true)
+	store.c.Assert(secLock.MinCommitTS, Greater, uint64(0))
+	store.c.Assert(bytes.Compare(secLock.Value, secVal2), Equals, 0)
 }
