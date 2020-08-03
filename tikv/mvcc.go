@@ -451,7 +451,7 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	}
 }
 
-// TxnStatus is the result of `CheckSecondaryLocksStatus` API.
+// SecondaryLocksStatus is the result of `CheckSecondaryLocksStatus` API.
 type SecondaryLocksStatus struct {
 	locks    []*kvrpcpb.LockInfo
 	commitTS uint64
