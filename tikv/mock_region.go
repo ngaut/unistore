@@ -470,12 +470,11 @@ func (rm *MockRegionManager) saveRegions(regions []*regionCtx) error {
 	})
 }
 
-func (rm *MockRegionManager) ScanRegions(startKey, endKey []byte, limit int) ([]*metapb.Region, []*metapb.Peer) {
+func (rm *MockRegionManager) ScanRegions(startKey, endKey []byte, limit int) []*pdclient.Region {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 
-	regions := make([]*metapb.Region, 0, len(rm.regions))
-	leaders := make([]*metapb.Peer, 0, len(rm.regions))
+	regions := make([]*pdclient.Region, 0, len(rm.regions))
 	rm.sortedRegions.AscendGreaterOrEqual(newBtreeSearchItem(startKey), func(i btree.Item) bool {
 		r := i.(*btreeItem).region
 		if len(endKey) > 0 && bytes.Compare(r.meta.StartKey, endKey) >= 0 {
@@ -486,12 +485,14 @@ func (rm *MockRegionManager) ScanRegions(startKey, endKey []byte, limit int) ([]
 			return true
 		}
 
-		regions = append(regions, proto.Clone(r.meta).(*metapb.Region))
-		leaders = append(leaders, proto.Clone(r.meta.Peers[0]).(*metapb.Peer))
+		regions = append(regions, &pdclient.Region{
+			Meta:         proto.Clone(r.meta).(*metapb.Region),
+			Leader:       proto.Clone(r.meta.Peers[0]).(*metapb.Peer),
+		})
 
 		return !(limit > 0 && len(regions) >= limit)
 	})
-	return regions, leaders
+	return regions
 }
 
 func (rm *MockRegionManager) GetAllStores() []*metapb.Store {
@@ -656,9 +657,9 @@ func (pd *MockPD) GetAllStores(ctx context.Context, opts ...pdclient.GetStoreOpt
 	return pd.rm.GetAllStores(), nil
 }
 
-func (pd *MockPD) ScanRegions(ctx context.Context, startKey []byte, endKey []byte, limit int) ([]*metapb.Region, []*metapb.Peer, error) {
-	r, p := pd.rm.ScanRegions(startKey, endKey, limit)
-	return r, p, nil
+func (pd *MockPD) ScanRegions(ctx context.Context, startKey []byte, endKey []byte, limit int) ([]*pdclient.Region, error) {
+	regions := pd.rm.ScanRegions(startKey, endKey, limit)
+	return regions, nil
 }
 
 func (pd *MockPD) ScatterRegion(ctx context.Context, regionID uint64) error {
