@@ -451,6 +451,55 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	}
 }
 
+// TxnStatus is the result of `CheckSecondaryLocksStatus` API.
+type SecondaryLocksStatus struct {
+	locks    []*kvrpcpb.LockInfo
+	commitTS uint64
+}
+
+func (store *MVCCStore) CheckSecondaryLocks(reqCtx *requestCtx, keys [][]byte, startTS uint64) (SecondaryLocksStatus, error) {
+	sortKeys(keys)
+	hashVals := keysToHashVals(keys...)
+	log.S().Debugf("%d check secondary %v", startTS, hashVals)
+	regCtx := reqCtx.regCtx
+	regCtx.AcquireLatches(hashVals)
+	defer regCtx.ReleaseLatches(hashVals)
+
+	batch := store.dbWriter.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
+	locks := make([]*kvrpcpb.LockInfo, 0, len(keys))
+	for _, key := range keys {
+		lock := store.getLock(reqCtx, key)
+		if lock != nil && lock.StartTS == startTS {
+			if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
+				batch.Rollback(key, true)
+				return SecondaryLocksStatus{commitTS: 0}, store.dbWriter.Write(batch)
+			} else {
+				locks = append(locks, &kvrpcpb.LockInfo{
+					PrimaryLock:     lock.Primary,
+					LockVersion:     startTS,
+					Key:             key,
+					LockTtl:         uint64(lock.TTL),
+					LockType:        kvrpcpb.Op(lock.Op),
+					LockForUpdateTs: lock.ForUpdateTS,
+					UseAsyncCommit:  lock.UseAsyncCommit,
+					MinCommitTs:     lock.MinCommitTS,
+				})
+			}
+		} else {
+			commitTS, err := store.checkCommitted(reqCtx.getDBReader(), key, startTS)
+			if err != nil {
+				return SecondaryLocksStatus{}, err
+			}
+			if commitTS > 0 {
+				return SecondaryLocksStatus{commitTS: commitTS}, nil
+			}
+			batch.Rollback(key, false)
+			return SecondaryLocksStatus{commitTS: 0}, store.dbWriter.Write(batch)
+		}
+	}
+	return SecondaryLocksStatus{locks: locks}, nil
+}
+
 func (store *MVCCStore) normalizeWaitTime(lockWaitTime int64) time.Duration {
 	if lockWaitTime > store.conf.PessimisticTxn.WaitForLockTimeout {
 		lockWaitTime = store.conf.PessimisticTxn.WaitForLockTimeout

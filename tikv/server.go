@@ -262,7 +262,7 @@ func (svr *Server) KvTxnHeartBeat(ctx context.Context, req *kvrpcpb.TxnHeartBeat
 }
 
 func (svr *Server) KvCheckTxnStatus(ctx context.Context, req *kvrpcpb.CheckTxnStatusRequest) (*kvrpcpb.CheckTxnStatusResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "TxnHeartBeat")
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvCheckTxnStatus")
 	if err != nil {
 		return &kvrpcpb.CheckTxnStatusResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -279,6 +279,26 @@ func (svr *Server) KvCheckTxnStatus(ctx context.Context, req *kvrpcpb.CheckTxnSt
 		Secondaries:    txnStatus.secondaries,
 	}
 	resp.Error, resp.RegionError = convertToPBError(err)
+	return resp, nil
+}
+
+func (svr *Server) KvCheckSecondaryLocks(ctx context.Context, req *kvrpcpb.CheckSecondaryLocksRequest) (*kvrpcpb.CheckSecondaryLocksResponse, error) {
+	reqCtx, err := newRequestCtx(svr, req.Context, "KvCheckSecondaryLocks")
+	if err != nil {
+		return &kvrpcpb.CheckSecondaryLocksResponse{Error: convertToKeyError(err)}, nil
+	}
+	defer reqCtx.finish()
+	if reqCtx.regErr != nil {
+		return &kvrpcpb.CheckSecondaryLocksResponse{RegionError: reqCtx.regErr}, nil
+	}
+	locksStatus, err := svr.mvccStore.CheckSecondaryLocks(reqCtx, req.Keys, req.StartVersion)
+	resp := &kvrpcpb.CheckSecondaryLocksResponse{}
+	if err == nil {
+		resp.Locks = locksStatus.locks
+		resp.CommitTs = locksStatus.commitTS
+	} else {
+		resp.Error, resp.RegionError = convertToPBError(err)
+	}
 	return resp, nil
 }
 

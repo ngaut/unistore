@@ -212,6 +212,11 @@ func CheckTxnStatus(pk []byte, lockTs uint64, callerStartTs uint64,
 	return txnStatus.ttl, txnStatus.commitTS, txnStatus.action, err
 }
 
+func CheckSecondaryLocksStatus(keys [][]byte, startTS uint64, store *TestStore) ([]*kvrpcpb.LockInfo, uint64, error) {
+	status, err := store.MvccStore.CheckSecondaryLocks(store.newReqCtx(), keys, startTS)
+	return status.locks, status.commitTS, err
+}
+
 func MustLocked(key []byte, pessimistic bool, store *TestStore) {
 	lock := store.MvccStore.getLock(store.newReqCtx(), key)
 	store.c.Assert(lock, NotNil)
@@ -704,6 +709,67 @@ func (s *testMvccSuite) TestCheckTxnStatus(c *C) {
 	c.Assert(resCommitTs, Equals, uint64(41))
 	c.Assert(err, IsNil)
 	c.Assert(action, Equals, kvrpcpb.Action_NoAction)
+}
+
+func (s *testMvccSuite) TestCheckSecondaryLocksStatus(c *C) {
+	var err error
+	store, err := NewTestStore("CheckSecondaryLocksStatusDB", "CheckSecondaryLocksStatusLog", c)
+	c.Assert(err, IsNil)
+	defer CleanTestStore(store)
+
+	pk := []byte("pk")
+	secondary := []byte("secondary")
+	val := []byte("val")
+
+	MustPrewritePut(pk, secondary, val, 1, store)
+	MustCommit(secondary, 1, 3, store)
+	MustRollbackKey(secondary, 5, store)
+	MustPrewritePut(pk, secondary, val, 7, store)
+	MustCommit(secondary, 7, 9, store)
+
+	// No lock
+	// 9: start_ts = 7
+	// 5: rollback
+	// 3: start_ts = 1
+
+	// Lock is committed
+	locks, commitTS, err := CheckSecondaryLocksStatus([][]byte{secondary}, 7, store)
+	c.Assert(err, IsNil)
+	c.Assert(len(locks), Equals, 0)
+	c.Assert(commitTS, Equals, uint64(9))
+	MustGet(secondary, 7, store)
+
+	// Lock is rolled back
+	locks, commitTS, err = CheckSecondaryLocksStatus([][]byte{secondary}, 5, store)
+	c.Assert(err, IsNil)
+	c.Assert(len(locks), Equals, 0)
+	c.Assert(commitTS, Equals, uint64(0))
+	MustGetRollback(secondary, 5, store)
+
+	// No commit info
+	locks, commitTS, err = CheckSecondaryLocksStatus([][]byte{secondary}, 6, store)
+	c.Assert(err, IsNil)
+	c.Assert(len(locks), Equals, 0)
+	c.Assert(commitTS, Equals, uint64(0))
+	MustGetRollback(secondary, 6, store)
+
+	// If there is a pessimistic lock on the secondary key:
+	MustAcquirePessimisticLock(pk, secondary, 11, 11, store)
+	// After CheckSecondaryLockStatus, the lock should be rolled back
+	locks, commitTS, err = CheckSecondaryLocksStatus([][]byte{secondary}, 11, store)
+	c.Assert(err, IsNil)
+	c.Assert(len(locks), Equals, 0)
+	c.Assert(commitTS, Equals, uint64(0))
+	MustGetRollback(secondary, 11, store)
+
+	// If there is an optimistic lock on the secondary key:
+	MustPrewritePut(pk, secondary, val, 13, store)
+	// After CheckSecondaryLockStatus, the lock should remain and be returned back
+	locks, commitTS, err = CheckSecondaryLocksStatus([][]byte{secondary}, 13, store)
+	c.Assert(err, IsNil)
+	c.Assert(len(locks), Equals, 1)
+	c.Assert(commitTS, Equals, uint64(0))
+	MustLocked(secondary, false, store)
 }
 
 func (s *testMvccSuite) TestMvccGet(c *C) {
