@@ -467,12 +467,18 @@ func (store *MVCCStore) CheckSecondaryLocks(reqCtx *requestCtx, keys [][]byte, s
 
 	batch := store.dbWriter.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
 	locks := make([]*kvrpcpb.LockInfo, 0, len(keys))
-	for _, key := range keys {
+	for i, key := range keys {
 		lock := store.getLock(reqCtx, key)
 		if lock != nil && lock.StartTS == startTS {
 			if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
 				batch.Rollback(key, true)
-				return SecondaryLocksStatus{commitTS: 0}, store.dbWriter.Write(batch)
+				err := store.dbWriter.Write(batch)
+				if err != nil {
+					return SecondaryLocksStatus{}, err
+				}
+				store.lockWaiterManager.WakeUp(startTS, 0, []uint64{hashVals[i]})
+				store.DeadlockDetectCli.CleanUp(startTS)
+				return SecondaryLocksStatus{commitTS: 0}, nil
 			} else {
 				locks = append(locks, &kvrpcpb.LockInfo{
 					PrimaryLock:     lock.Primary,
@@ -493,8 +499,15 @@ func (store *MVCCStore) CheckSecondaryLocks(reqCtx *requestCtx, keys [][]byte, s
 			if commitTS > 0 {
 				return SecondaryLocksStatus{commitTS: commitTS}, nil
 			}
-			batch.Rollback(key, false)
-			return SecondaryLocksStatus{commitTS: 0}, store.dbWriter.Write(batch)
+			status := store.checkExtraTxnStatus(reqCtx, key, startTS)
+			if status.isOpLockCommitted() {
+				return SecondaryLocksStatus{commitTS: status.commitTS}, nil
+			}
+			if !status.isRollback {
+				batch.Rollback(key, false)
+				err = store.dbWriter.Write(batch)
+			}
+			return SecondaryLocksStatus{commitTS: 0}, err
 		}
 	}
 	return SecondaryLocksStatus{locks: locks}, nil

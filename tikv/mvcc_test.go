@@ -733,13 +733,20 @@ func (s *testMvccSuite) TestCheckSecondaryLocksStatus(c *C) {
 	// 3: start_ts = 1
 
 	// Lock is committed
-	locks, commitTS, err := CheckSecondaryLocksStatus([][]byte{secondary}, 7, store)
+	locks, commitTS, err := CheckSecondaryLocksStatus([][]byte{secondary}, 1, store)
+	c.Assert(err, IsNil)
+	c.Assert(len(locks), Equals, 0)
+	c.Assert(commitTS, Equals, uint64(3))
+	MustGet(secondary, 1, store)
+
+	// Op_Lock lock is committed
+	locks, commitTS, err = CheckSecondaryLocksStatus([][]byte{secondary}, 7, store)
 	c.Assert(err, IsNil)
 	c.Assert(len(locks), Equals, 0)
 	c.Assert(commitTS, Equals, uint64(9))
 	MustGet(secondary, 7, store)
 
-	// Lock is rolled back
+	// Lock is already rolled back
 	locks, commitTS, err = CheckSecondaryLocksStatus([][]byte{secondary}, 5, store)
 	c.Assert(err, IsNil)
 	c.Assert(len(locks), Equals, 0)
