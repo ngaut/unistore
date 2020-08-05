@@ -1010,7 +1010,7 @@ func checkLock(lock mvcc.MvccLock, key []byte, startTS uint64, resolved []uint64
 	isWriteLock := lock.Op == uint8(kvrpcpb.Op_Put) || lock.Op == uint8(kvrpcpb.Op_Del)
 	isPrimaryGet := startTS == maxSystemTS && bytes.Equal(lock.Primary, key)
 	if lockVisible && isWriteLock && !isPrimaryGet {
-		return BuildLockErr(key, lock.Primary, lock.StartTS, uint64(lock.TTL), lock.Op, lock.MinCommitTS)
+		return BuildLockErr(safeCopy(key), lock.Primary, lock.StartTS, uint64(lock.TTL), lock.Op, lock.MinCommitTS)
 	}
 	return nil
 }
