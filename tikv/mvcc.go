@@ -399,7 +399,9 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 		// lock.minCommitTS == 0 may be a secondary lock, or not a large transaction.
 		// For async commit protocol, the minCommitTS is always greater than zero, but async commit will not be a large transaction.
 		action := kvrpcpb.Action_NoAction
-		if lock.MinCommitTS > 0 && !lock.UseAsyncCommit {
+		if req.CallerStartTs == maxSystemTS {
+			action = kvrpcpb.Action_MinCommitTSPushed
+		} else if lock.MinCommitTS > 0 && !lock.UseAsyncCommit {
 			action = kvrpcpb.Action_MinCommitTSPushed
 			// We *must* guarantee the invariance lock.minCommitTS >= callerStartTS + 1
 			if lock.MinCommitTS < req.CallerStartTs+1 {
@@ -1003,7 +1005,7 @@ func isVisibleKey(key []byte, startTS uint64) bool {
 }
 
 func checkLock(lock mvcc.MvccLock, key []byte, startTS uint64, resolved []uint64) error {
-	if isResolved(startTS, resolved) {
+	if isResolved(lock.StartTS, resolved) {
 		return nil
 	}
 	lockVisible := lock.StartTS <= startTS
