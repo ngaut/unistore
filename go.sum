@@ -456,6 +456,8 @@ github.com/pingcap/badger v1.5.1-0.20200604041313-19c397305fcc h1:aL83XYtYRGJHGr
 github.com/pingcap/badger v1.5.1-0.20200604041313-19c397305fcc/go.mod h1:LyrqUOHZrUDf9oGi1yoz1+qw9ckSIhQb5eMa1acOLNQ=
 github.com/pingcap/badger v1.5.1-0.20200714132513-80ba2000f159 h1:cmZSuRbdfOJd3kJjRIClrLbt3nD0xi4oqYR1c/ZrPKg=
 github.com/pingcap/badger v1.5.1-0.20200714132513-80ba2000f159/go.mod h1:LyrqUOHZrUDf9oGi1yoz1+qw9ckSIhQb5eMa1acOLNQ=
+github.com/pingcap/badger v1.5.1-0.20200810065601-8c92a97807f9 h1:tjVCYovZalb5nxH6Imn70Ifcu/FlBxMf0xFqUNW9q7Y=
+github.com/pingcap/badger v1.5.1-0.20200810065601-8c92a97807f9/go.mod h1:LyrqUOHZrUDf9oGi1yoz1+qw9ckSIhQb5eMa1acOLNQ=
 github.com/pingcap/br v0.0.0-20200426093517-dd11ae28b885 h1:gI14HoGBF9UyECMgqSRZx1ONhREtrZe8JCmZ/6OFilw=
 github.com/pingcap/br v0.0.0-20200426093517-dd11ae28b885/go.mod h1:4w3meMnk7HDNpNgjuRAxavruTeKJvUiXxoEWTjzXPnA=
 github.com/pingcap/br v0.0.0-20200521085655-53201addd4ad h1:nptiQT0kWdIUghh49OyaTBYb4DtdxJmsLHOxbU25kW4=

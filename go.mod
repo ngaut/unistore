@@ -9,7 +9,7 @@ require (
 	github.com/google/btree v1.0.0
 	github.com/juju/errors v0.0.0-20181118221551-089d3ea4e4d5
 	github.com/pierrec/lz4 v2.0.5+incompatible
-	github.com/pingcap/badger v1.5.1-0.20200714132513-80ba2000f159
+	github.com/pingcap/badger v1.5.1-0.20200810065601-8c92a97807f9
 	github.com/pingcap/check v0.0.0-20200212061837-5e12011dc712
 	github.com/pingcap/errors v0.11.5-0.20200729012136-4e113ddee29e
 	github.com/pingcap/kvproto v0.0.0-20200803054707-ebd5de15093f
