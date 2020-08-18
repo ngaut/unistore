@@ -64,9 +64,9 @@ func (ts *TestStore) newReqCtxWithKeys(startKey, endKey []byte) *requestCtx {
 			RegionId:    1,
 			RegionEpoch: &metapb.RegionEpoch{Version: 1, ConfVer: 1},
 			Peer: &metapb.Peer{
-				Id:        1,
-				StoreId:   1,
-				IsLearner: false,
+				Id:      1,
+				StoreId: 1,
+				Role:    metapb.PeerRole_Voter,
 			},
 		},
 		svr: ts.Svr,

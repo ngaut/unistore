@@ -12,7 +12,7 @@ require (
 	github.com/pingcap/badger v1.5.1-0.20200810065601-8c92a97807f9
 	github.com/pingcap/check v0.0.0-20200212061837-5e12011dc712
 	github.com/pingcap/errors v0.11.5-0.20200729012136-4e113ddee29e
-	github.com/pingcap/kvproto v0.0.0-20200803054707-ebd5de15093f
+	github.com/pingcap/kvproto v0.0.0-20200810113304-6157337686b1
 	github.com/pingcap/log v0.0.0-20200511115504-543df19646ad
 	github.com/pingcap/pd/v4 v4.0.0-rc.2.0.20200730093003-dc8c75cf7ca0
 	github.com/pingcap/tidb v1.1.0-beta.0.20200806060043-574540aa06ba
@@ -28,5 +28,7 @@ require (
 )
 
 replace go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.0.0-20190226085253-137eac022b64
+
+replace github.com/zhangjinpeng1987/raft => github.com/NingLin-P/raft v0.0.0-20200818113713-19cc67b2ee50
 
 go 1.13

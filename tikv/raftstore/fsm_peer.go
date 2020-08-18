@@ -752,7 +752,7 @@ func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
 	peerID := cp.peer.Id
 	switch changeType {
 	case eraftpb.ConfChangeType_AddNode, eraftpb.ConfChangeType_AddLearnerNode:
-		if d.peerID() == peerID && d.peer.Meta.IsLearner {
+		if d.peerID() == peerID && d.peer.Meta.Role == metapb.PeerRole_Learner {
 			d.peer.Meta = cp.peer
 		}
 
