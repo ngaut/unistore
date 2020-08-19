@@ -20,7 +20,7 @@ require (
 	github.com/shirou/gopsutil v2.19.10+incompatible
 	github.com/stretchr/testify v1.5.1
 	github.com/uber-go/atomic v1.3.2
-	github.com/zhangjinpeng1987/raft v0.0.0-20190624145930-deeb32d6553d
+	github.com/zhangjinpeng1987/raft v0.0.0-20200819064223-df31bb68a018
 	go.uber.org/zap v1.15.0
 	golang.org/x/net v0.0.0-20200520182314-0ba52f642ac2
 	golang.org/x/time v0.0.0-20190308202827-9d24e82272b4
@@ -28,7 +28,5 @@ require (
 )
 
 replace go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.0.0-20190226085253-137eac022b64
-
-replace github.com/zhangjinpeng1987/raft => github.com/NingLin-P/raft v0.0.0-20200818113713-19cc67b2ee50
 
 go 1.13
