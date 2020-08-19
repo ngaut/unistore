@@ -443,10 +443,10 @@ func (ps *PeerStorage) InitialState() (eraftpb.HardState, eraftpb.ConfState, err
 
 func confStateFromRegion(region *metapb.Region) (confState eraftpb.ConfState) {
 	for _, p := range region.Peers {
-		if p.IsLearner {
+		if p.Role == metapb.PeerRole_Learner {
 			confState.Learners = append(confState.Learners, p.GetId())
 		} else {
-			confState.Nodes = append(confState.Nodes, p.GetId())
+			confState.Voters = append(confState.Voters, p.GetId())
 		}
 	}
 	return
@@ -932,7 +932,7 @@ func (ps *PeerStorage) SaveReadyState(kvWB, raftWB *WriteBatch, ready *raft.Read
 }
 
 func PeerEqual(l, r *metapb.Peer) bool {
-	return l.Id == r.Id && l.StoreId == r.StoreId && l.IsLearner == r.IsLearner
+	return l.Id == r.Id && l.StoreId == r.StoreId && l.Role == r.Role
 }
 
 func RegionEqual(l, r *metapb.Region) bool {

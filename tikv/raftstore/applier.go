@@ -1224,14 +1224,14 @@ func (a *applier) execChangePeer(aCtx *applyContext, req *raft_cmdpb.AdminReques
 		var exist bool
 		if p := findPeer(region, storeID); p != nil {
 			exist = true
-			if !p.IsLearner || p.Id != peer.Id {
+			if !(p.Role == metapb.PeerRole_Learner) || p.Id != peer.Id {
 				errMsg := fmt.Sprintf("%s can't add duplicated peer, peer %s, region %s",
 					a.tag, p, a.region)
 				log.S().Error(errMsg)
 				err = errors.New(errMsg)
 				return
 			}
-			p.IsLearner = false
+			p.Role = metapb.PeerRole_Voter
 		}
 		if !exist {
 			// TODO: Do we allow adding peer in same node?
@@ -1367,9 +1367,9 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 		newRegion.Peers = make([]*metapb.Peer, len(derived.Peers))
 		for j := range newRegion.Peers {
 			newRegion.Peers[j] = &metapb.Peer{
-				Id:        request.NewPeerIds[j],
-				StoreId:   derived.Peers[j].StoreId,
-				IsLearner: derived.Peers[j].IsLearner,
+				Id:      request.NewPeerIds[j],
+				StoreId: derived.Peers[j].StoreId,
+				Role:    derived.Peers[j].Role,
 			}
 		}
 		WritePeerState(aCtx.wb, newRegion, rspb.PeerState_Normal, nil)

@@ -852,15 +852,15 @@ func (p *Peer) PostRaftReadyPersistent(trans Transport, applyMsgs *applyMsgs, re
 	}
 
 	applySnapResult := p.Store().PostReadyPersistent(invokeCtx)
-	if applySnapResult != nil && p.Meta.GetIsLearner() {
+	if applySnapResult != nil && p.Meta.GetRole() == metapb.PeerRole_Learner {
 		// The peer may change from learner to voter after snapshot applied.
 		var pr *metapb.Peer
 		for _, peer := range p.Region().GetPeers() {
 			if peer.GetId() == p.Meta.GetId() {
 				pr = &metapb.Peer{
-					Id:        peer.Id,
-					StoreId:   peer.StoreId,
-					IsLearner: peer.IsLearner,
+					Id:      peer.Id,
+					StoreId: peer.StoreId,
+					Role:    peer.Role,
 				}
 			}
 		}
@@ -1283,8 +1283,8 @@ func (p *Peer) checkConfChange(cfg *Config, cmd *raft_cmdpb.RaftCmdRequest) erro
 	peer := changePeer.GetPeer()
 
 	// Check the request itself is valid or not.
-	if (changeType == eraftpb.ConfChangeType_AddNode && peer.IsLearner) ||
-		(changeType == eraftpb.ConfChangeType_AddLearnerNode && !peer.IsLearner) {
+	if (changeType == eraftpb.ConfChangeType_AddNode && peer.Role == metapb.PeerRole_Learner) ||
+		(changeType == eraftpb.ConfChangeType_AddLearnerNode && !(peer.Role == metapb.PeerRole_Learner)) {
 		log.S().Warnf("%s conf change type: %v, but got peer %v", p.Tag, changeType, peer)
 		return fmt.Errorf("invalid conf change request")
 	}
@@ -1311,7 +1311,7 @@ func (p *Peer) checkConfChange(cfg *Config, cmd *raft_cmdpb.RaftCmdRequest) erro
 			status.Progress[peer.Id] = raft.Progress{}
 		}
 	case eraftpb.ConfChangeType_RemoveNode:
-		if peer.GetIsLearner() {
+		if peer.GetRole() == metapb.PeerRole_Learner {
 			// If the node is a learner, we can return directly.
 			return nil
 		}
