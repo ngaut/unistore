@@ -14,11 +14,11 @@ require (
 	github.com/pingcap/errors v0.11.5-0.20200729012136-4e113ddee29e
 	github.com/pingcap/kvproto v0.0.0-20200810113304-6157337686b1
 	github.com/pingcap/log v0.0.0-20200511115504-543df19646ad
-	github.com/pingcap/pd/v4 v4.0.0-rc.2.0.20200730093003-dc8c75cf7ca0
-	github.com/pingcap/tidb v1.1.0-beta.0.20200806060043-574540aa06ba
+	github.com/pingcap/tidb v1.1.0-beta.0.20200820085534-0d997f2b8b3c
 	github.com/prometheus/client_golang v1.5.1
 	github.com/shirou/gopsutil v2.19.10+incompatible
 	github.com/stretchr/testify v1.5.1
+	github.com/tikv/pd v1.1.0-beta.0.20200818122340-ef1a4e920b2f
 	github.com/uber-go/atomic v1.3.2
 	github.com/zhangjinpeng1987/raft v0.0.0-20200819064223-df31bb68a018
 	go.uber.org/zap v1.15.0

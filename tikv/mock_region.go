@@ -18,10 +18,10 @@ import (
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
-	pdclient "github.com/pingcap/pd/v4/client"
 	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/util/codec"
+	pdclient "github.com/tikv/pd/client"
 	"golang.org/x/net/context"
 )
 
@@ -486,8 +486,8 @@ func (rm *MockRegionManager) ScanRegions(startKey, endKey []byte, limit int) []*
 		}
 
 		regions = append(regions, &pdclient.Region{
-			Meta:         proto.Clone(r.meta).(*metapb.Region),
-			Leader:       proto.Clone(r.meta.Peers[0]).(*metapb.Peer),
+			Meta:   proto.Clone(r.meta).(*metapb.Region),
+			Leader: proto.Clone(r.meta.Peers[0]).(*metapb.Peer),
 		})
 
 		return !(limit > 0 && len(regions) >= limit)
