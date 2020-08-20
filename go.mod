@@ -14,7 +14,7 @@ require (
 	github.com/pingcap/errors v0.11.5-0.20200729012136-4e113ddee29e
 	github.com/pingcap/kvproto v0.0.0-20200810113304-6157337686b1
 	github.com/pingcap/log v0.0.0-20200511115504-543df19646ad
-	github.com/pingcap/tidb v1.1.0-beta.0.20200806060043-574540aa06ba
+	github.com/pingcap/tidb v1.1.0-beta.0.20200820085534-0d997f2b8b3c
 	github.com/prometheus/client_golang v1.5.1
 	github.com/shirou/gopsutil v2.19.10+incompatible
 	github.com/stretchr/testify v1.5.1
