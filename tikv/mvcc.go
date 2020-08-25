@@ -1306,9 +1306,10 @@ func (store *MVCCStore) BatchGet(reqCtx *requestCtx, keys [][]byte, version uint
 	return pairs
 }
 
-func (store *MVCCStore) collectRangeLock(startTS uint64, startKey, endKey []byte, resolved []uint64) []*kvrpcpb.KvPair {
+func (store *MVCCStore) collectRangeLock(startTS uint64, startKey, endKey []byte, resolved []uint64, limit int) []*kvrpcpb.KvPair {
 	var pairs []*kvrpcpb.KvPair
 	it := store.lockStore.NewIterator()
+	var cnt int
 	for it.Seek(startKey); it.Valid(); it.Next() {
 		if exceedEndKey(it.Key(), endKey) {
 			break
@@ -1320,6 +1321,10 @@ func (store *MVCCStore) collectRangeLock(startTS uint64, startKey, endKey []byte
 				Error: convertToKeyError(err),
 				Key:   safeCopy(it.Key()),
 			})
+		}
+		cnt++
+		if cnt >= limit {
+			break
 		}
 	}
 	return pairs
@@ -1381,7 +1386,7 @@ func (store *MVCCStore) Scan(reqCtx *requestCtx, req *kvrpcpb.ScanRequest) []*kv
 	var lockPairs []*kvrpcpb.KvPair
 	limit := req.GetLimit()
 	if req.SampleStep == 0 {
-		lockPairs = store.collectRangeLock(req.GetVersion(), startKey, endKey, req.Context.ResolvedLocks)
+		lockPairs = store.collectRangeLock(req.GetVersion(), startKey, endKey, req.Context.ResolvedLocks, int(limit))
 	} else {
 		limit = req.SampleStep * limit
 	}
@@ -1424,6 +1429,9 @@ func (store *MVCCStore) Scan(reqCtx *requestCtx, req *kvrpcpb.ScanRequest) []*kv
 			prevErr = pair
 		}
 		validPairs = append(validPairs, pair)
+		if len(validPairs) >= int(limit) {
+			break
+		}
 	}
 	return validPairs
 }
