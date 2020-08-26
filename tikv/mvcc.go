@@ -1424,6 +1424,9 @@ func (store *MVCCStore) Scan(reqCtx *requestCtx, req *kvrpcpb.ScanRequest) []*kv
 			prevErr = pair
 		}
 		validPairs = append(validPairs, pair)
+		if len(validPairs) >= int(limit) {
+			break
+		}
 	}
 	return validPairs
 }
