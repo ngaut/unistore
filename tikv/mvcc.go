@@ -370,11 +370,9 @@ func (store *MVCCStore) TxnHeartBeat(reqCtx *requestCtx, req *kvrpcpb.TxnHeartBe
 
 // TxnStatus is the result of `CheckTxnStatus` API.
 type TxnStatus struct {
-	ttl         uint64
 	commitTS    uint64
 	action      kvrpcpb.Action
-	asyncCommit bool
-	secondaries [][]byte
+	lockInfo    *kvrpcpb.LockInfo
 }
 
 func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
@@ -390,10 +388,10 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 		if uint64(oracle.ExtractPhysical(lock.StartTS))+uint64(lock.TTL) < uint64(oracle.ExtractPhysical(req.CurrentTs)) {
 			if !lock.UseAsyncCommit {
 				batch.Rollback(req.PrimaryKey, true)
-				return TxnStatus{0, 0, kvrpcpb.Action_TTLExpireRollback, false, nil}, store.dbWriter.Write(batch)
+				return TxnStatus{0, kvrpcpb.Action_TTLExpireRollback, nil}, store.dbWriter.Write(batch)
 			}
 			log.S().Debugf("async commit startTS=%v secondaries=%v minCommitTS=%v", lock.StartTS, lock.Secondaries, lock.MinCommitTS)
-			return TxnStatus{0, 0, kvrpcpb.Action_NoAction, lock.UseAsyncCommit, lock.Secondaries}, nil
+			return TxnStatus{0, kvrpcpb.Action_NoAction, lock.ToLockInfo(req.PrimaryKey)}, nil
 		}
 		// If this is a large transaction and the lock is active, push forward the minCommitTS.
 		// lock.minCommitTS == 0 may be a secondary lock, or not a large transaction.
@@ -415,26 +413,26 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 				}
 				batch.PessimisticLock(req.PrimaryKey, lock)
 				if err = store.dbWriter.Write(batch); err != nil {
-					return TxnStatus{0, 0, action, false, nil}, err
+					return TxnStatus{0, action, nil}, err
 				}
 			}
 		}
-		return TxnStatus{uint64(lock.TTL), 0, action, lock.UseAsyncCommit, lock.Secondaries}, nil
+		return TxnStatus{0, action, lock.ToLockInfo(req.PrimaryKey)}, nil
 	}
 
 	// The current transaction lock not exists, check the transaction commit info
 	commitTS, err := store.checkCommitted(reqCtx.getDBReader(), req.PrimaryKey, req.LockTs)
 	if commitTS > 0 {
-		return TxnStatus{0, commitTS, kvrpcpb.Action_NoAction, false, nil}, nil
+		return TxnStatus{commitTS, kvrpcpb.Action_NoAction, nil}, nil
 	}
 	// Check if the transaction already rollbacked
 	status := store.checkExtraTxnStatus(reqCtx, req.PrimaryKey, req.LockTs)
 	if status.isRollback {
-		return TxnStatus{0, 0, kvrpcpb.Action_NoAction, false, nil}, nil
+		return TxnStatus{0, kvrpcpb.Action_NoAction, nil}, nil
 	}
 	if status.isOpLockCommitted() {
 		commitTS = status.commitTS
-		return TxnStatus{0, commitTS, kvrpcpb.Action_NoAction, false, nil}, nil
+		return TxnStatus{commitTS, kvrpcpb.Action_NoAction, nil}, nil
 	}
 	// If current transaction is not prewritted before, it may be pessimistic lock.
 	// When pessimistic txn rollback statement, it may not leave a 'rollbacked' tombstone.
@@ -445,9 +443,9 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	if req.RollbackIfNotExist {
 		batch.Rollback(req.PrimaryKey, false)
 		err = store.dbWriter.Write(batch)
-		return TxnStatus{0, 0, kvrpcpb.Action_LockNotExistRollback, false, nil}, nil
+		return TxnStatus{0, kvrpcpb.Action_LockNotExistRollback, nil}, nil
 	}
-	return TxnStatus{0, 0, kvrpcpb.Action_NoAction, false, nil}, &ErrTxnNotFound{
+	return TxnStatus{0, kvrpcpb.Action_NoAction, nil}, &ErrTxnNotFound{
 		PrimaryKey: req.PrimaryKey,
 		StartTS:    req.LockTs,
 	}
@@ -482,16 +480,7 @@ func (store *MVCCStore) CheckSecondaryLocks(reqCtx *requestCtx, keys [][]byte, s
 				store.DeadlockDetectCli.CleanUp(startTS)
 				return SecondaryLocksStatus{commitTS: 0}, nil
 			} else {
-				locks = append(locks, &kvrpcpb.LockInfo{
-					PrimaryLock:     lock.Primary,
-					LockVersion:     startTS,
-					Key:             key,
-					LockTtl:         uint64(lock.TTL),
-					LockType:        kvrpcpb.Op(lock.Op),
-					LockForUpdateTs: lock.ForUpdateTS,
-					UseAsyncCommit:  lock.UseAsyncCommit,
-					MinCommitTs:     lock.MinCommitTS,
-				})
+				locks = append(locks, lock.ToLockInfo(key))
 			}
 		} else {
 			commitTS, err := store.checkCommitted(reqCtx.getDBReader(), key, startTS)
