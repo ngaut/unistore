@@ -271,12 +271,15 @@ func (svr *Server) KvCheckTxnStatus(ctx context.Context, req *kvrpcpb.CheckTxnSt
 		return &kvrpcpb.CheckTxnStatusResponse{RegionError: reqCtx.regErr}, nil
 	}
 	txnStatus, err := svr.mvccStore.CheckTxnStatus(reqCtx, req)
+	ttl := uint64(0)
+	if txnStatus.lockInfo != nil {
+		ttl = txnStatus.lockInfo.LockTtl
+	}
 	resp := &kvrpcpb.CheckTxnStatusResponse{
-		LockTtl:        txnStatus.ttl,
-		CommitVersion:  txnStatus.commitTS,
-		Action:         txnStatus.action,
-		UseAsyncCommit: txnStatus.asyncCommit,
-		Secondaries:    txnStatus.secondaries,
+		LockTtl:       ttl,
+		CommitVersion: txnStatus.commitTS,
+		Action:        txnStatus.action,
+		LockInfo:      txnStatus.lockInfo,
 	}
 	resp.Error, resp.RegionError = convertToPBError(err)
 	return resp, nil

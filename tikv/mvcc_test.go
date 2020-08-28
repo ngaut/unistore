@@ -207,9 +207,12 @@ func CheckTxnStatus(pk []byte, lockTs uint64, callerStartTs uint64,
 		CurrentTs:          currentTs,
 		RollbackIfNotExist: rollbackIfNotExists,
 	}
-	//resTTL, resCommitTs, action, err := store.MvccStore.CheckTxnStatus(store.newReqCtx(), req)
+	ttl := uint64(0)
 	txnStatus, err := store.MvccStore.CheckTxnStatus(store.newReqCtx(), req)
-	return txnStatus.ttl, txnStatus.commitTS, txnStatus.action, err
+	if txnStatus.lockInfo != nil {
+		ttl = txnStatus.lockInfo.LockTtl
+	}
+	return ttl, txnStatus.commitTS, txnStatus.action, err
 }
 
 func CheckSecondaryLocksStatus(keys [][]byte, startTS uint64, store *TestStore) ([]*kvrpcpb.LockInfo, uint64, error) {
