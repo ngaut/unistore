@@ -15,6 +15,7 @@ package tikv
 
 import (
 	"context"
+	mpppb "github.com/pingcap/kvproto/pkg/mpp"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -518,6 +519,18 @@ func (svr *Server) CoprocessorStream(*coprocessor.Request, tikvpb.Tikv_Coprocess
 }
 
 func (svr *Server) BatchCoprocessor(*coprocessor.BatchRequest, tikvpb.Tikv_BatchCoprocessorServer) error {
+	panic("todo")
+}
+
+func (svr *Server) PrepareMPPTask(_ context.Context, _ *mpppb.PrepareTaskRequest) (*mpppb.PrepareTaskResponse, error) {
+	panic("todo")
+}
+
+func (svr *Server) CancelMPPTask(_ context.Context, _ *mpppb.CancelTaskRequest) (*mpppb.CancelTaskResponse, error) {
+	panic("todo")
+}
+
+func (svr *Server) EstablishMPPConnection(*mpppb.EstablishMPPConnectionRequest, tikvpb.Tikv_EstablishMPPConnectionServer) error {
 	panic("todo")
 }
 
