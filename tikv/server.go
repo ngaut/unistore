@@ -15,7 +15,6 @@ package tikv
 
 import (
 	"context"
-	mpppb "github.com/pingcap/kvproto/pkg/mpp"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -29,6 +28,7 @@ import (
 	deadlockPb "github.com/pingcap/kvproto/pkg/deadlock"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/kvproto/pkg/mpp"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/store/mockstore/unistore/cophandler"
@@ -522,15 +522,15 @@ func (svr *Server) BatchCoprocessor(*coprocessor.BatchRequest, tikvpb.Tikv_Batch
 	panic("todo")
 }
 
-func (svr *Server) PrepareMPPTask(_ context.Context, _ *mpppb.PrepareTaskRequest) (*mpppb.PrepareTaskResponse, error) {
+func (svr *Server) DispatchMPPTask(_ context.Context, _ *mpp.DispatchTaskRequest) (*mpp.DispatchTaskResponse, error) {
 	panic("todo")
 }
 
-func (svr *Server) CancelMPPTask(_ context.Context, _ *mpppb.CancelTaskRequest) (*mpppb.CancelTaskResponse, error) {
+func (svr *Server) CancelMPPTask(_ context.Context, _ *mpp.CancelTaskRequest) (*mpp.CancelTaskResponse, error) {
 	panic("todo")
 }
 
-func (svr *Server) EstablishMPPConnection(*mpppb.EstablishMPPConnectionRequest, tikvpb.Tikv_EstablishMPPConnectionServer) error {
+func (svr *Server) EstablishMPPConnection(*mpp.EstablishMPPConnectionRequest, tikvpb.Tikv_EstablishMPPConnectionServer) error {
 	panic("todo")
 }
 

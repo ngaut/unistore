@@ -1,6 +1,6 @@
 module github.com/ngaut/unistore
 
-replace github.com/pingcap/kvproto => github.com/hanfei1991/kvproto v0.0.0-20200831063328-5c398a9f65b1
+replace github.com/pingcap/kvproto => github.com/hanfei1991/kvproto v0.0.0-20200901105828-2c09ed0da556
 
 require (
 	github.com/BurntSushi/toml v0.3.1
