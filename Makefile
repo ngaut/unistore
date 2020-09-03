@@ -18,17 +18,32 @@ PACKAGES            := $$($(PACKAGE_LIST))
 PACKAGE_DIRECTORIES := $(PACKAGE_LIST) | sed 's|github.com/pingcap/$(PROJECT)/||'
 
 # Targets
-.PHONY: build clean test
+.PHONY: build linux test go-build go-build-linux go-test prepare finish
 
 default: build
 
-test:
+test: prepare go-test
+
+go-test:
 	@echo "Running tests in native mode."
 	@export TZ='Asia/Shanghai'; \
 	$(GOTEST) -cover $(PACKAGES)
 
-build:
+go-build:
 	$(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/unistore-server cmd/unistore-server/main.go
 
-linux:
-	GOOS=linux $(GOBUILD) -ldflags "-X main.gitHash=`git rev-parse HEAD`" -o bin/unistore-server-linux unistore-server/main.go
+go-build-linux:
+	GOOS=linux $(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/unistore-server-linux cmd/unistore-server/main.go
+
+build: prepare go-build finish
+
+linux: prepare go-build-linux finish
+
+prepare:
+	cp go.mod1 go.mod
+	cp go.sum1 go.sum
+
+finish:
+	@$(GO) mod tidy
+	cp go.mod go.mod1
+	cp go.sum go.sum1
