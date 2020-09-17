@@ -182,7 +182,7 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*
 	opts.ValueLogFileSize = conf.VlogFileSize
 	opts.ValueLogMaxNumFiles = 3
 	opts.MaxMemTableSize = conf.MaxMemTableSize
-	opts.MaxTableSize = conf.MaxTableSize
+	opts.TableBuilderOptions.MaxTableSize = conf.MaxTableSize
 	opts.NumMemtables = conf.NumMemTables
 	opts.NumLevelZeroTables = conf.NumL0Tables
 	opts.NumLevelZeroTablesStall = conf.NumL0TablesStall
