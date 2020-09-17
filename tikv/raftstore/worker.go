@@ -834,7 +834,7 @@ func (r *regionTaskHandler) resetBuilder() error {
 
 func (r *regionTaskHandler) handleApplyResult(result ApplyResult) error {
 	if result.HasPut {
-		if err := r.builder.Finish(); err != nil {
+		if _, err := r.builder.Finish(); err != nil {
 			return err
 		}
 	} else {
