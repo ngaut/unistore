@@ -189,7 +189,6 @@ func (lw *Manager) WakeUp(txn, commitTS uint64, keyHashes []uint64) {
 	// wake up delay waiters, this will not remove waiter from queue
 	if len(wakeUpDelayWaiters) > 0 {
 		for _, w := range wakeUpDelayWaiters {
-			w.LockTS = txn
 			select {
 			case w.ch <- WaitResult{WakeupSleepTime: WakeupDelayTimeout, CommitTS: commitTS}:
 			default:
