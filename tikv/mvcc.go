@@ -370,9 +370,9 @@ func (store *MVCCStore) TxnHeartBeat(reqCtx *requestCtx, req *kvrpcpb.TxnHeartBe
 
 // TxnStatus is the result of `CheckTxnStatus` API.
 type TxnStatus struct {
-	commitTS    uint64
-	action      kvrpcpb.Action
-	lockInfo    *kvrpcpb.LockInfo
+	commitTS uint64
+	action   kvrpcpb.Action
+	lockInfo *kvrpcpb.LockInfo
 }
 
 func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
@@ -999,7 +999,7 @@ func checkLock(lock mvcc.MvccLock, key []byte, startTS uint64, resolved []uint64
 	}
 	lockVisible := lock.StartTS <= startTS
 	isWriteLock := lock.Op == uint8(kvrpcpb.Op_Put) || lock.Op == uint8(kvrpcpb.Op_Del)
-	isPrimaryGet := startTS == maxSystemTS && bytes.Equal(lock.Primary, key)
+	isPrimaryGet := startTS == maxSystemTS && bytes.Equal(lock.Primary, key) && !lock.UseAsyncCommit
 	if lockVisible && isWriteLock && !isPrimaryGet {
 		return BuildLockErr(safeCopy(key), lock.Primary, lock.StartTS, uint64(lock.TTL), lock.Op, lock.MinCommitTS)
 	}
