@@ -384,14 +384,16 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	lock := store.getLock(reqCtx, req.PrimaryKey)
 	batch := store.dbWriter.NewWriteBatch(req.LockTs, 0, reqCtx.rpcCtx)
 	if lock != nil && lock.StartTS == req.LockTs {
-		// If the lock has already outdated, clean up it.
-		if uint64(oracle.ExtractPhysical(lock.StartTS))+uint64(lock.TTL) < uint64(oracle.ExtractPhysical(req.CurrentTs)) {
-			if !lock.UseAsyncCommit {
-				batch.Rollback(req.PrimaryKey, true)
-				return TxnStatus{0, kvrpcpb.Action_TTLExpireRollback, nil}, store.dbWriter.Write(batch)
-			}
+		// For an async-commit lock, never roll it back or push forward it MinCommitTS.
+		if lock.UseAsyncCommit {
 			log.S().Debugf("async commit startTS=%v secondaries=%v minCommitTS=%v", lock.StartTS, lock.Secondaries, lock.MinCommitTS)
 			return TxnStatus{0, kvrpcpb.Action_NoAction, lock.ToLockInfo(req.PrimaryKey)}, nil
+		}
+
+		// If the lock has already outdated, clean up it.
+		if uint64(oracle.ExtractPhysical(lock.StartTS))+uint64(lock.TTL) < uint64(oracle.ExtractPhysical(req.CurrentTs)) {
+			batch.Rollback(req.PrimaryKey, true)
+			return TxnStatus{0, kvrpcpb.Action_TTLExpireRollback, nil}, store.dbWriter.Write(batch)
 		}
 		// If this is a large transaction and the lock is active, push forward the minCommitTS.
 		// lock.minCommitTS == 0 may be a secondary lock, or not a large transaction.
