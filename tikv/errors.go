@@ -16,36 +16,33 @@ package tikv
 import (
 	"fmt"
 
+	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 )
 
 // ErrLocked is returned when trying to Read/Write on a locked key. Client should
 // backoff or cleanup the lock then retry.
 type ErrLocked struct {
-	Key         []byte
-	Primary     []byte
-	StartTS     uint64
-	TTL         uint64
-	LockType    uint8
-	minCommitTS uint64
+	Key  []byte
+	Lock *mvcc.MvccLock
 }
 
 // BuildLockErr generates ErrKeyLocked objects
-func BuildLockErr(key []byte, primaryKey []byte, startTS uint64, TTL uint64, lockType uint8, minCommitTS uint64) *ErrLocked {
+func BuildLockErr(key []byte, lock *mvcc.MvccLock) *ErrLocked {
 	errLocked := &ErrLocked{
-		Key:         key,
-		Primary:     primaryKey,
-		StartTS:     startTS,
-		TTL:         TTL,
-		LockType:    lockType,
-		minCommitTS: minCommitTS,
+		Key:  key,
+		Lock: lock,
 	}
 	return errLocked
 }
 
 // Error formats the lock to a string.
 func (e *ErrLocked) Error() string {
-	return fmt.Sprintf("key is locked, key: %q, Type: %v, primary: %q, startTS: %v", e.Key, e.LockType, e.Primary, e.StartTS)
+	lock := e.Lock
+	return fmt.Sprintf(
+		"key is locked, key: %q, Type: %v, primary: %q, startTS: %v, forUpdateTS: %v, useAsyncCommit: %v",
+		e.Key, lock.Op, lock.Primary, lock.StartTS, lock.ForUpdateTS, lock.UseAsyncCommit,
+	)
 }
 
 // ErrRetryable suggests that client may restart the txn. e.g. write conflict.
