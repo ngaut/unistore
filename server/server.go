@@ -13,7 +13,6 @@ import (
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/pingcap/badger"
-	"github.com/pingcap/badger/options"
 )
 
 const (
@@ -175,6 +174,11 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*
 		opts.CompactionFilterFactory = raftstore.CreateRaftLogCompactionFilter
 	} else {
 		opts.ManagedTxns = true
+		opts.S3Options.InstanceID = conf.S3.InstanceID
+		opts.S3Options.EndPoint = conf.S3.Endpoint
+		opts.S3Options.SecretKey = conf.S3.SecretKey
+		opts.S3Options.KeyID = conf.S3.KeyID
+		opts.S3Options.Bucket = conf.S3.Bucket
 	}
 	opts.ValueLogWriteOptions.WriteBufferSize = 4 * 1024 * 1024
 	opts.Dir = filepath.Join(conf.DBPath, subPath)
@@ -188,11 +192,6 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*
 	opts.NumLevelZeroTablesStall = conf.NumL0TablesStall
 	opts.LevelOneSize = conf.L1Size
 	opts.SyncWrites = conf.SyncWrite
-	compressionPerLevel := make([]options.CompressionType, len(conf.Compression))
-	for i := range opts.TableBuilderOptions.CompressionPerLevel {
-		compressionPerLevel[i] = config.ParseCompression(conf.Compression[i])
-	}
-	opts.TableBuilderOptions.CompressionPerLevel = compressionPerLevel
 	opts.MaxBlockCacheSize = conf.BlockCacheSize
 	opts.MaxIndexCacheSize = conf.IndexCacheSize
 	opts.TableBuilderOptions.SuRFStartLevel = conf.SurfStartLevel

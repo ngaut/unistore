@@ -821,9 +821,8 @@ func (r *regionTaskHandler) resetBuilder() error {
 	if r.builderFile, err = r.tempFile(); err != nil {
 		return err
 	}
-	compressionType := config.ParseCompression(r.conf.Engine.IngestCompression)
 	if r.builder == nil {
-		r.builder = r.ctx.engiens.kv.DB.NewExternalTableBuilder(r.builderFile, compressionType, r.ctx.mgr.limiter)
+		r.builder = r.ctx.engiens.kv.DB.NewExternalTableBuilder(r.builderFile, r.ctx.mgr.limiter)
 		r.builder.SetIsManaged()
 	} else {
 		r.builder.Reset(r.builderFile)

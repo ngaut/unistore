@@ -30,8 +30,6 @@ import (
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/server"
-	"github.com/pingcap/badger"
-	"github.com/pingcap/badger/y"
 	"github.com/pingcap/kvproto/pkg/deadlock"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
@@ -190,7 +188,6 @@ func loadConfig() *config.Config {
 			os.Exit(1)
 		}
 	}
-	y.Assert(len(conf.Engine.Compression) >= badger.DefaultOptions.TableBuilderOptions.MaxLevels)
 	return &conf
 }
 

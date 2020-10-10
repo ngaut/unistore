@@ -16,7 +16,6 @@ package config
 import (
 	"time"
 
-	"github.com/pingcap/badger/options"
 	"github.com/pingcap/log"
 )
 
@@ -65,18 +64,25 @@ type Engine struct {
 	VlogFileSize     int64  `toml:"vlog-file-size"`      // Value log file size.
 
 	// 	Sync all writes to disk. Setting this to true would slow down data loading significantly.")
-	SyncWrite         bool     `toml:"sync-write"`
-	NumCompactors     int      `toml:"num-compactors"`
-	SurfStartLevel    int      `toml:"surf-start-level"`
-	BlockCacheSize    int64    `toml:"block-cache-size"`
-	IndexCacheSize    int64    `toml:"index-cache-size"`
-	Compression       []string `toml:"compression"` // Compression types for each level
-	IngestCompression string   `toml:"ingest-compression"`
+	SyncWrite      bool  `toml:"sync-write"`
+	NumCompactors  int   `toml:"num-compactors"`
+	SurfStartLevel int   `toml:"surf-start-level"`
+	BlockCacheSize int64 `toml:"block-cache-size"`
+	IndexCacheSize int64 `toml:"index-cache-size"`
 
 	// Only used in tests.
 	VolatileMode bool
 
-	CompactL0WhenClose bool `toml:"compact-l0-when-close"`
+	CompactL0WhenClose bool      `toml:"compact-l0-when-close"`
+	S3                 S3Options `toml:"s3"`
+}
+
+type S3Options struct {
+	Endpoint   string `toml:"endpoint"`
+	KeyID      string `toml:"key-id"`
+	SecretKey  string `toml:"secret-key"`
+	Bucket     string `toml:"bucket"`
+	InstanceID uint32 `toml:"instance-id"`
 }
 
 type PessimisticTxn struct {
@@ -86,17 +92,6 @@ type PessimisticTxn struct {
 
 	// The duration between waking up lock waiter, in milliseconds
 	WakeUpDelayDuration int64 `toml:"wake-up-delay-duration"`
-}
-
-func ParseCompression(s string) options.CompressionType {
-	switch s {
-	case "snappy":
-		return options.Snappy
-	case "zstd":
-		return options.ZSTD
-	default:
-		return options.None
-	}
 }
 
 const MB = 1024 * 1024
@@ -132,7 +127,6 @@ var DefaultConf = Config{
 		NumCompactors:      3,
 		SurfStartLevel:     8,
 		L1Size:             512 * MB,
-		Compression:        make([]string, 7),
 		BlockCacheSize:     0, // 0 means disable block cache, use mmap to access sst.
 		IndexCacheSize:     0,
 		CompactL0WhenClose: true,

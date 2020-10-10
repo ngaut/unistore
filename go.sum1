@@ -54,6 +54,8 @@ github.com/aws/aws-sdk-go v1.26.1 h1:JGQggXhOiNJIqsmbYUl3cYtJZUffeOWlHtxfzGK7WPI
 github.com/aws/aws-sdk-go v1.26.1/go.mod h1:KmX6BPdI08NWTb3/sm4ZGu5ShLoqVDhKgpiN924inxo=
 github.com/aws/aws-sdk-go v1.30.24 h1:y3JPD51VuEmVqN3BEDVm4amGpDma2cKJcDPuAU1OR58=
 github.com/aws/aws-sdk-go v1.30.24/go.mod h1:5zCpMtNQVjRREroY7sYe8lOMRSxkhG6MZveU8YkpAk0=
+github.com/aws/aws-sdk-go v1.34.22 h1:7V2sKilVVgHqdjbW+O/xaVWYfnmuLwZdF/+6JuUh6Cw=
+github.com/aws/aws-sdk-go v1.34.22/go.mod h1:5zCpMtNQVjRREroY7sYe8lOMRSxkhG6MZveU8YkpAk0=
 github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973/go.mod h1:Dwedo/Wpr24TaqPxmxbtue+5NUziq4I4S80YR8gNf3Q=
 github.com/beorn7/perks v1.0.0/go.mod h1:KWe93zE9D1o94FZ5RNwFwVgaQK1VOXiVxmqh+CedLV8=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
@@ -458,14 +460,6 @@ github.com/pingcap-incubator/tidb-dashboard v0.0.0-20200514075710-eecc9a4525b5/g
 github.com/pingcap-incubator/tidb-dashboard v0.0.0-20200710045508-523e95bc5ec9/go.mod h1:9yaAM77sPfa5/f6sdxr3jSkKfIz463KRHyiFHiGjdes=
 github.com/pingcap-incubator/tidb-dashboard v0.0.0-20200715070228-47f5de8a6992/go.mod h1:9yaAM77sPfa5/f6sdxr3jSkKfIz463KRHyiFHiGjdes=
 github.com/pingcap-incubator/tidb-dashboard v0.0.0-20200807020752-01f0abe88e93/go.mod h1:9yaAM77sPfa5/f6sdxr3jSkKfIz463KRHyiFHiGjdes=
-github.com/pingcap/badger v1.5.1-0.20200604041313-19c397305fcc h1:aL83XYtYRGJHGruiw5Kk/vJiJl2xFiWfqCgnvHin7ek=
-github.com/pingcap/badger v1.5.1-0.20200604041313-19c397305fcc/go.mod h1:LyrqUOHZrUDf9oGi1yoz1+qw9ckSIhQb5eMa1acOLNQ=
-github.com/pingcap/badger v1.5.1-0.20200714132513-80ba2000f159 h1:cmZSuRbdfOJd3kJjRIClrLbt3nD0xi4oqYR1c/ZrPKg=
-github.com/pingcap/badger v1.5.1-0.20200714132513-80ba2000f159/go.mod h1:LyrqUOHZrUDf9oGi1yoz1+qw9ckSIhQb5eMa1acOLNQ=
-github.com/pingcap/badger v1.5.1-0.20200810065601-8c92a97807f9 h1:tjVCYovZalb5nxH6Imn70Ifcu/FlBxMf0xFqUNW9q7Y=
-github.com/pingcap/badger v1.5.1-0.20200810065601-8c92a97807f9/go.mod h1:LyrqUOHZrUDf9oGi1yoz1+qw9ckSIhQb5eMa1acOLNQ=
-github.com/pingcap/badger v1.5.1-0.20200908111422-2e78ee155d19 h1:IXpGy7y9HyoShAFmzW2OPF0xCA5EOoSTyZHwsgYk9Ro=
-github.com/pingcap/badger v1.5.1-0.20200908111422-2e78ee155d19/go.mod h1:LyrqUOHZrUDf9oGi1yoz1+qw9ckSIhQb5eMa1acOLNQ=
 github.com/pingcap/br v0.0.0-20200426093517-dd11ae28b885 h1:gI14HoGBF9UyECMgqSRZx1ONhREtrZe8JCmZ/6OFilw=
 github.com/pingcap/br v0.0.0-20200426093517-dd11ae28b885/go.mod h1:4w3meMnk7HDNpNgjuRAxavruTeKJvUiXxoEWTjzXPnA=
 github.com/pingcap/br v0.0.0-20200521085655-53201addd4ad h1:nptiQT0kWdIUghh49OyaTBYb4DtdxJmsLHOxbU25kW4=
