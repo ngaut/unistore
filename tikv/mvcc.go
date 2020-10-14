@@ -570,10 +570,25 @@ func (store *MVCCStore) Prewrite(reqCtx *requestCtx, req *kvrpcpb.PrewriteReques
 	defer regCtx.ReleaseLatches(hashVals)
 
 	isPessimistic := req.ForUpdateTs > 0
+	var err error
 	if isPessimistic {
-		return store.prewritePessimistic(reqCtx, mutations, req)
+		err = store.prewritePessimistic(reqCtx, mutations, req)
+	} else {
+		err = store.prewriteOptimistic(reqCtx, mutations, req)
 	}
-	return store.prewriteOptimistic(reqCtx, mutations, req)
+	if err != nil {
+		return err
+	}
+
+	if reqCtx.onePCCommitTS != 0 {
+		// TODO: Is it correct to pass the hashVals directly here, considering that some of the keys may
+		// have no pessimistic lock?
+		if isPessimistic {
+			store.lockWaiterManager.WakeUp(req.StartVersion, reqCtx.onePCCommitTS, hashVals)
+			store.DeadlockDetectCli.CleanUp(req.StartVersion)
+		}
+	}
+	return nil
 }
 
 func (store *MVCCStore) prewriteOptimistic(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation, req *kvrpcpb.PrewriteRequest) error {
@@ -682,23 +697,39 @@ func (store *MVCCStore) prewritePessimistic(reqCtx *requestCtx, mutations []*kvr
 
 func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation,
 	req *kvrpcpb.PrewriteRequest, items []*badger.Item) error {
-	batch := store.dbWriter.NewWriteBatch(req.StartVersion, 0, reqCtx.rpcCtx)
 	var minCommitTS uint64
-	if req.UseAsyncCommit {
+	if req.UseAsyncCommit || req.TryOnePc {
 		// Get minCommitTS for async commit protocol. After all keys are locked in memory lock.
 		physical, logical, tsErr := store.pdClient.GetTS(context.Background())
 		if tsErr != nil {
 			return tsErr
 		}
 		minCommitTS = uint64(physical)<<18 + uint64(logical)
-		reqCtx.asyncMinCommitTS = minCommitTS
+		if req.UseAsyncCommit {
+			reqCtx.asyncMinCommitTS = minCommitTS
+		}
 	}
+
+	if req.UseAsyncCommit && minCommitTS > req.MinCommitTs {
+		req.MinCommitTs = minCommitTS
+	}
+
+	if req.TryOnePc {
+		committed, err := store.tryOnePC(reqCtx, mutations, req, items, minCommitTS, req.OnePcMaxCommitTs)
+		if err != nil {
+			return err
+		}
+		// If 1PC succeeded, exit immediately.
+		if committed {
+			return nil
+		}
+	}
+
+	batch := store.dbWriter.NewWriteBatch(req.StartVersion, 0, reqCtx.rpcCtx)
+
 	for i, m := range mutations {
 		if m.Op == kvrpcpb.Op_CheckNotExists {
 			continue
-		}
-		if req.UseAsyncCommit && minCommitTS > req.MinCommitTs {
-			req.MinCommitTs = minCommitTS
 		}
 		lock, err1 := store.buildPrewriteLock(reqCtx, m, items[i], req)
 		if err1 != nil {
@@ -706,7 +737,45 @@ func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpc
 		}
 		batch.Prewrite(m.Key, lock)
 	}
+
 	return store.dbWriter.Write(batch)
+}
+
+func (store *MVCCStore) tryOnePC(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation,
+	req *kvrpcpb.PrewriteRequest, items []*badger.Item, minCommitTS uint64, maxCommitTS uint64) (bool, error) {
+	if minCommitTS > maxCommitTS {
+		log.Debug("1pc transaction fallbacks due to minCommitTS exceeds maxCommitTS",
+			zap.Uint64("startTS", req.StartVersion),
+			zap.Uint64("minCommitTS", minCommitTS),
+			zap.Uint64("maxCommitTS", maxCommitTS))
+		return false, nil
+	}
+	if minCommitTS < req.StartVersion {
+		log.Fatal("1pc commitTS less than startTS", zap.Uint64("startTS", req.StartVersion), zap.Uint64("minCommitTS", minCommitTS))
+	}
+
+	reqCtx.onePCCommitTS = minCommitTS
+	store.updateLatestTS(minCommitTS)
+	batch := store.dbWriter.NewWriteBatch(req.StartVersion, minCommitTS, reqCtx.rpcCtx)
+
+	for i, m := range mutations {
+		if m.Op == kvrpcpb.Op_CheckNotExists {
+			continue
+		}
+		lock, err1 := store.buildPrewriteLock(reqCtx, m, items[i], req)
+		if err1 != nil {
+			return false, err1
+		}
+		// batch.Commit will panic if the key is not locked. So there need to be a special function
+		// for it to commit without deleting lock.
+		batch.Commit(m.Key, lock)
+	}
+
+	if err := store.dbWriter.Write(batch); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
 
 func encodeFromOldRow(oldRow, buf []byte) ([]byte, error) {
