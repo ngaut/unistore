@@ -27,7 +27,6 @@ import (
 	"unsafe"
 
 	"github.com/dgryski/go-farm"
-	"github.com/juju/errors"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
@@ -35,6 +34,7 @@ import (
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/util/lockwaiter"
 	"github.com/pingcap/badger"
+	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/sessionctx/stmtctx"
