@@ -715,7 +715,7 @@ func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpc
 	}
 
 	if req.TryOnePc {
-		committed, err := store.tryOnePC(reqCtx, mutations, req, items, minCommitTS, req.OnePcMaxCommitTs)
+		committed, err := store.tryOnePC(reqCtx, mutations, req, items, minCommitTS, req.MaxCommitTs)
 		if err != nil {
 			return err
 		}
@@ -743,7 +743,7 @@ func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpc
 
 func (store *MVCCStore) tryOnePC(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation,
 	req *kvrpcpb.PrewriteRequest, items []*badger.Item, minCommitTS uint64, maxCommitTS uint64) (bool, error) {
-	if minCommitTS > maxCommitTS {
+	if maxCommitTS != 0 && minCommitTS > maxCommitTS {
 		log.Debug("1pc transaction fallbacks due to minCommitTS exceeds maxCommitTS",
 			zap.Uint64("startTS", req.StartVersion),
 			zap.Uint64("minCommitTS", minCommitTS),
