@@ -96,6 +96,7 @@ type requestCtx struct {
 	startTime        time.Time
 	rpcCtx           *kvrpcpb.Context
 	asyncMinCommitTS uint64
+	onePCCommitTS    uint64
 }
 
 func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCtx, error) {
@@ -318,6 +319,9 @@ func (svr *Server) KvPrewrite(ctx context.Context, req *kvrpcpb.PrewriteRequest)
 	resp := &kvrpcpb.PrewriteResponse{}
 	if reqCtx.asyncMinCommitTS > 0 {
 		resp.MinCommitTs = reqCtx.asyncMinCommitTS
+	}
+	if reqCtx.onePCCommitTS > 0 {
+		resp.OnePcCommitTs = reqCtx.onePCCommitTS
 	}
 	resp.Errors, resp.RegionError = convertToPBErrors(err)
 	return resp, nil
