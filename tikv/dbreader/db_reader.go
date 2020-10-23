@@ -30,10 +30,10 @@ import (
 	"bytes"
 	"math"
 
-	"github.com/juju/errors"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
+	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 )
 

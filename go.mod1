@@ -7,7 +7,6 @@ require (
 	github.com/gogo/protobuf v1.3.1
 	github.com/golang/protobuf v1.3.4
 	github.com/google/btree v1.0.0
-	github.com/juju/errors v0.0.0-20181118221551-089d3ea4e4d5
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/pingcap/badger v1.5.1-0.20200908111422-2e78ee155d19
 	github.com/pingcap/check v0.0.0-20200212061837-5e12011dc712
