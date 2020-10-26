@@ -1,7 +1,5 @@
 module github.com/ngaut/unistore
 
-replace github.com/pingcap/kvproto => github.com/hanfei1991/kvproto v0.0.0-20200901105828-2c09ed0da556
-
 require (
 	github.com/BurntSushi/toml v0.3.1
 	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548
