@@ -15,8 +15,9 @@ package mvcc
 
 import (
 	"encoding/binary"
-	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"unsafe"
+
+	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 
 	"github.com/pingcap/tidb/util/codec"
 )
@@ -103,15 +104,15 @@ func (l *MvccLock) MarshalBinary() []byte {
 // ToLockInfo converts an MvccLock to kvrpcpb.LockInfo
 func (l *MvccLock) ToLockInfo(key []byte) *kvrpcpb.LockInfo {
 	return &kvrpcpb.LockInfo{
-		PrimaryLock:          l.Primary,
-		LockVersion:          l.StartTS,
-		Key:                  key,
-		LockTtl:              uint64(l.TTL),
-		LockType:             kvrpcpb.Op(l.Op),
-		LockForUpdateTs:      l.ForUpdateTS,
-		UseAsyncCommit:       l.UseAsyncCommit,
-		MinCommitTs:          l.MinCommitTS,
-		Secondaries:          l.Secondaries,
+		PrimaryLock:     l.Primary,
+		LockVersion:     l.StartTS,
+		Key:             key,
+		LockTtl:         uint64(l.TTL),
+		LockType:        kvrpcpb.Op(l.Op),
+		LockForUpdateTs: l.ForUpdateTS,
+		UseAsyncCommit:  l.UseAsyncCommit,
+		MinCommitTs:     l.MinCommitTS,
+		Secondaries:     l.Secondaries,
 	}
 }
 

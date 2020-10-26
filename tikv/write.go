@@ -161,9 +161,8 @@ func (w writeLockWorker) run() {
 				switch entry.UserMeta[0] {
 				case mvcc.LockUserMetaDeleteByte:
 					delCnt++
-					if !ls.DeleteWithHint(entry.Key.UserKey, hint) {
-						panic("failed to delete key")
-					}
+					// Ignore if the key doesn't exist
+					ls.DeleteWithHint(entry.Key.UserKey, hint)
 				default:
 					insertCnt++
 					ls.PutWithHint(entry.Key.UserKey, entry.Value, hint)
