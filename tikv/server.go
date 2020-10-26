@@ -28,6 +28,7 @@ import (
 	deadlockPb "github.com/pingcap/kvproto/pkg/deadlock"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/kvproto/pkg/mpp"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/store/mockstore/unistore/cophandler"
@@ -522,6 +523,18 @@ func (svr *Server) CoprocessorStream(*coprocessor.Request, tikvpb.Tikv_Coprocess
 }
 
 func (svr *Server) BatchCoprocessor(*coprocessor.BatchRequest, tikvpb.Tikv_BatchCoprocessorServer) error {
+	panic("todo")
+}
+
+func (svr *Server) DispatchMPPTask(_ context.Context, _ *mpp.DispatchTaskRequest) (*mpp.DispatchTaskResponse, error) {
+	panic("todo")
+}
+
+func (svr *Server) CancelMPPTask(_ context.Context, _ *mpp.CancelTaskRequest) (*mpp.CancelTaskResponse, error) {
+	panic("todo")
+}
+
+func (svr *Server) EstablishMPPConnection(*mpp.EstablishMPPConnectionRequest, tikvpb.Tikv_EstablishMPPConnectionServer) error {
 	panic("todo")
 }
 
