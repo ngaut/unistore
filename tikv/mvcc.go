@@ -370,9 +370,9 @@ func (store *MVCCStore) TxnHeartBeat(reqCtx *requestCtx, req *kvrpcpb.TxnHeartBe
 
 // TxnStatus is the result of `CheckTxnStatus` API.
 type TxnStatus struct {
-	commitTS    uint64
-	action      kvrpcpb.Action
-	lockInfo    *kvrpcpb.LockInfo
+	commitTS uint64
+	action   kvrpcpb.Action
+	lockInfo *kvrpcpb.LockInfo
 }
 
 func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
@@ -384,14 +384,16 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	lock := store.getLock(reqCtx, req.PrimaryKey)
 	batch := store.dbWriter.NewWriteBatch(req.LockTs, 0, reqCtx.rpcCtx)
 	if lock != nil && lock.StartTS == req.LockTs {
-		// If the lock has already outdated, clean up it.
-		if uint64(oracle.ExtractPhysical(lock.StartTS))+uint64(lock.TTL) < uint64(oracle.ExtractPhysical(req.CurrentTs)) {
-			if !lock.UseAsyncCommit {
-				batch.Rollback(req.PrimaryKey, true)
-				return TxnStatus{0, kvrpcpb.Action_TTLExpireRollback, nil}, store.dbWriter.Write(batch)
-			}
+		// For an async-commit lock, never roll it back or push forward it MinCommitTS.
+		if lock.UseAsyncCommit {
 			log.S().Debugf("async commit startTS=%v secondaries=%v minCommitTS=%v", lock.StartTS, lock.Secondaries, lock.MinCommitTS)
 			return TxnStatus{0, kvrpcpb.Action_NoAction, lock.ToLockInfo(req.PrimaryKey)}, nil
+		}
+
+		// If the lock has already outdated, clean up it.
+		if uint64(oracle.ExtractPhysical(lock.StartTS))+uint64(lock.TTL) < uint64(oracle.ExtractPhysical(req.CurrentTs)) {
+			batch.Rollback(req.PrimaryKey, true)
+			return TxnStatus{0, kvrpcpb.Action_TTLExpireRollback, nil}, store.dbWriter.Write(batch)
 		}
 		// If this is a large transaction and the lock is active, push forward the minCommitTS.
 		// lock.minCommitTS == 0 may be a secondary lock, or not a large transaction.
@@ -512,10 +514,11 @@ func (store *MVCCStore) normalizeWaitTime(lockWaitTime int64) time.Duration {
 }
 
 func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isFirstLock bool, lockWaitTime int64) (*lockwaiter.Waiter, error) {
-	if lock, ok := err.(*ErrLocked); ok {
+	if locked, ok := err.(*ErrLocked); ok {
 		if lockWaitTime != lockwaiter.LockNoWait {
-			keyHash := farm.Fingerprint64(lock.Key)
+			keyHash := farm.Fingerprint64(locked.Key)
 			waitTimeDuration := store.normalizeWaitTime(lockWaitTime)
+			lock := locked.Lock
 			log.S().Debugf("%d blocked by %d on key %d", startTS, lock.StartTS, keyHash)
 			waiter := store.lockWaiterManager.NewWaiter(startTS, lock.StartTS, keyHash, waitTimeDuration)
 			if !isFirstLock {
@@ -660,7 +663,8 @@ func (store *MVCCStore) prewritePessimistic(reqCtx *requestCtx, mutations []*kvr
 			if !valid {
 				// Safe to set TTL to zero because the transaction of the lock is committed
 				// or rollbacked or must be rollbacked.
-				return BuildLockErr(m.Key, lock.Primary, lock.StartTS, 0, lock.Op, lock.MinCommitTS)
+				lock.TTL = 0
+				return BuildLockErr(m.Key, lock)
 			}
 			if lockMatch {
 				// Duplicate command.
@@ -789,7 +793,7 @@ func (store *MVCCStore) checkConflictInLockStore(
 		// Same ts, no need to overwrite.
 		return &lock, nil
 	}
-	return nil, BuildLockErr(mutation.Key, lock.Primary, lock.StartTS, uint64(lock.TTL), lock.Op, lock.MinCommitTS)
+	return nil, BuildLockErr(mutation.Key, &lock)
 }
 
 const maxSystemTS uint64 = math.MaxUint64
@@ -934,7 +938,7 @@ func (store *MVCCStore) rollbackKeyReadLock(reqCtx *requestCtx, batch mvcc.Write
 		}
 		if lock.StartTS == startTS {
 			if currentTs > 0 && uint64(oracle.ExtractPhysical(lock.StartTS))+uint64(lock.TTL) >= uint64(oracle.ExtractPhysical(currentTs)) {
-				return rollbackStatusLocked, BuildLockErr(key, key, lock.StartTS, uint64(lock.TTL), lock.Op, lock.MinCommitTS)
+				return rollbackStatusLocked, BuildLockErr(key, &lock)
 			}
 			// We can not simply delete the lock because the prewrite may be sent multiple times.
 			// To prevent that we update it a rollback lock.
@@ -999,9 +1003,9 @@ func checkLock(lock mvcc.MvccLock, key []byte, startTS uint64, resolved []uint64
 	}
 	lockVisible := lock.StartTS <= startTS
 	isWriteLock := lock.Op == uint8(kvrpcpb.Op_Put) || lock.Op == uint8(kvrpcpb.Op_Del)
-	isPrimaryGet := startTS == maxSystemTS && bytes.Equal(lock.Primary, key)
+	isPrimaryGet := startTS == maxSystemTS && bytes.Equal(lock.Primary, key) && !lock.UseAsyncCommit
 	if lockVisible && isWriteLock && !isPrimaryGet {
-		return BuildLockErr(safeCopy(key), lock.Primary, lock.StartTS, uint64(lock.TTL), lock.Op, lock.MinCommitTS)
+		return BuildLockErr(safeCopy(key), &lock)
 	}
 	return nil
 }

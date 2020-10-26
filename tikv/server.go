@@ -199,7 +199,7 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 		errLocked := err.(*ErrLocked)
 		deadlockErr := &ErrDeadlock{
 			LockKey:         errLocked.Key,
-			LockTS:          errLocked.StartTS,
+			LockTS:          errLocked.Lock.StartTS,
 			DeadlockKeyHash: result.DeadlockResp.DeadlockKeyHash,
 		}
 		resp.Errors, resp.RegionError = convertToPBErrors(deadlockErr)
@@ -691,14 +691,7 @@ func convertToKeyError(err error) *kvrpcpb.KeyError {
 	switch x := causeErr.(type) {
 	case *ErrLocked:
 		return &kvrpcpb.KeyError{
-			Locked: &kvrpcpb.LockInfo{
-				PrimaryLock: x.Primary,
-				Key:         x.Key,
-				LockVersion: x.StartTS,
-				LockTtl:     x.TTL,
-				LockType:    kvrpcpb.Op(x.LockType),
-				MinCommitTs: x.minCommitTS,
-			},
+			Locked: x.Lock.ToLockInfo(x.Key),
 		}
 	case ErrRetryable:
 		return &kvrpcpb.KeyError{
