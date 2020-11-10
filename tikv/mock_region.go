@@ -507,13 +507,14 @@ func (rm *MockRegionManager) GetAllStores() []*metapb.Store {
 }
 
 // AddStore adds a new Store to the cluster.
-func (rm *MockRegionManager) AddStore(storeID uint64, addr string) {
+func (rm *MockRegionManager) AddStore(storeID uint64, addr string, labels ...*metapb.StoreLabel) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
 	rm.stores[storeID] = &metapb.Store{
 		Id:      storeID,
 		Address: addr,
+		Labels: labels,
 	}
 }
 
@@ -523,6 +524,13 @@ func (rm *MockRegionManager) RemoveStore(storeID uint64) {
 	defer rm.mu.Unlock()
 
 	delete(rm.stores, storeID)
+}
+
+func (rm *MockRegionManager) AddPeer(regionID, storeID, peerID uint64) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	rm.regions[regionID].addPeer(peerID, storeID)
 }
 
 type MockPD struct {

@@ -179,6 +179,25 @@ func (ri *regionCtx) greaterThanEndKey(key []byte) bool {
 	return len(ri.endKey) > 0 && bytes.Compare(key, ri.endKey) > 0
 }
 
+func newPeerMeta(peerID, storeID uint64) *metapb.Peer {
+	return &metapb.Peer{
+		Id:      peerID,
+		StoreId: storeID,
+	}
+}
+
+func (ri *regionCtx) incConfVer() {
+	ri.meta.RegionEpoch = &metapb.RegionEpoch{
+		ConfVer: ri.meta.GetRegionEpoch().GetConfVer() + 1,
+		Version: ri.meta.GetRegionEpoch().GetVersion(),
+	}
+}
+
+func (ri *regionCtx) addPeer(peerID, storeID uint64) {
+	ri.meta.Peers = append(ri.meta.Peers, newPeerMeta(peerID, storeID))
+	ri.incConfVer()
+}
+
 func (ri *regionCtx) unmarshal(data []byte) error {
 	ri.approximateSize = int64(binary.LittleEndian.Uint64(data))
 	data = data[8:]
