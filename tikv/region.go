@@ -191,6 +191,7 @@ func (ri *regionCtx) incConfVer() {
 		ConfVer: ri.meta.GetRegionEpoch().GetConfVer() + 1,
 		Version: ri.meta.GetRegionEpoch().GetVersion(),
 	}
+	ri.updateRegionEpoch(ri.meta.RegionEpoch)
 }
 
 func (ri *regionCtx) addPeer(peerID, storeID uint64) {
