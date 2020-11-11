@@ -33,12 +33,7 @@ func newSnapBuilder(cfFiles []*CFFile, snap *regionSnapshot, region *metapb.Regi
 	b.cfFiles = cfFiles
 	b.endKey = RawEndKey(region)
 	b.extraEndKey = mvcc.EncodeExtraTxnStatusKey(b.endKey, 0)
-	b.txn = snap.txn
-	itOpt := badger.DefaultIteratorOptions
-	itOpt.AllVersions = true
-	b.dbIterator = b.txn.NewIterator(itOpt)
-	// extraIterator doesn't need to read all versions because startTS is encoded in the key.
-	b.extraIterator = b.txn.NewIterator(badger.DefaultIteratorOptions)
+	b.dbSnap = snap.dbSnap
 	startKey := RawStartKey(region)
 
 	b.dbIterator.Seek(startKey)
@@ -48,12 +43,6 @@ func newSnapBuilder(cfFiles []*CFFile, snap *regionSnapshot, region *metapb.Regi
 	b.extraIterator.Seek(mvcc.EncodeExtraTxnStatusKey(startKey, math.MaxUint64))
 	if b.extraIterator.Valid() && !b.reachExtraEnd(b.extraIterator.Item().Key()) {
 		b.curExtraKey = mvcc.DecodeExtraTxnStatusKey(b.extraIterator.Item().Key())
-	}
-
-	b.lockIterator = snap.lockSnap.NewIterator()
-	b.lockIterator.Seek(startKey)
-	if b.lockIterator.Valid() && !b.reachEnd(b.lockIterator.Key()) {
-		b.curLockKey = b.lockIterator.Key()
 	}
 	lockCFFile := cfFiles[lockCFIdx].File
 	if lockCFFile == nil {
@@ -76,7 +65,7 @@ func newSnapBuilder(cfFiles []*CFFile, snap *regionSnapshot, region *metapb.Regi
 type snapBuilder struct {
 	endKey          []byte
 	extraEndKey     []byte
-	txn             *badger.Txn
+	dbSnap          *badger.Snapshot
 	lockIterator    *lockstore.Iterator
 	dbIterator      *badger.Iterator
 	extraIterator   *badger.Iterator
@@ -97,7 +86,7 @@ func (b *snapBuilder) build() error {
 	defer func() {
 		b.dbIterator.Close()
 		b.extraIterator.Close()
-		b.txn.Discard()
+		b.dbSnap.Discard()
 	}()
 	for {
 		var err error

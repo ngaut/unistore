@@ -127,7 +127,7 @@ func main() {
 
 	tikvServer, err := server.New(conf, pdClient)
 	if err != nil {
-		log.S().Fatal(err)
+		log.Fatal("new server failed", zap.Error(err))
 	}
 
 	var alivePolicy = keepalive.EnforcementPolicy{

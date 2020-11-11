@@ -14,21 +14,18 @@
 package tikv
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/pingcap/badger/y"
 	"math"
-	"os"
 	"sort"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/dgryski/go-farm"
 	"github.com/ngaut/unistore/config"
-	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
@@ -48,8 +45,7 @@ import (
 // MVCCStore is a wrapper of badger.DB to provide MVCC functions.
 type MVCCStore struct {
 	dir       string
-	db        *badger.DB
-	lockStore *lockstore.MemStore
+	db        *badger.ShardingDB
 	dbWriter  mvcc.DBWriter
 	safePoint *SafePoint
 	pdClient  pd.Client
@@ -63,13 +59,19 @@ type MVCCStore struct {
 	DeadlockDetectSvr *DetectorServer
 }
 
+const (
+	writeCF = 0
+	lockCF  = 1
+	extraCF = 2
+	raftCF  = 3
+)
+
 // NewMVCCStore creates a new MVCCStore
-func NewMVCCStore(conf *config.Config, bundle *mvcc.DBBundle, dataDir string, safePoint *SafePoint,
+func NewMVCCStore(conf *config.Config, db *badger.ShardingDB, dataDir string, safePoint *SafePoint,
 	writer mvcc.DBWriter, pdClient pd.Client) *MVCCStore {
 	store := &MVCCStore{
-		db:                bundle.DB,
+		db:                db,
 		dir:               dataDir,
-		lockStore:         bundle.LockStore,
 		safePoint:         safePoint,
 		pdClient:          pdClient,
 		closeCh:           make(chan bool),
@@ -106,57 +108,16 @@ func (store *MVCCStore) getLatestTS() uint64 {
 func (store *MVCCStore) Close() error {
 	store.dbWriter.Close()
 	close(store.closeCh)
-
-	err := store.dumpMemLocks()
-	if err != nil {
-		log.Fatal("dump mem locks failed", zap.Error(err))
-	}
 	return nil
 }
 
-type lockEntryHdr struct {
-	keyLen uint32
-	valLen uint32
-}
-
-func (store *MVCCStore) dumpMemLocks() error {
-	tmpFileName := store.dir + "/lock_store.tmp"
-	f, err := os.OpenFile(tmpFileName, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0666)
-	if err != nil {
-		return errors.Trace(err)
-	}
-	writer := bufio.NewWriter(f)
-	cnt := 0
-	it := store.lockStore.NewIterator()
-	hdrBuf := make([]byte, 8)
-	hdr := (*lockEntryHdr)(unsafe.Pointer(&hdrBuf[0]))
-	for it.SeekToFirst(); it.Valid(); it.Next() {
-		hdr.keyLen = uint32(len(it.Key()))
-		hdr.valLen = uint32(len(it.Value()))
-		writer.Write(hdrBuf)
-		writer.Write(it.Key())
-		writer.Write(it.Value())
-		cnt++
-	}
-	err = writer.Flush()
-	if err != nil {
-		return errors.Trace(err)
-	}
-	err = f.Sync()
-	if err != nil {
-		return errors.Trace(err)
-	}
-	f.Close()
-	return os.Rename(tmpFileName, store.dir+"/lock_store")
-}
-
 func (store *MVCCStore) getDBItems(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation) (items []*badger.Item, err error) {
-	txn := reqCtx.getDBReader().GetTxn()
+	snap := reqCtx.getDBReader().GetSnapshot()
 	keys := make([][]byte, len(mutations))
 	for i, m := range mutations {
 		keys[i] = m.Key
 	}
-	return txn.MultiGet(keys)
+	return snap.MultiGet(writeCF, keys, math.MaxUint64)
 }
 
 func sortMutations(mutations []*kvrpcpb.Mutation) []*kvrpcpb.Mutation {
@@ -302,9 +263,9 @@ func (s extraTxnStatus) isOpLockCommitted() bool {
 }
 
 func (store *MVCCStore) checkExtraTxnStatus(reqCtx *requestCtx, key []byte, startTS uint64) extraTxnStatus {
-	txn := reqCtx.getDBReader().GetTxn()
+	snap := reqCtx.getDBReader().GetSnapshot()
 	txnStatusKey := mvcc.EncodeExtraTxnStatusKey(key, startTS)
-	item, err := txn.Get(txnStatusKey)
+	item, err := snap.Get(extraCF, y.KeyWithTs(txnStatusKey, 0))
 	if err != nil {
 		return extraTxnStatus{}
 	}
@@ -393,6 +354,7 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 		// If the lock has already outdated, clean up it.
 		if uint64(oracle.ExtractPhysical(lock.StartTS))+uint64(lock.TTL) < uint64(oracle.ExtractPhysical(req.CurrentTs)) {
 			batch.Rollback(req.PrimaryKey, true)
+			log.S().Info("resolve already outdated")
 			return TxnStatus{0, kvrpcpb.Action_TTLExpireRollback, nil}, store.dbWriter.Write(batch)
 		}
 		// If this is a large transaction and the lock is active, push forward the minCommitTS.
@@ -843,7 +805,7 @@ func (store *MVCCStore) buildPrewriteLock(reqCtx *requestCtx, m *kvrpcpb.Mutatio
 }
 
 func (store *MVCCStore) getLock(req *requestCtx, key []byte) *mvcc.MvccLock {
-	req.buf = store.lockStore.Get(key, req.buf)
+	req.buf = req.getDBReader().GetLock(key, req.buf)
 	if len(req.buf) == 0 {
 		return nil
 	}
@@ -853,7 +815,7 @@ func (store *MVCCStore) getLock(req *requestCtx, key []byte) *mvcc.MvccLock {
 
 func (store *MVCCStore) checkConflictInLockStore(
 	req *requestCtx, mutation *kvrpcpb.Mutation, startTS uint64) (*mvcc.MvccLock, error) {
-	req.buf = store.lockStore.Get(mutation.Key, req.buf)
+	req.buf = req.getDBReader().GetLock(mutation.Key, req.buf)
 	if len(req.buf) == 0 {
 		return nil, nil
 	}
@@ -884,7 +846,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 		var lockErr error
 		var checkErr error
 		var lock mvcc.MvccLock
-		buf = store.lockStore.Get(key, buf)
+		buf = req.getDBReader().GetLock(key, buf)
 		if len(buf) == 0 {
 			// We never commit partial keys in Commit request, so if one lock is not found,
 			// the others keys must not be found too.
@@ -934,9 +896,8 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 }
 
 func (store *MVCCStore) handleLockNotFound(reqCtx *requestCtx, key []byte, startTS, commitTS uint64) error {
-	txn := reqCtx.getDBReader().GetTxn()
-	txn.SetReadTS(commitTS)
-	item, err := txn.Get(key)
+	snap := reqCtx.getDBReader().GetSnapshot()
+	item, err := snap.Get(mvcc.WriteCF, y.KeyWithTs(key, commitTS))
 	if err != nil && err != badger.ErrKeyNotFound {
 		return errors.Trace(err)
 	}
@@ -995,7 +956,7 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 
 func (store *MVCCStore) rollbackKeyReadLock(reqCtx *requestCtx, batch mvcc.WriteBatch, key []byte,
 	startTS, currentTs uint64) (int, error) {
-	reqCtx.buf = store.lockStore.Get(key, reqCtx.buf)
+	reqCtx.buf = reqCtx.getDBReader().GetLock(key, reqCtx.buf)
 	hasLock := len(reqCtx.buf) > 0
 	if hasLock {
 		lock := mvcc.DecodeLock(reqCtx.buf)
@@ -1034,8 +995,8 @@ func (store *MVCCStore) rollbackKeyReadDB(req *requestCtx, batch mvcc.WriteBatch
 }
 
 func (store *MVCCStore) checkCommitted(reader *dbreader.DBReader, key []byte, startTS uint64) (uint64, error) {
-	txn := reader.GetTxn()
-	item, err := txn.Get(key)
+	snap := reader.GetSnapshot()
+	item, err := snap.Get(mvcc.WriteCF, y.KeyWithTs(key, 0))
 	if err != nil && err != badger.ErrKeyNotFound {
 		return 0, errors.Trace(err)
 	}
@@ -1079,10 +1040,10 @@ func checkLock(lock mvcc.MvccLock, key []byte, startTS uint64, resolved []uint64
 	return nil
 }
 
-func (store *MVCCStore) CheckKeysLock(startTS uint64, resolved []uint64, keys ...[]byte) error {
+func (store *MVCCStore) CheckKeysLock(reqCtx *requestCtx, startTS uint64, resolved []uint64, keys ...[]byte) error {
 	var buf []byte
 	for _, key := range keys {
-		buf = store.lockStore.Get(key, buf)
+		buf = reqCtx.getDBReader().GetLock(key, buf)
 		if len(buf) == 0 {
 			continue
 		}
@@ -1095,14 +1056,17 @@ func (store *MVCCStore) CheckKeysLock(startTS uint64, resolved []uint64, keys ..
 	return nil
 }
 
-func (store *MVCCStore) CheckRangeLock(startTS uint64, startKey, endKey []byte, resolved []uint64) error {
-	it := store.lockStore.NewIterator()
+func (store *MVCCStore) CheckRangeLock(reqCtx *requestCtx, startTS uint64, startKey, endKey []byte, resolved []uint64) error {
+	it := reqCtx.getDBReader().GetLockIter()
+	it.SetBound(endKey)
 	for it.Seek(startKey); it.Valid(); it.Next() {
-		if exceedEndKey(it.Key(), endKey) {
+		item := it.Item()
+		if exceedEndKey(item.Key(), endKey) {
 			break
 		}
-		lock := mvcc.DecodeLock(it.Value())
-		err := checkLock(lock, it.Key(), startTS, resolved)
+		val, _ := item.Value()
+		lock := mvcc.DecodeLock(val)
+		err := checkLock(lock, item.Key(), startTS, resolved)
 		if err != nil {
 			return err
 		}
@@ -1137,13 +1101,14 @@ func (store *MVCCStore) Cleanup(reqCtx *requestCtx, key []byte, startTS, current
 	return err
 }
 
-func (store *MVCCStore) appendScannedLock(locks []*kvrpcpb.LockInfo, it *lockstore.Iterator, maxTS uint64) []*kvrpcpb.LockInfo {
-	lock := mvcc.DecodeLock(it.Value())
+func (store *MVCCStore) appendScannedLock(locks []*kvrpcpb.LockInfo, it *badger.Iterator, maxTS uint64) []*kvrpcpb.LockInfo {
+	val, _ := it.Item().Value()
+	lock := mvcc.DecodeLock(val)
 	if lock.StartTS < maxTS {
 		locks = append(locks, &kvrpcpb.LockInfo{
 			PrimaryLock: lock.Primary,
 			LockVersion: lock.StartTS,
-			Key:         safeCopy(it.Key()),
+			Key:         safeCopy(it.Item().Key()),
 			LockTtl:     uint64(lock.TTL),
 		})
 	}
@@ -1152,9 +1117,9 @@ func (store *MVCCStore) appendScannedLock(locks []*kvrpcpb.LockInfo, it *locksto
 
 func (store *MVCCStore) ScanLock(reqCtx *requestCtx, maxTS uint64, limit int) ([]*kvrpcpb.LockInfo, error) {
 	var locks []*kvrpcpb.LockInfo
-	it := store.lockStore.NewIterator()
+	it := reqCtx.getDBReader().GetLockIter()
 	for it.Seek(reqCtx.regCtx.startKey); it.Valid(); it.Next() {
-		if exceedEndKey(it.Key(), reqCtx.regCtx.endKey) {
+		if exceedEndKey(it.Item().Key(), reqCtx.regCtx.endKey) {
 			return locks, nil
 		}
 		if len(locks) == limit {
@@ -1167,7 +1132,9 @@ func (store *MVCCStore) ScanLock(reqCtx *requestCtx, maxTS uint64, limit int) ([
 
 func (store *MVCCStore) PhysicalScanLock(startKey []byte, maxTS uint64, limit int) []*kvrpcpb.LockInfo {
 	var locks []*kvrpcpb.LockInfo
-	it := store.lockStore.NewIterator()
+	snap := store.db.NewSnapshot(startKey, nil)
+	defer snap.Discard()
+	it := snap.NewIterator(1, false, false)
 	for it.Seek(startKey); it.Valid(); it.Next() {
 		if len(locks) == limit {
 			break
@@ -1180,16 +1147,18 @@ func (store *MVCCStore) PhysicalScanLock(startKey []byte, maxTS uint64, limit in
 func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, lockKeys [][]byte, startTS, commitTS uint64) error {
 	regCtx := reqCtx.regCtx
 	if len(lockKeys) == 0 {
-		it := store.lockStore.NewIterator()
+		it := reqCtx.getDBReader().GetLockIter()
 		for it.Seek(regCtx.startKey); it.Valid(); it.Next() {
-			if exceedEndKey(it.Key(), regCtx.endKey) {
+			item := it.Item()
+			if exceedEndKey(item.Key(), regCtx.endKey) {
 				break
 			}
-			lock := mvcc.DecodeLock(it.Value())
+			val, _ := it.Item().Value()
+			lock := mvcc.DecodeLock(val)
 			if lock.StartTS != startTS {
 				continue
 			}
-			lockKeys = append(lockKeys, safeCopy(it.Key()))
+			lockKeys = append(lockKeys, safeCopy(item.Key()))
 		}
 		if len(lockKeys) == 0 {
 			return nil
@@ -1204,7 +1173,7 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, lockKeys [][]byte, start
 	var buf []byte
 	var tmpDiff int
 	for _, lockKey := range lockKeys {
-		buf = store.lockStore.Get(lockKey, buf)
+		buf = reqCtx.getDBReader().GetLock(lockKey, buf)
 		if len(buf) == 0 {
 			continue
 		}
@@ -1226,7 +1195,7 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, lockKeys [][]byte, start
 
 func (store *MVCCStore) UpdateSafePoint(safePoint uint64) {
 	// We use the gcLock to make sure safePoint can only increase.
-	store.db.UpdateSafeTs(safePoint)
+	store.db.UpdateMangedSafeTs(safePoint)
 	store.safePoint.UpdateTS(safePoint)
 	log.Info("safePoint is updated to", zap.Uint64("ts", safePoint), zap.Time("time", tsToTime(safePoint)))
 }
@@ -1305,9 +1274,6 @@ func (store *MVCCStore) getExtraMvccInfo(rawkey []byte,
 			break
 		}
 		key := item.Key()
-		if len(key) == 0 || (key[0] != tableExtraPrefix && key[0] != metaExtraPrefix) {
-			continue
-		}
 		rollbackTs := mvcc.DecodeKeyTS(key)
 		curRecord := &kvrpcpb.MvccWrite{
 			Type:     kvrpcpb.Op_Rollback,
@@ -1337,18 +1303,11 @@ func (store *MVCCStore) MvccGetByStartTs(reqCtx *requestCtx, startTs uint64) (*k
 	return res, rawKey, nil
 }
 
-func (store *MVCCStore) DeleteFileInRange(start, end []byte) {
-	store.db.DeleteFilesInRange(start, end)
-	start[0]++
-	end[0]++
-	store.db.DeleteFilesInRange(start, end)
-}
-
 func (store *MVCCStore) BatchGet(reqCtx *requestCtx, keys [][]byte, version uint64) []*kvrpcpb.KvPair {
 	pairs := make([]*kvrpcpb.KvPair, 0, len(keys))
 	remain := make([][]byte, 0, len(keys))
 	for _, key := range keys {
-		err := store.CheckKeysLock(version, reqCtx.rpcCtx.ResolvedLocks, key)
+		err := store.CheckKeysLock(reqCtx, version, reqCtx.rpcCtx.ResolvedLocks, key)
 		if err != nil {
 			pairs = append(pairs, &kvrpcpb.KvPair{Key: key, Error: convertToKeyError(err)})
 		} else {
@@ -1368,19 +1327,24 @@ func (store *MVCCStore) BatchGet(reqCtx *requestCtx, keys [][]byte, version uint
 	return pairs
 }
 
-func (store *MVCCStore) collectRangeLock(startTS uint64, startKey, endKey []byte, resolved []uint64) []*kvrpcpb.KvPair {
+func (store *MVCCStore) collectRangeLock(reqCtx *requestCtx, startTS uint64, startKey, endKey []byte, resolved []uint64) []*kvrpcpb.KvPair {
 	var pairs []*kvrpcpb.KvPair
-	it := store.lockStore.NewIterator()
+	it := reqCtx.getDBReader().GetLockIter()
 	for it.Seek(startKey); it.Valid(); it.Next() {
-		if exceedEndKey(it.Key(), endKey) {
+		item := it.Item()
+		if exceedEndKey(item.Key(), endKey) {
 			break
 		}
-		lock := mvcc.DecodeLock(it.Value())
-		err := checkLock(lock, it.Key(), startTS, resolved)
+		val, _ := item.Value()
+		if len(val) == 0 {
+			log.S().Errorf("empty value for key %x %s", item.Key(), item.Key())
+		}
+		lock := mvcc.DecodeLock(val)
+		err := checkLock(lock, item.Key(), startTS, resolved)
 		if err != nil {
 			pairs = append(pairs, &kvrpcpb.KvPair{
 				Error: convertToKeyError(err),
-				Key:   safeCopy(it.Key()),
+				Key:   safeCopy(item.Key()),
 			})
 		}
 	}
@@ -1443,7 +1407,7 @@ func (store *MVCCStore) Scan(reqCtx *requestCtx, req *kvrpcpb.ScanRequest) []*kv
 	var lockPairs []*kvrpcpb.KvPair
 	limit := req.GetLimit()
 	if req.SampleStep == 0 {
-		lockPairs = store.collectRangeLock(req.GetVersion(), startKey, endKey, req.Context.ResolvedLocks)
+		lockPairs = store.collectRangeLock(reqCtx, req.GetVersion(), startKey, endKey, req.Context.ResolvedLocks)
 	} else {
 		limit = req.SampleStep * limit
 	}
@@ -1555,6 +1519,9 @@ const (
 // Since we use txn ts as badger version, we only need to filter Delete, Rollback and Op_Lock.
 // It is called for the first valid version before safe point, older versions are discarded automatically.
 func (f *GCCompactionFilter) Filter(key, value, userMeta []byte) badger.Decision {
+	if len(userMeta) != 16 {
+		return badger.DecisionKeep
+	}
 	switch key[0] {
 	case metaPrefix, tablePrefix:
 		// For latest version, we need to remove `delete` key, which has value len 0.

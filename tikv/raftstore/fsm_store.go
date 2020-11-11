@@ -16,6 +16,7 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"github.com/ngaut/unistore/tikv/mvcc"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,7 +27,6 @@ import (
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/rocksdb"
-	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -224,7 +224,7 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 	startKey := RegionMetaMinKey
 	endKey := RegionMetaMaxKey
 	ctx := bs.ctx
-	kvEngine := ctx.engine.kv.DB
+	kvEngine := ctx.engine.kv
 	storeID := ctx.store.Id
 
 	var totalCount, tombStoneCount, applyingCount int
@@ -238,69 +238,64 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 	ctx.storeMetaLock.Lock()
 	defer ctx.storeMetaLock.Unlock()
 	meta := ctx.storeMeta
-	err := kvEngine.View(func(txn *badger.Txn) error {
-		it := dbreader.NewIterator(txn, false, startKey, endKey)
-		defer it.Close()
-		for it.Seek(startKey); it.Valid(); it.Next() {
-			item := it.Item()
-			if bytes.Compare(item.Key(), endKey) >= 0 {
-				break
-			}
-			regionID, suffix, err := decodeRegionMetaKey(item.Key())
-			if err != nil {
-				return err
-			}
-			if suffix != RegionStateSuffix {
-				continue
-			}
-			val, err := item.Value()
-			if err != nil {
-				return errors.WithStack(err)
-			}
-			totalCount++
-			localState := new(rspb.RegionLocalState)
-			err = localState.Unmarshal(val)
-			if err != nil {
-				return errors.WithStack(err)
-			}
-			region := localState.Region
-			if localState.State == rspb.PeerState_Tombstone {
-				tombStoneCount++
-				bs.clearStaleMeta(kvWB, raftWB, localState)
-				continue
-			}
-			if localState.State == rspb.PeerState_Applying {
-				// in case of restart happen when we just write region state to Applying,
-				// but not write raft_local_state to raft rocksdb in time.
-				err = recoverFromApplyingState(ctx.engine, raftWB, regionID)
-				if err != nil {
-					return errors.WithStack(err)
-				}
-				applyingCount++
-				applyingRegions = append(applyingRegions, region)
-				continue
-			}
-
-			peer, err := createPeerFsm(storeID, ctx.cfg, ctx.regionTaskSender, ctx.engine, region)
-			if err != nil {
-				return err
-			}
-			ctx.peerEventObserver.OnPeerCreate(peer.peer.getEventContext(), region)
-			if localState.State == rspb.PeerState_Merging {
-				log.S().Infof("region %d is merging", regionID)
-				mergingCount++
-				peer.setPendingMergeState(localState.MergeState)
-			}
-			meta.regionRanges.Put(region.EndKey, regionIDToBytes(regionID))
-			meta.regions[regionID] = region
-			// No need to check duplicated here, because we use region id as the key
-			// in DB.
-			regionPeers = append(regionPeers, peer)
+	dbSnap := kvEngine.NewSnapshot(startKey, endKey)
+	iter := dbSnap.NewIterator(mvcc.RaftCF, false, false)
+	iter.SetBound(endKey)
+	for iter.Seek(startKey); iter.Valid(); iter.Next() {
+		item := iter.Item()
+		if bytes.Compare(item.Key(), endKey) >= 0 {
+			break
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
+		regionID, suffix, err := decodeRegionMetaKey(item.Key())
+		if err != nil {
+			return nil, err
+		}
+		if suffix != RegionStateSuffix {
+			continue
+		}
+		val, err := item.Value()
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+		totalCount++
+		localState := new(rspb.RegionLocalState)
+		err = localState.Unmarshal(val)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+		region := localState.Region
+		if localState.State == rspb.PeerState_Tombstone {
+			tombStoneCount++
+			bs.clearStaleMeta(kvWB, raftWB, localState)
+			continue
+		}
+		if localState.State == rspb.PeerState_Applying {
+			// in case of restart happen when we just write region state to Applying,
+			// but not write raft_local_state to raft rocksdb in time.
+			err = recoverFromApplyingState(ctx.engine, raftWB, regionID)
+			if err != nil {
+				return nil, errors.WithStack(err)
+			}
+			applyingCount++
+			applyingRegions = append(applyingRegions, region)
+			continue
+		}
+
+		peer, err := createPeerFsm(storeID, ctx.cfg, ctx.regionTaskSender, ctx.engine, region)
+		if err != nil {
+			return nil, err
+		}
+		ctx.peerEventObserver.OnPeerCreate(peer.peer.getEventContext(), region)
+		if localState.State == rspb.PeerState_Merging {
+			log.S().Infof("region %d is merging", regionID)
+			mergingCount++
+			peer.setPendingMergeState(localState.MergeState)
+		}
+		meta.regionRanges.Put(region.EndKey, regionIDToBytes(regionID))
+		meta.regions[regionID] = region
+		// No need to check duplicated here, because we use region id as the key
+		// in DB.
+		regionPeers = append(regionPeers, peer)
 	}
 	if kvWB.size > 0 {
 		kvWB.MustWriteToKV(ctx.engine.kv)
@@ -341,9 +336,8 @@ func (bs *raftBatchSystem) clearStaleMeta(kvWB, raftWB *WriteBatch, originState 
 		panic(err)
 	}
 	key := y.KeyWithTs(RegionStateKey(region.Id), KvTS)
-	if err := kvWB.SetMsg(key, originState); err != nil {
-		panic(err)
-	}
+	originVal, _ := originState.Marshal()
+	kvWB.SetRaftCF(key, originVal)
 }
 
 type workers struct {
@@ -416,6 +410,7 @@ func (bs *raftBatchSystem) start(
 	if err != nil {
 		return err
 	}
+	log.S().Infof("region peers %d", len(regionPeers))
 
 	for _, peer := range regionPeers {
 		bs.router.register(peer)
@@ -444,10 +439,10 @@ func (bs *raftBatchSystem) startWorkers(peers []*peerFsm) {
 	}
 	engines := ctx.engine
 	cfg := ctx.cfg
-	workers.splitCheckWorker.start(newSplitCheckRunner(engines.kv.DB, router, cfg.SplitCheck))
-	workers.regionWorker.start(newRegionTaskHandler(bs.globalCfg, engines, ctx.snapMgr, cfg.SnapApplyBatchSize, cfg.CleanStalePeerDelay))
+	workers.splitCheckWorker.start(newSplitCheckRunner(engines.kv, router, cfg.SplitCheck))
+	workers.regionWorker.start(newRegionTaskHandler(bs.globalCfg, engines, ctx.snapMgr, cfg.SnapApplyBatchSize))
 	workers.raftLogGCWorker.start(&raftLogGCTaskHandler{})
-	workers.compactWorker.start(&compactTaskHandler{engine: engines.kv.DB})
+	workers.compactWorker.start(&compactTaskHandler{engine: engines.kv})
 	workers.pdWorker.start(newPDTaskHandler(ctx.store.Id, ctx.pdClient, bs.router))
 	workers.computeHashWorker.start(&computeHashTaskHandler{router: bs.router})
 }
@@ -495,7 +490,7 @@ func (d *storeMsgHandler) checkMsg(msg *rspb.RaftMessage) (bool, error) {
 	// Check if the target is tombstone,
 	stateKey := RegionStateKey(regionID)
 	localState := new(rspb.RegionLocalState)
-	err := getMsg(d.ctx.engine.kv.DB, stateKey, localState)
+	err := getKVMsg(d.ctx.engine.kv, stateKey, localState)
 	if err != nil {
 		if err == badger.ErrKeyNotFound {
 			return false, nil
@@ -682,7 +677,7 @@ func (d *storeMsgHandler) storeHeartbeatPD() {
 	stats.IsBusy = atomic.SwapUint64(&globalStats.isBusy, 0) > 0
 	storeInfo := &pdStoreHeartbeatTask{
 		stats:    stats,
-		engine:   d.ctx.engine.kv.DB,
+		engine:   d.ctx.engine.kv,
 		capacity: d.ctx.cfg.Capacity,
 		path:     d.ctx.engine.kvPath,
 	}

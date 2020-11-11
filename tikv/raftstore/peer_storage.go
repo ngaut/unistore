@@ -16,13 +16,13 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"github.com/ngaut/unistore/tikv/mvcc"
 	"math"
 	"sync/atomic"
 	"time"
 
 	"github.com/cznic/mathutil"
 	"github.com/golang/protobuf/proto"
-	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -202,7 +202,7 @@ func (ic *InvokeContext) saveRaftStateTo(wb *WriteBatch) {
 
 func (ic *InvokeContext) saveApplyStateTo(wb *WriteBatch) {
 	key := y.KeyWithTs(ApplyStateKey(ic.RegionID), KvTS)
-	wb.Set(key, ic.ApplyState.Marshal())
+	wb.SetRaftCF(key, ic.ApplyState.Marshal())
 }
 
 func (ic *InvokeContext) saveSnapshotRaftStateTo(snapshotIdx uint64, wb *WriteBatch) {
@@ -210,13 +210,13 @@ func (ic *InvokeContext) saveSnapshotRaftStateTo(snapshotIdx uint64, wb *WriteBa
 	snapshotRaftState.commit = snapshotIdx
 	snapshotRaftState.lastIndex = snapshotIdx
 	key := y.KeyWithTs(SnapshotRaftStateKey(ic.RegionID), KvTS)
-	wb.Set(key, snapshotRaftState.Marshal())
+	wb.SetRaftCF(key, snapshotRaftState.Marshal())
 }
 
 func recoverFromApplyingState(engines *Engines, raftWB *WriteBatch, regionID uint64) error {
 	snapRaftStateKey := SnapshotRaftStateKey(regionID)
 	snapRaftState := raftState{}
-	val, err := getValue(engines.kv.DB, snapRaftStateKey)
+	val, err := getKVValue(engines.kv, snapRaftStateKey)
 	if err != nil {
 		return errors.Errorf("region %d failed to get raftstate from kv engine when recover from applying state", regionID)
 	}
@@ -271,7 +271,7 @@ func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- 
 	if err != nil {
 		return nil, err
 	}
-	applyState, err := initApplyState(engines.kv.DB, region)
+	applyState, err := initApplyState(engines.kv, region)
 	if err != nil {
 		return nil, err
 	}
@@ -305,23 +305,31 @@ func getMsg(engine *badger.DB, key []byte, msg proto.Message) error {
 	return proto.Unmarshal(val, msg)
 }
 
+func getKVMsg(engine *badger.ShardingDB, key []byte, msg proto.Message) error {
+	val, err := getKVValue(engine, key)
+	if err != nil {
+		return err
+	}
+	return proto.Unmarshal(val, msg)
+}
+
 type storageError string
 
 func (e storageError) Error() string {
 	return string(e)
 }
 
-func getRegionLocalState(db *badger.DB, regionId uint64) (*rspb.RegionLocalState, error) {
+func getRegionLocalState(db *badger.ShardingDB, regionId uint64) (*rspb.RegionLocalState, error) {
 	regionLocalState := new(rspb.RegionLocalState)
-	if err := getMsg(db, RegionStateKey(regionId), regionLocalState); err != nil {
+	if err := getKVMsg(db, RegionStateKey(regionId), regionLocalState); err != nil {
 		return nil, &ErrRegionNotFound{regionId}
 	}
 	return regionLocalState, nil
 }
 
-func getApplyState(db *badger.DB, regionId uint64) (applyState, error) {
+func getApplyState(db *badger.ShardingDB, regionId uint64) (applyState, error) {
 	applyState := applyState{}
-	val, err := getValue(db, ApplyStateKey(regionId))
+	val, err := getKVValue(db, ApplyStateKey(regionId))
 	if err != nil {
 		return applyState, storageError(fmt.Sprintf("couldn't load raft state of region %d", regionId))
 	}
@@ -343,6 +351,19 @@ func getValueTxn(txn *badger.Txn, key []byte) ([]byte, error) {
 		return nil, err
 	}
 	return i.Value()
+}
+
+func getKVValue(engine *badger.ShardingDB, key []byte) ([]byte, error) {
+	snap := engine.NewSnapshot(key, key)
+	return getKVValueBySnap(snap, key)
+}
+
+func getKVValueBySnap(snap *badger.Snapshot, key []byte) ([]byte, error) {
+	item, err := snap.Get(mvcc.RaftCF, y.KeyWithTs(key, 0))
+	if err != nil {
+		return nil, err
+	}
+	return item.ValueCopy(nil)
 }
 
 func getValue(engine *badger.DB, key []byte) ([]byte, error) {
@@ -385,10 +406,10 @@ func initRaftState(raftEngine *badger.DB, region *metapb.Region) (raftState, err
 	return raftState, nil
 }
 
-func initApplyState(kvEngine *badger.DB, region *metapb.Region) (applyState, error) {
+func initApplyState(kvEngine *badger.ShardingDB, region *metapb.Region) (applyState, error) {
 	key := ApplyStateKey(region.Id)
 	applyState := applyState{}
-	val, err := getValue(kvEngine, key)
+	val, err := getKVValue(kvEngine, key)
 	if err != nil && err != badger.ErrKeyNotFound {
 		return applyState, err
 	}
@@ -753,7 +774,10 @@ func fetchEntriesTo(engine *badger.DB, regionID, low, high, maxSize uint64, buf 
 	}
 	startKey := RaftLogKey(regionID, low)
 	endKey := RaftLogKey(regionID, high)
-	iter := dbreader.NewIterator(txn, false, startKey, endKey)
+	iter := txn.NewIterator(badger.IteratorOptions{
+		StartKey: y.KeyWithTs(startKey, math.MaxUint64),
+		EndKey:   y.KeyWithTs(endKey, 0),
+	})
 	defer iter.Close()
 	for iter.Seek(startKey); iter.Valid(); iter.Next() {
 		item := iter.Item()
@@ -794,8 +818,8 @@ func fetchEntriesTo(engine *badger.DB, regionID, low, high, maxSize uint64, buf 
 
 func ClearMeta(engines *Engines, kvWB, raftWB *WriteBatch, regionID uint64, lastIndex uint64) error {
 	start := time.Now()
-	kvWB.Delete(y.KeyWithTs(RegionStateKey(regionID), KvTS))
-	kvWB.Delete(y.KeyWithTs(ApplyStateKey(regionID), KvTS))
+	kvWB.SetRaftCF(y.KeyWithTs(RegionStateKey(regionID), KvTS), nil)
+	kvWB.SetRaftCF(y.KeyWithTs(ApplyStateKey(regionID), KvTS), nil)
 
 	firstIndex := lastIndex + 1
 	beginLogKey := RaftLogKey(regionID, 0)
@@ -838,7 +862,7 @@ func WritePeerState(kvWB *WriteBatch, region *metapb.Region, state rspb.PeerStat
 		regionState.MergeState = mergeState
 	}
 	data, _ := regionState.Marshal()
-	kvWB.Set(y.KeyWithTs(RegionStateKey(regionID), KvTS), data)
+	kvWB.SetRaftCF(y.KeyWithTs(RegionStateKey(regionID), KvTS), data)
 }
 
 // Apply the peer with given snapshot.
@@ -1040,9 +1064,9 @@ func createAndInitSnapshot(snap *regionSnapshot, key SnapKey, mgr *SnapManager) 
 	return snapshot, err
 }
 
-func getAppliedIdxTermForSnapshot(raft *badger.DB, kv *badger.Txn, regionId uint64) (uint64, uint64, error) {
+func getAppliedIdxTermForSnapshot(raft *badger.DB, dbSnap *badger.Snapshot, regionId uint64) (uint64, uint64, error) {
 	applyState := applyState{}
-	val, err := getValueTxn(kv, ApplyStateKey(regionId))
+	val, err := getKVValueBySnap(dbSnap, ApplyStateKey(regionId))
 	if err != nil {
 		return 0, 0, err
 	}
@@ -1063,19 +1087,19 @@ func getAppliedIdxTermForSnapshot(raft *badger.DB, kv *badger.Txn, regionId uint
 	return idx, term, nil
 }
 
-func doSnapshot(engines *Engines, mgr *SnapManager, regionId, redoIdx uint64) (*eraftpb.Snapshot, error) {
-	log.S().Debugf("begin to generate a snapshot. [regionId: %d]", regionId)
+func doSnapshot(engines *Engines, mgr *SnapManager, task *regionTask) (*eraftpb.Snapshot, error) {
+	log.S().Debugf("begin to generate a snapshot. [regionId: %d]", task.regionId)
 
-	snap, err := engines.newRegionSnapshot(regionId, redoIdx)
+	snap, err := engines.newRegionSnapshot(task)
 	if err != nil {
 		return nil, err
 	}
-	defer snap.txn.Discard()
+	defer snap.dbSnap.Discard()
 	if snap.regionState.GetState() != rspb.PeerState_Normal {
-		return nil, storageError(fmt.Sprintf("snap job %d seems stale, skip", regionId))
+		return nil, storageError(fmt.Sprintf("snap job %d seems stale, skip", task.regionId))
 	}
 
-	key := SnapKey{RegionID: regionId, Index: snap.index, Term: snap.term}
+	key := SnapKey{RegionID: task.regionId, Index: snap.index, Term: snap.term}
 	mgr.Register(key, SnapEntryGenerating)
 	defer mgr.Deregister(key, SnapEntryGenerating)
 

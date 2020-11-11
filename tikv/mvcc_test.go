@@ -16,6 +16,7 @@ package tikv
 import (
 	"bytes"
 	"fmt"
+	"github.com/ngaut/unistore/tikv/mvcc"
 	"io/ioutil"
 	"math"
 	"os"
@@ -23,12 +24,9 @@ import (
 	"strings"
 
 	"github.com/ngaut/unistore/config"
-	"github.com/ngaut/unistore/lockstore"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/ngaut/unistore/util/lockwaiter"
 	"github.com/pingcap/badger"
-	"github.com/pingcap/badger/y"
 	. "github.com/pingcap/check"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -81,13 +79,19 @@ func newMutation(op kvrpcpb.Op, key, value []byte) *kvrpcpb.Mutation {
 	}
 }
 
-func CreateTestDB(dbPath, LogPath string) (*badger.DB, error) {
-	subPath := fmt.Sprintf("/%d", 0)
+func CreateTestRaftDB(dbPath, LogPath string) (*badger.DB, error) {
 	opts := badger.DefaultOptions
-	opts.Dir = dbPath + subPath
-	opts.ValueDir = LogPath + subPath
-	opts.ManagedTxns = true
+	opts.Dir = dbPath
+	opts.ValueDir = LogPath
 	return badger.Open(opts)
+}
+
+func CreateTestShardingDB(dbPath string) (*badger.ShardingDB, error) {
+	opts := badger.ShardingDBDefaultOpt
+	opts.Dir = dbPath
+	opts.ValueDir = dbPath
+	opts.CFs = []badger.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}, {Managed: false}}
+	return badger.OpenShardingDB(opts)
 }
 
 func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
@@ -100,26 +104,24 @@ func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
 		return nil, err
 	}
 	safePoint := &SafePoint{}
-	db, err := CreateTestDB(dbPath, LogPath)
+	kvPath := filepath.Join(dbPath, "kv")
+	raftPath := filepath.Join(dbPath, "raft")
+	kvDB, err := CreateTestShardingDB(kvPath)
+	raftDB, err := CreateTestRaftDB(raftPath, LogPath)
 	if err != nil {
 		return nil, err
 	}
-	dbBundle := &mvcc.DBBundle{
-		DB:        db,
-		LockStore: lockstore.NewMemStore(4096),
-	}
 	// Some raft store path problems could not be found using simple store in tests
 	// writer := NewDBWriter(dbBundle, safePoint)
-	kvPath := filepath.Join(dbPath, "kv")
-	raftPath := filepath.Join(dbPath, "raft")
+
 	snapPath := filepath.Join(dbPath, "snap")
 	os.MkdirAll(kvPath, os.ModePerm)
 	os.MkdirAll(raftPath, os.ModePerm)
 	os.Mkdir(snapPath, os.ModePerm)
-	engines := raftstore.NewEngines(dbBundle, dbBundle.DB, kvPath, raftPath)
-	writer := raftstore.NewTestRaftWriter(dbBundle, engines)
+	engines := raftstore.NewEngines(kvDB, raftDB, kvPath, raftPath)
+	writer := raftstore.NewTestRaftWriter(engines)
 
-	rm, err := NewMockRegionManager(dbBundle, 1, RegionOptions{
+	rm, err := NewMockRegionManager(kvDB, 1, RegionOptions{
 		StoreAddr:  "127.0.0.1:10086",
 		PDAddr:     "127.0.0.1:2379",
 		RegionSize: 96 * 1024 * 1024,
@@ -128,7 +130,7 @@ func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
 		return nil, err
 	}
 	pdClient := NewMockPD(rm)
-	store := NewMVCCStore(&config.DefaultConf, dbBundle, dbPath, safePoint, writer, pdClient)
+	store := NewMVCCStore(&config.DefaultConf, kvDB, dbPath, safePoint, writer, pdClient)
 	svr := NewServer(nil, store, nil)
 	return &TestStore{
 		MvccStore: store,
@@ -308,9 +310,8 @@ func MustPrewriteOpCheckExistOk(pk, key []byte, startTs uint64, store *TestStore
 	}
 	err := store.MvccStore.prewriteOptimistic(store.newReqCtx(), prewriteReq.Mutations, prewriteReq)
 	store.c.Assert(err, IsNil)
-	var buf []byte
-	buf = store.MvccStore.lockStore.Get(key, buf)
-	store.c.Assert(len(buf), Equals, 0)
+	lock := store.MvccStore.getLock(store.newReqCtx(), key)
+	store.c.Assert(lock, IsNil)
 }
 
 func MustPrewriteDelete(pk, key []byte, startTs uint64, store *TestStore) {
@@ -411,7 +412,7 @@ func MustCommitErr(key []byte, startTs, commitTs uint64, store *TestStore) {
 func MustRollbackKey(key []byte, startTs uint64, store *TestStore) {
 	err := store.MvccStore.Rollback(store.newReqCtx(), [][]byte{key}, startTs)
 	store.c.Assert(err, IsNil)
-	store.c.Assert(store.MvccStore.lockStore.Get(key, nil), IsNil)
+	store.c.Assert(store.MvccStore.getLock(store.newReqCtx(), key), IsNil)
 	status := store.MvccStore.checkExtraTxnStatus(store.newReqCtx(), key, startTs)
 	store.c.Assert(status.isRollback, IsTrue)
 }
@@ -437,11 +438,12 @@ func MustGetErr(key []byte, startTs uint64, store *TestStore) {
 }
 
 func kvGet(key []byte, readTs uint64, store *TestStore) ([]byte, error) {
-	err := store.MvccStore.CheckKeysLock(readTs, nil, key)
+	reqCtx := store.newReqCtx()
+	err := store.MvccStore.CheckKeysLock(reqCtx, readTs, nil, key)
 	if err != nil {
 		return nil, err
 	}
-	getVal, err := store.newReqCtx().getDBReader().Get(key, readTs)
+	getVal, err := reqCtx.getDBReader().Get(key, readTs)
 	return getVal, err
 }
 
@@ -1481,15 +1483,9 @@ func (s *testMvccSuite) TestResolveCommit(c *C) {
 	MustCommit(k2, 3, 4, store)
 
 	// The error path
-	kvTxn := store.MvccStore.db.NewTransaction(true)
-	e := &badger.Entry{
-		Key: y.KeyWithTs(sk, 3),
-	}
-	e.SetDelete()
-	err = kvTxn.SetEntry(e)
-	c.Assert(err, IsNil)
-	err = kvTxn.Commit()
-	c.Assert(err, IsNil)
+	wb := store.MvccStore.db.NewWriteBatch()
+	c.Assert(wb.Delete(mvcc.WriteCF, sk, 3), IsNil)
+	c.Assert(store.MvccStore.db.Write(wb), IsNil)
 	MustCommitErr(sk, 1, 3, store)
 	MustAcquirePessimisticLock(sk, sk, 5, 5, store)
 	MustCommitErr(sk, 1, 3, store)

@@ -15,13 +15,14 @@ package tikv
 
 import (
 	"context"
+	"github.com/ngaut/unistore/tikv/raftstore"
 	"io"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ngaut/unistore/tikv/dbreader"
-	"github.com/ngaut/unistore/tikv/raftstore"
+	//"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/ngaut/unistore/util/lockwaiter"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
@@ -120,8 +121,8 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCt
 func (req *requestCtx) getDBReader() *dbreader.DBReader {
 	if req.reader == nil {
 		mvccStore := req.svr.mvccStore
-		txn := mvccStore.db.NewTransaction(false)
-		req.reader = dbreader.NewDBReader(req.regCtx.startKey, req.regCtx.endKey, txn)
+		snap := mvccStore.db.NewSnapshot(req.regCtx.startKey, req.regCtx.endKey)
+		req.reader = dbreader.NewDBReader(req.regCtx.startKey, req.regCtx.endKey, snap)
 	}
 	return req.reader
 }
@@ -142,7 +143,7 @@ func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.GetResponse{RegionError: reqCtx.regErr}, nil
 	}
-	err = svr.mvccStore.CheckKeysLock(req.GetVersion(), req.Context.ResolvedLocks, req.Key)
+	err = svr.mvccStore.CheckKeysLock(reqCtx, req.GetVersion(), req.Context.ResolvedLocks, req.Key)
 	if err != nil {
 		return &kvrpcpb.GetResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -273,6 +274,7 @@ func (svr *Server) KvCheckTxnStatus(ctx context.Context, req *kvrpcpb.CheckTxnSt
 		return &kvrpcpb.CheckTxnStatusResponse{RegionError: reqCtx.regErr}, nil
 	}
 	txnStatus, err := svr.mvccStore.CheckTxnStatus(reqCtx, req)
+	log.S().Infof("check txn status lockTS:%d commitTS:%d action:%s hasLock:%v", req.LockTs, txnStatus.commitTS, txnStatus.action, txnStatus.lockInfo != nil)
 	ttl := uint64(0)
 	if txnStatus.lockInfo != nil {
 		ttl = txnStatus.lockInfo.LockTtl
@@ -514,7 +516,10 @@ func (svr *Server) Coprocessor(ctx context.Context, req *coprocessor.Request) (*
 	if reqCtx.regErr != nil {
 		return &coprocessor.Response{RegionError: reqCtx.regErr}, nil
 	}
-	return cophandler.HandleCopRequest(reqCtx.getDBReader(), svr.mvccStore.lockStore, req), nil
+	start := time.Now()
+	resp := cophandler.HandleCopRequest(reqCtx.getDBReader(), req)
+	log.S().Infof("handle cop request tp:%d ranges:%d time: %v", req.Tp, len(req.Ranges), time.Since(start))
+	return resp, nil
 }
 
 func (svr *Server) CoprocessorStream(*coprocessor.Request, tikvpb.Tikv_CoprocessorStreamServer) error {
@@ -605,8 +610,12 @@ func (svr *Server) MvccGetByStartTs(ctx context.Context, req *kvrpcpb.MvccGetByS
 
 func (svr *Server) UnsafeDestroyRange(ctx context.Context, req *kvrpcpb.UnsafeDestroyRangeRequest) (*kvrpcpb.UnsafeDestroyRangeResponse, error) {
 	start, end := req.GetStartKey(), req.GetEndKey()
-	svr.mvccStore.DeleteFileInRange(start, end)
-	return &kvrpcpb.UnsafeDestroyRangeResponse{}, nil
+	err := svr.mvccStore.db.DeleteRange(start, end)
+	resp := &kvrpcpb.UnsafeDestroyRangeResponse{}
+	if err != nil {
+		resp.Error = err.Error()
+	}
+	return resp, nil
 }
 
 // deadlock detection related services

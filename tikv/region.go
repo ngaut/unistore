@@ -16,6 +16,8 @@ package tikv
 import (
 	"bytes"
 	"encoding/binary"
+	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/zhangjinpeng1987/raft"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -24,7 +26,6 @@ import (
 
 	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/pd"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
@@ -35,7 +36,6 @@ import (
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/util/codec"
-	"github.com/zhangjinpeng1987/raft"
 	"go.uber.org/zap"
 	"golang.org/x/net/context"
 )
@@ -44,7 +44,6 @@ var (
 	InternalKeyPrefix        = []byte{0xff}
 	InternalRegionMetaPrefix = append(InternalKeyPrefix, "region"...)
 	InternalStoreMetaKey     = append(InternalKeyPrefix, "store"...)
-	InternalSafePointKey     = append(InternalKeyPrefix, "safepoint"...)
 )
 
 func InternalRegionMetaKey(regionId uint64) []byte {
@@ -279,46 +278,41 @@ func (rm *regionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
 	return lhs.GetConfVer() != rhs.GetConfVer() || lhs.GetVersion() != rhs.GetVersion()
 }
 
-func (rm *regionManager) loadFromLocal(bundle *mvcc.DBBundle, f func(*regionCtx)) error {
-	err := bundle.DB.View(func(txn *badger.Txn) error {
-		item, err1 := txn.Get(InternalStoreMetaKey)
-		if err1 != nil {
-			return err1
-		}
+func (rm *regionManager) loadFromLocal(db *badger.ShardingDB, f func(*regionCtx)) error {
+	snap := db.NewSnapshot(InternalKeyPrefix, nil)
+	defer snap.Discard()
+	item, err := snap.Get(mvcc.RaftCF, y.KeyWithTs(InternalStoreMetaKey, 0))
+	if err != nil && err != badger.ErrKeyNotFound {
+		return err
+	}
+	if err != nil {
+		return nil
+	}
+	val, _ := item.Value()
+	err = rm.storeMeta.Unmarshal(val)
+	if err != nil {
+		return err
+	}
+	// load region meta
+	it := snap.NewIterator(mvcc.RaftCF, false, false)
+	defer it.Close()
+	prefix := InternalRegionMetaPrefix
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		item := it.Item()
 		val, err1 := item.Value()
 		if err1 != nil {
 			return err1
 		}
-		err1 = rm.storeMeta.Unmarshal(val)
-		if err1 != nil {
-			return err1
+		r := new(regionCtx)
+		err := r.unmarshal(val)
+		if err != nil {
+			return errors.Trace(err)
 		}
-		// load region meta
-		opts := badger.DefaultIteratorOptions
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		prefix := InternalRegionMetaPrefix
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			val, err1 = item.Value()
-			if err1 != nil {
-				return err1
-			}
-			r := new(regionCtx)
-			err := r.unmarshal(val)
-			if err != nil {
-				return errors.Trace(err)
-			}
-			r.latches = rm.latches
-			rm.regions[r.meta.Id] = r
-			f(r)
-		}
-		return nil
-	})
-	if err == badger.ErrKeyNotFound {
-		err = nil
+		r.latches = rm.latches
+		rm.regions[r.meta.Id] = r
+		f(r)
 	}
-	return err
+	return nil
 }
 
 type RaftRegionManager struct {
@@ -482,7 +476,7 @@ func (rm *RaftRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpc
 
 type StandAloneRegionManager struct {
 	regionManager
-	bundle     *mvcc.DBBundle
+	db         *badger.ShardingDB
 	pdc        pd.Client
 	clusterID  uint64
 	regionSize int64
@@ -490,12 +484,12 @@ type StandAloneRegionManager struct {
 	wg         sync.WaitGroup
 }
 
-func NewStandAloneRegionManager(bundle *mvcc.DBBundle, opts RegionOptions, pdc pd.Client) *StandAloneRegionManager {
+func NewStandAloneRegionManager(db *badger.ShardingDB, opts RegionOptions, pdc pd.Client) *StandAloneRegionManager {
 	var err error
 	clusterID := pdc.GetClusterID(context.TODO())
 	log.S().Infof("cluster id %v", clusterID)
 	rm := &StandAloneRegionManager{
-		bundle:     bundle,
+		db:         db,
 		pdc:        pdc,
 		clusterID:  clusterID,
 		regionSize: opts.RegionSize,
@@ -506,7 +500,7 @@ func NewStandAloneRegionManager(bundle *mvcc.DBBundle, opts RegionOptions, pdc p
 			latches:   newLatches(),
 		},
 	}
-	err = rm.loadFromLocal(bundle, func(r *regionCtx) {
+	err = rm.loadFromLocal(db, func(r *regionCtx) {
 		req := &pdpb.RegionHeartbeatRequest{
 			Region:          r.meta,
 			Leader:          r.meta.Peers[0],
@@ -514,6 +508,9 @@ func NewStandAloneRegionManager(bundle *mvcc.DBBundle, opts RegionOptions, pdc p
 		}
 		rm.pdc.ReportRegion(req)
 	})
+	if err != nil {
+		log.Fatal("loadFromLocal failed", zap.Error(err))
+	}
 	if rm.storeMeta.Id == 0 {
 		err = rm.initStore(opts.StoreAddr)
 		if err != nil {
@@ -554,27 +551,18 @@ func (rm *StandAloneRegionManager) initStore(storeAddr string) error {
 	if err != nil {
 		log.Fatal("marshal store meta failed", zap.Error(err))
 	}
-	err = rm.bundle.DB.Update(func(txn *badger.Txn) error {
-		ts := atomic.AddUint64(&rm.bundle.StateTS, 1)
-		err = txn.SetEntry(&badger.Entry{
-			Key:   y.KeyWithTs(InternalStoreMetaKey, ts),
-			Value: storeBuf,
-		})
-		if err != nil {
-			return err
-		}
-		for rid, region := range rm.regions {
-			regionBuf := region.marshal()
-			err = txn.SetEntry(&badger.Entry{
-				Key:   y.KeyWithTs(InternalRegionMetaKey(rid), ts),
-				Value: regionBuf,
-			})
-			if err != nil {
-				log.Fatal("save region info failed", zap.Error(err))
-			}
-		}
-		return nil
-	})
+	wb := rm.db.NewWriteBatch()
+	err = wb.Put(raftCF, InternalStoreMetaKey, y.ValueStruct{Value: storeBuf})
+	y.Assert(err == nil)
+	for rid, region := range rm.regions {
+		regionBuf := region.marshal()
+		err = wb.Put(raftCF, InternalRegionMetaKey(rid), y.ValueStruct{Value: regionBuf})
+		y.Assert(err == nil)
+	}
+	err = rm.db.Write(wb)
+	if err != nil {
+		log.Fatal("write store meta failed", zap.Error(err))
+	}
 	for _, region := range rm.regions {
 		req := &pdpb.RegionHeartbeatRequest{
 			Region:          region.meta,
@@ -592,7 +580,11 @@ func (rm *StandAloneRegionManager) initialSplit(root *metapb.Region) {
 	root.EndKey = codec.EncodeBytes(nil, []byte{'m'})
 	root.RegionEpoch.Version = 2
 	rm.regions[root.Id] = newRegionCtx(root, rm.latches, nil)
-	preSplitStartKeys := [][]byte{{'m'}, {'n'}, {'t'}, {'u'}}
+	preSplitStartKeys := [][]byte{{'m'}, {'t'}, {255}}
+	err := rm.db.Split(preSplitStartKeys)
+	if err != nil {
+		log.Fatal("pre split failed", zap.Error(err))
+	}
 	ids, err := rm.allocIDs(len(preSplitStartKeys) * 2)
 	if err != nil {
 		log.Fatal("alloc ids failed", zap.Error(err))
@@ -707,31 +699,32 @@ func (s *sampler) getSplitKeyAndSize() ([]byte, int64) {
 
 func (rm *StandAloneRegionManager) runSplitWorker() {
 	defer rm.wg.Done()
-	ticker := time.NewTicker(time.Second * 5)
-	var regionsToCheck []*regionCtx
-	var regionsToSave []*regionCtx
+	ticker := time.NewTicker(time.Second * 10)
 	for {
-		regionsToCheck = regionsToCheck[:0]
-		rm.mu.RLock()
-		for _, ri := range rm.regions {
-			if ri.approximateSize+atomic.LoadInt64(&ri.diff) > rm.regionSize*3/2 {
-				regionsToCheck = append(regionsToCheck, ri)
+		keys := rm.db.GetSplitSuggestion(rm.regionSize)
+		if len(keys) > 0 {
+			err := rm.db.Split(keys)
+			if err != nil {
+				log.Error("failed to split engine", zap.Error(err))
+			}
+			for _, key := range keys {
+				var splitRegion *regionCtx
+				rm.mu.RLock()
+				for _, ri := range rm.regions {
+					if bytes.Compare(key, ri.startKey) >= 0 && bytes.Compare(key, ri.endKey) < 0 {
+						splitRegion = ri
+						break
+					}
+				}
+				rm.mu.RUnlock()
+				if splitRegion != nil {
+					err = rm.splitRegion(splitRegion, key)
+					if err != nil {
+						log.Error("failed to split region", zap.Error(err))
+					}
+				}
 			}
 		}
-		rm.mu.RUnlock()
-		for _, ri := range regionsToCheck {
-			rm.splitCheckRegion(ri)
-		}
-
-		regionsToSave = regionsToSave[:0]
-		rm.mu.RLock()
-		for _, ri := range rm.regions {
-			if atomic.LoadInt64(&ri.diff) > rm.regionSize/8 {
-				regionsToSave = append(regionsToSave, ri)
-			}
-		}
-		rm.mu.RUnlock()
-		rm.saveSize(regionsToSave)
 		select {
 		case <-rm.closeCh:
 			return
@@ -740,60 +733,7 @@ func (rm *StandAloneRegionManager) runSplitWorker() {
 	}
 }
 
-func (rm *StandAloneRegionManager) saveSize(regionsToSave []*regionCtx) {
-	err1 := rm.bundle.DB.Update(func(txn *badger.Txn) error {
-		ts := atomic.AddUint64(&rm.bundle.StateTS, 1)
-		for _, ri := range regionsToSave {
-			ri.approximateSize += atomic.LoadInt64(&ri.diff)
-			err := txn.SetEntry(&badger.Entry{
-				Key:   y.KeyWithTs(InternalRegionMetaKey(ri.meta.Id), ts),
-				Value: ri.marshal(),
-			})
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err1 != nil {
-		log.Error("region manager save size failed", zap.Error(err1))
-	}
-}
-
-func (rm *StandAloneRegionManager) splitCheckRegion(region *regionCtx) error {
-	s := newSampler()
-	err := rm.bundle.DB.View(func(txn *badger.Txn) error {
-		iter := txn.NewIterator(badger.IteratorOptions{})
-		defer iter.Close()
-		for iter.Seek(region.startKey); iter.Valid(); iter.Next() {
-			item := iter.Item()
-			if region.greaterEqualEndKey(item.Key()) {
-				break
-			}
-			s.scanKey(item.Key(), int64(len(item.Key())+item.ValueSize()))
-		}
-		return nil
-	})
-	if err != nil {
-		log.Error("sample region failed", zap.Error(err))
-		return errors.Trace(err)
-	}
-	// Need to update the diff to avoid split check again.
-	atomic.StoreInt64(&region.diff, s.totalSize-region.approximateSize)
-	if s.totalSize < rm.regionSize {
-		return nil
-	}
-	splitKey, leftSize := s.getSplitKeyAndSize()
-	log.Info("try to split region", zap.Uint64("id", region.meta.Id), zap.Binary("split key", splitKey),
-		zap.Int64("left size", leftSize), zap.Int64("right size", s.totalSize-leftSize))
-	err = rm.splitRegion(region, splitKey, s.totalSize, leftSize)
-	if err != nil {
-		log.Error("split region failed", zap.Error(err))
-	}
-	return errors.Trace(err)
-}
-
-func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey []byte, oldSize, leftSize int64) error {
+func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey []byte) error {
 	oldRegion := oldRegionCtx.meta
 	rightMeta := &metapb.Region{
 		Id:       oldRegion.Id,
@@ -806,7 +746,6 @@ func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey
 		Peers: oldRegion.Peers,
 	}
 	right := newRegionCtx(rightMeta, rm.latches, nil)
-	right.approximateSize = oldSize - leftSize
 	id, err := rm.pdc.AllocID(context.Background())
 	if err != nil {
 		return errors.Trace(err)
@@ -822,24 +761,14 @@ func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey
 		Peers: oldRegion.Peers,
 	}
 	left := newRegionCtx(leftMeta, rm.latches, nil)
-	left.approximateSize = leftSize
-	err1 := rm.bundle.DB.Update(func(txn *badger.Txn) error {
-		ts := atomic.AddUint64(&rm.bundle.StateTS, 1)
-		err := txn.SetEntry(&badger.Entry{
-			Key:   y.KeyWithTs(InternalRegionMetaKey(left.meta.Id), ts),
-			Value: left.marshal(),
-		})
-		if err != nil {
-			return errors.Trace(err)
-		}
-		err = txn.SetEntry(&badger.Entry{
-			Key:   y.KeyWithTs(InternalRegionMetaKey(right.meta.Id), ts),
-			Value: right.marshal(),
-		})
-		return errors.Trace(err)
-	})
-	if err1 != nil {
-		return errors.Trace(err1)
+	wb := rm.db.NewWriteBatch()
+	err = wb.Put(raftCF, InternalRegionMetaKey(left.meta.Id), y.ValueStruct{Value: left.marshal()})
+	y.Assert(err == nil)
+	err = wb.Put(raftCF, InternalRegionMetaKey(right.meta.Id), y.ValueStruct{Value: right.marshal()})
+	y.Assert(err == nil)
+	err = rm.db.Write(wb)
+	if err != nil {
+		return err
 	}
 	rm.mu.Lock()
 	rm.regions[left.meta.Id] = left
@@ -862,6 +791,12 @@ func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey
 }
 
 func (rm *StandAloneRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse {
+	err := rm.db.Split(req.SplitKeys)
+	if err != nil {
+		log.Info("split db failed", zap.Error(err))
+	} else {
+		log.Info("split db")
+	}
 	return &kvrpcpb.SplitRegionResponse{}
 }
 

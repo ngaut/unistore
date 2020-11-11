@@ -15,7 +15,7 @@ package tikv
 
 import (
 	"github.com/ngaut/unistore/pd"
-	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/pingcap/badger"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 )
 
@@ -29,12 +29,12 @@ type InnerServer interface {
 }
 
 type StandAlongInnerServer struct {
-	bundle *mvcc.DBBundle
+	db *badger.ShardingDB
 }
 
-func NewStandAlongInnerServer(bundle *mvcc.DBBundle) *StandAlongInnerServer {
+func NewStandAlongInnerServer(db *badger.ShardingDB) *StandAlongInnerServer {
 	return &StandAlongInnerServer{
-		bundle: bundle,
+		db: db,
 	}
 }
 
@@ -57,5 +57,5 @@ func (is *StandAlongInnerServer) Start(pdClient pd.Client) error {
 }
 
 func (is *StandAlongInnerServer) Stop() error {
-	return is.bundle.DB.Close()
+	return is.db.Close()
 }

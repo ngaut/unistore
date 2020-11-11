@@ -260,7 +260,7 @@ func (w *TestRaftWriter) Write(batch mvcc.WriteBatch) error {
 	applier := new(applier)
 	applyCtx := newApplyContext("test", nil, w.engine, nil, NewDefaultConfig())
 	applier.execWriteCmd(applyCtx, raftLog)
-	err := applyCtx.wb.WriteToKV(w.dbBundle)
+	err := applyCtx.wb.WriteToKV(w.engine.kv)
 	if err != nil {
 		return err
 	}
@@ -275,10 +275,9 @@ func (w *TestRaftWriter) NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Co
 	return NewCustomWriteBatch(startTS, commitTS, ctx)
 }
 
-func NewTestRaftWriter(dbBundle *mvcc.DBBundle, engine *Engines) mvcc.DBWriter {
+func NewTestRaftWriter(engine *Engines) mvcc.DBWriter {
 	writer := &TestRaftWriter{
-		dbBundle: dbBundle,
-		engine:   engine,
+		engine: engine,
 	}
 	return writer
 }

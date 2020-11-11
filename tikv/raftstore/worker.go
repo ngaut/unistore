@@ -18,14 +18,11 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ngaut/unistore/config"
-	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
@@ -139,7 +136,7 @@ type pdRegionHeartbeatTask struct {
 
 type pdStoreHeartbeatTask struct {
 	stats    *pdpb.StoreStats
-	engine   *badger.DB
+	engine   *badger.ShardingDB
 	path     string
 	capacity uint64
 }
@@ -236,13 +233,13 @@ func newWorker(name string, wg *sync.WaitGroup) *worker {
 }
 
 type splitCheckHandler struct {
-	engine   *badger.DB
+	engine   *badger.ShardingDB
 	router   *router
 	config   *splitCheckConfig
 	checkers []splitChecker
 }
 
-func newSplitCheckRunner(engine *badger.DB, router *router, config *splitCheckConfig) *splitCheckHandler {
+func newSplitCheckRunner(engine *badger.ShardingDB, router *router, config *splitCheckConfig) *splitCheckHandler {
 	runner := &splitCheckHandler{
 		engine: engine,
 		router: router,
@@ -277,8 +274,8 @@ func (r *splitCheckHandler) handle(t task) {
 	}
 	log.S().Debugf("executing split check task: [regionId: %d, startKey: %s, endKey: %s]", regionId,
 		hex.EncodeToString(startKey), hex.EncodeToString(endKey))
-	txn := r.engine.NewTransaction(false)
-	reader := dbreader.NewDBReader(startKey, endKey, txn)
+	snap := r.engine.NewSnapshot(startKey, endKey)
+	reader := dbreader.NewDBReader(startKey, endKey, snap)
 	defer reader.Close()
 	var keys [][]byte
 	switch t.tp {
@@ -504,45 +501,6 @@ func (r *splitCheckHandler) halfSplitCheck(startKey, endKey []byte, reader *dbre
 	return nil
 }
 
-type pendingDeleteRanges struct {
-	ranges *lockstore.MemStore
-}
-
-func (pendDelRanges *pendingDeleteRanges) insert(regionId uint64, startKey, endKey []byte, timeout time.Time) {
-	if len(pendDelRanges.findOverlapRanges(startKey, endKey)) != 0 {
-		panic(fmt.Sprintf("[region %d] register deleting data in [%v, %v) failed due to overlap", regionId, startKey, endKey))
-	}
-	peerInfo := newStalePeerInfo(regionId, endKey, timeout)
-	pendDelRanges.ranges.Put(startKey, peerInfo.data)
-}
-
-// remove removes and returns the peer info with the `start_key`.
-func (pendDelRanges *pendingDeleteRanges) remove(startKey []byte) *stalePeerInfo {
-	value := pendDelRanges.ranges.Get(startKey, nil)
-	if value != nil {
-		pendDelRanges.ranges.Delete(startKey)
-		return &stalePeerInfo{data: safeCopy(value)}
-	}
-	return nil
-}
-
-// timeoutRanges returns all timeout ranges info.
-func (pendDelRanges *pendingDeleteRanges) timeoutRanges(now time.Time) (ranges []delRangeHolder) {
-	ite := pendDelRanges.ranges.NewIterator()
-	for ite.Next(); ite.Valid(); ite.Next() {
-		startKey := safeCopy(ite.Key())
-		peerInfo := stalePeerInfo{data: safeCopy(ite.Value())}
-		if peerInfo.timeout().Before(now) {
-			ranges = append(ranges, delRangeHolder{
-				startKey: startKey,
-				endKey:   peerInfo.endKey(),
-				regionId: peerInfo.regionId(),
-			})
-		}
-	}
-	return
-}
-
 type stalePeerInfo struct {
 	data []byte
 }
@@ -579,70 +537,28 @@ func (s stalePeerInfo) setEndKey(endKey []byte) {
 	copy(s.data[16:], endKey)
 }
 
-type delRangeHolder struct {
-	startKey []byte
-	endKey   []byte
-	regionId uint64
-}
-
-// findOverlapRanges finds ranges that overlap with [start_key, end_key).
-func (pendDelRanges *pendingDeleteRanges) findOverlapRanges(startKey, endKey []byte) (ranges []delRangeHolder) {
-	if exceedEndKey(startKey, endKey) {
-		return nil
-	}
-	ite := pendDelRanges.ranges.NewIterator()
-	// find the first range that may overlap with [start_key, end_key)
-	if ite.SeekForExclusivePrev(startKey); ite.Valid() {
-		peerInfo := stalePeerInfo{data: safeCopy(ite.Value())}
-		if bytes.Compare(peerInfo.endKey(), startKey) > 0 {
-			ranges = append(ranges, delRangeHolder{startKey: safeCopy(ite.Key()), endKey: peerInfo.endKey(), regionId: peerInfo.regionId()})
-		}
-	}
-	// Find the rest ranges that overlap with [start_key, end_key)
-	for ite.Next(); ite.Valid(); ite.Next() {
-		peerInfo := stalePeerInfo{data: safeCopy(ite.Value())}
-		startKey := safeCopy(ite.Key())
-		if exceedEndKey(startKey, endKey) {
-			break
-		}
-		ranges = append(ranges, delRangeHolder{startKey: startKey, endKey: peerInfo.endKey(), regionId: peerInfo.regionId()})
-	}
-	return
-}
-
-// drainOverlapRanges gets ranges that overlap with [start_key, end_key).
-func (pendDelRanges *pendingDeleteRanges) drainOverlapRanges(startKey, endKey []byte) []delRangeHolder {
-	ranges := pendDelRanges.findOverlapRanges(startKey, endKey)
-	for _, r := range ranges {
-		y.Assert(pendDelRanges.ranges.Delete(r.startKey))
-	}
-	return ranges
-}
-
 type snapContext struct {
-	engiens             *Engines
-	wb                  *WriteBatch
-	batchSize           uint64
-	mgr                 *SnapManager
-	cleanStalePeerDelay time.Duration
-	pendingDeleteRanges *pendingDeleteRanges
+	engines   *Engines
+	wb        *WriteBatch
+	batchSize uint64
+	mgr       *SnapManager
 }
 
 // handleGen handles the task of generating snapshot of the Region. It calls `generateSnap` to do the actual work.
-func (snapCtx *snapContext) handleGen(regionId, redoIdx uint64, notifier chan<- *eraftpb.Snapshot) {
-	if err := snapCtx.generateSnap(regionId, redoIdx, notifier); err != nil {
-		log.Error("failed to generate snapshot!!!", zap.Uint64("region id", regionId), zap.Error(err))
+func (snapCtx *snapContext) handleGen(task *regionTask) {
+	if err := snapCtx.generateSnap(task); err != nil {
+		log.Error("failed to generate snapshot!!!", zap.Uint64("region id", task.regionId), zap.Error(err))
 	}
 }
 
 // generateSnap generates the snapshots of the Region
-func (snapCtx *snapContext) generateSnap(regionId, redoIdx uint64, notifier chan<- *eraftpb.Snapshot) error {
+func (snapCtx *snapContext) generateSnap(task *regionTask) error {
 	// do we need to check leader here?
-	snap, err := doSnapshot(snapCtx.engiens, snapCtx.mgr, regionId, redoIdx)
+	snap, err := doSnapshot(snapCtx.engines, snapCtx.mgr, task)
 	if err != nil {
 		return err
 	}
-	notifier <- snap
+	task.notifier <- snap
 	return nil
 }
 
@@ -653,8 +569,7 @@ func (snapCtx *snapContext) cleanUpOriginData(regionState *rspb.RegionLocalState
 	if err := checkAbort(status); err != nil {
 		return err
 	}
-	snapCtx.cleanUpOverlapRanges(startKey, endKey)
-	if err := deleteRange(snapCtx.engiens.kv, startKey, endKey); err != nil {
+	if err := snapCtx.engines.kv.DeleteRange(startKey, endKey); err != nil {
 		return err
 	}
 	if err := checkAbort(status); err != nil {
@@ -672,7 +587,7 @@ func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builde
 	}
 
 	regionKey := RegionStateKey(regionId)
-	regionState, err := getRegionLocalState(snapCtx.engiens.kv.DB, regionId)
+	regionState, err := getRegionLocalState(snapCtx.engines.kv, regionId)
 	if err != nil {
 		return result, errors.New(fmt.Sprintf("failed to get regionState from %v", regionKey))
 	}
@@ -682,7 +597,7 @@ func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builde
 		return result, err
 	}
 
-	applyState, err := getApplyState(snapCtx.engiens.kv.DB, regionId)
+	applyState, err := getApplyState(snapCtx.engines.kv, regionId)
 	if err != nil {
 		return result, errors.New(fmt.Sprintf("failed to get raftState from %v", ApplyStateKey(regionId)))
 	}
@@ -696,7 +611,7 @@ func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builde
 	}
 
 	t := time.Now()
-	applyOptions := newApplyOptions(snapCtx.engiens.kv, regionState.GetRegion(), status, builder, snapCtx.wb)
+	applyOptions := newApplyOptions(snapCtx.engines.kv, regionState.GetRegion(), status, builder, snapCtx.wb)
 	if result, err = snap.Apply(*applyOptions); err != nil {
 		return result, err
 	}
@@ -737,46 +652,6 @@ func (snapCtx *snapContext) ingestMaybeStall() bool {
 	return false
 }
 
-// cleanupOverlapRanges gets the overlapping ranges and cleans them up.
-func (snapCtx *snapContext) cleanUpOverlapRanges(startKey, endKey []byte) {
-	overlapRanges := snapCtx.pendingDeleteRanges.drainOverlapRanges(startKey, endKey)
-	useDeleteFiles := false
-	for _, r := range overlapRanges {
-		snapCtx.cleanUpRange(r.regionId, r.startKey, r.endKey, useDeleteFiles)
-	}
-}
-
-// insertPendingDeleteRange inserts a new pending range, and it will be cleaned up with some delay.
-func (snapCtx *snapContext) insertPendingDeleteRange(regionId uint64, startKey, endKey []byte) bool {
-	if int64(snapCtx.cleanStalePeerDelay.Seconds()) == 0 {
-		return false
-	}
-	snapCtx.cleanUpOverlapRanges(startKey, endKey)
-	log.Info("register deleting data in range",
-		zap.Uint64("region id", regionId), zap.String("start key", hex.EncodeToString(startKey)), zap.String("end key", hex.EncodeToString(endKey)))
-	timeout := time.Now().Add(snapCtx.cleanStalePeerDelay)
-	snapCtx.pendingDeleteRanges.insert(regionId, startKey, endKey, timeout)
-	return true
-}
-
-// cleanUpRange cleans up the data within the range.
-func (snapCtx *snapContext) cleanUpRange(regionId uint64, startKey, endKey []byte, useDeleteFiles bool) {
-	if useDeleteFiles {
-		if err := deleteAllFilesInRange(snapCtx.engiens.kv, startKey, endKey); err != nil {
-			log.Error("failed to delete files in range", zap.Uint64("region id", regionId), zap.String("start key",
-				hex.EncodeToString(startKey)), zap.String("end key", hex.EncodeToString(endKey)), zap.Error(err))
-			return
-		}
-	}
-	if err := deleteRange(snapCtx.engiens.kv, startKey, endKey); err != nil {
-		log.Error("failed to delete data in range", zap.Uint64("region id", regionId), zap.String("start key",
-			hex.EncodeToString(startKey)), zap.String("end key", hex.EncodeToString(endKey)), zap.Error(err))
-	} else {
-		log.Info("succeed in deleting data in range", zap.Uint64("region id", regionId), zap.String("start key",
-			hex.EncodeToString(startKey)), zap.String("end key", hex.EncodeToString(endKey)))
-	}
-}
-
 type regionApplyState struct {
 	localState *rspb.RegionLocalState
 	tableCount int
@@ -784,140 +659,46 @@ type regionApplyState struct {
 
 type regionTaskHandler struct {
 	ctx *snapContext
-	// we may delay some apply tasks if level 0 files to write stall threshold,
-	// pending_applies records all delayed apply task, and will check again later
-	pendingApplies []task
-
-	builderFile *os.File
-	builder     *sstable.Builder
 
 	conf *config.Config
 
-	tableFiles  []*os.File
-	applyStates []regionApplyState
+	tree       *badger.IngestTree
+	applyState regionApplyState
 }
 
-func newRegionTaskHandler(conf *config.Config, engines *Engines, mgr *SnapManager, batchSize uint64, cleanStalePeerDelay time.Duration) *regionTaskHandler {
+func newRegionTaskHandler(conf *config.Config, engines *Engines, mgr *SnapManager, batchSize uint64) *regionTaskHandler {
 	return &regionTaskHandler{
 		conf: conf,
 		ctx: &snapContext{
-			engiens:             engines,
-			mgr:                 mgr,
-			batchSize:           batchSize,
-			cleanStalePeerDelay: cleanStalePeerDelay,
-			pendingDeleteRanges: &pendingDeleteRanges{
-				ranges: lockstore.NewMemStore(4096),
-			},
+			engines:   engines,
+			mgr:       mgr,
+			batchSize: batchSize,
 		},
 	}
 }
 
-func (r *regionTaskHandler) tempFile() (*os.File, error) {
-	return ioutil.TempFile(r.ctx.engiens.kvPath, "ingest_convert_*.sst")
-}
-
-func (r *regionTaskHandler) resetBuilder() error {
-	var err error
-	if r.builderFile, err = r.tempFile(); err != nil {
-		return err
-	}
-	if r.builder == nil {
-		r.builder = r.ctx.engiens.kv.DB.NewExternalTableBuilder(r.builderFile, r.ctx.mgr.limiter)
-		r.builder.SetIsManaged()
-	} else {
-		r.builder.Reset(r.builderFile)
-	}
-
-	return nil
-}
-
-func (r *regionTaskHandler) handleApplyResult(result ApplyResult) error {
-	if result.HasPut {
-		if _, err := r.builder.Finish(); err != nil {
-			return err
-		}
-	} else {
-		os.Remove(r.builderFile.Name())
-	}
-
-	state := regionApplyState{localState: result.RegionState}
-	if result.HasPut {
-		state.tableCount++
-		r.tableFiles = append(r.tableFiles, r.builderFile)
-	}
-	r.applyStates = append(r.applyStates, state)
-
-	return nil
-}
-
-func (r *regionTaskHandler) finishApply() error {
-	log.S().Infof("apply snapshot ingesting %d tables", len(r.tableFiles))
-	externalFiles := make([]badger.ExternalTableSpec, len(r.tableFiles))
-	for i, file := range r.tableFiles {
-		externalFiles[i] = badger.ExternalTableSpec{Filename: file.Name()}
-	}
-	n, err := r.ctx.engiens.kv.DB.IngestExternalFiles(externalFiles)
+// handlePendingApplies tries to apply pending tasks if there is some.
+func (r *regionTaskHandler) handleApply(task *regionTask) {
+	r.ctx.wb = new(WriteBatch)
+	// TODO: implement apply snapshot
+	tree := new(badger.IngestTree)
+	err := r.ctx.engines.kv.Ingest(tree)
 	if err != nil {
-		log.S().Errorf("ingest sst failed (first %d files succeeded): %s", n, err)
+		log.Error("ingest sst failed", zap.Error(err))
 	}
 
 	wb := r.ctx.wb
 	r.ctx.wb = nil
-	var cnt int
-	for _, state := range r.applyStates {
-		if cnt >= n {
-			break
-		}
-		cnt += state.tableCount
-		rs := state.localState
-		regionID := rs.Region.Id
-		wb.SetMsg(y.KeyWithTs(RegionStateKey(regionID), KvTS), rs)
-		wb.Delete(y.KeyWithTs(SnapshotRaftStateKey(regionID), KvTS))
-	}
+	state := r.applyState
+	rs := state.localState
+	regionID := rs.Region.Id
+	// TODO: change to region start key.
+	rsVal, _ := rs.Marshal()
+	wb.SetRaftCF(y.KeyWithTs(RegionStateKey(regionID), KvTS), rsVal)
+	wb.SetRaftCF(y.KeyWithTs(SnapshotRaftStateKey(regionID), KvTS), nil)
 
-	if err := wb.WriteToKV(r.ctx.engiens.kv); err != nil {
+	if err := wb.WriteToKV(r.ctx.engines.kv); err != nil {
 		log.Error("update region status failed", zap.Error(err))
-	}
-
-	log.S().Infof("apply snapshot ingested %d tables", len(r.tableFiles))
-
-	for _, f := range r.tableFiles {
-		os.Remove(f.Name())
-	}
-	r.tableFiles = nil
-	r.applyStates = nil
-	return nil
-}
-
-// handlePendingApplies tries to apply pending tasks if there is some.
-func (r *regionTaskHandler) handlePendingApplies() {
-	r.ctx.wb = new(WriteBatch)
-	for len(r.pendingApplies) > 0 {
-		// Should not handle too many applies than the number of files that can be ingested.
-		// Check level 0 every time because we can not make sure how does the number of level 0 files change.
-		if r.ctx.ingestMaybeStall() {
-			break
-		}
-		// Try to apply task, if apply failed, throw away this task and let sender retry
-		apply := r.pendingApplies[0]
-		r.pendingApplies = r.pendingApplies[1:]
-		if err := r.resetBuilder(); err != nil {
-			log.S().Error(err)
-			continue
-		}
-
-		task := apply.data.(*regionTask)
-		result, err := r.ctx.handleApply(task.regionId, task.status, r.builder)
-		if err != nil {
-			log.S().Error(err)
-			continue
-		}
-		if err := r.handleApplyResult(result); err != nil {
-			log.S().Error(err)
-		}
-	}
-	if err := r.finishApply(); err != nil {
-		log.S().Error(err)
 	}
 }
 
@@ -927,18 +708,18 @@ func (r *regionTaskHandler) handle(t task) {
 		// It is safe for now to handle generating and applying snapshot concurrently,
 		// but it may not when merge is implemented.
 		regionTask := t.data.(*regionTask)
-		r.ctx.handleGen(regionTask.regionId, regionTask.redoIdx, regionTask.notifier)
+		r.ctx.handleGen(regionTask)
 	case taskTypeRegionApply:
 		// To make sure applying snapshots in order.
-		r.pendingApplies = append(r.pendingApplies, t)
-		r.handlePendingApplies()
+		task := t.data.(*regionTask)
+		r.handleApply(task)
 	case taskTypeRegionDestroy:
-		// Try to delay the range deletion because
-		// there might be a coprocessor request related to this range
+		// We don't need to delay the range deletion because DeleteRange operation
+		// doesn't affect the existing badger.Snapshot
 		regionTask := t.data.(regionTask)
-		if !r.ctx.insertPendingDeleteRange(regionTask.regionId, regionTask.startKey, regionTask.endKey) {
-			// Use delete files
-			r.ctx.cleanUpRange(regionTask.regionId, regionTask.startKey, regionTask.endKey, false)
+		err := r.ctx.engines.kv.DeleteRange(regionTask.startKey, regionTask.endKey)
+		if err != nil {
+			log.Error("failed to destroy region", zap.Error(err))
 		}
 	}
 }
@@ -1027,7 +808,7 @@ func (r *raftLogGCTaskHandler) handle(t task) {
 }
 
 type compactTaskHandler struct {
-	engine *badger.DB
+	engine *badger.ShardingDB
 }
 
 func (r *compactTaskHandler) handle(t task) {

@@ -16,6 +16,7 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"github.com/pingcap/badger"
 	"hash"
 	"hash/crc32"
 	"io"
@@ -26,7 +27,6 @@ import (
 	"time"
 
 	"github.com/ngaut/unistore/rocksdb"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/util"
 	"github.com/pingcap/badger/table/sstable"
 	"github.com/pingcap/badger/y"
@@ -104,20 +104,20 @@ type SnapStatistics struct {
 }
 
 type ApplyOptions struct {
-	DBBundle *mvcc.DBBundle
-	Region   *metapb.Region
-	Abort    *uint32
-	Builder  *sstable.Builder
-	WB       *WriteBatch
+	DB      *badger.ShardingDB
+	Region  *metapb.Region
+	Abort   *uint32
+	Builder *sstable.Builder
+	WB      *WriteBatch
 }
 
-func newApplyOptions(db *mvcc.DBBundle, region *metapb.Region, abort *uint32, builder *sstable.Builder, wb *WriteBatch) *ApplyOptions {
+func newApplyOptions(db *badger.ShardingDB, region *metapb.Region, abort *uint32, builder *sstable.Builder, wb *WriteBatch) *ApplyOptions {
 	return &ApplyOptions{
-		DBBundle: db,
-		Region:   region,
-		Abort:    abort,
-		Builder:  builder,
-		WB:       wb,
+		DB:      db,
+		Region:  region,
+		Abort:   abort,
+		Builder: builder,
+		WB:      wb,
 	}
 }
 
@@ -765,7 +765,7 @@ func (s *Snap) Apply(opts ApplyOptions) (ApplyResult, error) {
 				UserMeta: item.userMeta,
 			})
 		case applySnapTypeLock:
-			opts.DBBundle.LockStore.Put(item.key.UserKey, item.val)
+			opts.WB.SetLock(item.key.UserKey, item.val)
 		case applySnapTypeRollback:
 			opts.WB.Rollback(item.key)
 		case applySnapTypeOpLock:

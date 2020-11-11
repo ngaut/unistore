@@ -15,26 +15,30 @@ package raftstore
 
 import (
 	"bytes"
-
-	"github.com/ngaut/unistore/tikv/dbreader"
+	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/pingcap/log"
+	"math"
 )
 
 const (
 	InitEpochVer     uint64 = 1
 	InitEpochConfVer uint64 = 1
-	KvTS             uint64 = 1
+	KvTS             uint64 = 0
 	RaftTS           uint64 = 0
 )
 
-func isRangeEmpty(engine *badger.DB, startKey, endKey []byte) (bool, error) {
+func isRaftRangeEmpty(engine *badger.DB, startKey, endKey []byte) (bool, error) {
 	var hasData bool
 	err := engine.View(func(txn *badger.Txn) error {
-		it := dbreader.NewIterator(txn, false, startKey, endKey)
+		it := txn.NewIterator(badger.IteratorOptions{
+			StartKey: y.Key{UserKey: startKey, Version: math.MaxUint64},
+			EndKey:   y.Key{UserKey: endKey, Version: 0},
+		})
 		defer it.Close()
 		it.Seek(startKey)
 		if it.Valid() {
@@ -48,19 +52,33 @@ func isRangeEmpty(engine *badger.DB, startKey, endKey []byte) (bool, error) {
 	if err != nil {
 		return false, errors.WithStack(err)
 	}
-	return !hasData, err
+	return !hasData, nil
+}
+
+func isKVRangeEmpty(engine *badger.ShardingDB, startKey, endKey []byte) (bool, error) {
+	var hasData bool
+	dbSnap := engine.NewSnapshot(startKey, endKey)
+	it := dbSnap.NewIterator(mvcc.WriteCF, false, false)
+	it.Seek(startKey)
+	if it.Valid() {
+		item := it.Item()
+		if bytes.Compare(item.Key(), endKey) < 0 {
+			hasData = true
+		}
+	}
+	return !hasData, nil
 }
 
 func BootstrapStore(engines *Engines, clussterID, storeID uint64) error {
 	ident := new(rspb.StoreIdent)
-	empty, err := isRangeEmpty(engines.kv.DB, MinKey, MaxDataKey)
+	empty, err := isKVRangeEmpty(engines.kv, MinKey, MaxDataKey)
 	if err != nil {
 		return err
 	}
 	if !empty {
 		return errors.New("kv store is not empty and ahs alread had data.")
 	}
-	empty, err = isRangeEmpty(engines.raft, MinKey, MaxDataKey)
+	empty, err = isRaftRangeEmpty(engines.raft, MinKey, MaxDataKey)
 	if err != nil {
 		return err
 	}
@@ -70,10 +88,11 @@ func BootstrapStore(engines *Engines, clussterID, storeID uint64) error {
 	ident.ClusterId = clussterID
 	ident.StoreId = storeID
 	wb := new(WriteBatch)
-	err = wb.SetMsg(y.KeyWithTs(storeIdentKey, KvTS), ident)
+	val, err := ident.Marshal()
 	if err != nil {
 		return err
 	}
+	wb.SetRaftCF(y.KeyWithTs(storeIdentKey, 0), val)
 	return wb.WriteToKV(engines.kv)
 }
 
@@ -104,13 +123,15 @@ func writePrepareBootstrap(engines *Engines, region *metapb.Region) error {
 	state := new(rspb.RegionLocalState)
 	state.Region = region
 	kvWB := new(WriteBatch)
-	kvWB.SetMsg(y.KeyWithTs(prepareBootstrapKey, KvTS), state)
-	kvWB.SetMsg(y.KeyWithTs(RegionStateKey(region.Id), KvTS), state)
+	val, _ := state.Marshal()
+	kvWB.SetRaftCF(y.KeyWithTs(prepareBootstrapKey, KvTS), val)
+	kvWB.SetRaftCF(y.KeyWithTs(RegionStateKey(region.Id), KvTS), val)
 	writeInitialApplyState(kvWB, region.Id)
 	err := engines.WriteKV(kvWB)
 	if err != nil {
 		return err
 	}
+	log.S().Infof("write initial region local state")
 	err = engines.SyncKVWAL()
 	if err != nil {
 		return err
@@ -130,7 +151,7 @@ func writeInitialApplyState(kvWB *WriteBatch, regionID uint64) {
 		truncatedIndex: RaftInitLogIndex,
 		truncatedTerm:  RaftInitLogTerm,
 	}
-	kvWB.Set(y.KeyWithTs(ApplyStateKey(regionID), KvTS), applyState.Marshal())
+	kvWB.SetRaftCF(y.KeyWithTs(ApplyStateKey(regionID), KvTS), applyState.Marshal())
 }
 
 func writeInitialRaftState(raftWB *WriteBatch, regionID uint64) {
@@ -150,10 +171,10 @@ func ClearPrepareBootstrap(engines *Engines, regionID uint64) error {
 		return errors.WithStack(err)
 	}
 	wb := new(WriteBatch)
-	wb.Delete(y.KeyWithTs(prepareBootstrapKey, KvTS))
+	wb.SetRaftCF(y.KeyWithTs(prepareBootstrapKey, KvTS), nil)
 	// should clear raft initial state too.
-	wb.Delete(y.KeyWithTs(RegionStateKey(regionID), KvTS))
-	wb.Delete(y.KeyWithTs(ApplyStateKey(regionID), KvTS))
+	wb.SetRaftCF(y.KeyWithTs(RegionStateKey(regionID), KvTS), nil)
+	wb.SetRaftCF(y.KeyWithTs(ApplyStateKey(regionID), KvTS), nil)
 	err = engines.WriteKV(wb)
 	if err != nil {
 		return err
@@ -163,7 +184,7 @@ func ClearPrepareBootstrap(engines *Engines, regionID uint64) error {
 
 func ClearPrepareBootstrapState(engines *Engines) error {
 	wb := new(WriteBatch)
-	wb.Delete(y.KeyWithTs(prepareBootstrapKey, KvTS))
+	wb.SetRaftCF(y.KeyWithTs(prepareBootstrapKey, KvTS), nil)
 	err := wb.WriteToKV(engines.kv)
 	return errors.WithStack(err)
 }

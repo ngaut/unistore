@@ -1,17 +1,13 @@
 package server
 
 import (
-	"context"
-	"encoding/binary"
+	"github.com/ngaut/unistore/tikv/raftstore"
 	"os"
 	"path/filepath"
 
 	"github.com/ngaut/unistore/config"
-	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/tikv"
-	"github.com/ngaut/unistore/tikv/mvcc"
-	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/pingcap/badger"
 )
 
@@ -21,21 +17,13 @@ const (
 )
 
 func NewMock(conf *config.Config, clusterID uint64) (*tikv.Server, *tikv.MockRegionManager, *tikv.MockPD, error) {
-	physical, logical := tikv.GetTS()
-	ts := uint64(physical)<<18 + uint64(logical)
-
 	safePoint := &tikv.SafePoint{}
-	db, err := createDB(subPathKV, safePoint, &conf.Engine)
+	db, err := createShardingDB(subPathKV, safePoint, &conf.Engine)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	bundle := &mvcc.DBBundle{
-		DB:        db,
-		LockStore: lockstore.NewMemStore(8 << 20),
-		StateTS:   ts,
-	}
 
-	rm, err := tikv.NewMockRegionManager(bundle, clusterID, tikv.RegionOptions{
+	rm, err := tikv.NewMockRegionManager(db, clusterID, tikv.RegionOptions{
 		StoreAddr:  conf.Server.StoreAddr,
 		PDAddr:     conf.Server.PDAddr,
 		RegionSize: conf.Server.RegionSize,
@@ -44,7 +32,7 @@ func NewMock(conf *config.Config, clusterID uint64) (*tikv.Server, *tikv.MockReg
 		return nil, nil, nil, err
 	}
 	pdClient := tikv.NewMockPD(rm)
-	svr, err := setupStandAlongInnerServer(bundle, safePoint, rm, pdClient, conf)
+	svr, err := setupStandAlongInnerServer(db, safePoint, rm, pdClient, conf)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -52,28 +40,17 @@ func NewMock(conf *config.Config, clusterID uint64) (*tikv.Server, *tikv.MockReg
 }
 
 func New(conf *config.Config, pdClient pd.Client) (*tikv.Server, error) {
-	physical, logical, err := pdClient.GetTS(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	ts := uint64(physical)<<18 + uint64(logical)
-
 	safePoint := &tikv.SafePoint{}
-	db, err := createDB(subPathKV, safePoint, &conf.Engine)
+	db, err := createShardingDB(subPathKV, safePoint, &conf.Engine)
 	if err != nil {
 		return nil, err
-	}
-	bundle := &mvcc.DBBundle{
-		DB:        db,
-		LockStore: lockstore.NewMemStore(8 << 20),
-		StateTS:   ts,
 	}
 	if conf.Server.Raft {
-		return setupRaftServer(bundle, safePoint, pdClient, conf)
+		return setupRaftServer(db, safePoint, pdClient, conf)
 	}
 
-	rm := tikv.NewStandAloneRegionManager(bundle, getRegionOptions(conf), pdClient)
-	return setupStandAlongInnerServer(bundle, safePoint, rm, pdClient, conf)
+	rm := tikv.NewStandAloneRegionManager(db, getRegionOptions(conf), pdClient)
+	return setupStandAlongInnerServer(db, safePoint, rm, pdClient, conf)
 }
 
 func getRegionOptions(conf *config.Config) tikv.RegionOptions {
@@ -84,7 +61,7 @@ func getRegionOptions(conf *config.Config) tikv.RegionOptions {
 	}
 }
 
-func setupRaftServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient pd.Client, conf *config.Config) (*tikv.Server, error) {
+func setupRaftServer(db *badger.ShardingDB, safePoint *tikv.SafePoint, pdClient pd.Client, conf *config.Config) (*tikv.Server, error) {
 	dbPath := conf.Engine.DBPath
 	kvPath := filepath.Join(dbPath, "kv")
 	raftPath := filepath.Join(dbPath, "raft")
@@ -102,26 +79,14 @@ func setupRaftServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient 
 	if err != nil {
 		return nil, err
 	}
-	meta, err := bundle.LockStore.LoadFromFile(filepath.Join(kvPath, raftstore.LockstoreFileName))
-	if err != nil {
-		return nil, err
-	}
-	var offset uint64
-	if meta != nil {
-		offset = binary.LittleEndian.Uint64(meta)
-	}
-	err = raftstore.RestoreLockStore(offset, bundle, raftDB)
-	if err != nil {
-		return nil, err
-	}
 
-	engines := raftstore.NewEngines(bundle, raftDB, kvPath, raftPath)
+	engines := raftstore.NewEngines(db, raftDB, kvPath, raftPath)
 
 	innerServer := raftstore.NewRaftInnerServer(conf, engines, raftConf)
 	innerServer.Setup(pdClient)
 	router := innerServer.GetRaftstoreRouter()
 	storeMeta := innerServer.GetStoreMeta()
-	store := tikv.NewMVCCStore(conf, bundle, dbPath, safePoint, raftstore.NewDBWriter(conf, router), pdClient)
+	store := tikv.NewMVCCStore(conf, db, dbPath, safePoint, raftstore.NewDBWriter(conf, router), pdClient)
 	rm := tikv.NewRaftRegionManager(storeMeta, router, store.DeadlockDetectSvr)
 	innerServer.SetPeerEventObserver(rm)
 
@@ -134,10 +99,10 @@ func setupRaftServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient 
 	return tikv.NewServer(rm, store, innerServer), nil
 }
 
-func setupStandAlongInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, rm tikv.RegionManager, pdClient pd.Client, conf *config.Config) (*tikv.Server, error) {
-	innerServer := tikv.NewStandAlongInnerServer(bundle)
+func setupStandAlongInnerServer(db *badger.ShardingDB, safePoint *tikv.SafePoint, rm tikv.RegionManager, pdClient pd.Client, conf *config.Config) (*tikv.Server, error) {
+	innerServer := tikv.NewStandAlongInnerServer(db)
 	innerServer.Setup(pdClient)
-	store := tikv.NewMVCCStore(conf, bundle, conf.Engine.DBPath, safePoint, tikv.NewDBWriter(bundle), pdClient)
+	store := tikv.NewMVCCStore(conf, db, conf.Engine.DBPath, safePoint, tikv.NewDBWriter(db), pdClient)
 	store.DeadlockDetectSvr.ChangeRole(tikv.Leader)
 
 	if err := innerServer.Start(pdClient); err != nil {
@@ -201,4 +166,21 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*
 	opts.CompactL0WhenClose = conf.CompactL0WhenClose
 	opts.VolatileMode = conf.VolatileMode
 	return badger.Open(opts)
+}
+
+func createShardingDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*badger.ShardingDB, error) {
+	opts := badger.ShardingDBDefaultOpt
+	opts.NumCompactors = conf.NumCompactors
+	opts.CFs = []badger.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}, {Managed: false}}
+	opts.S3Options.InstanceID = conf.S3.InstanceID
+	opts.S3Options.EndPoint = conf.S3.Endpoint
+	opts.S3Options.SecretKey = conf.S3.SecretKey
+	opts.S3Options.KeyID = conf.S3.KeyID
+	opts.S3Options.Bucket = conf.S3.Bucket
+	opts.Dir = filepath.Join(conf.DBPath, subPath)
+	opts.ValueDir = opts.Dir
+	if safePoint != nil {
+		opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
+	}
+	return badger.OpenShardingDB(opts)
 }

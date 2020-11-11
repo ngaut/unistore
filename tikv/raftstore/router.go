@@ -76,7 +76,7 @@ func (pr *router) send(regionID uint64, msg Msg) error {
 	msg.RegionID = regionID
 	p := pr.get(regionID)
 	if p == nil || atomic.LoadUint32(&p.closed) == 1 {
-		return errPeerNotFound
+		return errors.WithStack(errPeerNotFound)
 	}
 	pr.peerSender <- msg
 	return nil

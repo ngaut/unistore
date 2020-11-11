@@ -161,7 +161,6 @@ func (m DBUserMeta) StartTS() uint64 {
 func EncodeExtraTxnStatusKey(key []byte, startTS uint64) []byte {
 	b := append([]byte{}, key...)
 	ret := codec.EncodeUintDesc(b, startTS)
-	ret[0]++
 	return ret
 }
 
@@ -171,6 +170,12 @@ func DecodeExtraTxnStatusKey(extraKey []byte) (key []byte) {
 		return nil
 	}
 	key = append([]byte{}, extraKey[:len(extraKey)-8]...)
-	key[0]--
 	return
 }
+
+const (
+	WriteCF = 0
+	LockCF  = 1
+	ExtraCF = 2
+	RaftCF  = 3
+)

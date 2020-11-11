@@ -28,41 +28,36 @@ package dbreader
 
 import (
 	"bytes"
-	"math"
-
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/log"
+	"go.uber.org/zap"
 )
 
-func NewDBReader(startKey, endKey []byte, txn *badger.Txn) *DBReader {
+func NewDBReader(startKey, endKey []byte, snap *badger.Snapshot) *DBReader {
 	return &DBReader{
 		StartKey: startKey,
 		EndKey:   endKey,
-		txn:      txn,
+		snap:     snap,
 	}
 }
 
-func NewIterator(txn *badger.Txn, reverse bool, startKey, endKey []byte) *badger.Iterator {
-	opts := badger.DefaultIteratorOptions
-	opts.Reverse = reverse
-	if len(startKey) > 0 {
-		opts.StartKey = y.KeyWithTs(startKey, math.MaxUint64)
-	}
-	if len(endKey) > 0 {
-		opts.EndKey = y.KeyWithTs(endKey, math.MaxUint64)
-	}
-	return txn.NewIterator(opts)
-}
+const (
+	writeCF = 0
+	lockCF  = 1
+	extraCF = 2
+)
 
 // DBReader reads data from DB, for read-only requests, the locks must already be checked before DBReader is created.
 type DBReader struct {
 	StartKey  []byte
 	EndKey    []byte
-	txn       *badger.Txn
+	snap      *badger.Snapshot
 	iter      *badger.Iterator
+	lockIter  *badger.Iterator
 	extraIter *badger.Iterator
 	revIter   *badger.Iterator
 }
@@ -99,8 +94,7 @@ func (r *DBReader) GetMvccInfoByKey(key []byte, isRowKey bool, mvccInfo *kvrpcpb
 }
 
 func (r *DBReader) Get(key []byte, startTS uint64) ([]byte, error) {
-	r.txn.SetReadTS(startTS)
-	item, err := r.txn.Get(key)
+	item, err := r.snap.Get(writeCF, y.KeyWithTs(key, startTS))
 	if err != nil && err != badger.ErrKeyNotFound {
 		return nil, errors.Trace(err)
 	}
@@ -112,29 +106,41 @@ func (r *DBReader) Get(key []byte, startTS uint64) ([]byte, error) {
 
 func (r *DBReader) GetIter() *badger.Iterator {
 	if r.iter == nil {
-		r.iter = NewIterator(r.txn, false, r.StartKey, r.EndKey)
+		r.iter = r.snap.NewIterator(writeCF, false, false)
 	}
 	return r.iter
 }
 
+func (r *DBReader) GetLock(key []byte, buf []byte) []byte {
+	item, err := r.snap.Get(lockCF, y.KeyWithTs(key, 0))
+	if err != nil && err != badger.ErrKeyNotFound {
+		log.Error("get lock failed", zap.Error(err))
+		return nil
+	}
+	if item == nil {
+		return nil
+	}
+	val, _ := item.Value()
+	return val
+}
+
+func (r *DBReader) GetLockIter() *badger.Iterator {
+	if r.lockIter == nil {
+		r.lockIter = r.snap.NewIterator(lockCF, false, false)
+	}
+	return r.lockIter
+}
+
 func (r *DBReader) GetExtraIter() *badger.Iterator {
 	if r.extraIter == nil {
-		rbStartKey := append([]byte{}, r.StartKey...)
-		if len(rbStartKey) != 0 {
-			rbStartKey[0]++
-		}
-		rbEndKey := append([]byte{}, r.EndKey...)
-		if len(rbEndKey) != 0 {
-			rbEndKey[0]++
-		}
-		r.extraIter = NewIterator(r.txn, false, rbStartKey, rbEndKey)
+		r.extraIter = r.snap.NewIterator(extraCF, false, false)
 	}
 	return r.extraIter
 }
 
 func (r *DBReader) getReverseIter() *badger.Iterator {
 	if r.revIter == nil {
-		r.revIter = NewIterator(r.txn, true, r.StartKey, r.EndKey)
+		r.revIter = r.snap.NewIterator(writeCF, true, false)
 	}
 	return r.revIter
 }
@@ -142,21 +148,14 @@ func (r *DBReader) getReverseIter() *badger.Iterator {
 type BatchGetFunc = func(key, value []byte, err error)
 
 func (r *DBReader) BatchGet(keys [][]byte, startTS uint64, f BatchGetFunc) {
-	r.txn.SetReadTS(startTS)
-	items, err := r.txn.MultiGet(keys)
-	if err != nil {
-		for _, key := range keys {
-			f(key, nil, err)
+	for _, key := range keys {
+		item, err := r.snap.Get(0, y.KeyWithTs(key, startTS))
+		if err == nil {
+			val, _ := item.Value()
+			f(key, val, nil)
+		} else {
+			f(key, nil, badger.ErrKeyNotFound)
 		}
-		return
-	}
-	for i, item := range items {
-		key := keys[i]
-		var val []byte
-		if item != nil {
-			val, err = item.Value()
-		}
-		f(key, val, err)
 	}
 	return
 }
@@ -185,7 +184,7 @@ func exceedEndKey(current, endKey []byte) bool {
 }
 
 func (r *DBReader) Scan(startKey, endKey []byte, limit int, startTS uint64, proc ScanProcessor) error {
-	r.txn.SetReadTS(startTS)
+	r.snap.SetManagedReadTS(startTS)
 	skipValue := proc.SkipValue()
 	iter := r.GetIter()
 	var cnt int
@@ -241,8 +240,8 @@ func (r *DBReader) GetKeyByStartTs(startKey, endKey []byte, startTs uint64) ([]b
 // ReverseScan implements the MVCCStore interface. The search range is [startKey, endKey).
 func (r *DBReader) ReverseScan(startKey, endKey []byte, limit int, startTS uint64, proc ScanProcessor) error {
 	skipValue := proc.SkipValue()
+	r.snap.SetManagedReadTS(startTS)
 	iter := r.getReverseIter()
-	r.txn.SetReadTS(startTS)
 	var cnt int
 	for iter.Seek(endKey); iter.Valid(); iter.Next() {
 		item := iter.Item()
@@ -279,8 +278,8 @@ func (r *DBReader) ReverseScan(startKey, endKey []byte, limit int, startTS uint6
 	return nil
 }
 
-func (r *DBReader) GetTxn() *badger.Txn {
-	return r.txn
+func (r *DBReader) GetSnapshot() *badger.Snapshot {
+	return r.snap
 }
 
 func (r *DBReader) Close() {
@@ -293,5 +292,5 @@ func (r *DBReader) Close() {
 	if r.extraIter != nil {
 		r.extraIter.Close()
 	}
-	r.txn.Discard()
+	r.snap.Discard()
 }

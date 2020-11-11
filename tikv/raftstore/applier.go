@@ -16,9 +16,9 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"go.uber.org/zap"
 	"time"
 
-	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/badger"
@@ -282,7 +282,7 @@ type applyContext struct {
 	regionScheduler  chan<- task
 	applyResCh       chan<- Msg
 	engines          *Engines
-	txn              *badger.Txn
+	dbSnap           *badger.Snapshot
 	cbs              []applyCallback
 	applyTaskResList []*applyTaskRes
 	execCtx          *applyExecContext
@@ -390,11 +390,11 @@ func (ac *applyContext) deltaKeys() uint64 {
 	return uint64(len(ac.wb.entries)) - ac.wbLastKeys
 }
 
-func (ac *applyContext) getTxn() *badger.Txn {
-	if ac.txn == nil {
-		ac.txn = ac.engines.kv.DB.NewTransaction(false)
+func (ac *applyContext) getDBSnap() *badger.Snapshot {
+	if ac.dbSnap == nil {
+		ac.dbSnap = ac.engines.kv.NewSnapshot(nil, nil)
 	}
-	return ac.txn
+	return ac.dbSnap
 }
 
 func (ac *applyContext) flush() {
@@ -404,9 +404,9 @@ func (ac *applyContext) flush() {
 	if t == nil {
 		return
 	}
-	if ac.txn != nil {
-		ac.txn.Discard()
-		ac.txn = nil
+	if ac.dbSnap != nil {
+		ac.dbSnap.Discard()
+		ac.dbSnap = nil
 	}
 	// Write to engine
 	// raftsotre.sync-log = true means we need prevent data loss when power failure.
@@ -639,8 +639,8 @@ func (a *applier) updateMetrics(aCtx *applyContext) {
 }
 
 func (a *applier) writeApplyState(wb *WriteBatch) {
-	applyStateKey := y.KeyWithTs(ApplyStateKey(a.region.Id), KvTS)
-	wb.Set(applyStateKey, a.applyState.Marshal())
+	applyStateKey := y.KeyWithTs(ApplyStateKey(a.region.Id), 0)
+	wb.SetApplyState(applyStateKey, a.applyState)
 }
 
 func (a *applier) handleRaftEntryNormal(aCtx *applyContext, entry *eraftpb.Entry) applyResult {
@@ -1088,12 +1088,12 @@ func createWriteCmdOps(requests []*raft_cmdpb.Request) (ops []interface{}) {
 }
 
 func (a *applier) execPrewrite(aCtx *applyContext, op prewriteOp) {
-	key, value := convertPrewriteToLock(op, aCtx.getTxn())
+	key, value := convertPrewriteToLock(op, aCtx.getDBSnap())
 	aCtx.wb.SetLock(key, value)
 	return
 }
 
-func convertPrewriteToLock(op prewriteOp, txn *badger.Txn) (key, value []byte) {
+func convertPrewriteToLock(op prewriteOp, dbSnap *badger.Snapshot) (key, value []byte) {
 	_, rawKey, err := codec.DecodeBytes(op.putLock.Key, nil)
 	if err != nil {
 		panic(op.putLock.Key)
@@ -1140,7 +1140,9 @@ func (a *applier) commitLock(aCtx *applyContext, rawKey []byte, val []byte, comm
 }
 
 func (a *applier) getLock(aCtx *applyContext, rawKey []byte) []byte {
-	if val := aCtx.engines.kv.LockStore.Get(rawKey, nil); len(val) > 0 {
+	item, err := aCtx.dbSnap.Get(mvcc.LockCF, y.KeyWithTs(rawKey, 0))
+	if err == nil {
+		val, _ := item.Value()
 		return val
 	}
 	lockEntries := aCtx.wb.lockEntries
@@ -1182,23 +1184,8 @@ func (a *applier) execDeleteRange(aCtx *applyContext, req *raft_cmdpb.DeleteRang
 	if err != nil {
 		panic(req.EndKey)
 	}
-	txn := aCtx.getTxn()
-	it := dbreader.NewIterator(txn, false, startKey, endKey)
-	for it.Seek(startKey); it.Valid(); it.Next() {
-		item := it.Item()
-		if bytes.Compare(item.Key(), endKey) >= 0 {
-			break
-		}
-		aCtx.wb.Delete(y.KeyWithTs(item.KeyCopy(nil), item.Version()+1))
-	}
-	it.Close()
-	lockIt := aCtx.engines.kv.LockStore.NewIterator()
-	for lockIt.Seek(startKey); lockIt.Valid(); lockIt.Next() {
-		if bytes.Compare(lockIt.Key(), endKey) >= 0 {
-			break
-		}
-		aCtx.wb.DeleteLock(safeCopy(lockIt.Key()))
-	}
+	err = aCtx.engines.kv.DeleteRange(startKey, endKey)
+	log.Error("execDeleteRange failed", zap.Error(err))
 	return
 }
 

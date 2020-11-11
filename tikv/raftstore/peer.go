@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"github.com/pingcap/badger"
 	"math"
 	"sync/atomic"
 	"time"
@@ -24,7 +25,6 @@ import (
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
@@ -990,7 +990,7 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	return trans.Send(sendMsg)
 }
 
-func (p *Peer) HandleRaftReadyApply(kv *mvcc.DBBundle, applyMsgs *applyMsgs, ready *raft.Ready) {
+func (p *Peer) HandleRaftReadyApply(kv *badger.ShardingDB, applyMsgs *applyMsgs, ready *raft.Ready) {
 	// Call `HandleRaftCommittedEntries` directly here may lead to inconsistency.
 	// In some cases, there will be some pending committed entries when applying a
 	// snapshot. If we call `HandleRaftCommittedEntries` directly, these updates
@@ -1077,7 +1077,7 @@ func (p *Peer) HandleRaftReadyApply(kv *mvcc.DBBundle, applyMsgs *applyMsgs, rea
 	}
 }
 
-func (p *Peer) ApplyReads(kv *mvcc.DBBundle, ready *raft.Ready) {
+func (p *Peer) ApplyReads(kv *badger.ShardingDB, ready *raft.Ready) {
 	var proposeTime *time.Time
 	if p.readyToHandleRead() {
 		for _, state := range ready.ReadStates {
@@ -1123,7 +1123,7 @@ func (p *Peer) ApplyReads(kv *mvcc.DBBundle, ready *raft.Ready) {
 	}
 }
 
-func (p *Peer) PostApply(kv *mvcc.DBBundle, applyState applyState, appliedIndexTerm uint64, merged bool, applyMetrics applyMetrics) bool {
+func (p *Peer) PostApply(kv *badger.ShardingDB, applyState applyState, appliedIndexTerm uint64, merged bool, applyMetrics applyMetrics) bool {
 	hasReady := false
 	if p.IsApplyingSnapshot() {
 		panic("should not applying snapshot")
@@ -1183,7 +1183,7 @@ func (p *Peer) PostSplit() {
 // Propose a request.
 //
 // Return true means the request has been proposed successfully.
-func (p *Peer) Propose(kv *mvcc.DBBundle, cfg *Config, cb *Callback, rlog raftlog.RaftLog, errResp *raft_cmdpb.RaftCmdResponse) bool {
+func (p *Peer) Propose(kv *badger.ShardingDB, cfg *Config, cb *Callback, rlog raftlog.RaftLog, errResp *raft_cmdpb.RaftCmdResponse) bool {
 	if p.PendingRemove {
 		return false
 	}
@@ -1371,7 +1371,7 @@ func (p *Peer) readyToTransferLeader(cfg *Config, peer *metapb.Peer) bool {
 	return lastIndex <= status.Progress[peerId].Match+cfg.LeaderTransferMaxLogLag
 }
 
-func (p *Peer) readLocal(kv *mvcc.DBBundle, req *raft_cmdpb.RaftCmdRequest, cb *Callback) {
+func (p *Peer) readLocal(kv *badger.ShardingDB, req *raft_cmdpb.RaftCmdRequest, cb *Callback) {
 	resp := p.handleRead(kv, req, false)
 	cb.Done(resp)
 }
@@ -1644,7 +1644,7 @@ func (p *Peer) ProposeConfChange(cfg *Config, req *raft_cmdpb.RaftCmdRequest) (u
 	return proposeIndex, nil
 }
 
-func (p *Peer) handleRead(kv *mvcc.DBBundle, req *raft_cmdpb.RaftCmdRequest, checkEpoch bool) *raft_cmdpb.RaftCmdResponse {
+func (p *Peer) handleRead(kv *badger.ShardingDB, req *raft_cmdpb.RaftCmdRequest, checkEpoch bool) *raft_cmdpb.RaftCmdResponse {
 	readExecutor := NewReadExecutor(checkEpoch)
 	resp := readExecutor.Execute(req, p.Region())
 	BindRespTerm(resp, p.Term())

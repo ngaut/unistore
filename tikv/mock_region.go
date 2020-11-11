@@ -9,11 +9,8 @@ import (
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/google/btree"
-	"github.com/ngaut/unistore/tikv/dbreader"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
-	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -28,7 +25,7 @@ import (
 type MockRegionManager struct {
 	regionManager
 
-	bundle        *mvcc.DBBundle
+	db            *badger.ShardingDB
 	sortedRegions *btree.BTree
 	stores        map[uint64]*metapb.Store
 	id            uint64
@@ -37,9 +34,9 @@ type MockRegionManager struct {
 	closed        uint32
 }
 
-func NewMockRegionManager(bundle *mvcc.DBBundle, clusterID uint64, opts RegionOptions) (*MockRegionManager, error) {
+func NewMockRegionManager(db *badger.ShardingDB, clusterID uint64, opts RegionOptions) (*MockRegionManager, error) {
 	rm := &MockRegionManager{
-		bundle:        bundle,
+		db:            db,
 		clusterID:     clusterID,
 		regionSize:    opts.RegionSize,
 		sortedRegions: btree.New(32),
@@ -51,7 +48,7 @@ func NewMockRegionManager(bundle *mvcc.DBBundle, clusterID uint64, opts RegionOp
 		},
 	}
 	var maxID uint64
-	err := rm.regionManager.loadFromLocal(bundle, func(r *regionCtx) {
+	err := rm.regionManager.loadFromLocal(db, func(r *regionCtx) {
 		if maxID < r.meta.Id {
 			maxID = r.meta.Id
 		}
@@ -205,29 +202,19 @@ func (rm *MockRegionManager) Bootstrap(stores []*metapb.Store, region *metapb.Re
 	if err != nil {
 		return err
 	}
-
-	err = rm.bundle.DB.Update(func(txn *badger.Txn) error {
-		ts := atomic.AddUint64(&rm.bundle.StateTS, 1)
-		return txn.SetEntry(&badger.Entry{
-			Key:   y.KeyWithTs(InternalStoreMetaKey, ts),
-			Value: storeBuf,
-		})
-	})
-	return err
+	wb := rm.db.NewWriteBatch()
+	y.Assert(wb.Put(raftCF, InternalStoreMetaKey, y.ValueStruct{Value: storeBuf}) == nil)
+	return rm.db.Write(wb)
 }
 
 func (rm *MockRegionManager) IsBootstrapped() (bool, error) {
-	err := rm.bundle.DB.View(func(txn *badger.Txn) error {
-		_, err := txn.Get(InternalStoreMetaKey)
-		return err
-	})
-	if err == nil {
-		return true, nil
+	snap := rm.db.NewSnapshot(InternalKeyPrefix, nil)
+	defer snap.Discard()
+	item, err := snap.Get(raftCF, y.KeyWithTs(InternalStoreMetaKey, 0))
+	if err != nil && err != badger.ErrKeyNotFound {
+		return false, err
 	}
-	if err == badger.ErrKeyNotFound {
-		err = nil
-	}
-	return false, err
+	return item != nil, nil
 }
 
 // Split splits a Region at the key (encoded) and creates new Region.
@@ -301,9 +288,9 @@ func (rm *MockRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpc
 
 func (rm *MockRegionManager) calculateSplitKeys(start, end []byte, count int) [][]byte {
 	var keys [][]byte
-	txn := rm.bundle.DB.NewTransaction(false)
-	it := dbreader.NewIterator(txn, false, start, end)
-	it.SetAllVersions(true)
+	snap := rm.db.NewSnapshot(start, end)
+	defer snap.Discard()
+	it := snap.NewIterator(writeCF, false, true)
 	for it.Seek(start); it.Valid(); it.Next() {
 		item := it.Item()
 		key := item.Key()
@@ -455,19 +442,11 @@ func (rm *MockRegionManager) saveRegions(regions []*regionCtx) error {
 	if atomic.LoadUint32(&rm.closed) == 1 {
 		return nil
 	}
-	return rm.bundle.DB.Update(func(txn *badger.Txn) error {
-		ts := atomic.AddUint64(&rm.bundle.StateTS, 1)
-		for _, r := range regions {
-			err := txn.SetEntry(&badger.Entry{
-				Key:   y.KeyWithTs(InternalRegionMetaKey(r.meta.Id), ts),
-				Value: r.marshal(),
-			})
-			if err != nil {
-				return errors.Trace(err)
-			}
-		}
-		return nil
-	})
+	wb := rm.db.NewWriteBatch()
+	for _, r := range regions {
+		y.Assert(wb.Put(raftCF, InternalRegionMetaKey(r.meta.Id), y.ValueStruct{Value: r.marshal()}) == nil)
+	}
+	return rm.db.Write(wb)
 }
 
 func (rm *MockRegionManager) ScanRegions(startKey, endKey []byte, limit int) []*pdclient.Region {
