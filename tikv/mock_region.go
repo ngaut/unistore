@@ -514,7 +514,7 @@ func (rm *MockRegionManager) AddStore(storeID uint64, addr string, labels ...*me
 	rm.stores[storeID] = &metapb.Store{
 		Id:      storeID,
 		Address: addr,
-		Labels: labels,
+		Labels:  labels,
 	}
 }
 

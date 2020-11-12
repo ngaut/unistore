@@ -561,7 +561,7 @@ func (rm *StandAloneRegionManager) initStore(storeAddr string) error {
 	rootRegion := &metapb.Region{
 		Id:          regionID,
 		RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
-		Peers:       []*metapb.Peer{&metapb.Peer{Id: peerID, StoreId: storeID}},
+		Peers:       []*metapb.Peer{{Id: peerID, StoreId: storeID}},
 	}
 	rm.regions[rootRegion.Id] = newRegionCtx(rootRegion, rm.latches, nil)
 	_, err = rm.pdc.Bootstrap(ctx, rm.storeMeta, rootRegion)
@@ -625,7 +625,7 @@ func (rm *StandAloneRegionManager) initialSplit(root *metapb.Region) {
 		newRegion := &metapb.Region{
 			Id:          ids[i*2],
 			RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
-			Peers:       []*metapb.Peer{&metapb.Peer{Id: ids[i*2+1], StoreId: rm.storeMeta.Id}},
+			Peers:       []*metapb.Peer{{Id: ids[i*2+1], StoreId: rm.storeMeta.Id}},
 			StartKey:    codec.EncodeBytes(nil, startKey),
 			EndKey:      endKey,
 		}
