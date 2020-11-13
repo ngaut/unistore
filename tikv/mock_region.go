@@ -91,6 +91,52 @@ func (rm *MockRegionManager) AllocIDs(n int) []uint64 {
 	return ids
 }
 
+func (rm *MockRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
+	ctxPeer := ctx.GetPeer()
+	if ctxPeer != nil {
+		foundPeer := false
+		for _, store := range rm.stores {
+			if ctxPeer.GetStoreId() == store.Id {
+				foundPeer = true
+				break
+			}
+		}
+		if !foundPeer {
+			return nil, &errorpb.Error{
+				Message:       "store not match",
+				StoreNotMatch: &errorpb.StoreNotMatch{},
+			}
+		}
+	}
+	rm.mu.RLock()
+	ri := rm.regions[ctx.RegionId]
+	rm.mu.RUnlock()
+	if ri == nil {
+		return nil, &errorpb.Error{
+			Message: "region not found",
+			RegionNotFound: &errorpb.RegionNotFound{
+				RegionId: ctx.GetRegionId(),
+			},
+		}
+	}
+	// Region epoch does not match.
+	if rm.isEpochStale(ri.getRegionEpoch(), ctx.GetRegionEpoch()) {
+		return nil, &errorpb.Error{
+			Message: "stale epoch",
+			EpochNotMatch: &errorpb.EpochNotMatch{
+				CurrentRegions: []*metapb.Region{{
+					Id:          ri.meta.Id,
+					StartKey:    ri.meta.StartKey,
+					EndKey:      ri.meta.EndKey,
+					RegionEpoch: ri.getRegionEpoch(),
+					Peers:       ri.meta.Peers,
+				}},
+			},
+		}
+	}
+	return ri, nil
+}
+
 // btreeItem is BTree's Item that uses []byte to compare.
 type btreeItem struct {
 	key    []byte
@@ -507,13 +553,14 @@ func (rm *MockRegionManager) GetAllStores() []*metapb.Store {
 }
 
 // AddStore adds a new Store to the cluster.
-func (rm *MockRegionManager) AddStore(storeID uint64, addr string) {
+func (rm *MockRegionManager) AddStore(storeID uint64, addr string, labels ...*metapb.StoreLabel) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
 	rm.stores[storeID] = &metapb.Store{
 		Id:      storeID,
 		Address: addr,
+		Labels:  labels,
 	}
 }
 
@@ -523,6 +570,13 @@ func (rm *MockRegionManager) RemoveStore(storeID uint64) {
 	defer rm.mu.Unlock()
 
 	delete(rm.stores, storeID)
+}
+
+func (rm *MockRegionManager) AddPeer(regionID, storeID, peerID uint64) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	rm.regions[regionID].addPeer(peerID, storeID)
 }
 
 type MockPD struct {

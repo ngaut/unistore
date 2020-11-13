@@ -31,6 +31,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/mpp"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
+	"github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tidb/store/mockstore/unistore/cophandler"
 	"go.uber.org/zap"
 )
@@ -522,8 +523,48 @@ func (svr *Server) CoprocessorStream(*coprocessor.Request, tikvpb.Tikv_Coprocess
 	return nil
 }
 
-func (svr *Server) BatchCoprocessor(*coprocessor.BatchRequest, tikvpb.Tikv_BatchCoprocessorServer) error {
-	panic("todo")
+type RegionError struct {
+	err *errorpb.Error
+}
+
+func (regionError *RegionError) Error() string {
+	return regionError.err.Message
+}
+
+func (svr *Server) BatchCoprocessor(req *coprocessor.BatchRequest, batchCopServer tikvpb.Tikv_BatchCoprocessorServer) error {
+	reqCtxs := make([]*requestCtx, 0, len(req.Regions))
+	defer func() {
+		for _, ctx := range reqCtxs {
+			ctx.finish()
+		}
+	}()
+	for _, ri := range req.Regions {
+		cop := coprocessor.Request{
+			Tp:      kv.ReqTypeDAG,
+			Data:    req.Data,
+			StartTs: req.StartTs,
+			Ranges:  ri.Ranges,
+		}
+		regionCtx := *req.Context
+		regionCtx.RegionEpoch = ri.RegionEpoch
+		regionCtx.RegionId = ri.RegionId
+		cop.Context = &regionCtx
+
+		reqCtx, err := newRequestCtx(svr, &regionCtx, "Coprocessor")
+		if err != nil {
+			return err
+		}
+		reqCtxs = append(reqCtxs, reqCtx)
+		if reqCtx.regErr != nil {
+			return &RegionError{err: reqCtx.regErr}
+		}
+		copResponse := cophandler.HandleCopRequest(reqCtx.getDBReader(), svr.mvccStore.lockStore, &cop)
+		err = batchCopServer.Send(&coprocessor.BatchResponse{Data: copResponse.Data})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (svr *Server) DispatchMPPTask(_ context.Context, _ *mpp.DispatchTaskRequest) (*mpp.DispatchTaskResponse, error) {

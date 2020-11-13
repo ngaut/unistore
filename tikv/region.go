@@ -179,6 +179,26 @@ func (ri *regionCtx) greaterThanEndKey(key []byte) bool {
 	return len(ri.endKey) > 0 && bytes.Compare(key, ri.endKey) > 0
 }
 
+func newPeerMeta(peerID, storeID uint64) *metapb.Peer {
+	return &metapb.Peer{
+		Id:      peerID,
+		StoreId: storeID,
+	}
+}
+
+func (ri *regionCtx) incConfVer() {
+	ri.meta.RegionEpoch = &metapb.RegionEpoch{
+		ConfVer: ri.meta.GetRegionEpoch().GetConfVer() + 1,
+		Version: ri.meta.GetRegionEpoch().GetVersion(),
+	}
+	ri.updateRegionEpoch(ri.meta.RegionEpoch)
+}
+
+func (ri *regionCtx) addPeer(peerID, storeID uint64) {
+	ri.meta.Peers = append(ri.meta.Peers, newPeerMeta(peerID, storeID))
+	ri.incConfVer()
+}
+
 func (ri *regionCtx) unmarshal(data []byte) error {
 	ri.approximateSize = int64(binary.LittleEndian.Uint64(data))
 	data = data[8:]
@@ -541,7 +561,7 @@ func (rm *StandAloneRegionManager) initStore(storeAddr string) error {
 	rootRegion := &metapb.Region{
 		Id:          regionID,
 		RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
-		Peers:       []*metapb.Peer{&metapb.Peer{Id: peerID, StoreId: storeID}},
+		Peers:       []*metapb.Peer{{Id: peerID, StoreId: storeID}},
 	}
 	rm.regions[rootRegion.Id] = newRegionCtx(rootRegion, rm.latches, nil)
 	_, err = rm.pdc.Bootstrap(ctx, rm.storeMeta, rootRegion)
@@ -605,7 +625,7 @@ func (rm *StandAloneRegionManager) initialSplit(root *metapb.Region) {
 		newRegion := &metapb.Region{
 			Id:          ids[i*2],
 			RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
-			Peers:       []*metapb.Peer{&metapb.Peer{Id: ids[i*2+1], StoreId: rm.storeMeta.Id}},
+			Peers:       []*metapb.Peer{{Id: ids[i*2+1], StoreId: rm.storeMeta.Id}},
 			StartKey:    codec.EncodeBytes(nil, startKey),
 			EndKey:      endKey,
 		}
