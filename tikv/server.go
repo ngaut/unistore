@@ -546,9 +546,9 @@ func (svr *Server) BatchCoprocessor(req *coprocessor.BatchRequest, batchCopServe
 			Ranges:  ri.Ranges,
 		}
 		regionCtx := *req.Context
-		regionCtx.Peer = nil
 		regionCtx.RegionEpoch = ri.RegionEpoch
 		regionCtx.RegionId = ri.RegionId
+		cop.Context = &regionCtx
 
 		reqCtx, err := newRequestCtx(svr, &regionCtx, "Coprocessor")
 		if err != nil {
