@@ -28,6 +28,6 @@ require (
 
 replace go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.5.0-alpha.5.0.20201117041249-9487a87e2cbd
 
-replace github.com/pingcap/kvproto => github.com/sticnarf/kvproto v0.0.0-20201203161608-0599ca68618d
+replace github.com/pingcap/kvproto => github.com/sticnarf/kvproto v0.0.0-20201207033407-2932f1492fd7
 
 go 1.13
