@@ -385,7 +385,7 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	batch := store.dbWriter.NewWriteBatch(req.LockTs, 0, reqCtx.rpcCtx)
 	if lock != nil && lock.StartTS == req.LockTs {
 		// For an async-commit lock, never roll it back or push forward it MinCommitTS.
-		if lock.UseAsyncCommit && !req.AsyncCommitFallback {
+		if lock.UseAsyncCommit && !req.ForceSyncCommit {
 			log.S().Debugf("async commit startTS=%v secondaries=%v minCommitTS=%v", lock.StartTS, lock.Secondaries, lock.MinCommitTS)
 			return TxnStatus{0, kvrpcpb.Action_NoAction, lock.ToLockInfo(req.PrimaryKey)}, nil
 		}
