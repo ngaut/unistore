@@ -705,6 +705,10 @@ func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpc
 			return tsErr
 		}
 		minCommitTS = uint64(physical)<<18 + uint64(logical)
+		if minCommitTS > req.MaxCommitTs {
+			req.UseAsyncCommit = false
+			req.TryOnePc = false
+		}
 		if req.UseAsyncCommit {
 			reqCtx.asyncMinCommitTS = minCommitTS
 		}
