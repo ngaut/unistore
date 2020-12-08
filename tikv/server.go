@@ -728,6 +728,10 @@ func (svr *Server) VerDeleteRange(context.Context, *kvrpcpb.VerDeleteRangeReques
 	panic("unimplemented")
 }
 
+func (svr *Server) CheckLeader(context.Context, *kvrpcpb.CheckLeaderRequest) (*kvrpcpb.CheckLeaderResponse, error) {
+	panic("unimplemented")
+}
+
 func convertToKeyError(err error) *kvrpcpb.KeyError {
 	if err == nil {
 		return nil
