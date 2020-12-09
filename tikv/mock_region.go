@@ -19,6 +19,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/tidb/kv"
+	"github.com/pingcap/tidb/store/mockstore/unistore/cophandler"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/pingcap/tidb/util/codec"
 	pdclient "github.com/tikv/pd/client"
@@ -35,6 +36,9 @@ type MockRegionManager struct {
 	clusterID     uint64
 	regionSize    int64
 	closed        uint32
+
+	// used for mpp test
+	mppTaskSet map[uint64]map[int64]*cophandler.MPPTaskHandler
 }
 
 func NewMockRegionManager(bundle *mvcc.DBBundle, clusterID uint64, opts RegionOptions) (*MockRegionManager, error) {
@@ -44,6 +48,7 @@ func NewMockRegionManager(bundle *mvcc.DBBundle, clusterID uint64, opts RegionOp
 		regionSize:    opts.RegionSize,
 		sortedRegions: btree.New(32),
 		stores:        make(map[uint64]*metapb.Store),
+		mppTaskSet:    make(map[uint64]map[int64]*cophandler.MPPTaskHandler),
 		regionManager: regionManager{
 			regions:   make(map[uint64]*regionCtx),
 			storeMeta: new(metapb.Store),
@@ -91,17 +96,44 @@ func (rm *MockRegionManager) AllocIDs(n int) []uint64 {
 	return ids
 }
 
+func (rm *MockRegionManager) GetStoreIDByAddr(addr string) (uint64, error) {
+	for _, store := range rm.stores {
+		if store.Address == addr {
+			return store.Id, nil
+		}
+	}
+	return 0, errors.New("Store not match")
+}
+
+func (rm *MockRegionManager) GetStoreAddrByStoreId(storeId uint64) (string, error) {
+	for _, store := range rm.stores {
+		if store.Id == storeId {
+			return store.Address, nil
+		}
+	}
+	return "", errors.New("Store not match")
+}
+
+func (rm *MockRegionManager) GetStoreInfoFromCtx(ctx *kvrpcpb.Context) (string, uint64, *errorpb.Error) {
+	ctxPeer := ctx.GetPeer()
+	if ctxPeer != nil {
+		addr, err := rm.GetStoreAddrByStoreId(ctxPeer.GetStoreId())
+		if err != nil {
+			return "", 0, &errorpb.Error{
+				Message:       "store not match",
+				StoreNotMatch: &errorpb.StoreNotMatch{},
+			}
+		}
+		return addr, ctxPeer.GetStoreId(), nil
+	}
+	return rm.storeMeta.Address, rm.storeMeta.Id, nil
+}
+
 func (rm *MockRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
 	ctxPeer := ctx.GetPeer()
 	if ctxPeer != nil {
-		foundPeer := false
-		for _, store := range rm.stores {
-			if ctxPeer.GetStoreId() == store.Id {
-				foundPeer = true
-				break
-			}
-		}
-		if !foundPeer {
+		_, err := rm.GetStoreAddrByStoreId(ctxPeer.GetStoreId())
+		if err != nil {
 			return nil, &errorpb.Error{
 				Message:       "store not match",
 				StoreNotMatch: &errorpb.StoreNotMatch{},
@@ -562,6 +594,11 @@ func (rm *MockRegionManager) AddStore(storeID uint64, addr string, labels ...*me
 		Address: addr,
 		Labels:  labels,
 	}
+	rm.mppTaskSet[storeID] = make(map[int64]*cophandler.MPPTaskHandler)
+}
+
+func (rm *MockRegionManager) getMPPTaskSet(storeID uint64) map[int64]*cophandler.MPPTaskHandler {
+	return rm.mppTaskSet[storeID]
 }
 
 // RemoveStore removes a Store from the cluster.
@@ -570,6 +607,7 @@ func (rm *MockRegionManager) RemoveStore(storeID uint64) {
 	defer rm.mu.Unlock()
 
 	delete(rm.stores, storeID)
+	delete(rm.mppTaskSet, storeID)
 }
 
 func (rm *MockRegionManager) AddPeer(regionID, storeID, peerID uint64) {

@@ -247,7 +247,10 @@ type RegionOptions struct {
 
 type RegionManager interface {
 	GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error)
+	GetStoreInfoFromCtx(ctx *kvrpcpb.Context) (string, uint64, *errorpb.Error)
 	SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse
+	GetStoreIDByAddr(addr string) (uint64, error)
+	GetStoreAddrByStoreId(storeId uint64) (string, error)
 	Close() error
 }
 
@@ -256,6 +259,30 @@ type regionManager struct {
 	mu        sync.RWMutex
 	regions   map[uint64]*regionCtx
 	latches   *latches
+}
+
+func (rm *regionManager) GetStoreIDByAddr(addr string) (uint64, error) {
+	if rm.storeMeta.Address != addr {
+		return 0, errors.New("store not match")
+	}
+	return rm.storeMeta.Id, nil
+}
+
+func (rm *regionManager) GetStoreAddrByStoreId(storeId uint64) (string, error) {
+	if rm.storeMeta.Id != storeId {
+		return "", errors.New("store not match")
+	}
+	return rm.storeMeta.Address, nil
+}
+
+func (rm *regionManager) GetStoreInfoFromCtx(ctx *kvrpcpb.Context) (string, uint64, *errorpb.Error) {
+	if ctx.GetPeer() != nil && ctx.GetPeer().GetStoreId() != rm.storeMeta.Id {
+		return "", 0, &errorpb.Error{
+			Message:       "store not match",
+			StoreNotMatch: &errorpb.StoreNotMatch{},
+		}
+	}
+	return rm.storeMeta.Address, rm.storeMeta.Id, nil
 }
 
 func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
