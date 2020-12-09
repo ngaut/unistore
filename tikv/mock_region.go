@@ -37,7 +37,7 @@ type MockRegionManager struct {
 	regionSize    int64
 	closed        uint32
 
-    // used for mpp test
+	// used for mpp test
 	mppTaskSet map[uint64]map[int64]*cophandler.MPPTaskHandler
 }
 
@@ -343,7 +343,7 @@ func (rm *MockRegionManager) SplitKeys(start, end kv.Key, count int) {
 }
 
 func (rm *MockRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse {
-	if _, err,_,_ := rm.GetRegionFromCtx(req.Context); err != nil {
+	if _, err, _, _ := rm.GetRegionFromCtx(req.Context); err != nil {
 		return &kvrpcpb.SplitRegionResponse{RegionError: err}
 	}
 	splitKeys := make([][]byte, 0, len(req.SplitKeys))

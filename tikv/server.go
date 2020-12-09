@@ -108,8 +108,8 @@ type requestCtx struct {
 	method           string
 	startTime        time.Time
 	rpcCtx           *kvrpcpb.Context
-	storeAddr		 string
-	storeId		     uint64
+	storeAddr        string
+	storeId          uint64
 	asyncMinCommitTS uint64
 	onePCCommitTS    uint64
 }
@@ -607,9 +607,9 @@ func (mrm *MockRegionManager) getMPPTaskHandle(rpcClient client.Client, meta *mp
 		return handler, false, nil
 	}
 	if createdIfNotExist {
-		handler := &cophandler.MPPTaskHandler {
-			TunnelSet:  make(map[int64]*cophandler.ExchangerTunnel),
-			Meta:       meta,
+		handler := &cophandler.MPPTaskHandler{
+			TunnelSet: make(map[int64]*cophandler.ExchangerTunnel),
+			Meta:      meta,
 			RPCClient: rpcClient,
 		}
 		set[meta.TaskId] = handler
@@ -660,7 +660,7 @@ func (svr *Server) EstablishMPPConnectionWithStoreId(req *mpp.EstablishMPPConnec
 	if mockRegionManager, ok := svr.regionManager.(*MockRegionManager); ok {
 		var (
 			mppHandler *cophandler.MPPTaskHandler
-			err error
+			err        error
 		)
 		maxRetryTime := 5
 		for i := 0; i < maxRetryTime; i++ {
