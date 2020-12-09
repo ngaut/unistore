@@ -606,6 +606,13 @@ func (rm *MockRegionManager) AddPeer(regionID, storeID, peerID uint64) {
 	rm.regions[regionID].addPeer(peerID, storeID)
 }
 
+func (rm *MockRegionManager) AddPeer(regionID, storeID, peerID uint64) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	rm.regions[regionID].addPeer(peerID, storeID)
+}
+
 type MockPD struct {
 	rm          *MockRegionManager
 	gcSafePoint uint64
