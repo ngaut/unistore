@@ -534,11 +534,13 @@ func (svr *Server) Coprocessor(_ context.Context, req *coprocessor.Request) (*co
 	if reqCtx.regErr != nil {
 		return &coprocessor.Response{RegionError: reqCtx.regErr}, nil
 	}
-	var mppTaskHandler *cophandler.MPPTaskHandler = nil
+	var mppTaskHandler *cophandler.MPPTaskHandler
 	if mockRegionRM, ok := svr.regionManager.(*MockRegionManager); ok {
 		mppTaskHandlerMap := mockRegionRM.getMPPTaskSet(reqCtx.storeId)
-		if th, ok := mppTaskHandlerMap[int64(req.Context.TaskId)]; ok {
-			mppTaskHandler = th
+		if mppTaskHandlerMap != nil {
+			if th, ok := mppTaskHandlerMap[int64(req.Context.TaskId)]; ok {
+				mppTaskHandler = th
+			}
 		}
 	}
 	return cophandler.HandleCopRequestWithMPPCtx(reqCtx.getDBReader(), svr.mvccStore.lockStore, req, &cophandler.MPPCtx{
@@ -586,11 +588,13 @@ func (svr *Server) BatchCoprocessor(req *coprocessor.BatchRequest, batchCopServe
 		if reqCtx.regErr != nil {
 			return &RegionError{err: reqCtx.regErr}
 		}
-		var mppTaskHandler *cophandler.MPPTaskHandler = nil
+		var mppTaskHandler *cophandler.MPPTaskHandler
 		if mockRegionRM, ok := svr.regionManager.(*MockRegionManager); ok {
 			mppTaskHandlerMap := mockRegionRM.getMPPTaskSet(reqCtx.storeId)
-			if th, ok := mppTaskHandlerMap[int64(req.Context.TaskId)]; ok {
-				mppTaskHandler = th
+			if mppTaskHandlerMap != nil {
+				if th, ok := mppTaskHandlerMap[int64(req.Context.TaskId)]; ok {
+					mppTaskHandler = th
+				}
 			}
 		}
 		copResponse := cophandler.HandleCopRequestWithMPPCtx(reqCtx.getDBReader(), svr.mvccStore.lockStore, &cop, &cophandler.MPPCtx{
