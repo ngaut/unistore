@@ -32,7 +32,9 @@ import (
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/kv"
+	"github.com/pingcap/tidb/store/mockstore/unistore/client"
 	"github.com/pingcap/tidb/store/mockstore/unistore/cophandler"
+	"github.com/pingcap/tipb/go-tipb"
 	"go.uber.org/zap"
 )
 
@@ -42,6 +44,7 @@ type Server struct {
 	mvccStore     *MVCCStore
 	regionManager RegionManager
 	innerServer   InnerServer
+	RPCClient     client.Client
 	wg            sync.WaitGroup
 	refCount      int32
 	stopped       int32
@@ -88,6 +91,14 @@ func (svr *Server) Stop() {
 	}
 }
 
+func (svr *Server) GetStoreIdByAddr(addr string) (uint64, error) {
+	return svr.regionManager.GetStoreIDByAddr(addr)
+}
+
+func (svr *Server) GetStoreAddrByStoreId(storeId uint64) (string, error) {
+	return svr.regionManager.GetStoreAddrByStoreId(storeId)
+}
+
 type requestCtx struct {
 	svr              *Server
 	regCtx           *regionCtx
@@ -97,6 +108,8 @@ type requestCtx struct {
 	method           string
 	startTime        time.Time
 	rpcCtx           *kvrpcpb.Context
+	storeAddr		 string
+	storeId		     uint64
 	asyncMinCommitTS uint64
 	onePCCommitTS    uint64
 }
@@ -113,7 +126,7 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCt
 		startTime: time.Now(),
 		rpcCtx:    ctx,
 	}
-	req.regCtx, req.regErr = svr.regionManager.GetRegionFromCtx(ctx)
+	req.regCtx, req.regErr, req.storeAddr, req.storeId = svr.regionManager.GetRegionFromCtx(ctx)
 	return req, nil
 }
 
@@ -506,7 +519,7 @@ func (svr *Server) RawDeleteRange(context.Context, *kvrpcpb.RawDeleteRangeReques
 }
 
 // SQL push down commands.
-func (svr *Server) Coprocessor(ctx context.Context, req *coprocessor.Request) (*coprocessor.Response, error) {
+func (svr *Server) Coprocessor(_ context.Context, req *coprocessor.Request) (*coprocessor.Response, error) {
 	reqCtx, err := newRequestCtx(svr, req.Context, "Coprocessor")
 	if err != nil {
 		return &coprocessor.Response{OtherError: convertToKeyError(err).String()}, nil
@@ -515,7 +528,16 @@ func (svr *Server) Coprocessor(ctx context.Context, req *coprocessor.Request) (*
 	if reqCtx.regErr != nil {
 		return &coprocessor.Response{RegionError: reqCtx.regErr}, nil
 	}
-	return cophandler.HandleCopRequest(reqCtx.getDBReader(), svr.mvccStore.lockStore, req), nil
+	var mppTaskHandler *cophandler.MPPTaskHandler = nil
+	if mockRegionRM, ok := svr.regionManager.(*MockRegionManager); ok {
+		mppTaskHandlerMap := mockRegionRM.getMPPTaskSet(reqCtx.storeId)
+		if th, ok := mppTaskHandlerMap[int64(req.Context.TaskId)]; ok {
+			mppTaskHandler = th
+		}
+	}
+	return cophandler.HandleCopRequestWithMPPCtx(reqCtx.getDBReader(), svr.mvccStore.lockStore, req, &cophandler.MPPCtx{
+		RPCClient: svr.RPCClient, StoreAddr: reqCtx.storeAddr, TaskHandler: mppTaskHandler,
+	}), nil
 }
 
 func (svr *Server) CoprocessorStream(*coprocessor.Request, tikvpb.Tikv_CoprocessorStreamServer) error {
@@ -558,7 +580,16 @@ func (svr *Server) BatchCoprocessor(req *coprocessor.BatchRequest, batchCopServe
 		if reqCtx.regErr != nil {
 			return &RegionError{err: reqCtx.regErr}
 		}
-		copResponse := cophandler.HandleCopRequest(reqCtx.getDBReader(), svr.mvccStore.lockStore, &cop)
+		var mppTaskHandler *cophandler.MPPTaskHandler = nil
+		if mockRegionRM, ok := svr.regionManager.(*MockRegionManager); ok {
+			mppTaskHandlerMap := mockRegionRM.getMPPTaskSet(reqCtx.storeId)
+			if th, ok := mppTaskHandlerMap[int64(req.Context.TaskId)]; ok {
+				mppTaskHandler = th
+			}
+		}
+		copResponse := cophandler.HandleCopRequestWithMPPCtx(reqCtx.getDBReader(), svr.mvccStore.lockStore, &cop, &cophandler.MPPCtx{
+			RPCClient: svr.RPCClient, StoreAddr: reqCtx.storeAddr, TaskHandler: mppTaskHandler,
+		})
 		err = batchCopServer.Send(&coprocessor.BatchResponse{Data: copResponse.Data})
 		if err != nil {
 			return err
@@ -567,8 +598,53 @@ func (svr *Server) BatchCoprocessor(req *coprocessor.BatchRequest, batchCopServe
 	return nil
 }
 
+func (mrm *MockRegionManager) getMPPTaskHandle(rpcClient client.Client, meta *mpp.TaskMeta, createdIfNotExist bool, storeId uint64) (*cophandler.MPPTaskHandler, bool, error) {
+	set := mrm.getMPPTaskSet(storeId)
+	if set == nil {
+		return nil, false, errors.New("cannot find mpp task set for store")
+	}
+	if handler, ok := set[meta.TaskId]; ok {
+		return handler, false, nil
+	}
+	if createdIfNotExist {
+		handler := &cophandler.MPPTaskHandler {
+			TunnelSet:  make(map[int64]*cophandler.ExchangerTunnel),
+			Meta:       meta,
+			RPCClient: rpcClient,
+		}
+		set[meta.TaskId] = handler
+		return handler, true, nil
+	} else {
+		return nil, false, nil
+	}
+}
+
 func (svr *Server) DispatchMPPTask(_ context.Context, _ *mpp.DispatchTaskRequest) (*mpp.DispatchTaskResponse, error) {
 	panic("todo")
+}
+
+// func DispatchMPPTask do not have enough information(lack of target store id)
+func (svr *Server) DispatchMPPTaskWithStoreId(ctx context.Context, req *mpp.DispatchTaskRequest, storeId uint64) (*mpp.DispatchTaskResponse, error) {
+	if mockRegionManager, ok := svr.regionManager.(*MockRegionManager); ok {
+		mppHandler, created, err := mockRegionManager.getMPPTaskHandle(svr.RPCClient, req.Meta, true, storeId)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		if !created {
+			return nil, errors.New("task has been created")
+		}
+		storeAddr, err := svr.GetStoreAddrByStoreId(storeId)
+		if err != nil {
+			return nil, err
+		}
+		taskResp, err := mppHandler.HandleMPPDispatch(ctx, req, storeAddr, storeId)
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		return taskResp, nil
+	} else {
+		return nil, errors.New("only mock region manager support MPP")
+	}
 }
 
 func (svr *Server) CancelMPPTask(_ context.Context, _ *mpp.CancelTaskRequest) (*mpp.CancelTaskResponse, error) {
@@ -577,6 +653,60 @@ func (svr *Server) CancelMPPTask(_ context.Context, _ *mpp.CancelTaskRequest) (*
 
 func (svr *Server) EstablishMPPConnection(*mpp.EstablishMPPConnectionRequest, tikvpb.Tikv_EstablishMPPConnectionServer) error {
 	panic("todo")
+}
+
+// func EstablishMPPConnection do not have enough information(lack of target store id)
+func (svr *Server) EstablishMPPConnectionWithStoreId(req *mpp.EstablishMPPConnectionRequest, server tikvpb.Tikv_EstablishMPPConnectionServer, storeId uint64) error {
+	if mockRegionManager, ok := svr.regionManager.(*MockRegionManager); ok {
+		var (
+			mppHandler *cophandler.MPPTaskHandler
+			err error
+		)
+		maxRetryTime := 5
+		for i := 0; i < maxRetryTime; i++ {
+			mppHandler, _, err = mockRegionManager.getMPPTaskHandle(svr.RPCClient, req.SenderMeta, false, storeId)
+			if err != nil {
+				return errors.Trace(err)
+			}
+			if mppHandler == nil {
+				time.Sleep(time.Second)
+			} else {
+				break
+			}
+		}
+		if mppHandler == nil {
+			return errors.New("tatsk not found")
+		}
+		ctx1, cancel := context.WithCancel(context.Background())
+		tunnel, err := mppHandler.HandleEstablishConn(ctx1, req)
+		if err != nil {
+			cancel()
+			return errors.Trace(err)
+		}
+		var sendError error = nil
+		for sendError == nil {
+			chunk, err := tunnel.RecvChunk()
+			if err != nil {
+				sendError = server.Send(&mpp.MPPDataPacket{Error: &mpp.Error{Msg: err.Error()}})
+				break
+			}
+			if chunk == nil {
+				// todo return io.EOF error?
+				break
+			}
+			res := tipb.SelectResponse{
+				Chunks: []tipb.Chunk{*chunk},
+			}
+			raw, err := res.Marshal()
+			if err != nil {
+				sendError = server.Send(&mpp.MPPDataPacket{Error: &mpp.Error{Msg: err.Error()}})
+			}
+			sendError = server.Send(&mpp.MPPDataPacket{Data: raw})
+		}
+		return sendError
+	} else {
+		return errors.New("only mock region manager support MPP")
+	}
 }
 
 // Raft commands (tikv <-> tikv).
