@@ -126,7 +126,13 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCt
 		startTime: time.Now(),
 		rpcCtx:    ctx,
 	}
-	req.regCtx, req.regErr, req.storeAddr, req.storeId = svr.regionManager.GetRegionFromCtx(ctx)
+	req.regCtx, req.regErr = svr.regionManager.GetRegionFromCtx(ctx)
+	storeAddr, storeId, regErr := svr.regionManager.GetStoreInfoFromCtx(ctx)
+	req.storeAddr = storeAddr
+	req.storeId = storeId
+	if regErr != nil {
+		req.regErr = regErr
+	}
 	return req, nil
 }
 

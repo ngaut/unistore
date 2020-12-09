@@ -246,7 +246,8 @@ type RegionOptions struct {
 }
 
 type RegionManager interface {
-	GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error, string, uint64)
+	GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error)
+	GetStoreInfoFromCtx(ctx *kvrpcpb.Context) (string, uint64, *errorpb.Error)
 	SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse
 	GetStoreIDByAddr(addr string) (uint64, error)
 	GetStoreAddrByStoreId(storeId uint64) (string, error)
@@ -274,13 +275,23 @@ func (rm *regionManager) GetStoreAddrByStoreId(storeId uint64) (string, error) {
 	return rm.storeMeta.Address, nil
 }
 
-func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error, string, uint64) {
+func (rm *regionManager) GetStoreInfoFromCtx(ctx *kvrpcpb.Context) (string, uint64, *errorpb.Error) {
+	if ctx.GetPeer() != nil && ctx.GetPeer().GetStoreId() != rm.storeMeta.Id {
+		return "", 0, &errorpb.Error{
+			Message:       "store not match",
+			StoreNotMatch: &errorpb.StoreNotMatch{},
+		}
+	}
+	return rm.storeMeta.Address, rm.storeMeta.Id, nil
+}
+
+func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
 	ctxPeer := ctx.GetPeer()
 	if ctxPeer != nil && ctxPeer.GetStoreId() != rm.storeMeta.Id {
 		return nil, &errorpb.Error{
 			Message:       "store not match",
 			StoreNotMatch: &errorpb.StoreNotMatch{},
-		}, "", 0
+		}
 	}
 	rm.mu.RLock()
 	ri := rm.regions[ctx.RegionId]
@@ -291,7 +302,7 @@ func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *er
 			RegionNotFound: &errorpb.RegionNotFound{
 				RegionId: ctx.GetRegionId(),
 			},
-		}, "", 0
+		}
 	}
 	// Region epoch does not match.
 	if rm.isEpochStale(ri.getRegionEpoch(), ctx.GetRegionEpoch()) {
@@ -306,9 +317,9 @@ func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *er
 					Peers:       ri.meta.Peers,
 				}},
 			},
-		}, "", 0
+		}
 	}
-	return ri, nil, rm.storeMeta.Address, rm.storeMeta.Id
+	return ri, nil
 }
 
 func (rm *regionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
@@ -446,15 +457,15 @@ func (rm *RaftRegionManager) OnRoleChange(regionId uint64, newState raft.StateTy
 	rm.eventCh <- &regionRoleChangeEvent{regionId: regionId, newState: newState}
 }
 
-func (rm *RaftRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error, string, uint64) {
-	regionCtx, err, storeAddr, storeId := rm.regionManager.GetRegionFromCtx(ctx)
+func (rm *RaftRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
+	regionCtx, err := rm.regionManager.GetRegionFromCtx(ctx)
 	if err != nil {
-		return nil, err, "", 0
+		return nil, err
 	}
 	if err := regionCtx.leaderChecker.IsLeader(ctx, rm.router); err != nil {
-		return nil, err, "", 0
+		return nil, err
 	}
-	return regionCtx, nil, storeAddr, storeId
+	return regionCtx, nil
 }
 
 func (rm *RaftRegionManager) Close() error {

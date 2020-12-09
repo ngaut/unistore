@@ -114,20 +114,31 @@ func (rm *MockRegionManager) GetStoreAddrByStoreId(storeId uint64) (string, erro
 	return "", errors.New("Store not match")
 }
 
-func (rm *MockRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error, string, uint64) {
-	storeAddr := rm.storeMeta.Address
-	storeId := rm.storeMeta.Id
+func (rm *MockRegionManager) GetStoreInfoFromCtx(ctx *kvrpcpb.Context) (string, uint64, *errorpb.Error) {
 	ctxPeer := ctx.GetPeer()
 	if ctxPeer != nil {
 		addr, err := rm.GetStoreAddrByStoreId(ctxPeer.GetStoreId())
 		if err != nil {
+			return "", 0, &errorpb.Error{
+				Message:       "store not match",
+				StoreNotMatch: &errorpb.StoreNotMatch{},
+			}
+		}
+		return addr, ctxPeer.GetStoreId(), nil
+	}
+	return rm.storeMeta.Address, rm.storeMeta.Id, nil
+}
+
+func (rm *MockRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
+	ctxPeer := ctx.GetPeer()
+	if ctxPeer != nil {
+		_, err := rm.GetStoreAddrByStoreId(ctxPeer.GetStoreId())
+		if err != nil {
 			return nil, &errorpb.Error{
 				Message:       "store not match",
 				StoreNotMatch: &errorpb.StoreNotMatch{},
-			}, "", 0
+			}
 		}
-		storeAddr = addr
-		storeId = ctxPeer.GetStoreId()
 	}
 	rm.mu.RLock()
 	ri := rm.regions[ctx.RegionId]
@@ -138,7 +149,7 @@ func (rm *MockRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx,
 			RegionNotFound: &errorpb.RegionNotFound{
 				RegionId: ctx.GetRegionId(),
 			},
-		}, "", 0
+		}
 	}
 	// Region epoch does not match.
 	if rm.isEpochStale(ri.getRegionEpoch(), ctx.GetRegionEpoch()) {
@@ -153,9 +164,9 @@ func (rm *MockRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx,
 					Peers:       ri.meta.Peers,
 				}},
 			},
-		}, "", 0
+		}
 	}
-	return ri, nil, storeAddr, storeId
+	return ri, nil
 }
 
 // btreeItem is BTree's Item that uses []byte to compare.
@@ -343,7 +354,7 @@ func (rm *MockRegionManager) SplitKeys(start, end kv.Key, count int) {
 }
 
 func (rm *MockRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse {
-	if _, err, _, _ := rm.GetRegionFromCtx(req.Context); err != nil {
+	if _, err := rm.GetRegionFromCtx(req.Context); err != nil {
 		return &kvrpcpb.SplitRegionResponse{RegionError: err}
 	}
 	splitKeys := make([][]byte, 0, len(req.SplitKeys))
