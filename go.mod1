@@ -29,6 +29,4 @@ require (
 
 replace go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.5.0-alpha.5.0.20201117041249-9487a87e2cbd
 
-replace github.com/pingcap/tidb => /Users/xufei/dev/go/src/github.com/pingcap/tidb
-
 go 1.13
