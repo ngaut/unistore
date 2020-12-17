@@ -392,6 +392,11 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 
 		// If the lock has already outdated, clean up it.
 		if uint64(oracle.ExtractPhysical(lock.StartTS))+uint64(lock.TTL) < uint64(oracle.ExtractPhysical(req.CurrentTs)) {
+			// If the resolving lock and primary lock are both pessimistic type, just pessimistic rollback locks.
+			if req.ResolvingPessimisticLock && lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
+				batch.PessimisticRollback(req.PrimaryKey)
+				return TxnStatus{0, kvrpcpb.Action_TTLExpirePessimisticRollback, nil}, store.dbWriter.Write(batch)
+			}
 			batch.Rollback(req.PrimaryKey, true)
 			return TxnStatus{0, kvrpcpb.Action_TTLExpireRollback, nil}, store.dbWriter.Write(batch)
 		}
@@ -443,6 +448,9 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	// written before the primary lock.
 	// Currently client will always set this flag to true when resolving locks
 	if req.RollbackIfNotExist {
+		if req.ResolvingPessimisticLock {
+			return TxnStatus{0, kvrpcpb.Action_LockNotExistDoNothing, nil}, nil
+		}
 		batch.Rollback(req.PrimaryKey, false)
 		err = store.dbWriter.Write(batch)
 		return TxnStatus{0, kvrpcpb.Action_LockNotExistRollback, nil}, nil

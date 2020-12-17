@@ -11,7 +11,7 @@ require (
 	github.com/pingcap/badger v1.5.1-0.20200908111422-2e78ee155d19
 	github.com/pingcap/check v0.0.0-20200212061837-5e12011dc712
 	github.com/pingcap/errors v0.11.5-0.20201126102027-b0a155152ca3
-	github.com/pingcap/kvproto v0.0.0-20201208043834-923c9609272c
+	github.com/pingcap/kvproto v0.0.0-20201215060142-f3dafca4c7fd
 	github.com/pingcap/log v0.0.0-20201112100606-8f1e84a3abc8
 	github.com/pingcap/tidb v1.1.0-beta.0.20201216120335-040a03229e97
 	github.com/pingcap/tipb v0.0.0-20201209065231-aa39b1b86217
