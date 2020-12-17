@@ -97,6 +97,8 @@ func (rm *MockRegionManager) AllocIDs(n int) []uint64 {
 }
 
 func (rm *MockRegionManager) GetStoreIDByAddr(addr string) (uint64, error) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
 	for _, store := range rm.stores {
 		if store.Address == addr {
 			return store.Id, nil
@@ -106,6 +108,8 @@ func (rm *MockRegionManager) GetStoreIDByAddr(addr string) (uint64, error) {
 }
 
 func (rm *MockRegionManager) GetStoreAddrByStoreId(storeId uint64) (string, error) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
 	for _, store := range rm.stores {
 		if store.Id == storeId {
 			return store.Address, nil

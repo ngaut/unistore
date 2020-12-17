@@ -13,8 +13,8 @@ require (
 	github.com/pingcap/errors v0.11.5-0.20201126102027-b0a155152ca3
 	github.com/pingcap/kvproto v0.0.0-20201208043834-923c9609272c
 	github.com/pingcap/log v0.0.0-20201112100606-8f1e84a3abc8
-	github.com/pingcap/tidb v1.1.0-beta.0.20201209051538-340ba78f0c25
-	github.com/pingcap/tipb v0.0.0-20201026044621-45e60c77588f
+	github.com/pingcap/tidb v1.1.0-beta.0.20201216120335-040a03229e97
+	github.com/pingcap/tipb v0.0.0-20201209065231-aa39b1b86217
 	github.com/prometheus/client_golang v1.5.1
 	github.com/shirou/gopsutil v2.20.3+incompatible
 	github.com/stretchr/testify v1.6.1
@@ -28,5 +28,7 @@ require (
 )
 
 replace go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.5.0-alpha.5.0.20201117041249-9487a87e2cbd
+
+replace github.com/pingcap/tidb => /Users/xufei/dev/go/src/github.com/pingcap/tidb
 
 go 1.13
