@@ -19,27 +19,30 @@ import (
 )
 
 type applyState struct {
-	appliedIndex   uint64
-	truncatedIndex uint64
-	truncatedTerm  uint64
+	appliedIndex     uint64
+	appliedIndexTerm uint64
+	truncatedIndex   uint64
+	truncatedTerm    uint64
 }
 
 func (s applyState) Marshal() []byte {
-	bin := make([]byte, 24)
+	bin := make([]byte, 32)
 	binary.LittleEndian.PutUint64(bin, s.appliedIndex)
-	binary.LittleEndian.PutUint64(bin[8:], s.truncatedIndex)
-	binary.LittleEndian.PutUint64(bin[16:], s.truncatedTerm)
+	binary.LittleEndian.PutUint64(bin[8:], s.appliedIndexTerm)
+	binary.LittleEndian.PutUint64(bin[16:], s.truncatedIndex)
+	binary.LittleEndian.PutUint64(bin[24:], s.truncatedTerm)
 	return bin
 }
 
 func (s *applyState) Unmarshal(data []byte) {
 	s.appliedIndex = binary.LittleEndian.Uint64(data)
-	s.truncatedIndex = binary.LittleEndian.Uint64(data[8:])
-	s.truncatedTerm = binary.LittleEndian.Uint64(data[16:])
+	s.appliedIndexTerm = binary.LittleEndian.Uint64(data[8:])
+	s.truncatedIndex = binary.LittleEndian.Uint64(data[16:])
+	s.truncatedTerm = binary.LittleEndian.Uint64(data[24:])
 }
 
 func (s applyState) String() string {
-	return fmt.Sprintf("{appliedIndex:%d, truncatedIndex:%d, truncatedTerm:%d}", s.appliedIndex, s.truncatedIndex, s.truncatedTerm)
+	return fmt.Sprintf("{appliedIndex:%d, appliedIndexTerm:%d, truncatedIndex:%d, truncatedTerm:%d}", s.appliedIndex, s.appliedIndexTerm, s.truncatedIndex, s.truncatedTerm)
 }
 
 type raftState struct {

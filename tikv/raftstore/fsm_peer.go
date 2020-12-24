@@ -16,6 +16,7 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"github.com/pingcap/badger/protos"
 	"time"
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
@@ -83,11 +84,13 @@ func createPeerFsm(storeID uint64, cfg *Config, sched chan<- task,
 // know the region_id and peer_id when creating this replicated peer, the region info
 // will be retrieved later after applying snapshot.
 func replicatePeerFsm(storeID uint64, cfg *Config, sched chan<- task,
-	engines *Engines, regionID uint64, metaPeer *metapb.Peer) (*peerFsm, error) {
+	engines *Engines, regionID uint64, startKey, endKey []byte, metaPeer *metapb.Peer) (*peerFsm, error) {
 	// We will remove tombstone key when apply snapshot
 	log.S().Infof("[region %v] replicates peer with ID %d", regionID, metaPeer.GetId())
 	region := &metapb.Region{
 		Id:          regionID,
+		StartKey:    startKey,
+		EndKey:      endKey,
 		RegionEpoch: &metapb.RegionEpoch{},
 	}
 	peer, err := NewPeer(storeID, cfg, engines, region, sched, metaPeer)
@@ -132,8 +135,8 @@ func (pf *peerFsm) setPendingMergeState(state *rspb.MergeState) {
 	pf.peer.PendingMergeState = state
 }
 
-func (pf *peerFsm) scheduleApplyingSnapshot() {
-	pf.peer.Store().ScheduleApplyingSnapshot()
+func (pf *peerFsm) scheduleApplyingSnapshot(snapData *snapData) {
+	pf.peer.Store().ScheduleApplyingSnapshot(snapData)
 }
 
 func (pf *peerFsm) hasPendingMergeApplyResult() bool {
@@ -205,6 +208,8 @@ func (d *peerMsgHandler) HandleMsgs(msgs ...Msg) {
 		case MsgTypeStart:
 			d.startTicker()
 		case MsgTypeNoop:
+		case MsgTypeGenerateEngineMetaChange:
+			d.onGenerateMetaChangeEvent(msg.Data.(*protos.MetaChangeEvent))
 		}
 	}
 }
@@ -392,7 +397,7 @@ func (d *peerMsgHandler) onApplyResult(res *applyTaskRes) {
 		if d.stopped {
 			return
 		}
-		if d.peer.PostApply(d.ctx.engine.kv, res.applyState, res.appliedIndexTerm, res.merged, res.metrics) {
+		if d.peer.PostApply(d.ctx.engine.kv, res.applyState, res.merged, res.metrics) {
 			d.hasReady = true
 		}
 	}
@@ -425,21 +430,9 @@ func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
 	if d.checkMessage(msg) {
 		return nil
 	}
-	key, err := d.checkSnapshot(msg)
+	err := d.checkSnapshot(msg)
 	if err != nil {
 		return err
-	}
-	if key != nil {
-		// If the snapshot file is not used again, then it's OK to
-		// delete them here. If the snapshot file will be reused when
-		// receiving, then it will fail to pass the check again, so
-		// missing snapshot files should not be noticed.
-		s, err1 := d.ctx.snapMgr.GetSnapshotForApplying(*key)
-		if err1 != nil {
-			return err1
-		}
-		d.ctx.snapMgr.DeleteSnapshot(*key, s, false)
-		return nil
 	}
 	d.peer.insertPeerCache(msg.GetFromPeer())
 	err = d.peer.Step(msg.GetMessage())
@@ -568,32 +561,28 @@ func (d *peerMsgHandler) handleGCPeerMsg(msg *rspb.RaftMessage) {
 	}
 }
 
-// Returns `None` if the `msg` doesn't contain a snapshot or it contains a snapshot which
-// doesn't conflict with any other snapshots or regions. Otherwise a `SnapKey` is returned.
-func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) (*SnapKey, error) {
-	if msg.Message.Snapshot == nil {
-		return nil, nil
-	}
-	regionID := msg.RegionId
-	snap := msg.Message.Snapshot
-	key := SnapKeyFromRegionSnap(regionID, snap)
-	snapData := new(rspb.RaftSnapshotData)
-	err := snapData.Unmarshal(snap.Data)
-	if err != nil {
-		return nil, err
-	}
-	snapRegion := snapData.Region
-	peerID := msg.ToPeer.Id
-	var contains bool
-	for _, peer := range snapRegion.Peers {
-		if peer.Id == peerID {
-			contains = true
-			break
+func u64SliceContains(slice []uint64, v uint64) bool {
+	for _, e := range slice {
+		if e == v {
+			return true
 		}
 	}
+	return false
+}
+
+// Returns `None` if the `msg` doesn't contain a snapshot or it contains a snapshot which
+// doesn't conflict with any other snapshots or regions. Otherwise a `SnapKey` is returned.
+func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) error {
+	if msg.Message.Snapshot == nil {
+		return nil
+	}
+	snap := msg.Message.Snapshot
+	confState := snap.Metadata.ConfState
+	peerID := msg.ToPeer.Id
+	contains := u64SliceContains(confState.Voters, peerID) || u64SliceContains(confState.Learners, peerID)
 	if !contains {
-		log.S().Infof("%s %s doesn't contains peer %d, skip", d.tag(), snapRegion, peerID)
-		return &key, nil
+		log.S().Infof("%s %v doesn't contains peer %d, skip", d.tag(), msg.RegionId, peerID)
+		return nil
 	}
 	var regionsToDestroy []uint64
 	d.ctx.storeMetaLock.Lock()
@@ -606,19 +595,19 @@ func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) (*SnapKey, error) 
 	if !RegionEqual(meta.regions[d.regionID()], d.region()) {
 		if !d.peer.isInitialized() {
 			log.S().Infof("%s stale delegate detected, skip", d.tag())
-			return &key, nil
+			return nil
 		} else {
 			panic(fmt.Sprintf("%s meta corrupted %s != %s", d.tag(), meta.regions[d.regionID()], d.region()))
 		}
 	}
-	for _, region := range meta.pendingSnapshotRegions {
-		if bytes.Compare(region.StartKey, snapRegion.EndKey) < 0 &&
-			bytes.Compare(region.EndKey, snapRegion.StartKey) > 0 &&
+	for _, snapMsg := range meta.pendingSnapshotMessages {
+		if bytes.Compare(snapMsg.StartKey, msg.EndKey) < 0 &&
+			bytes.Compare(snapMsg.EndKey, msg.StartKey) > 0 &&
 			// Same region can overlap, we will apply the latest version of snapshot.
-			region.Id != snapRegion.Id {
-			log.S().Infof("pending region overlapped regionID %d peerID %d region %s snap %s",
-				d.regionID(), d.peerID(), region, snap)
-			return &key, nil
+			snapMsg.RegionId != msg.RegionId {
+			log.S().Infof("pending region overlapped regionID %d peerID %d region %d snap %s",
+				d.regionID(), d.peerID(), snapMsg.RegionId, snap)
+			return nil
 		}
 	}
 
@@ -631,39 +620,34 @@ func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) (*SnapKey, error) 
 	// 2. There is a CommitMerge pending in apply thread.
 	ready := !d.peer.IsApplyingSnapshot() && !d.peer.HasPendingSnapshot() && d.peer.ReadyToHandlePendingSnap()
 
-	existRegions := d.findOverlapRegions(meta, snapRegion)
+	existRegions := d.findOverlapRegions(meta, msg.RegionId, msg.StartKey, msg.EndKey)
 	for _, existRegion := range existRegions {
-		log.S().Infof("%s region overlapped %s %s", d.tag(), existRegion, snapRegion)
-		if ready && maybeDestroySource(meta, d.regionID(), existRegion.Id, snapRegion.RegionEpoch) {
+		log.S().Infof("%s region overlapped %s %d", d.tag(), existRegion, msg.RegionId)
+		if ready && maybeDestroySource(meta, d.regionID(), existRegion.Id, msg.RegionEpoch) {
 			// The snapshot that we decide to whether destroy peer based on must can be applied.
 			// So here not to destroy peer immediately, or the snapshot maybe dropped in later
 			// check but the peer is already destroyed.
 			regionsToDestroy = append(regionsToDestroy, existRegion.Id)
 			continue
 		}
-		return &key, nil
+		return nil
 	}
-	// check if snapshot file exists.
-	_, err = d.ctx.snapMgr.GetSnapshotForApplying(key)
-	if err != nil {
-		return nil, err
-	}
-	meta.pendingSnapshotRegions = append(meta.pendingSnapshotRegions, snapRegion)
-	d.ctx.queuedSnaps[regionID] = struct{}{}
-	return nil, nil
+	meta.pendingSnapshotMessages = append(meta.pendingSnapshotMessages, msg)
+	d.ctx.queuedSnaps[msg.RegionId] = struct{}{}
+	return nil
 }
 
-func (d *peerMsgHandler) findOverlapRegions(storeMeta *storeMeta, snapRegion *metapb.Region) (result []*metapb.Region) {
+func (d *peerMsgHandler) findOverlapRegions(storeMeta *storeMeta, id uint64, startKey, endKey []byte) (result []*metapb.Region) {
 	it := storeMeta.regionRanges.NewIterator()
-	it.Seek(snapRegion.StartKey)
+	it.Seek(startKey)
 	for it.Valid() {
 		regionID := regionIDFromBytes(it.Value())
-		if bytes.Equal(it.Key(), snapRegion.StartKey) || regionID == snapRegion.Id {
+		if bytes.Equal(it.Key(), startKey) || regionID == id {
 			it.Next()
 			continue
 		}
 		region := storeMeta.regions[regionID]
-		if bytes.Compare(region.StartKey, snapRegion.EndKey) < 0 {
+		if bytes.Compare(region.StartKey, endKey) < 0 {
 			result = append(result, region)
 		} else {
 			return
@@ -912,7 +896,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 			}
 		}
 	}
-
+	d.ctx.engine.metaManager.split(derived, regions)
 	d.ctx.peerEventObserver.OnSplitRegion(derived, regions, newPeers)
 }
 
@@ -1544,4 +1528,16 @@ func (d *peerMsgHandler) executeRegionDetail(request *raft_cmdpb.RaftCmdRequest)
 		}
 	}
 	return resp, nil
+}
+
+func (d *peerMsgHandler) onGenerateMetaChangeEvent(e *protos.MetaChangeEvent) {
+	region := d.region()
+	header := raftlog.CustomHeader{
+		RegionID: region.Id,
+		Epoch:    raftlog.NewEpoch(region.RegionEpoch.Version, region.RegionEpoch.ConfVer),
+		PeerID:   d.peer.Meta.Id,
+		StoreID:  d.storeID(),
+	}
+	rlog := raftlog.BuildEngineMetaChangeLog(header, e)
+	d.proposeRaftCommand(rlog, nil)
 }

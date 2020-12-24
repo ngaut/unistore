@@ -14,9 +14,7 @@
 package raftstore
 
 import (
-	"bytes"
 	"context"
-	"io"
 	"sync/atomic"
 	"time"
 
@@ -73,22 +71,6 @@ const snapChunkLen = 1024 * 1024
 
 func (r *snapRunner) sendSnap(storeID uint64, msg *raft_serverpb.RaftMessage) error {
 	start := time.Now()
-	msgSnap := msg.GetMessage().GetSnapshot()
-	snapKey, err := SnapKeyFromSnap(msgSnap)
-	if err != nil {
-		return err
-	}
-
-	r.snapManager.Register(snapKey, SnapEntrySending)
-	defer r.snapManager.Deregister(snapKey, SnapEntrySending)
-
-	snap, err := r.snapManager.GetSnapshotForSending(snapKey)
-	if err != nil {
-		return err
-	}
-	if !snap.Exists() {
-		return errors.Errorf("missing snap file: %v", snap.Path())
-	}
 	// Send snap shot is a low frequent operation, we can afford resolving the store address every time.
 	addr, err := getStoreAddr(storeID, r.pdCli)
 	if err != nil {
@@ -113,27 +95,11 @@ func (r *snapRunner) sendSnap(storeID uint64, msg *raft_serverpb.RaftMessage) er
 	if err != nil {
 		return err
 	}
-
-	buf := make([]byte, snapChunkLen)
-	for remain := snap.TotalSize(); remain > 0; remain -= uint64(len(buf)) {
-		if remain < uint64(len(buf)) {
-			buf = buf[:remain]
-		}
-		_, err := io.ReadFull(snap, buf)
-		if err != nil {
-			return errors.Errorf("failed to read snapshot chunk: %v", err)
-		}
-		err = stream.Send(&raft_serverpb.SnapshotChunk{Data: buf})
-		if err != nil {
-			return err
-		}
-	}
 	_, err = stream.CloseAndRecv()
 	if err != nil {
 		return err
 	}
-
-	log.Info("sent snapshot", zap.Uint64("region id", snapKey.RegionID), zap.Stringer("snap key", snapKey), zap.Uint64("size", snap.TotalSize()), zap.Duration("duration", time.Since(start)))
+	log.Info("sent snapshot", zap.Uint64("region id", msg.RegionId), zap.Int("size", len(msg.Message.Snapshot.Data)), zap.Duration("duration", time.Since(start)))
 	return nil
 }
 
@@ -153,55 +119,9 @@ func (r *snapRunner) recv(t recvSnapTask) {
 }
 
 func (r *snapRunner) recvSnap(stream tikvpb.Tikv_SnapshotServer) (*raft_serverpb.RaftMessage, error) {
-	head, err := stream.Recv()
+	chunk, err := stream.Recv()
 	if err != nil {
 		return nil, err
 	}
-	if head.GetMessage() == nil {
-		return nil, errors.New("no raft message in the first chunk")
-	}
-	message := head.GetMessage().GetMessage()
-	snapKey, err := SnapKeyFromSnap(message.GetSnapshot())
-	if err != nil {
-		return nil, errors.Errorf("failed to create snap key: %v", err)
-	}
-
-	data := message.GetSnapshot().GetData()
-	snap, err := r.snapManager.GetSnapshotForReceiving(snapKey, data)
-	if err != nil {
-		return nil, errors.Errorf("%v failed to create snapshot file: %v", snapKey, err)
-	}
-	if snap.Exists() {
-		log.Info("snapshot file already exists, skip receiving", zap.Stringer("snap key", snapKey), zap.String("file", snap.Path()))
-		stream.SendAndClose(&raft_serverpb.Done{})
-		return head.GetMessage(), nil
-	}
-	r.snapManager.Register(snapKey, SnapEntryReceiving)
-	defer r.snapManager.Deregister(snapKey, SnapEntryReceiving)
-
-	for {
-		chunk, err := stream.Recv()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-		data := chunk.GetData()
-		if len(data) == 0 {
-			return nil, errors.Errorf("%v receive chunk with empty data", snapKey)
-		}
-		_, err = bytes.NewReader(data).WriteTo(snap)
-		if err != nil {
-			return nil, errors.Errorf("%v failed to write snapshot file %v: %v", snapKey, snap.Path(), err)
-		}
-	}
-
-	err = snap.Save()
-	if err != nil {
-		return nil, err
-	}
-
-	stream.SendAndClose(&raft_serverpb.Done{})
-	return head.GetMessage(), nil
+	return chunk.Message, nil
 }

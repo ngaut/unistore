@@ -20,7 +20,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
@@ -49,9 +48,9 @@ func (d *dummyDeleter) DeleteSnapshot(key SnapKey, snapshot Snapshot, checkEntry
 	return true
 }
 
-func getTestDBForRegions(t *testing.T, path string, regions []uint64) *mvcc.DBBundle {
+func getTestDBForRegions(t *testing.T, path string, regions []uint64) *badger.ShardingDB {
 	kv := openDBBundle(t, path)
-	fillDBBundleData(t, kv)
+	fillKVDBData(t, kv)
 	for _, regionID := range regions {
 		// Put apply state into kv engine.
 		applyState := applyState{
@@ -134,43 +133,37 @@ func getDBValue(t *testing.T, db *badger.DB, key []byte, ts uint64) (val []byte)
 	return
 }
 
-func openDBBundle(t *testing.T, dir string) *mvcc.DBBundle {
-	opts := badger.DefaultOptions
+func openDBBundle(t *testing.T, dir string) *badger.ShardingDB {
+	opts := badger.ShardingDBDefaultOpt
+	opts.CFs = []badger.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}, {Managed: false}}
 	opts.Dir = dir
 	opts.ValueDir = dir
 	opts.ManagedTxns = true
-	db, err := badger.Open(opts)
+	db, err := badger.OpenShardingDB(opts)
 	require.Nil(t, err)
-	lockStore := lockstore.NewMemStore(1024)
-	return &mvcc.DBBundle{
-		DB:        db,
-		LockStore: lockStore,
-	}
+	return db
 }
 
-func fillDBBundleData(t *testing.T, dbBundle *mvcc.DBBundle) {
+func fillKVDBData(t *testing.T, db *badger.ShardingDB) {
 	// write some data.
 	// Put an new version key and an old version key.
-	err := dbBundle.DB.Update(func(txn *badger.Txn) error {
-		e := &badger.Entry{
-			Key:      y.KeyWithTs(snapTestKey, 100),
-			UserMeta: mvcc.NewDBUserMeta(50, 100),
-			Value:    make([]byte, 128),
-		}
-		require.Nil(t, txn.SetEntry(e))
-		return nil
+	wb := db.NewWriteBatch()
+	err := wb.Put(mvcc.WriteCF, snapTestKey, y.ValueStruct{
+		Value:    make([]byte, 128),
+		Version:  100,
+		UserMeta: mvcc.NewDBUserMeta(50, 100),
 	})
-	err = dbBundle.DB.Update(func(txn *badger.Txn) error {
-		e := &badger.Entry{
-			Key:      y.KeyWithTs(snapTestKey, 200),
-			UserMeta: mvcc.NewDBUserMeta(150, 200),
-			Value:    make([]byte, 32),
-		}
-		require.Nil(t, txn.SetEntry(e))
-		return nil
-	})
-
 	require.Nil(t, err)
+	require.Nil(t, db.Write(wb))
+
+	wb = db.NewWriteBatch()
+	err = wb.Put(mvcc.WriteCF, snapTestKey, y.ValueStruct{
+		Value:    make([]byte, 128),
+		Version:  200,
+		UserMeta: mvcc.NewDBUserMeta(150, 200),
+	})
+	require.Nil(t, err)
+	require.Nil(t, db.Write(wb))
 	lockVal := &mvcc.MvccLock{
 		MvccLockHdr: mvcc.MvccLockHdr{
 			StartTS:    250,
@@ -181,7 +174,13 @@ func fillDBBundleData(t *testing.T, dbBundle *mvcc.DBBundle) {
 		Primary: snapTestKey,
 		Value:   make([]byte, 128),
 	}
-	dbBundle.LockStore.Put(snapTestKey, lockVal.MarshalBinary())
+	wb = db.NewWriteBatch()
+	err = wb.Put(mvcc.LockCF, snapTestKey, y.ValueStruct{
+		Value:   lockVal.MarshalBinary(),
+		Version: 0,
+	})
+	require.Nil(t, err)
+	require.Nil(t, db.Write(wb))
 }
 
 func TestSnapGenMeta(t *testing.T) {
@@ -558,17 +557,17 @@ func TestSnapMgrCreateDir(t *testing.T) {
 	_, err = os.Stat(tempPath)
 	require.True(t, os.IsNotExist(err))
 	mgr := NewSnapManager(tempPath, nil)
-	require.Nil(t, mgr.init())
+	require.Nil(t, mgr.start())
 	_, err = os.Stat(tempPath)
 	require.Nil(t, err)
 
-	// Ensure `init()` will return an error if specified target is a file.
+	// Ensure `start()` will return an error if specified target is a file.
 	tempPath2 := filepath.Join(tempDir, "snap2")
 	f2, err := os.Create(tempPath2)
 	require.Nil(t, err)
 	f2.Close()
 	mgr = NewSnapManager(tempPath2, nil)
-	require.NotNil(t, mgr.init())
+	require.NotNil(t, mgr.start())
 }
 
 func TestSnapMgrV2(t *testing.T) {
@@ -576,7 +575,7 @@ func TestSnapMgrV2(t *testing.T) {
 	require.Nil(t, err)
 	defer os.RemoveAll(tempDir)
 	mgr := NewSnapManager(tempDir, nil)
-	require.Nil(t, mgr.init())
+	require.Nil(t, mgr.start())
 	require.Equal(t, uint64(0), mgr.GetTotalSnapSize())
 
 	dbDir, err := ioutil.TempDir("", "snapshot")
@@ -622,7 +621,7 @@ func TestSnapMgrV2(t *testing.T) {
 	require.False(t, s4.Exists())
 
 	mgr = NewSnapManager(tempDir, nil)
-	err = mgr.init()
+	err = mgr.start()
 	require.Nil(t, err, errors.ErrorStack(err))
 	require.Equal(t, expectedSize*2, mgr.GetTotalSnapSize())
 
@@ -658,7 +657,7 @@ func TestSnapDeletionOnRegistry(t *testing.T) {
 	require.Nil(t, err)
 	defer os.RemoveAll(srcTmpDir)
 	srcMgr := NewSnapManager(srcTmpDir, nil)
-	require.Nil(t, srcMgr.init())
+	require.Nil(t, srcMgr.start())
 
 	srcDBDir, err := ioutil.TempDir("", "snapshot")
 	require.Nil(t, err)
@@ -693,7 +692,7 @@ func TestSnapDeletionOnRegistry(t *testing.T) {
 	require.Nil(t, err)
 	defer os.RemoveAll(dstTmpDir)
 	dstMgr := NewSnapManager(dstTmpDir, nil)
-	require.Nil(t, dstMgr.init())
+	require.Nil(t, dstMgr.start())
 
 	// Ensure the snapshot being received will not be deleted on GC.
 	dstMgr.Register(key, SnapEntryReceiving)

@@ -83,6 +83,7 @@ type S3Options struct {
 	SecretKey  string `toml:"secret-key"`
 	Bucket     string `toml:"bucket"`
 	InstanceID uint32 `toml:"instance-id"`
+	Region     string `toml:"region"`
 }
 
 type PessimisticTxn struct {

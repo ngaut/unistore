@@ -50,7 +50,7 @@ func TestStalePeerInfo(t *testing.T) {
 	assert.True(t, peerInfo.timeout().Equal(timeout))
 }
 
-func newEnginesWithKVDb(t *testing.T, kv *mvcc.DBBundle) *Engines {
+func newEnginesWithKVDb(t *testing.T, kv *badger.ShardingDB) *Engines {
 	engines := new(Engines)
 	engines.kv = kv
 	var err error
@@ -71,13 +71,12 @@ func TestPendingApplies(t *testing.T) {
 	db := getTestDBForRegions(t, kvPath, []uint64{1, 2, 3, 4, 5, 6})
 	keys := []byte{1, 2, 3, 4, 5, 6}
 	for _, k := range keys {
-		require.Nil(t, db.DB.Update(func(txn *badger.Txn) error {
-			require.Nil(t, txn.SetEntry(&badger.Entry{Key: y.KeyWithTs([]byte{k}, KvTS), Value: []byte{k}}))
-			require.Nil(t, txn.SetEntry(&badger.Entry{Key: y.KeyWithTs([]byte{k + 1}, KvTS), Value: []byte{k + 1}}))
-			// todo, there might be flush method needed.
-			// todo, test also test level 0 files, we add later when badger export level 0 files api.
-			return nil
-		}))
+		wb := db.NewWriteBatch()
+		wb.Put(mvcc.WriteCF, []byte{k}, y.ValueStruct{Value: []byte{k}, Version: 1})
+		wb.Put(mvcc.WriteCF, []byte{k + 1}, y.ValueStruct{Value: []byte{k + 1}, Version: 1})
+		require.Nil(t, db.Write(wb))
+		// todo, there might be flush method needed.
+		// todo, test also test level 0 files, we add later when badger export level 0 files api.
 	}
 
 	engines := newEnginesWithKVDb(t, db)
@@ -90,7 +89,7 @@ func TestPendingApplies(t *testing.T) {
 	mgr := NewSnapManager(snapPath, nil)
 	wg := new(sync.WaitGroup)
 	worker := newWorker("snap-manager", wg)
-	regionRunner := newRegionTaskHandler(&config.DefaultConf, engines, mgr, 0, time.Duration(time.Second*0))
+	regionRunner := newRegionTaskHandler(&config.DefaultConf, engines, mgr, 0)
 	worker.start(regionRunner)
 	genAndApplySnap := func(regionId uint64) {
 		tx := make(chan *eraftpb.Snapshot, 1)
@@ -101,9 +100,9 @@ func TestPendingApplies(t *testing.T) {
 			regionId: regionId,
 			notifier: tx,
 		}
-		txn := engines.kv.DB.NewTransaction(false)
+		snap := engines.kv.NewSnapshot(nil, nil)
 		// TODO [fix this] the new regionTask need "redoIdx" as input param
-		index, _, err := getAppliedIdxTermForSnapshot(engines.raft, txn, regionId)
+		index, _, err := getAppliedIdxTermForSnapshot(engines.raft, snap, regionId)
 		rgTsk.redoIdx = index + 1
 		tsk.data = rgTsk
 		require.Nil(t, err)
@@ -120,7 +119,7 @@ func TestPendingApplies(t *testing.T) {
 
 		// set applying state
 		wb := new(WriteBatch)
-		regionLocalState, err := getRegionLocalState(engines.kv.DB, regionId)
+		regionLocalState, err := getRegionLocalState(engines.kv, regionId)
 		require.Nil(t, err)
 		regionLocalState.State = rspb.PeerState_Applying
 		require.Nil(t, wb.SetMsg(y.KeyWithTs(RegionStateKey(regionId), KvTS), regionLocalState))
@@ -141,7 +140,7 @@ func TestPendingApplies(t *testing.T) {
 	waitApplyFinish := func(regionId uint64) {
 		for {
 			time.Sleep(time.Millisecond * 100)
-			regionLocalState, err := getRegionLocalState(engines.kv.DB, regionId)
+			regionLocalState, err := getRegionLocalState(engines.kv, regionId)
 			require.Nil(t, err)
 			if regionLocalState.State == rspb.PeerState_Normal {
 				break

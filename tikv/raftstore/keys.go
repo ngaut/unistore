@@ -16,6 +16,7 @@ package raftstore
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -98,7 +99,8 @@ func RaftStateKey(regionID uint64) []byte {
 }
 
 func ApplyStateKey(regionID uint64) []byte {
-	return makeRaftRegionPrefix(regionID, ApplyStateSuffix)
+	panic("should not be called")
+	// return makeRaftRegionPrefix(regionID, ApplyStateSuffix)
 }
 
 func SnapshotRaftStateKey(regionID uint64) []byte {
@@ -137,13 +139,14 @@ func RegionStateKey(regionID uint64) []byte {
 func RawStartKey(region *metapb.Region) []byte {
 	// only initialized region's start_key can be encoded, otherwise there must be bugs
 	// somewhere.
-	y.Assert(len(region.Peers) > 0)
 	if len(region.StartKey) == 0 {
 		// Data starts with 0x01 is used as local key.
-		return MinDataKey
+		return rawInitialStartKey
 	}
 	_, decoded, err := codec.DecodeBytes(region.StartKey, nil)
-	y.Assert(err == nil)
+	if err != nil {
+		panic(fmt.Sprint(err, region.StartKey))
+	}
 	return decoded
 }
 
@@ -151,9 +154,8 @@ func RawStartKey(region *metapb.Region) []byte {
 func RawEndKey(region *metapb.Region) []byte {
 	// only initialized region's end_key can be encoded, otherwise there must be bugs
 	// somewhere.
-	y.Assert(len(region.Peers) > 0)
 	if len(region.EndKey) == 0 {
-		return MaxDataKey
+		return rawInitialEndKey
 	}
 	_, decoded, err := codec.DecodeBytes(region.EndKey, nil)
 	y.Assert(err == nil)
@@ -166,4 +168,16 @@ func RaftLogIndex(key []byte) (uint64, error) {
 		return 0, errors.Errorf("key %v is not a valid raft log key", key)
 	}
 	return binary.BigEndian.Uint64(key[RegionRaftLogLen-8:]), nil
+}
+
+func ShardingApplyStateKey(regionStartKey []byte, regionID uint64) []byte {
+	// The applied index key is composed of region start key and region and version.
+	key := make([]byte, len(regionStartKey)+
+		8+ // reserve 8 zeros to make sure this key doesn't expand region.
+		1+ // state suffix.
+		8) // regionID
+	copy(key, regionStartKey)
+	key[len(key)-9] = ApplyStateSuffix
+	binary.LittleEndian.PutUint64(key[len(key)-8:], regionID)
+	return key
 }

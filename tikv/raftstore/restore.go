@@ -98,7 +98,7 @@ func restoreAppliedEntry(entry *eraftpb.Entry, txn *badger.Txn, lockStore *locks
 
 func restorePrewrite(op prewriteOp, txn *badger.Txn, lockStore *lockstore.MemStore) {
 	// TODO: just make it compile, remove the whole file later.
-	key, value := convertPrewriteToLock(op, nil)
+	key, value := convertPrewriteToLock(op)
 	lockStore.Put(key, value)
 }
 

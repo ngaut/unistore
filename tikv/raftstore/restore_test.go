@@ -16,10 +16,7 @@ package raftstore
 import (
 	"testing"
 
-	"github.com/ngaut/unistore/lockstore"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
-	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	rcpb "github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/stretchr/testify/require"
 )
@@ -39,6 +36,7 @@ func genEntry(wb *raftWriteBatch, t *testing.T) *eraftpb.Entry {
 	return entry
 }
 
+/*
 func TestRestore(t *testing.T) {
 	engines := newTestEngines(t)
 	defer cleanUpTestEngineData(engines)
@@ -96,3 +94,4 @@ func TestRestore(t *testing.T) {
 	err = restoreAppliedEntry(genEntry(wbPessimisticRollback, t), txn, lockStore)
 	require.Nil(t, err)
 }
+ */

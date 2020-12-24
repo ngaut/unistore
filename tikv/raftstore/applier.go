@@ -108,12 +108,11 @@ type applyMetrics struct {
 }
 
 type applyTaskRes struct {
-	regionID         uint64
-	applyState       applyState
-	appliedIndexTerm uint64
-	execResults      []execResult
-	metrics          applyMetrics
-	merged           bool
+	regionID    uint64
+	applyState  applyState
+	execResults []execResult
+	metrics     applyMetrics
+	merged      bool
 
 	destroyPeerID uint64
 }
@@ -226,20 +225,18 @@ func newRegionProposal(id uint64, regionId uint64, props []*proposal) *regionPro
 }
 
 type registration struct {
-	id               uint64
-	term             uint64
-	applyState       applyState
-	appliedIndexTerm uint64
-	region           *metapb.Region
+	id         uint64
+	term       uint64
+	applyState applyState
+	region     *metapb.Region
 }
 
 func newRegistration(peer *Peer) *registration {
 	return &registration{
-		id:               peer.PeerId(),
-		term:             peer.Term(),
-		applyState:       peer.Store().applyState,
-		appliedIndexTerm: peer.Store().appliedIndexTerm,
-		region:           peer.Region(),
+		id:         peer.PeerId(),
+		term:       peer.Term(),
+		applyState: peer.Store().applyState,
+		region:     peer.Region(),
 	}
 }
 
@@ -373,11 +370,10 @@ func (ac *applyContext) finishFor(d *applier, results []execResult) {
 	}
 	ac.commitOpt(d, false)
 	res := &applyTaskRes{
-		regionID:         d.region.Id,
-		applyState:       d.applyState,
-		execResults:      results,
-		metrics:          d.metrics,
-		appliedIndexTerm: d.appliedIndexTerm,
+		regionID:    d.region.Id,
+		applyState:  d.applyState,
+		execResults: results,
+		metrics:     d.metrics,
 	}
 	ac.applyTaskResList = append(ac.applyTaskResList, res)
 }
@@ -555,8 +551,6 @@ type applier struct {
 	/// separate WAL file. When power failure, for current raft log, apply_index may synced
 	/// to file, but KV data may not synced to file, so we will lose data.
 	applyState applyState
-	/// The term of the raft log at applied index.
-	appliedIndexTerm uint64
 
 	// redoIdx is the raft log index starts redo for lockStore.
 	redoIndex uint64
@@ -567,12 +561,11 @@ type applier struct {
 
 func newApplier(reg *registration) *applier {
 	return &applier{
-		id:               reg.id,
-		tag:              fmt.Sprintf("[region %d] %d", reg.region.Id, reg.id),
-		region:           reg.region,
-		applyState:       reg.applyState,
-		appliedIndexTerm: reg.appliedIndexTerm,
-		term:             reg.term,
+		id:         reg.id,
+		tag:        fmt.Sprintf("[region %d] %d", reg.region.Id, reg.id),
+		region:     reg.region,
+		applyState: reg.applyState,
+		term:       reg.term,
 	}
 }
 
@@ -639,7 +632,7 @@ func (a *applier) updateMetrics(aCtx *applyContext) {
 }
 
 func (a *applier) writeApplyState(wb *WriteBatch) {
-	applyStateKey := y.KeyWithTs(ApplyStateKey(a.region.Id), 0)
+	applyStateKey := y.KeyWithTs(ShardingApplyStateKey(RawStartKey(a.region), a.region.Id), 0)
 	wb.SetApplyState(applyStateKey, a.applyState)
 }
 
@@ -650,6 +643,8 @@ func (a *applier) handleRaftEntryNormal(aCtx *applyContext, entry *eraftpb.Entry
 		var rlog raftlog.RaftLog
 		if entry.Data[0] == raftlog.CustomRaftLogFlag {
 			rlog = raftlog.NewCustom(entry.Data)
+		} else if entry.Data[0] == raftlog.EngineMetaChangeFlag {
+			rlog = raftlog.NewEngineMetaChange(entry.Data)
 		} else {
 			cmd := new(raft_cmdpb.RaftCmdRequest)
 			err := cmd.Unmarshal(entry.Data)
@@ -666,7 +661,7 @@ func (a *applier) handleRaftEntryNormal(aCtx *applyContext, entry *eraftpb.Entry
 
 	// when a peer become leader, it will send an empty entry.
 	a.applyState.appliedIndex = index
-	a.appliedIndexTerm = term
+	a.applyState.appliedIndexTerm = term
 	y.Assert(term > 0)
 	for {
 		cmd := a.pendingCmds.popNormal(term - 1)
@@ -786,7 +781,7 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 	a.applyState = aCtx.execCtx.applyState
 	aCtx.execCtx = nil
 	a.applyState.appliedIndex = index
-	a.appliedIndexTerm = term
+	a.applyState.appliedIndexTerm = term
 
 	if applyResult.tp == applyResultTypeExecResult {
 		switch x := applyResult.data.(type) {
@@ -843,6 +838,14 @@ func (a *applier) execRaftCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 	if req.GetAdminRequest() != nil {
 		return a.execAdminCmd(aCtx, req)
 	}
+	if metaChange, ok := rlog.(*raftlog.EngineMetaChangeRaftLog); ok {
+		return a.execMetaChangeCmd(aCtx, metaChange)
+	}
+	if rlog.PeerID() != a.id {
+		aCtx.engines.metaManager.followerApply(a.region.Id, aCtx.execCtx.index, rlog)
+		resp = &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
+		return
+	}
 	resp, result = a.execWriteCmd(aCtx, rlog)
 	return
 }
@@ -886,6 +889,13 @@ func (a *applier) execAdminCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdReques
 	adminResp.CmdType = cmdType
 	resp = newCmdRespForReq(req)
 	resp.AdminResponse = adminResp
+	return
+}
+
+func (a *applier) execMetaChangeCmd(aCtx *applyContext, metaChange *raftlog.EngineMetaChangeRaftLog) (
+	resp *raft_cmdpb.RaftCmdResponse, result applyResult, err error) {
+	resp = &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
+	err = aCtx.engines.metaManager.applyMetaChange(metaChange)
 	return
 }
 
@@ -1088,12 +1098,12 @@ func createWriteCmdOps(requests []*raft_cmdpb.Request) (ops []interface{}) {
 }
 
 func (a *applier) execPrewrite(aCtx *applyContext, op prewriteOp) {
-	key, value := convertPrewriteToLock(op, aCtx.getDBSnap())
+	key, value := convertPrewriteToLock(op)
 	aCtx.wb.SetLock(key, value)
 	return
 }
 
-func convertPrewriteToLock(op prewriteOp, dbSnap *badger.Snapshot) (key, value []byte) {
+func convertPrewriteToLock(op prewriteOp) (key, value []byte) {
 	_, rawKey, err := codec.DecodeBytes(op.putLock.Key, nil)
 	if err != nil {
 		panic(op.putLock.Key)
@@ -1359,6 +1369,7 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 				Role:    derived.Peers[j].Role,
 			}
 		}
+		log.S().Infof("execBatchSplit write peer state region: %d", newRegion.Id)
 		WritePeerState(aCtx.wb, newRegion, rspb.PeerState_Normal, nil)
 		writeInitialApplyState(aCtx.wb, newRegion.Id)
 		regions = append(regions, newRegion)
@@ -1584,7 +1595,7 @@ func (a *applier) handleTask(aCtx *applyContext, msg Msg) {
 	case MsgTypeApplyCatchUpLogs:
 		a.catchUpLogsForMerge(aCtx, msg.Data.(*catchUpLogs))
 	case MsgTypeApplyLogsUpToDate:
-	case MsgTypeApplySnapshot:
+	case MsgTypeApplyGenSnapshot:
 		a.handleGenSnapshot(aCtx, msg.Data.(*GenSnapTask))
 	}
 }

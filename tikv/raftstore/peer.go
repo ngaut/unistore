@@ -351,7 +351,7 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 	p.leaderChecker.peerID = p.PeerId()
 	p.leaderChecker.region = unsafe.Pointer(region)
 	p.leaderChecker.term.Store(p.Term())
-	p.leaderChecker.appliedIndexTerm.Store(ps.appliedIndexTerm)
+	p.leaderChecker.appliedIndexTerm.Store(ps.applyState.appliedIndexTerm)
 
 	// If this region has only one peer and I am the one, campaign directly.
 	if len(region.GetPeers()) == 1 && region.GetPeers()[0].GetStoreId() == storeId {
@@ -735,6 +735,7 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 				p.leaderChecker.term.Store(p.Term())
 			}
 			observer.OnRoleChange(p.getEventContext().RegionId, ss.RaftState)
+			p.Store().Engines.metaManager.ingestRegionFiles(p.regionId)
 		} else if ss.RaftState == raft.StateFollower {
 			p.leaderLease.Expire()
 			observer.OnRoleChange(p.getEventContext().RegionId, ss.RaftState)
@@ -761,7 +762,7 @@ func (p *Peer) readyToHandleRead() bool {
 	// applied commit merge, written new values, but the sibling peer in
 	// this store does not apply commit merge, so the leader is not ready
 	// to read, until the merge is rollbacked.
-	return p.Store().appliedIndexTerm == p.Term() && !p.isSplitting() && !p.isMerging()
+	return p.Store().applyState.appliedIndexTerm == p.Term() && !p.isSplitting() && !p.isMerging()
 }
 
 func (p *Peer) isSplitting() bool {
@@ -804,14 +805,6 @@ func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, kvWB
 	if p.HasPendingSnapshot() && !p.ReadyToHandlePendingSnap() {
 		log.S().Debugf("%v [apply_id: %v, last_applying_idx: %v] is not ready to apply snapshot.", p.Tag, p.Store().AppliedIndex(), p.LastApplyingIdx)
 		return nil
-	}
-
-	if p.peerStorage.genSnapTask != nil {
-		applyMsgs.appendMsg(p.regionId, Msg{
-			Type: MsgTypeApplySnapshot,
-			Data: p.peerStorage.genSnapTask,
-		})
-		p.peerStorage.genSnapTask = nil
 	}
 
 	if !p.RaftGroup.HasReadySince(&p.LastApplyingIdx) {
@@ -1123,7 +1116,7 @@ func (p *Peer) ApplyReads(kv *badger.ShardingDB, ready *raft.Ready) {
 	}
 }
 
-func (p *Peer) PostApply(kv *badger.ShardingDB, applyState applyState, appliedIndexTerm uint64, merged bool, applyMetrics applyMetrics) bool {
+func (p *Peer) PostApply(kv *badger.ShardingDB, applyState applyState, merged bool, applyMetrics applyMetrics) bool {
 	hasReady := false
 	if p.IsApplyingSnapshot() {
 		panic("should not applying snapshot")
@@ -1133,9 +1126,9 @@ func (p *Peer) PostApply(kv *badger.ShardingDB, applyState applyState, appliedIn
 		p.RaftGroup.AdvanceApply(applyState.appliedIndex)
 	}
 
-	progressToBeUpdated := p.Store().appliedIndexTerm != appliedIndexTerm
+	progressToBeUpdated := p.Store().applyState.appliedIndexTerm != applyState.appliedIndexTerm
 	p.Store().applyState = applyState
-	p.Store().appliedIndexTerm = appliedIndexTerm
+	p.Store().applyState.appliedIndexTerm = applyState.appliedIndexTerm
 
 	p.PeerStat.WrittenBytes += applyMetrics.writtenBytes
 	p.PeerStat.WrittenKeys += applyMetrics.writtenKeys
@@ -1168,7 +1161,7 @@ func (p *Peer) PostApply(kv *badger.ShardingDB, applyState applyState, appliedIn
 
 	// Only leaders need to update applied_index_term.
 	if progressToBeUpdated && p.IsLeader() && !p.PendingRemove {
-		p.leaderChecker.appliedIndexTerm.Store(appliedIndexTerm)
+		p.leaderChecker.appliedIndexTerm.Store(applyState.appliedIndexTerm)
 	}
 
 	return hasReady
@@ -1672,7 +1665,7 @@ type RequestInspector interface {
 }
 
 func (p *Peer) hasAppliedToCurrentTerm() bool {
-	return p.Store().appliedIndexTerm == p.Term()
+	return p.Store().applyState.appliedIndexTerm == p.Term()
 }
 
 func (p *Peer) inspectLease() LeaseState {

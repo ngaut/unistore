@@ -18,10 +18,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/ngaut/unistore/tikv/mvcc"
-
-	"github.com/ngaut/unistore/lockstore"
-
 	"github.com/pingcap/badger"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/stretchr/testify/require"
@@ -29,17 +25,10 @@ import (
 
 func newTestEngines(t *testing.T) *Engines {
 	engines := new(Engines)
-	engines.kv = new(mvcc.DBBundle)
 	var err error
 	engines.kvPath, err = ioutil.TempDir("", "unistore_kv")
 	require.Nil(t, err)
-	kvOpts := badger.DefaultOptions
-	kvOpts.Dir = engines.kvPath
-	kvOpts.ValueDir = engines.kvPath
-	kvOpts.ValueThreshold = 256
-	engines.kv.DB, err = badger.Open(kvOpts)
-	engines.kv.LockStore = lockstore.NewMemStore(16 * 1024)
-	require.Nil(t, err)
+	engines.kv = openDBBundle(t, engines.kvPath)
 	engines.raftPath, err = ioutil.TempDir("", "unistore_raft")
 	require.Nil(t, err)
 	raftOpts := badger.DefaultOptions
@@ -47,6 +36,8 @@ func newTestEngines(t *testing.T) *Engines {
 	raftOpts.ValueDir = engines.raftPath
 	raftOpts.ValueThreshold = 256
 	engines.raft, err = badger.Open(raftOpts)
+	require.Nil(t, err)
+	engines.metaManager, err = NewEngineMetaManager(engines.kv, engines.kvPath, new(MetaChangeListener))
 	require.Nil(t, err)
 	return engines
 }

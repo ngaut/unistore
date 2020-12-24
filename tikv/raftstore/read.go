@@ -92,6 +92,9 @@ func (c *leaderChecker) isExpired(ctx *kvrpcpb.Context, snapTime *time.Time) (bo
 	term := c.term.Load()
 	region := (*metapb.Region)(stdatomic.LoadPointer(&c.region))
 	lease := (*RemoteLease)(stdatomic.LoadPointer(&c.leaderLease))
+	if lease == nil {
+		return true, nil
+	}
 	appliedIndexTerm := c.appliedIndexTerm.Load()
 
 	if ctx.Peer.Id != peerID {

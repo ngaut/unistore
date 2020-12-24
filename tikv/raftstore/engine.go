@@ -14,6 +14,7 @@
 package raftstore
 
 import (
+	"github.com/pingcap/badger/table/memtable"
 	"math"
 	"time"
 
@@ -38,14 +39,17 @@ type Engines struct {
 	kvPath   string
 	raft     *badger.DB
 	raftPath string
+
+	metaManager *MetaManager
 }
 
-func NewEngines(kvEngine *badger.ShardingDB, raftEngine *badger.DB, kvPath, raftPath string) *Engines {
+func NewEngines(kvEngine *badger.ShardingDB, raftEngine *badger.DB, kvPath, raftPath string, metaManager *MetaManager) *Engines {
 	return &Engines{
-		kv:       kvEngine,
-		kvPath:   kvPath,
-		raft:     raftEngine,
-		raftPath: raftPath,
+		kv:          kvEngine,
+		kvPath:      kvPath,
+		raft:        raftEngine,
+		raftPath:    raftPath,
+		metaManager: metaManager,
 	}
 }
 
@@ -285,6 +289,38 @@ func (wb *WriteBatch) WriteToKV(db *badger.ShardingDB) error {
 		return errors.WithStack(err)
 	}
 	return nil
+}
+
+func (wb *WriteBatch) WriteToBuffer(buffer *memtable.CFTable, readTS uint64) {
+	if len(wb.entries) > 0 {
+		for _, entry := range wb.entries {
+			val := y.ValueStruct{
+				Value:    entry.Value,
+				UserMeta: entry.UserMeta,
+				Version:  entry.Key.Version,
+			}
+			buffer.Put(mvcc.WriteCF, entry.Key.UserKey, val)
+		}
+	}
+	if len(wb.lockEntries) > 0 {
+		for _, entry := range wb.lockEntries {
+			if len(entry.Value) == 0 {
+				buffer.DeleteKey(mvcc.LockCF, entry.Key.UserKey)
+			} else {
+				buffer.Put(mvcc.LockCF, entry.Key.UserKey, y.ValueStruct{Value: entry.Value, Version: readTS})
+			}
+		}
+	}
+	if len(wb.extraEntries) > 0 {
+		for _, entry := range wb.extraEntries {
+			val := y.ValueStruct{
+				Value:    entry.Value,
+				UserMeta: entry.UserMeta,
+				Version:  entry.Key.Version,
+			}
+			buffer.Put(mvcc.ExtraCF, entry.Key.UserKey, val)
+		}
+	}
 }
 
 func (wb *WriteBatch) WriteToRaft(db *badger.DB) error {

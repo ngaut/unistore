@@ -55,10 +55,10 @@ func isRaftRangeEmpty(engine *badger.DB, startKey, endKey []byte) (bool, error) 
 	return !hasData, nil
 }
 
-func isKVRangeEmpty(engine *badger.ShardingDB, startKey, endKey []byte) (bool, error) {
+func isKVRaftCFRangeEmpty(engine *badger.ShardingDB, startKey, endKey []byte) (bool, error) {
 	var hasData bool
 	dbSnap := engine.NewSnapshot(startKey, endKey)
-	it := dbSnap.NewIterator(mvcc.WriteCF, false, false)
+	it := dbSnap.NewIterator(mvcc.RaftCF, false, false)
 	it.Seek(startKey)
 	if it.Valid() {
 		item := it.Item()
@@ -71,7 +71,7 @@ func isKVRangeEmpty(engine *badger.ShardingDB, startKey, endKey []byte) (bool, e
 
 func BootstrapStore(engines *Engines, clussterID, storeID uint64) error {
 	ident := new(rspb.StoreIdent)
-	empty, err := isKVRangeEmpty(engines.kv, MinKey, MaxDataKey)
+	empty, err := isKVRaftCFRangeEmpty(engines.kv, MinKey, MaxDataKey)
 	if err != nil {
 		return err
 	}
@@ -96,11 +96,14 @@ func BootstrapStore(engines *Engines, clussterID, storeID uint64) error {
 	return wb.WriteToKV(engines.kv)
 }
 
-func PrepareBootstrap(engins *Engines, storeID, regionID, peerID uint64) (*metapb.Region, error) {
+var (
+	rawInitialStartKey = []byte{2}
+	rawInitialEndKey   = []byte{255, 255, 255, 255, 255, 255, 255, 255}
+)
+
+func PrepareBootstrap(engines *Engines, storeID, regionID, peerID uint64) (*metapb.Region, error) {
 	region := &metapb.Region{
-		Id:       regionID,
-		StartKey: []byte{},
-		EndKey:   []byte{},
+		Id: regionID,
 		RegionEpoch: &metapb.RegionEpoch{
 			Version: InitEpochVer,
 			ConfVer: InitEpochConfVer,
@@ -112,7 +115,7 @@ func PrepareBootstrap(engins *Engines, storeID, regionID, peerID uint64) (*metap
 			},
 		},
 	}
-	err := writePrepareBootstrap(engins, region)
+	err := writePrepareBootstrap(engines, region)
 	if err != nil {
 		return nil, err
 	}
@@ -142,16 +145,21 @@ func writePrepareBootstrap(engines *Engines, region *metapb.Region) error {
 	if err != nil {
 		return err
 	}
+	err = engines.metaManager.prepareBootstrap(region)
+	if err != nil {
+		return err
+	}
 	return engines.SyncRaftWAL()
 }
 
 func writeInitialApplyState(kvWB *WriteBatch, regionID uint64) {
 	applyState := applyState{
-		appliedIndex:   RaftInitLogIndex,
-		truncatedIndex: RaftInitLogIndex,
-		truncatedTerm:  RaftInitLogTerm,
+		appliedIndex:     RaftInitLogIndex,
+		appliedIndexTerm: RaftInitLogTerm,
+		truncatedIndex:   RaftInitLogIndex,
+		truncatedTerm:    RaftInitLogTerm,
 	}
-	kvWB.SetRaftCF(y.KeyWithTs(ApplyStateKey(regionID), KvTS), applyState.Marshal())
+	kvWB.SetRaftCF(y.KeyWithTs(ShardingApplyStateKey(rawInitialStartKey, regionID), KvTS), applyState.Marshal())
 }
 
 func writeInitialRaftState(raftWB *WriteBatch, regionID uint64) {
@@ -174,11 +182,12 @@ func ClearPrepareBootstrap(engines *Engines, regionID uint64) error {
 	wb.SetRaftCF(y.KeyWithTs(prepareBootstrapKey, KvTS), nil)
 	// should clear raft initial state too.
 	wb.SetRaftCF(y.KeyWithTs(RegionStateKey(regionID), KvTS), nil)
-	wb.SetRaftCF(y.KeyWithTs(ApplyStateKey(regionID), KvTS), nil)
+	wb.SetRaftCF(y.KeyWithTs(ShardingApplyStateKey(rawInitialStartKey, regionID), KvTS), nil)
 	err = engines.WriteKV(wb)
 	if err != nil {
 		return err
 	}
+	engines.metaManager.clearPrepareBootstrap(regionID)
 	return engines.SyncKVWAL()
 }
 

@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"github.com/pingcap/badger/table/memtable"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -83,6 +84,7 @@ type regionTask struct {
 	regionId uint64
 	notifier chan<- *eraftpb.Snapshot
 	status   *JobStatus
+	snapData *snapData
 	startKey []byte
 	endKey   []byte
 	redoIdx  uint64
@@ -546,9 +548,12 @@ type snapContext struct {
 
 // handleGen handles the task of generating snapshot of the Region. It calls `generateSnap` to do the actual work.
 func (snapCtx *snapContext) handleGen(task *regionTask) {
-	if err := snapCtx.generateSnap(task); err != nil {
-		log.Error("failed to generate snapshot!!!", zap.Uint64("region id", task.regionId), zap.Error(err))
+	snap, err := snapCtx.engines.metaManager.getSnapshotData(task.regionId)
+	if err != nil {
+		log.Error("failed to generate snapshot", zap.Error(err))
+		return
 	}
+	task.notifier <- snap
 }
 
 // generateSnap generates the snapshots of the Region
@@ -661,9 +666,6 @@ type regionTaskHandler struct {
 	ctx *snapContext
 
 	conf *config.Config
-
-	tree       *badger.IngestTree
-	applyState regionApplyState
 }
 
 func newRegionTaskHandler(conf *config.Config, engines *Engines, mgr *SnapManager, batchSize uint64) *regionTaskHandler {
@@ -679,26 +681,30 @@ func newRegionTaskHandler(conf *config.Config, engines *Engines, mgr *SnapManage
 
 // handlePendingApplies tries to apply pending tasks if there is some.
 func (r *regionTaskHandler) handleApply(task *regionTask) {
+	atomic.StoreUint32(task.status, JobStatus_Running)
 	r.ctx.wb = new(WriteBatch)
-	// TODO: implement apply snapshot
-	tree := new(badger.IngestTree)
-	err := r.ctx.engines.kv.Ingest(tree)
-	if err != nil {
-		log.Error("ingest sst failed", zap.Error(err))
+	snapData := task.snapData
+	db := r.ctx.engines.kv
+	delta := snapData.deltaEntries
+	cfTable := memtable.NewCFTable(r.conf.Engine.MaxMemTableSize, db.NumCFs())
+	for len(delta.data) > 0 {
+		entry := delta.decodeEntry()
+		cfTable.Put(entry.cf, entry.key, y.ValueStruct{Value: entry.val, UserMeta: entry.userMeta, Version: entry.version})
 	}
-
+	r.ctx.engines.metaManager.applySnapshot(task.snapData)
 	wb := r.ctx.wb
 	r.ctx.wb = nil
-	state := r.applyState
-	rs := state.localState
+	rs := new(rspb.RegionLocalState)
+	rs.Region = snapData.region
 	regionID := rs.Region.Id
-	// TODO: change to region start key.
 	rsVal, _ := rs.Marshal()
 	wb.SetRaftCF(y.KeyWithTs(RegionStateKey(regionID), KvTS), rsVal)
 	wb.SetRaftCF(y.KeyWithTs(SnapshotRaftStateKey(regionID), KvTS), nil)
-
 	if err := wb.WriteToKV(r.ctx.engines.kv); err != nil {
 		log.Error("update region status failed", zap.Error(err))
+		atomic.StoreUint32(task.status, JobStatus_Failed)
+	} else {
+		atomic.StoreUint32(task.status, JobStatus_Finished)
 	}
 }
 

@@ -516,9 +516,7 @@ func (svr *Server) Coprocessor(ctx context.Context, req *coprocessor.Request) (*
 	if reqCtx.regErr != nil {
 		return &coprocessor.Response{RegionError: reqCtx.regErr}, nil
 	}
-	start := time.Now()
 	resp := cophandler.HandleCopRequest(reqCtx.getDBReader(), req)
-	log.S().Infof("handle cop request tp:%d ranges:%d time: %v", req.Tp, len(req.Ranges), time.Since(start))
 	return resp, nil
 }
 

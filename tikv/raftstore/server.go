@@ -97,6 +97,7 @@ func (ris *RaftInnerServer) Setup(pdClient pd.Client) {
 
 	cfg := ris.raftConfig
 	router, batchSystem := createRaftBatchSystem(ris.globalConfig, cfg)
+	ris.engines.metaManager.listener.initMsgCh(router.storeSender)
 
 	ris.router = router // TODO: init with local reader
 	ris.snapManager = NewSnapManager(cfg.SnapPath, router)

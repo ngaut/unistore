@@ -190,7 +190,7 @@ func (rw *raftWorker) handleRaftReady(peers map[uint64]*peerState, batch *applyB
 	rw.raftCtx.ReadyRes = nil
 	if len(readyRes) > 0 {
 		for _, pair := range readyRes {
-			regionID := pair.IC.RegionID
+			regionID := pair.IC.Region.Id
 			newRaftMsgHandler(peers[regionID].peer, rw.raftCtx).PostRaftReadyPersistent(&pair.Ready, pair.IC)
 		}
 	}
@@ -207,13 +207,13 @@ func (rw *raftWorker) removeQueuedSnapshots() {
 	if len(rw.raftCtx.queuedSnaps) > 0 {
 		rw.raftCtx.storeMetaLock.Lock()
 		meta := rw.raftCtx.storeMeta
-		retained := meta.pendingSnapshotRegions[:0]
-		for _, region := range meta.pendingSnapshotRegions {
-			if _, ok := rw.raftCtx.queuedSnaps[region.Id]; !ok {
-				retained = append(retained, region)
+		retained := meta.pendingSnapshotMessages[:0]
+		for _, snapMsg := range meta.pendingSnapshotMessages {
+			if _, ok := rw.raftCtx.queuedSnaps[snapMsg.RegionId]; !ok {
+				retained = append(retained, snapMsg)
 			}
 		}
-		meta.pendingSnapshotRegions = retained
+		meta.pendingSnapshotMessages = retained
 		rw.raftCtx.storeMetaLock.Unlock()
 		rw.raftCtx.queuedSnaps = map[uint64]struct{}{}
 	}

@@ -174,16 +174,16 @@ type ApplySnapResult struct {
 }
 
 type InvokeContext struct {
-	RegionID   uint64
+	Region     *metapb.Region
 	RaftState  raftState
 	ApplyState applyState
 	lastTerm   uint64
-	SnapRegion *metapb.Region
+	SnapData   *snapData
 }
 
 func NewInvokeContext(store *PeerStorage) *InvokeContext {
 	ctx := &InvokeContext{
-		RegionID:   store.region.GetId(),
+		Region:     store.region,
 		RaftState:  store.raftState,
 		ApplyState: store.applyState,
 		lastTerm:   store.lastTerm,
@@ -192,16 +192,16 @@ func NewInvokeContext(store *PeerStorage) *InvokeContext {
 }
 
 func (ic *InvokeContext) hasSnapshot() bool {
-	return ic.SnapRegion != nil
+	return ic.SnapData != nil
 }
 
 func (ic *InvokeContext) saveRaftStateTo(wb *WriteBatch) {
-	key := y.KeyWithTs(RaftStateKey(ic.RegionID), RaftTS)
+	key := y.KeyWithTs(RaftStateKey(ic.Region.Id), RaftTS)
 	wb.Set(key, ic.RaftState.Marshal())
 }
 
 func (ic *InvokeContext) saveApplyStateTo(wb *WriteBatch) {
-	key := y.KeyWithTs(ApplyStateKey(ic.RegionID), KvTS)
+	key := y.KeyWithTs(ShardingApplyStateKey(RawStartKey(ic.Region), ic.Region.Id), KvTS)
 	wb.SetRaftCF(key, ic.ApplyState.Marshal())
 }
 
@@ -209,7 +209,7 @@ func (ic *InvokeContext) saveSnapshotRaftStateTo(snapshotIdx uint64, wb *WriteBa
 	snapshotRaftState := ic.RaftState
 	snapshotRaftState.commit = snapshotIdx
 	snapshotRaftState.lastIndex = snapshotIdx
-	key := y.KeyWithTs(SnapshotRaftStateKey(ic.RegionID), KvTS)
+	key := y.KeyWithTs(SnapshotRaftStateKey(ic.Region.Id), KvTS)
 	wb.SetRaftCF(key, snapshotRaftState.Marshal())
 }
 
@@ -247,15 +247,14 @@ var _ raft.Storage = new(PeerStorage)
 type PeerStorage struct {
 	Engines *Engines
 
-	peerID           uint64
-	region           *metapb.Region
-	raftState        raftState
-	applyState       applyState
-	appliedIndexTerm uint64
-	lastTerm         uint64
+	peerID     uint64
+	region     *metapb.Region
+	raftState  raftState
+	applyState applyState
+	lastTerm   uint64
 
-	snapState    SnapState
-	genSnapTask  *GenSnapTask
+	snapState SnapState
+	//genSnapTask  *GenSnapTask
 	regionSched  chan<- task
 	snapTriedCnt int
 
@@ -407,7 +406,7 @@ func initRaftState(raftEngine *badger.DB, region *metapb.Region) (raftState, err
 }
 
 func initApplyState(kvEngine *badger.ShardingDB, region *metapb.Region) (applyState, error) {
-	key := ApplyStateKey(region.Id)
+	key := ShardingApplyStateKey(RawStartKey(region), region.Id)
 	applyState := applyState{}
 	val, err := getKVValue(kvEngine, key)
 	if err != nil && err != badger.ErrKeyNotFound {
@@ -416,11 +415,12 @@ func initApplyState(kvEngine *badger.ShardingDB, region *metapb.Region) (applySt
 	if err == badger.ErrKeyNotFound {
 		if len(region.Peers) > 0 {
 			applyState.appliedIndex = RaftInitLogIndex
+			applyState.appliedIndexTerm = RaftInitLogTerm
 			applyState.truncatedIndex = RaftInitLogIndex
 			applyState.truncatedTerm = RaftInitLogTerm
 		}
 	} else {
-		y.AssertTruef(len(val) == 24, "apply state val %v", val)
+		y.AssertTruef(len(val) == 32, "apply state val %v", val)
 		applyState.Unmarshal(val)
 	}
 	return applyState, nil
@@ -584,12 +584,12 @@ func (ps *PeerStorage) validateSnap(snap *eraftpb.Snapshot) bool {
 		log.S().Infof("snapshot is stale, generate again, regionID: %d, peerID: %d, snapIndex: %d, truncatedIndex: %d", ps.region.GetId(), ps.peerID, idx, ps.truncatedIndex())
 		return false
 	}
-	var snapData rspb.RaftSnapshotData
-	if err := proto.UnmarshalMerge(snap.GetData(), &snapData); err != nil {
+	snapData := new(snapData)
+	if err := snapData.Unmarshal(snap.GetData()); err != nil {
 		log.S().Errorf("failed to decode snapshot, it may be corrupted, regionID: %d, peerID: %d, err: %v", ps.region.GetId(), ps.peerID, err)
 		return false
 	}
-	snapEpoch := snapData.GetRegion().GetRegionEpoch()
+	snapEpoch := snapData.region.GetRegionEpoch()
 	latestEpoch := ps.region.GetRegionEpoch()
 	if snapEpoch.GetConfVer() < latestEpoch.GetConfVer() {
 		log.S().Infof("snapshot epoch is stale, regionID: %d, peerID: %d, snapEpoch: %s, latestEpoch: %s", ps.region.GetId(), ps.peerID, snapEpoch, latestEpoch)
@@ -617,7 +617,6 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 			log.S().Warnf("failed to try generating snapshot, regionID: %d, peerID: %d, times: %d", ps.region.GetId(), ps.peerID, ps.snapTriedCnt)
 		}
 	}
-
 	if ps.snapTriedCnt >= MaxSnapRetryCnt {
 		err := errors.Errorf("failed to get snapshot after %d times", ps.snapTriedCnt)
 		ps.snapTriedCnt = 0
@@ -631,8 +630,14 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 		StateType: SnapState_Generating,
 		Receiver:  ch,
 	}
-	ps.genSnapTask = newGenSnapTask(ps.region.GetId(), ch)
-
+	// Schedule gen snapshot task directly instead of .
+	ps.regionSched <- task{
+		tp: taskTypeRegionGen,
+		data: &regionTask{
+			regionId: ps.region.GetId(),
+			notifier: ch,
+		},
+	}
 	return snap, raft.ErrSnapshotTemporarilyUnavailable
 }
 
@@ -689,7 +694,7 @@ func (ps *PeerStorage) MaybeGCCache(replicatedIdx, appliedIdx uint64) {
 }
 
 func (ps *PeerStorage) clearMeta(kvWB, raftWB *WriteBatch) error {
-	return ClearMeta(ps.Engines, kvWB, raftWB, ps.region.Id, ps.raftState.lastIndex)
+	return ClearMeta(ps.Engines, kvWB, raftWB, ps.region, ps.raftState.lastIndex)
 }
 
 type CacheQueryStats struct {
@@ -816,10 +821,11 @@ func fetchEntriesTo(engine *badger.DB, regionID, low, high, maxSize uint64, buf 
 	return nil, 0, raft.ErrUnavailable
 }
 
-func ClearMeta(engines *Engines, kvWB, raftWB *WriteBatch, regionID uint64, lastIndex uint64) error {
+func ClearMeta(engines *Engines, kvWB, raftWB *WriteBatch, region *metapb.Region, lastIndex uint64) error {
+	regionID := region.Id
 	start := time.Now()
 	kvWB.SetRaftCF(y.KeyWithTs(RegionStateKey(regionID), KvTS), nil)
-	kvWB.SetRaftCF(y.KeyWithTs(ApplyStateKey(regionID), KvTS), nil)
+	kvWB.SetRaftCF(y.KeyWithTs(ShardingApplyStateKey(RawStartKey(region), regionID), KvTS), nil)
 
 	firstIndex := lastIndex + 1
 	beginLogKey := RaftLogKey(regionID, 0)
@@ -869,13 +875,13 @@ func WritePeerState(kvWB *WriteBatch, region *metapb.Region, state rspb.PeerStat
 func (ps *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *eraftpb.Snapshot, kvWB *WriteBatch, raftWB *WriteBatch) error {
 	log.S().Infof("%v begin to apply snapshot", ps.Tag)
 
-	snapData := new(rspb.RaftSnapshotData)
+	snapData := new(snapData)
 	if err := snapData.Unmarshal(snap.Data); err != nil {
 		return err
 	}
 
-	if snapData.Region.Id != ps.region.Id {
-		return fmt.Errorf("mismatch region id %v != %v", snapData.Region.Id, ps.region.Id)
+	if snapData.region.Id != ps.region.Id {
+		return fmt.Errorf("mismatch region id %v != %v", snapData.region.Id, ps.region.Id)
 	}
 
 	if ps.isInitialized() {
@@ -885,7 +891,7 @@ func (ps *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *eraftpb.Snapshot,
 		}
 	}
 
-	WritePeerState(kvWB, snapData.Region, rspb.PeerState_Applying, nil)
+	WritePeerState(kvWB, snapData.region, rspb.PeerState_Applying, nil)
 
 	lastIdx := snap.Metadata.Index
 
@@ -898,9 +904,8 @@ func (ps *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *eraftpb.Snapshot,
 	ctx.ApplyState.truncatedIndex = lastIdx
 	ctx.ApplyState.truncatedTerm = snap.Metadata.Term
 
-	log.S().Debugf("%v apply snapshot for region %v with state %v ok", ps.Tag, snapData.Region, ctx.ApplyState)
-
-	ctx.SnapRegion = snapData.Region
+	log.S().Debugf("%v apply snapshot for region %v with state %v ok", ps.Tag, snapData.region, ctx.ApplyState)
+	ctx.SnapData = snapData
 	return nil
 }
 
@@ -973,7 +978,7 @@ func (ps *PeerStorage) PostReadyPersistent(ctx *InvokeContext) *ApplySnapResult 
 	ps.lastTerm = ctx.lastTerm
 
 	// If we apply snapshot ok, we should update some infos like applied index too.
-	if ctx.SnapRegion == nil {
+	if ctx.SnapData == nil {
 		return nil
 	}
 	// cleanup data before scheduling apply task
@@ -981,10 +986,10 @@ func (ps *PeerStorage) PostReadyPersistent(ctx *InvokeContext) *ApplySnapResult 
 		ps.clearExtraData(ps.region)
 	}
 
-	ps.ScheduleApplyingSnapshot()
+	ps.ScheduleApplyingSnapshot(ctx.SnapData)
 	prevRegion := ps.region
-	ps.region = ctx.SnapRegion
-	ctx.SnapRegion = nil
+	ps.region = ctx.SnapData.region
+	ctx.SnapData = nil
 
 	return &ApplySnapResult{
 		PrevRegion: prevRegion,
@@ -992,7 +997,7 @@ func (ps *PeerStorage) PostReadyPersistent(ctx *InvokeContext) *ApplySnapResult 
 	}
 }
 
-func (ps *PeerStorage) ScheduleApplyingSnapshot() {
+func (ps *PeerStorage) ScheduleApplyingSnapshot(snapData *snapData) {
 	status := JobStatus_Pending
 	ps.snapState = SnapState{
 		StateType: SnapState_Applying,
@@ -1003,6 +1008,7 @@ func (ps *PeerStorage) ScheduleApplyingSnapshot() {
 		data: &regionTask{
 			regionId: ps.region.Id,
 			status:   &status,
+			snapData: snapData,
 		},
 	}
 }

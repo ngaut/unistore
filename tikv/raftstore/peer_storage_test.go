@@ -15,10 +15,10 @@ package raftstore
 
 import (
 	"bytes"
+	"github.com/ngaut/unistore/tikv/mvcc"
 	"math"
 	"testing"
 
-	"github.com/pingcap/badger"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,44 +75,24 @@ func getMetaKeyCount(t *testing.T, peerStore *PeerStorage) int {
 	count := 0
 	metaStart := RegionMetaPrefixKey(regionID)
 	metaEnd := RegionMetaPrefixKey(regionID + 1)
-	err := peerStore.Engines.kv.DB.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
-		for it.Seek(metaStart); it.Valid(); it.Next() {
-			if bytes.Compare(it.Item().Key(), metaEnd) >= 0 {
-				break
-			}
-			count++
+	snap := peerStore.Engines.kv.NewSnapshot(nil, nil)
+	defer snap.Discard()
+	it := snap.NewIterator(mvcc.RaftCF, false, false)
+	defer it.Close()
+	for it.Seek(metaStart); it.Valid(); it.Next() {
+		if bytes.Compare(it.Item().Key(), metaEnd) >= 0 {
+			break
 		}
-		return nil
-	})
-	require.Nil(t, err)
+		count++
+	}
 	raftStart := RegionRaftPrefixKey(regionID)
 	raftEnd := RegionRaftPrefixKey(regionID + 1)
-	err = peerStore.Engines.kv.DB.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
-		for it.Seek(metaStart); it.Valid(); it.Next() {
-			if bytes.Compare(it.Item().Key(), metaEnd) >= 0 {
-				break
-			}
-			count++
+	for it.Seek(raftStart); it.Valid(); it.Next() {
+		if bytes.Compare(it.Item().Key(), raftEnd) >= 0 {
+			break
 		}
-		return nil
-	})
-	require.Nil(t, err)
-	err = peerStore.Engines.raft.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
-		for it.Seek(raftStart); it.Valid(); it.Next() {
-			if bytes.Compare(it.Item().Key(), raftEnd) >= 0 {
-				break
-			}
-			count++
-		}
-		return nil
-	})
-	require.Nil(t, err)
+		count++
+	}
 	return count
 }
 

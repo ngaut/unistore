@@ -17,6 +17,8 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/pingcap/badger/protos"
+	"github.com/pingcap/tidb/util/codec"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -46,7 +48,7 @@ type storeMeta struct {
 	/// such Region in this store now. So the messages are recorded temporarily and will be handled later.
 	pendingVotes []*rspb.RaftMessage
 	/// The regions with pending snapshots.
-	pendingSnapshotRegions []*metapb.Region
+	pendingSnapshotMessages []*rspb.RaftMessage
 	/// A marker used to indicate the peer of a Region has received a merge target message and waits to be destroyed.
 	/// target_region_id -> (source_region_id -> merge_target_epoch)
 	pendingMergeTargets map[uint64]map[uint64]*metapb.RegionEpoch
@@ -200,6 +202,8 @@ func (d *storeMsgHandler) handleMsg(msg Msg) {
 		d.onTick(msg.Data.(StoreTick))
 	case MsgTypeStoreStart:
 		d.start(msg.Data.(*metapb.Store))
+	case MsgTypeGenerateEngineMetaChange:
+		d.onGenerateEngineMetaChange(msg)
 	}
 }
 
@@ -311,7 +315,11 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 		if err != nil {
 			return nil, err
 		}
-		peer.scheduleApplyingSnapshot()
+		status := JobStatus_Cancelled
+		peer.peer.Store().snapState = SnapState{
+			StateType: SnapState_ApplyAborted,
+			Status:    &status,
+		}
 		meta.regionRanges.Put(region.EndKey, regionIDToBytes(region.Id))
 		meta.regions[region.Id] = region
 		regionPeers = append(regionPeers, peer)
@@ -331,7 +339,7 @@ func (bs *raftBatchSystem) clearStaleMeta(kvWB, raftWB *WriteBatch, originState 
 		return
 	}
 	raftState.Unmarshal(val)
-	err = ClearMeta(bs.ctx.engine, kvWB, raftWB, region.Id, raftState.lastIndex)
+	err = ClearMeta(bs.ctx.engine, kvWB, raftWB, region, raftState.lastIndex)
 	if err != nil {
 		panic(err)
 	}
@@ -629,7 +637,7 @@ func (d *storeMsgHandler) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage
 
 	// New created peers should know it's learner or not.
 	peer, err := replicatePeerFsm(
-		d.ctx.store.Id, d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, regionID, msg.ToPeer)
+		d.ctx.store.Id, d.ctx.cfg, d.ctx.regionTaskSender, d.ctx.engine, regionID, msg.StartKey, msg.EndKey, msg.ToPeer)
 	if err != nil {
 		return false, err
 	}
@@ -859,4 +867,17 @@ func isRangeCovered(meta *storeMeta, start, end []byte) bool {
 		start = region.EndKey
 	}
 	return false
+}
+
+func (d *storeMsgHandler) onGenerateEngineMetaChange(msg Msg) {
+	// GenerateEngineMetaChange message is first sent to store handler to find a region id for this change,
+	// Once we got the region ID, we send it to the router to create a raft log then propose this log, replicate to
+	// followers.
+	e := msg.Data.(*protos.MetaChangeEvent)
+	it := d.ctx.storeMeta.regionRanges.NewIterator()
+	it.Seek(codec.EncodeBytes(nil, e.StartKey))
+	y.Assert(it.Valid())
+	regionID := regionIDFromBytes(it.Value())
+	err := d.ctx.router.send(regionID, msg)
+	y.Assert(err == nil)
 }
