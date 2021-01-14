@@ -441,21 +441,15 @@ func (p *Peer) Destroy(engine *Engines, keepData bool) error {
 	log.S().Infof("%v begin to destroy", p.Tag)
 
 	// Set Tombstone state explicitly
-	kvWB := new(WriteBatch)
-	raftWB := new(WriteBatch)
-	if err := p.Store().clearMeta(kvWB, raftWB); err != nil {
+	raftWB := new(RaftWriteBatch)
+	if err := p.Store().clearMeta(raftWB); err != nil {
 		return err
 	}
 	var mergeState *rspb.MergeState
 	if p.PendingMergeState != nil {
 		mergeState = p.PendingMergeState
 	}
-	WritePeerState(kvWB, region, rspb.PeerState_Tombstone, mergeState)
-	// write kv rocksdb first in case of restart happen between two write
-	// Todo: sync = ctx.cfg.sync_log
-	if err := kvWB.WriteToKV(engine.kv); err != nil {
-		return err
-	}
+	WritePeerState(raftWB, region, rspb.PeerState_Tombstone, mergeState)
 	if err := raftWB.WriteToRaft(engine.raft); err != nil {
 		return err
 	}
@@ -721,6 +715,8 @@ func (p *Peer) CheckStaleState(cfg *Config) StaleState {
 func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 	ss := ready.SoftState
 	if ss != nil {
+		shard := p.Store().Engines.kv.GetShard(p.regionId)
+		shard.SetPassive(ss.RaftState != raft.StateLeader)
 		if ss.RaftState == raft.StateLeader {
 			// The local read can only be performed after a new leader has applied
 			// the first empty entry on its term. After that the lease expiring time
@@ -735,7 +731,6 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 				p.leaderChecker.term.Store(p.Term())
 			}
 			observer.OnRoleChange(p.getEventContext().RegionId, ss.RaftState)
-			p.Store().Engines.metaManager.ingestRegionFiles(p.regionId)
 		} else if ss.RaftState == raft.StateFollower {
 			p.leaderLease.Expire()
 			observer.OnRoleChange(p.getEventContext().RegionId, ss.RaftState)
@@ -782,7 +777,7 @@ func (p *Peer) TakeApplyProposals() *regionProposal {
 	return newRegionProposal(p.PeerId(), p.regionId, props)
 }
 
-func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, kvWB, raftWB *WriteBatch, observer PeerEventObserver) *ReadyICPair {
+func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, raftWB *RaftWriteBatch, observer PeerEventObserver) *ReadyICPair {
 	if p.PendingRemove {
 		return nil
 	}
@@ -831,7 +826,7 @@ func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, kvWB
 		ready.Messages = ready.Messages[:0]
 	}
 
-	invokeCtx, err := p.Store().SaveReadyState(kvWB, raftWB, &ready)
+	invokeCtx, err := p.Store().SaveReadyState(raftWB, &ready)
 	if err != nil {
 		panic(fmt.Sprintf("failed to handle raft ready, error: %v", err))
 	}

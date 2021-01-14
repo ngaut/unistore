@@ -17,6 +17,8 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/pingcap/badger/protos"
+	"github.com/pingcap/badger/y"
 	"io/ioutil"
 	"math"
 	"os"
@@ -91,7 +93,27 @@ func CreateTestShardingDB(dbPath string) (*badger.ShardingDB, error) {
 	opts.Dir = dbPath
 	opts.ValueDir = dbPath
 	opts.CFs = []badger.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}, {Managed: false}}
-	return badger.OpenShardingDB(opts)
+	db, err := badger.OpenShardingDB(opts)
+	if err != nil {
+		return nil, err
+	}
+	ingestTree := &badger.IngestTree{
+		ChangeSet: &protos.ShardChangeSet{
+			ShardID:  1,
+			ShardVer: 1,
+			Snapshot: &protos.ShardSnapshot{
+				Start:      nil,
+				End:        []byte{255, 255, 255, 255, 255, 255, 255, 255},
+				Properties: &protos.ShardProperties{ShardID: 1},
+			},
+		},
+	}
+	err = db.Ingest(ingestTree)
+	if err != nil {
+		return nil, err
+	}
+	y.Assert(db.GetShard(1) != nil)
+	return db, nil
 }
 
 func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
@@ -118,7 +140,7 @@ func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
 	os.MkdirAll(kvPath, os.ModePerm)
 	os.MkdirAll(raftPath, os.ModePerm)
 	os.Mkdir(snapPath, os.ModePerm)
-	engines := raftstore.NewEngines(kvDB, raftDB, kvPath, raftPath)
+	engines := raftstore.NewEngines(kvDB, raftDB, kvPath, raftPath, nil)
 	writer := raftstore.NewTestRaftWriter(engines)
 
 	rm, err := NewMockRegionManager(kvDB, 1, RegionOptions{
@@ -1482,10 +1504,11 @@ func (s *testMvccSuite) TestResolveCommit(c *C) {
 	MustPrewritePessimistic(k2, k2, v2, 3, 100, []bool{true}, 3, store)
 	MustCommit(k2, 3, 4, store)
 
+	db := store.MvccStore.db
 	// The error path
-	wb := store.MvccStore.db.NewWriteBatch()
+	wb := db.NewWriteBatch(db.GetShard(1))
 	c.Assert(wb.Delete(mvcc.WriteCF, sk, 3), IsNil)
-	c.Assert(store.MvccStore.db.Write(wb), IsNil)
+	c.Assert(db.Write(wb), IsNil)
 	MustCommitErr(sk, 1, 3, store)
 	MustAcquirePessimisticLock(sk, sk, 5, 5, store)
 	MustCommitErr(sk, 1, 3, store)

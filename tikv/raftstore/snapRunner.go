@@ -30,19 +30,17 @@ import (
 
 type snapRunner struct {
 	config         *Config
-	snapManager    *SnapManager
 	router         *router
 	sendingCount   int64
 	receivingCount int64
 	pdCli          pd.Client
 }
 
-func newSnapRunner(snapManager *SnapManager, config *Config, router *router, pdCli pd.Client) *snapRunner {
+func newSnapRunner(config *Config, router *router, pdCli pd.Client) *snapRunner {
 	return &snapRunner{
-		config:      config,
-		snapManager: snapManager,
-		router:      router,
-		pdCli:       pdCli,
+		config: config,
+		router: router,
+		pdCli:  pdCli,
 	}
 }
 

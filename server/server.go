@@ -87,11 +87,7 @@ func setupRaftServer(safePoint *tikv.SafePoint, pdClient pd.Client, conf *config
 	if err != nil {
 		return nil, err
 	}
-	metaManager, err := raftstore.NewEngineMetaManager(db, raftDB, dbPath, listener)
-	if err != nil {
-		return nil, err
-	}
-	engines := raftstore.NewEngines(db, raftDB, kvPath, raftPath, metaManager)
+	engines := raftstore.NewEngines(db, raftDB, kvPath, raftPath, listener)
 	innerServer := raftstore.NewRaftInnerServer(conf, engines, raftConf)
 	innerServer.Setup(pdClient)
 	router := innerServer.GetRaftstoreRouter()

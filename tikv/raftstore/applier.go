@@ -16,12 +16,12 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"github.com/pingcap/badger/protos"
 	"go.uber.org/zap"
 	"time"
 
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
-	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -32,15 +32,6 @@ import (
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/uber-go/atomic"
-)
-
-const (
-	DefaultApplyWBSize = 4 * 1024
-
-	WriteTypeFlagPut      = 'P'
-	WriteTypeFlagDelete   = 'D'
-	WriteTypeFlagLock     = 'L'
-	WriteTypeFlagRollback = 'R'
 )
 
 type pendingCmd struct {
@@ -240,29 +231,6 @@ func newRegistration(peer *Peer) *registration {
 	}
 }
 
-type GenSnapTask struct {
-	regionID     uint64
-	snapNotifier chan *eraftpb.Snapshot
-}
-
-func newGenSnapTask(regionID uint64, notifier chan *eraftpb.Snapshot) *GenSnapTask {
-	return &GenSnapTask{
-		regionID:     regionID,
-		snapNotifier: notifier,
-	}
-}
-
-func (t *GenSnapTask) generateAndScheduleSnapshot(regionSched chan<- task, redoIdx uint64) {
-	regionSched <- task{
-		tp: taskTypeRegionGen,
-		data: &regionTask{
-			regionId: t.regionID,
-			notifier: t.snapNotifier,
-			redoIdx:  redoIdx,
-		},
-	}
-}
-
 type applyMsgs struct {
 	msgs []Msg
 }
@@ -279,13 +247,11 @@ type applyContext struct {
 	regionScheduler  chan<- task
 	applyResCh       chan<- Msg
 	engines          *Engines
-	dbSnap           *badger.Snapshot
+	applyBatch       *applyBatch
 	cbs              []applyCallback
 	applyTaskResList []*applyTaskRes
 	execCtx          *applyExecContext
-	wb               *WriteBatch
-	wbLastBytes      uint64
-	wbLastKeys       uint64
+	wb               *KVWriteBatch
 	lastAppliedIndex uint64
 	committedCount   int
 
@@ -304,7 +270,7 @@ func newApplyContext(tag string, regionScheduler chan<- task, engines *Engines,
 		applyResCh:      applyResCh,
 		enableSyncLog:   cfg.SyncLog,
 		useDeleteRange:  cfg.UseDeleteRange,
-		wb:              new(WriteBatch),
+		wb:              NewKVWriteBatch(engines.kv),
 	}
 }
 
@@ -314,14 +280,11 @@ func newApplyContext(tag string, regionScheduler chan<- task, engines *Engines,
 /// `prepare_for` -> `commit` [-> `commit` ...] -> `finish_for`.
 /// After all appliers are handled, `write_to_db` method should be called.
 func (ac *applyContext) prepareFor(d *applier) {
-	if ac.wb == nil {
-		ac.wb = new(WriteBatch)
-		ac.wbLastBytes = 0
-		ac.wbLastKeys = 0
-	}
 	ac.cbs = append(ac.cbs, applyCallback{region: d.region})
 	ac.lastAppliedIndex = d.applyState.appliedIndex
 }
+
+const applyStateKey = "applyState"
 
 /// Commits all changes have done for applier. `persistent` indicates whether
 /// write the changes into rocksdb.
@@ -329,7 +292,7 @@ func (ac *applyContext) prepareFor(d *applier) {
 /// This call is valid only when it's between a `prepare_for` and `finish_for`.
 func (ac *applyContext) commit(d *applier) {
 	if ac.lastAppliedIndex < d.applyState.appliedIndex {
-		d.writeApplyState(ac.wb)
+		ac.wb.SetApplyState(d.region.Id, d.applyState)
 	}
 	// last_applied_index doesn't need to be updated, set persistent to true will
 	// force it call `prepare_for` automatically.
@@ -342,20 +305,13 @@ func (ac *applyContext) commitOpt(d *applier, persistent bool) {
 		ac.writeToDB()
 		ac.prepareFor(d)
 	}
-	ac.wbLastBytes = uint64(ac.wb.size)
-	ac.wbLastKeys = uint64(len(ac.wb.entries))
 }
 
 /// Writes all the changes into badger.
 func (ac *applyContext) writeToDB() {
-	if ac.wb.size != 0 {
-		if err := ac.wb.WriteToKV(ac.engines.kv); err != nil {
-			panic(err)
-		}
-		ac.wb.Reset()
-		ac.wbLastBytes = 0
-		ac.wbLastKeys = 0
-	}
+	err := ac.wb.WriteToEngine()
+	y.Assert(err == nil)
+	ac.wb.Reset()
 	doneApply := time.Now()
 	for _, cb := range ac.cbs {
 		cb.invokeAll(doneApply)
@@ -366,7 +322,7 @@ func (ac *applyContext) writeToDB() {
 /// Finishes `Apply`s for the applier.
 func (ac *applyContext) finishFor(d *applier, results []execResult) {
 	if !d.pendingRemove {
-		d.writeApplyState(ac.wb)
+		ac.wb.SetApplyState(d.region.Id, d.applyState)
 	}
 	ac.commitOpt(d, false)
 	res := &applyTaskRes{
@@ -378,31 +334,12 @@ func (ac *applyContext) finishFor(d *applier, results []execResult) {
 	ac.applyTaskResList = append(ac.applyTaskResList, res)
 }
 
-func (ac *applyContext) deltaBytes() uint64 {
-	return uint64(ac.wb.size) - ac.wbLastBytes
-}
-
-func (ac *applyContext) deltaKeys() uint64 {
-	return uint64(len(ac.wb.entries)) - ac.wbLastKeys
-}
-
-func (ac *applyContext) getDBSnap() *badger.Snapshot {
-	if ac.dbSnap == nil {
-		ac.dbSnap = ac.engines.kv.NewSnapshot(nil, nil)
-	}
-	return ac.dbSnap
-}
-
 func (ac *applyContext) flush() {
 	// TODO: this check is too hacky, need to be more verbose and less buggy.
 	t := ac.timer
 	ac.timer = nil
 	if t == nil {
 		return
-	}
-	if ac.dbSnap != nil {
-		ac.dbSnap.Discard()
-		ac.dbSnap = nil
 	}
 	// Write to engine
 	// raftsotre.sync-log = true means we need prevent data loss when power failure.
@@ -442,7 +379,7 @@ func notifyStaleReq(term uint64, cb *Callback) {
 }
 
 /// Checks if a write is needed to be issued before handling the command.
-func shouldWriteToEngine(rlog raftlog.RaftLog, wbKeys int) bool {
+func shouldWriteToEngine(rlog raftlog.RaftLog) bool {
 	cmd := rlog.GetRaftCmdRequest()
 	if cmd == nil {
 		return false
@@ -627,33 +564,18 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 }
 
 func (a *applier) updateMetrics(aCtx *applyContext) {
-	a.metrics.writtenBytes += aCtx.deltaBytes()
-	a.metrics.writtenKeys += aCtx.deltaKeys()
-}
-
-func (a *applier) writeApplyState(wb *WriteBatch) {
-	applyStateKey := y.KeyWithTs(ShardingApplyStateKey(RawStartKey(a.region), a.region.Id), 0)
-	wb.SetApplyState(applyStateKey, a.applyState)
+	for _, wb := range aCtx.wb.batches {
+		a.metrics.writtenBytes += uint64(wb.EstimatedSize())
+		a.metrics.writtenKeys += uint64(wb.NumEntries())
+	}
 }
 
 func (a *applier) handleRaftEntryNormal(aCtx *applyContext, entry *eraftpb.Entry) applyResult {
 	index := entry.Index
 	term := entry.Term
 	if len(entry.Data) > 0 {
-		var rlog raftlog.RaftLog
-		if entry.Data[0] == raftlog.CustomRaftLogFlag {
-			rlog = raftlog.NewCustom(entry.Data)
-		} else if entry.Data[0] == raftlog.EngineMetaChangeFlag {
-			rlog = raftlog.NewEngineMetaChange(entry.Data)
-		} else {
-			cmd := new(raft_cmdpb.RaftCmdRequest)
-			err := cmd.Unmarshal(entry.Data)
-			if err != nil {
-				panic(err)
-			}
-			rlog = raftlog.NewRequest(cmd)
-		}
-		if shouldWriteToEngine(rlog, len(aCtx.wb.entries)) {
+		rlog := raftlog.DecodeLog(entry)
+		if shouldWriteToEngine(rlog) {
 			aCtx.commit(a)
 		}
 		return a.processRaftCmd(aCtx, index, term, rlog)
@@ -763,11 +685,11 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 	y.Assert(!a.pendingRemove)
 
 	aCtx.execCtx = a.newCtx(index, term)
-	aCtx.wb.SetSafePoint()
+	// aCtx.wb.SetSafePoint()
 	resp, applyResult, err := a.execRaftCmd(aCtx, rlog)
 	if err != nil {
-		// clear dirty values.
-		aCtx.wb.RollbackToSafePoint()
+		// TODO: clear dirty values.
+		// aCtx.wb.RollbackToSafePoint()
 		if _, ok := err.(*ErrEpochNotMatch); ok {
 			log.S().Debugf("epoch not match region_id %d, peer_id %d, err %v", a.region.Id, a.id, err)
 		} else {
@@ -838,14 +760,6 @@ func (a *applier) execRaftCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 	if req.GetAdminRequest() != nil {
 		return a.execAdminCmd(aCtx, req)
 	}
-	if metaChange, ok := rlog.(*raftlog.EngineMetaChangeRaftLog); ok {
-		return a.execMetaChangeCmd(aCtx, metaChange)
-	}
-	if rlog.PeerID() != a.id {
-		aCtx.engines.metaManager.followerApply(a.region.Id, aCtx.execCtx.index, rlog)
-		resp = &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
-		return
-	}
 	resp, result = a.execWriteCmd(aCtx, rlog)
 	return
 }
@@ -861,7 +775,7 @@ func (a *applier) execAdminCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdReques
 	var adminResp *raft_cmdpb.AdminResponse
 	switch cmdType {
 	case raft_cmdpb.AdminCmdType_ChangePeer:
-		adminResp, result, err = a.execChangePeer(aCtx, adminReq)
+		adminResp, result, err = a.execChangePeer(adminReq)
 	case raft_cmdpb.AdminCmdType_Split:
 		adminResp, result, err = a.execSplit(aCtx, adminReq)
 	case raft_cmdpb.AdminCmdType_BatchSplit:
@@ -892,13 +806,6 @@ func (a *applier) execAdminCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdReques
 	return
 }
 
-func (a *applier) execMetaChangeCmd(aCtx *applyContext, metaChange *raftlog.EngineMetaChangeRaftLog) (
-	resp *raft_cmdpb.RaftCmdResponse, result applyResult, err error) {
-	resp = &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
-	err = aCtx.engines.metaManager.applyMetaChange(metaChange)
-	return
-}
-
 func (a *applier) execWriteCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 	resp *raft_cmdpb.RaftCmdResponse, result applyResult) {
 	if cl, ok := rlog.(*raftlog.CustomRaftLog); ok {
@@ -907,282 +814,89 @@ func (a *applier) execWriteCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 	}
 	req := rlog.GetRaftCmdRequest()
 	requests := req.GetRequests()
-	writeCmdOps := createWriteCmdOps(requests)
-	rangeDeleted := false
-	for _, op := range writeCmdOps {
-		switch x := op.(type) {
-		case *prewriteOp:
-			a.execPrewrite(aCtx, *x)
-		case *commitOp:
-			a.execCommit(aCtx, *x)
-		case *rollbackOp:
-			a.execRollback(aCtx, *x)
-		case *raft_cmdpb.DeleteRangeRequest:
-			a.execDeleteRange(aCtx, x)
-			rangeDeleted = true
-		default:
-			log.S().Fatalf("invalid input op=%v", x)
-		}
-	}
-	resps := make([]raft_cmdpb.Response, len(requests))
-	respPtrs := make([]*raft_cmdpb.Response, len(requests))
-	for i := 0; i < len(resps); i++ {
-		resp := &resps[i]
-		resp.CmdType = requests[i].CmdType
-		respPtrs[i] = resp
-	}
+	y.Assert(len(requests) == 1)
+	delRange := requests[0].DeleteRange
+	y.Assert(delRange != nil)
+	a.execDeleteRange(aCtx, delRange)
+	delRangeResp := &raft_cmdpb.Response{CmdType: raft_cmdpb.CmdType_DeleteRange}
 	resp = newCmdRespForReq(req)
-	resp.Responses = respPtrs
-	if rangeDeleted {
-		result = applyResult{
-			tp:   applyResultTypeExecResult,
-			data: &execResultDeleteRange{},
-		}
+	resp.Responses = []*raft_cmdpb.Response{delRangeResp}
+	result = applyResult{
+		tp:   applyResultTypeExecResult,
+		data: &execResultDeleteRange{},
 	}
 	return
 }
 
-func (a *applier) execCustomLog(actx *applyContext, cl *raftlog.CustomRaftLog) (
+func (a *applier) isFollower(rlog raftlog.RaftLog) bool {
+	return a.id != rlog.PeerID()
+}
+
+func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) (
 	resp *raft_cmdpb.RaftCmdResponse) {
 	var cnt int
 	switch cl.Type() {
 	case raftlog.TypePrewrite, raftlog.TypePessimisticLock:
 		cl.IterateLock(func(key, val []byte) {
-			actx.wb.SetLock(key, val)
+			aCtx.wb.SetLock(cl.RegionID(), key, val)
 			cnt++
 		})
 	case raftlog.TypeCommit:
 		cl.IterateCommit(func(key, val []byte, commitTS uint64) {
-			a.commitLock(actx, key, val, commitTS)
+			a.commitLock(aCtx, cl.RegionID(), key, val, commitTS)
 			cnt++
 		})
-	case raftlog.TypeRolback:
+	case raftlog.TypeRollback:
 		cl.IterateRollback(func(key []byte, startTS uint64, deleteLock bool) {
-			actx.wb.Rollback(y.KeyWithTs(key, startTS))
+			aCtx.wb.Rollback(cl.RegionID(), y.KeyWithTs(key, startTS))
 			if deleteLock {
-				actx.wb.DeleteLock(key)
+				aCtx.wb.DeleteLock(cl.RegionID(), key)
 			}
 			cnt++
 		})
 	case raftlog.TypePessimisticRollback:
-		cl.IteratePessimisticRollback(func(key []byte) {
-			actx.wb.DeleteLock(key)
+		cl.IterateKeysOnly(func(key []byte) {
+			aCtx.wb.DeleteLock(cl.RegionID(), key)
 			cnt++
 		})
+	case raftlog.TypePreSplit:
+		var splitKeys [][]byte
+		cl.IterateKeysOnly(func(key []byte) {
+			splitKeys = append(splitKeys, key)
+		})
+		err := aCtx.engines.kv.PreSplit(a.region.Id, a.region.RegionEpoch.Version, splitKeys)
+		y.AssertTruef(err == nil, "preSplit error %v", err)
+	case raftlog.TypeChangeSet:
+		changeSet, err := cl.GetShardChangeSet()
+		y.Assert(err == nil)
+		a.executeChangeSet(aCtx, changeSet, a.isFollower(cl))
 	}
 	resp = &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
 	resp.Responses = make([]*raft_cmdpb.Response, cnt)
 	return
 }
 
-// every commit must followed with a delete lock.
-type commitOp struct {
-	putWrite *raft_cmdpb.PutRequest
-	delLock  *raft_cmdpb.DeleteRequest
+func (a *applier) executeChangeSet(aCtx *applyContext, changeSet *protos.ShardChangeSet, isFollower bool) {
+	if isFollower {
+		y.Assert(changeSet.Flush != nil || changeSet.SplitFiles != nil || changeSet.Compaction != nil)
+		aCtx.regionScheduler <- task{tp: taskTypeRegionFollowerChangeSet, data: changeSet}
+	}
 }
 
-// a prewrite may optionally has a put Default.
-// a put default must follows a put lock.
-type prewriteOp struct {
-	putDefault *raft_cmdpb.PutRequest // optional
-	putLock    *raft_cmdpb.PutRequest
-}
-
-// a Rollback optionally has a delete Default.
-type rollbackOp struct {
-	delDefault *raft_cmdpb.DeleteRequest
-	putWrite   *raft_cmdpb.PutRequest
-	delLock    *raft_cmdpb.DeleteRequest
-}
-
-// createWriteCmdOps regroups requests into operations.
-func createWriteCmdOps(requests []*raft_cmdpb.Request) (ops []interface{}) {
-	// If first request is delete write, then this is a GC command, we can ignore it.
-	if len(requests) > 0 {
-		if del := requests[0].Delete; del != nil {
-			if del.Cf == CFWrite {
-				return
-			}
-		}
-	}
-	for i := 0; i < len(requests); i++ {
-		req := requests[i]
-		switch req.CmdType {
-		case raft_cmdpb.CmdType_Delete:
-			del := req.Delete
-			switch del.Cf {
-			case "":
-				// Rollback large value, must followed by put write and delete lock
-				putWriteReq := requests[i+1]
-				y.Assert(putWriteReq.Put != nil && putWriteReq.Put.Cf == CFWrite)
-				delLockReq := requests[i+2]
-				y.Assert(delLockReq.Delete != nil && delLockReq.Delete.Cf == CFLock)
-				ops = append(ops, &rollbackOp{
-					delDefault: req.Delete,
-					putWrite:   putWriteReq.Put,
-					delLock:    delLockReq.Delete,
-				})
-				i += 2
-			case CFWrite:
-				// This is collapse rollback, since we do local rollback GC, we can ignore it.
-			case CFLock:
-				// This is pessimistic rollback.
-				ops = append(ops, &rollbackOp{
-					delLock: req.Delete,
-				})
-			default:
-				panic("unreachable")
-			}
-		case raft_cmdpb.CmdType_Put:
-			put := req.Put
-			switch put.Cf {
-			case "":
-				// Prewrite with large value, the next req must be put lock.
-				nextPut := requests[i+1].Put
-				y.Assert(nextPut != nil && nextPut.Cf == CFLock)
-				ops = append(ops, &prewriteOp{
-					putDefault: put,
-					putLock:    nextPut,
-				})
-				i++
-			case CFLock:
-				// Prewrite with short value.
-				ops = append(ops, &prewriteOp{putLock: put})
-			case CFWrite:
-				writeType := put.Value[0]
-				if writeType == mvcc.WriteTypeRollback {
-					// Rollback optionally followed by a delete lock.
-					var nextDel *raft_cmdpb.DeleteRequest
-					if i+1 < len(requests) {
-						if tmpDel := requests[i+1].Delete; tmpDel != nil && tmpDel.Cf == CFLock {
-							nextDel = tmpDel
-						}
-					}
-					if nextDel != nil {
-						ops = append(ops, &rollbackOp{
-							putWrite: put,
-							delLock:  nextDel,
-						})
-						i++
-					} else {
-						ops = append(ops, &rollbackOp{
-							putWrite: put,
-						})
-					}
-				} else {
-					// Commit must followed by del lock
-					nextDel := requests[i+1].Delete
-					y.Assert(nextDel != nil && nextDel.Cf == CFLock)
-					ops = append(ops, &commitOp{
-						putWrite: put,
-						delLock:  nextDel,
-					})
-					i++
-				}
-			}
-		case raft_cmdpb.CmdType_DeleteRange:
-			ops = append(ops, &req.DeleteRange)
-		case raft_cmdpb.CmdType_IngestSST:
-			panic("ingestSST not unsupported")
-		case raft_cmdpb.CmdType_Snap, raft_cmdpb.CmdType_Get:
-			// Readonly commands are handled in raftstore directly.
-			// Don't panic here in case there are old entries need to be applied.
-			// It's also safe to skip them here, because a restart must have happened,
-			// hence there is no callback to be called.
-			log.S().Warnf("skip read-only command %s", req)
-		default:
-			panic("unreachable")
-		}
-	}
-	return
-}
-
-func (a *applier) execPrewrite(aCtx *applyContext, op prewriteOp) {
-	key, value := convertPrewriteToLock(op)
-	aCtx.wb.SetLock(key, value)
-	return
-}
-
-func convertPrewriteToLock(op prewriteOp) (key, value []byte) {
-	_, rawKey, err := codec.DecodeBytes(op.putLock.Key, nil)
-	if err != nil {
-		panic(op.putLock.Key)
-	}
-	lock, err := mvcc.ParseLockCFValue(op.putLock.Value)
-	if err != nil {
-		panic(op.putLock.Value)
-	}
-	if op.putDefault != nil {
-		lock.Value = op.putDefault.Value
-	}
-	return rawKey, lock.MarshalBinary()
-}
-
-func (a *applier) execCommit(aCtx *applyContext, op commitOp) {
-	remain, rawKey, err := codec.DecodeBytes(op.putWrite.Key, nil)
-	if err != nil {
-		panic(op.putWrite.Key)
-	}
-	_, commitTS, err := codec.DecodeUintDesc(remain)
-	if err != nil {
-		panic(remain)
-	}
-	val := a.getLock(aCtx, rawKey)
-	y.Assert(len(val) > 0)
-	a.commitLock(aCtx, rawKey, val, commitTS)
-	return
-}
-
-func (a *applier) commitLock(aCtx *applyContext, rawKey []byte, val []byte, commitTS uint64) {
+func (a *applier) commitLock(aCtx *applyContext, regionID uint64, rawKey []byte, val []byte, commitTS uint64) {
 	lock := mvcc.DecodeLock(val)
 	var sizeDiff int64
 	userMeta := mvcc.NewDBUserMeta(lock.StartTS, commitTS)
 	if lock.Op != uint8(kvrpcpb.Op_Lock) {
-		aCtx.wb.SetWithUserMeta(y.KeyWithTs(rawKey, commitTS), lock.Value, userMeta)
+		aCtx.wb.SetWithUserMeta(regionID, y.KeyWithTs(rawKey, commitTS), lock.Value, userMeta)
 		sizeDiff = int64(len(rawKey) + len(lock.Value))
 	} else if bytes.Equal(lock.Primary, rawKey) {
-		aCtx.wb.SetOpLock(y.KeyWithTs(rawKey, commitTS), userMeta)
+		aCtx.wb.SetOpLock(regionID, y.KeyWithTs(rawKey, commitTS), userMeta)
 	}
 	if sizeDiff > 0 {
 		a.metrics.sizeDiffHint += uint64(sizeDiff)
 	}
-	aCtx.wb.DeleteLock(rawKey)
-}
-
-func (a *applier) getLock(aCtx *applyContext, rawKey []byte) []byte {
-	item, err := aCtx.dbSnap.Get(mvcc.LockCF, y.KeyWithTs(rawKey, 0))
-	if err == nil {
-		val, _ := item.Value()
-		return val
-	}
-	lockEntries := aCtx.wb.lockEntries
-	for i := len(lockEntries) - 1; i >= 0; i-- {
-		if bytes.Equal(lockEntries[i].Key.UserKey, rawKey) {
-			return lockEntries[i].Value
-		}
-	}
-	return nil
-}
-
-func (a *applier) execRollback(aCtx *applyContext, op rollbackOp) {
-	if op.putWrite != nil {
-		remain, rawKey, err := codec.DecodeBytes(op.putWrite.Key, nil)
-		if err != nil {
-			panic(op.putWrite.Key)
-		}
-		aCtx.wb.Rollback(y.KeyWithTs(rawKey, mvcc.DecodeKeyTS(remain)))
-		if op.delLock != nil {
-			aCtx.wb.DeleteLock(rawKey)
-		}
-		return
-	}
-	if op.delLock != nil {
-		_, rawKey, err := codec.DecodeBytes(op.delLock.Key, nil)
-		if err != nil {
-			panic(op.delLock.Key)
-		}
-		aCtx.wb.DeleteLock(rawKey)
-	}
+	aCtx.wb.DeleteLock(regionID, rawKey)
 }
 
 func (a *applier) execDeleteRange(aCtx *applyContext, req *raft_cmdpb.DeleteRangeRequest) {
@@ -1194,12 +908,20 @@ func (a *applier) execDeleteRange(aCtx *applyContext, req *raft_cmdpb.DeleteRang
 	if err != nil {
 		panic(req.EndKey)
 	}
-	err = aCtx.engines.kv.DeleteRange(startKey, endKey)
-	log.Error("execDeleteRange failed", zap.Error(err))
+
+	if bytes.Equal(RawStartKey(a.region), startKey) && bytes.Equal(RawEndKey(a.region), endKey) {
+		err = aCtx.engines.kv.RemoveShard(a.region.Id, true)
+		if err != nil {
+			log.Error("execDeleteRange failed", zap.Error(err))
+		}
+	} else {
+		// TODO: implement
+		log.Error("execDeleteRange not implemented yet")
+	}
 	return
 }
 
-func (a *applier) execChangePeer(aCtx *applyContext, req *raft_cmdpb.AdminRequest) (
+func (a *applier) execChangePeer(req *raft_cmdpb.AdminRequest) (
 	resp *raft_cmdpb.AdminResponse, result applyResult, err error) {
 	request := req.ChangePeer
 	peer := request.Peer
@@ -1269,11 +991,6 @@ func (a *applier) execChangePeer(aCtx *applyContext, req *raft_cmdpb.AdminReques
 		region.Peers = append(region.Peers, peer)
 		log.S().Infof("%s add learner successfully, peer %s, region %s", a.tag, peer, a.region)
 	}
-	state := rspb.PeerState_Normal
-	if a.pendingRemove {
-		state = rspb.PeerState_Tombstone
-	}
-	WritePeerState(aCtx.wb, region, state, nil)
 	resp = &raft_cmdpb.AdminResponse{
 		ChangePeer: &raft_cmdpb.ChangePeerResponse{
 			Region: region,
@@ -1369,17 +1086,28 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 				Role:    derived.Peers[j].Role,
 			}
 		}
-		log.S().Infof("execBatchSplit write peer state region: %d", newRegion.Id)
-		WritePeerState(aCtx.wb, newRegion, rspb.PeerState_Normal, nil)
-		writeInitialApplyState(aCtx.wb, newRegion.Id)
 		regions = append(regions, newRegion)
 	}
 	if rightDerive {
 		derived.StartKey = keys[len(keys)-2]
 		regions = append(regions, derived)
 	}
-	WritePeerState(aCtx.wb, derived, rspb.PeerState_Normal, nil)
-
+	newShardProps := make([]*protos.ShardProperties, len(regions))
+	for i := 0; i < len(regions); i++ {
+		props := new(protos.ShardProperties)
+		props.ShardID = regions[i].Id
+		props.Keys = append(props.Keys, applyStateKey)
+		if regions[i].Id == a.region.Id {
+			props.Values = append(props.Values, a.applyState.Marshal())
+		} else {
+			props.Values = append(props.Values, newInitialApplyState().Marshal())
+		}
+		newShardProps[i] = props
+	}
+	_, err = aCtx.engines.kv.FinishSplit(a.region.Id, a.region.RegionEpoch.Version, newShardProps)
+	if err != nil {
+		return
+	}
 	resp = &raft_cmdpb.AdminResponse{
 		Splits: &raft_cmdpb.BatchSplitResponse{
 			Regions: regions,
@@ -1568,20 +1296,6 @@ func (a *applier) catchUpLogsForMerge(aCtx *applyContext, logs *catchUpLogs) {
 	// TODO: merge
 }
 
-func (a *applier) handleGenSnapshot(aCtx *applyContext, snapTask *GenSnapTask) {
-	if a.pendingRemove || a.stopped {
-		return
-	}
-	regionID := a.region.GetId()
-	for _, res := range aCtx.applyTaskResList {
-		if res.regionID == regionID {
-			aCtx.flush()
-			break
-		}
-	}
-	snapTask.generateAndScheduleSnapshot(aCtx.regionScheduler, a.redoIndex)
-}
-
 func (a *applier) handleTask(aCtx *applyContext, msg Msg) {
 	switch msg.Type {
 	case MsgTypeApply:
@@ -1595,7 +1309,5 @@ func (a *applier) handleTask(aCtx *applyContext, msg Msg) {
 	case MsgTypeApplyCatchUpLogs:
 		a.catchUpLogsForMerge(aCtx, msg.Data.(*catchUpLogs))
 	case MsgTypeApplyLogsUpToDate:
-	case MsgTypeApplyGenSnapshot:
-		a.handleGenSnapshot(aCtx, msg.Data.(*GenSnapTask))
 	}
 }

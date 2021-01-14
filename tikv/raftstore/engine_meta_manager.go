@@ -1,29 +1,11 @@
 package raftstore
 
 import (
-	"bytes"
 	"encoding/binary"
-	"github.com/ngaut/unistore/tikv/mvcc"
-	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
-	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/protos"
-	"github.com/pingcap/badger/table/memtable"
 	"github.com/pingcap/badger/y"
-	"github.com/pingcap/errors"
-	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
-	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
-	"github.com/pingcap/log"
-	"github.com/zhangjinpeng1987/raft"
-	"go.uber.org/zap"
-	"io"
-	"math"
-	"os"
-	"path/filepath"
-	"sort"
 	"sync"
-	"sync/atomic"
-	"unsafe"
 )
 
 // MetaChangeListener implements the badger.MetaChangeListener interface.
@@ -38,11 +20,9 @@ func NewMetaChangeListener() *MetaChangeListener {
 }
 
 // OnChange implements the badger.MetaChangeListener interface.
-func (l *MetaChangeListener) OnChange(e *protos.MetaChangeEvent) {
-	msg := Msg{
-		Type: MsgTypeGenerateEngineMetaChange,
-		Data: e,
-	}
+func (l *MetaChangeListener) OnChange(e *protos.ShardChangeSet) {
+	y.Assert(e.ShardID != 0)
+	msg := NewPeerMsg(MsgTypeGenerateEngineChangeSet, e.ShardID, e)
 	l.mu.Lock()
 	ch := l.msgCh
 	if ch == nil {
@@ -64,6 +44,7 @@ func (l *MetaChangeListener) initMsgCh(msgCh chan<- Msg) {
 	}
 }
 
+/*
 // MetaManager contains file metas in this store, it not only contains meta stored in local engine, but also
 // the follower region's file meta synced from its leader.
 // The follower region's file meta may not loaded from S3, so it can not be found in local engine.
@@ -94,27 +75,33 @@ func NewEngineMetaManager(
 }
 
 func (mm *MetaManager) loadRegions() error {
-	regionStateStartKey := RegionStateKey(0)
-	regionStateEndKey := RegionStateKey(math.MaxUint64)
-	snap := mm.engine.NewSnapshot(regionStateStartKey, regionStateEndKey)
-	defer snap.Discard()
-	iter := snap.NewIterator(mvcc.RaftCF, false, false)
-	defer iter.Close()
-	for iter.Seek(regionStateStartKey); iter.Valid(); iter.Next() {
-		item := iter.Item()
-		if bytes.Compare(item.Key(), regionStateEndKey) >= 0 {
-			break
+	regionStateStartKey := RegionMetaPrefixKey(0)
+	regionStateEndKey := RegionMetaPrefixKey(math.MaxUint64)
+	err := mm.raftEngine.View(func(txn *badger.Txn) error {
+		itOpt := badger.DefaultIteratorOptions
+		itOpt.Reverse = true
+		it := txn.NewIterator(itOpt)
+		defer it.Close()
+		for it.Seek(regionStateEndKey); it.Valid(); it.Next() {
+			item := it.Item()
+			if bytes.Compare(item.Key(), regionStateStartKey) < 0 {
+				break
+			}
+			val, _ := item.Value()
+			rs := new(rspb.RegionLocalState)
+			err := rs.Unmarshal(val)
+			if err != nil {
+				return err
+			}
+			regionMeta := newRegionFileMeta(rs.Region, mm.engine.NumCFs(), badger.ShardMaxLevel)
+			if _, ok := mm.regionMetas.Load(regionMeta.id); ok {
+				continue
+			}
+			mm.regionMetas.Store(regionMeta.id, regionMeta)
 		}
-		val, _ := item.Value()
-		rs := new(rspb.RegionLocalState)
-		err := rs.Unmarshal(val)
-		if err != nil {
-			return err
-		}
-		regionMeta := newRegionFileMeta(rs.Region, mm.engine.NumCFs(), badger.ShardMaxLevel)
-		mm.regionMetas.Store(regionMeta.id, regionMeta)
-	}
-	return nil
+		return nil
+	})
+	return err
 }
 
 func (mm *MetaManager) initMeta() error {
@@ -178,7 +165,18 @@ func (mm *MetaManager) prepareBootstrap(initRegion *metapb.Region) error {
 		PeerID:   peer.Id,
 		StoreID:  peer.StoreId,
 	}
-	e := &protos.MetaChangeEvent{EndKey: initialEndKey}
+	e := &protos.ShardChangeSet{
+		ShardID: initRegion.Id,
+		ShardVer: initRegion.RegionEpoch.Version,
+		Snapshot: &protos.ShardSnapshot{
+			End: initialEndKey,
+			Properties: &protos.ShardProperties{
+				ShardID: initRegion.Id,
+				Keys:    []string{applyStateKey},
+				Values:  [][]byte{newInitialApplyState().Marshal()},
+			},
+		},
+	}
 	rlog := raftlog.BuildEngineMetaChangeLog(header, e)
 	err := mm.writeMetaLogMetaChange(rlog.(*raftlog.EngineMetaChangeRaftLog))
 	if err != nil {
@@ -195,78 +193,11 @@ func (mm *MetaManager) clearPrepareBootstrap(regionID uint64) {
 	mm.metaLog.Truncate(0)
 	mm.metaLog.Seek(0, 0)
 }
-
-func (mm *MetaManager) getSnapshotData(regionID uint64) (*eraftpb.Snapshot, error) {
-	rval, ok := mm.regionMetas.Load(regionID)
-	if !ok {
-		return nil, errors.New("getSnapshotData: region not found")
-	}
-	rm := rval.(*regionFileMeta)
-
-	e := rm.convertToChangeEvent()
-	var maxL0ID uint64
-	for _, l0 := range e.AddedL0Files {
-		if l0.ID > maxL0ID {
-			maxL0ID = l0.ID
-		}
-	}
-	regionKey := RegionStateKey(regionID)
-
-	eSnap := mm.engine.NewSnapshot(regionKey, regionKey)
-	regionLocalState, err := engineSnapshotGetRegionLocalState(eSnap, y.KeyWithTs(regionKey, 0))
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	region := regionLocalState.Region
-	rawStartKey := RawStartKey(region)
-	rawEndKey := RawEndKey(region)
-	applyStateKey := ShardingApplyStateKey(rawStartKey, region.Id)
-	applyState, err := engineSnapshotGetApplyState(eSnap, y.KeyWithTs(applyStateKey, 0))
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	deltaEntries := new(deltaEntries)
-	for cf := 0; cf < mm.engine.NumCFs(); cf++ {
-		iter := eSnap.NewDeltaIterator(cf, maxL0ID)
-		for iter.Seek(rawStartKey); iter.Valid(); iter.Next() {
-			item := iter.Item()
-			if bytes.Compare(item.Key(), rawEndKey) >= 0 {
-				break
-			}
-			val, _ := item.Value()
-			e := deltaEntry{
-				cf:       cf,
-				key:      item.Key(),
-				val:      val,
-				userMeta: item.UserMeta(),
-				version:  item.Version(),
-			}
-			deltaEntries.encodeEntry(e)
-		}
-		iter.Close()
-	}
-	snapData := &snapData{
-		region:       region,
-		applyState:   applyState,
-		changeEvent:  e,
-		deltaEntries: *deltaEntries,
-		maxReadTS:    eSnap.GetReadTS(),
-	}
-	snap := &eraftpb.Snapshot{
-		Metadata: &eraftpb.SnapshotMetadata{},
-		Data:     snapData.Marshal(),
-	}
-	snap.Metadata.Index = applyState.appliedIndex
-	snap.Metadata.Term = applyState.appliedIndexTerm
-	confState := confStateFromRegion(region)
-	snap.Metadata.ConfState = &confState
-	return snap, nil
-}
-
+*/
 type snapData struct {
 	region       *metapb.Region
 	applyState   *applyState
-	changeEvent  *protos.MetaChangeEvent
+	changeSet    *protos.ShardChangeSet
 	deltaEntries deltaEntries
 	maxReadTS    uint64
 }
@@ -306,7 +237,7 @@ func (d *deltaEntries) decodeEntry() deltaEntry {
 func (sd *snapData) Marshal() []byte {
 	regionData, _ := sd.region.Marshal()
 	applyStateData := sd.applyState.Marshal()
-	changeData, _ := sd.changeEvent.Marshal()
+	changeData, _ := sd.changeSet.Marshal()
 	buf := make([]byte, 0, 4+len(regionData)+4+len(applyStateData)+4+len(changeData)+4+len(sd.deltaEntries.data))
 	buf = appendSlice(buf, regionData)
 	buf = appendSlice(buf, applyStateData)
@@ -326,9 +257,9 @@ func (sd *snapData) Unmarshal(data []byte) error {
 	sd.applyState = new(applyState)
 	element, data = cutSlices(data)
 	sd.applyState.Unmarshal(element)
-	sd.changeEvent = new(protos.MetaChangeEvent)
+	sd.changeSet = new(protos.ShardChangeSet)
 	element, data = cutSlices(data)
-	err = sd.changeEvent.Unmarshal(element)
+	err = sd.changeSet.Unmarshal(element)
 	if err != nil {
 		return err
 	}
@@ -355,22 +286,7 @@ func cutSlices(data []byte) (element []byte, remain []byte) {
 	return data[:length], data[length:]
 }
 
-func engineSnapshotGetRegionLocalState(eSnap *badger.Snapshot, key y.Key) (*rspb.RegionLocalState, error) {
-	item, err := eSnap.Get(mvcc.RaftCF, key)
-	if err != nil {
-		return nil, err
-	}
-	val, err := item.Value()
-	if err != nil {
-		return nil, err
-	}
-	regionLocalState := new(rspb.RegionLocalState)
-	err = regionLocalState.Unmarshal(val)
-	if err != nil {
-		return nil, err
-	}
-	return regionLocalState, nil
-}
+/*
 
 func engineSnapshotGetApplyState(eSnap *badger.Snapshot, key y.Key) (*applyState, error) {
 	item, err := eSnap.Get(mvcc.RaftCF, key)
@@ -440,52 +356,23 @@ func (mm *MetaManager) updateMeta(rlog *raftlog.EngineMetaChangeRaftLog) {
 	val, ok := mm.regionMetas.Load(regionID)
 	y.Assert(ok)
 	regionMeta := val.(*regionFileMeta)
-	if len(e.AddedL0Files) == 1 && len(e.AddedFiles) == 0 {
-		// Flush event, clear all the unneeded pending raft logs.
-		commitTS := e.AddedL0Files[0].CommitTS
-		snap := mm.engine.NewSnapshot(regionMeta.startKey, regionMeta.startKey)
-		item, err := snap.Get(mvcc.RaftCF, y.KeyWithTs(ShardingApplyStateKey(regionMeta.startKey, regionID), commitTS))
-		if err == nil {
-			v, _ := item.Value()
-			var applyState applyState
-			applyState.Unmarshal(v)
-			for i := 0; i < len(regionMeta.pendingIdx); i++ {
-				if regionMeta.pendingIdx[i] > applyState.appliedIndex {
-					regionMeta.pending = regionMeta.pending[i:]
-					regionMeta.pendingIdx = regionMeta.pendingIdx[i:]
-					break
-				}
-			}
-		} else {
-			log.S().Infof("failed to get with commitTS %d, raft log len %d", commitTS, len(regionMeta.pending))
-			latest, err1 := snap.Get(mvcc.RaftCF, y.KeyWithTs(ShardingApplyStateKey(regionMeta.startKey, regionID), commitTS))
-			if err1 != nil {
-				log.S().Info("get with latest ts", err1)
-			} else {
-				v, _ := latest.Value()
-				var applyState applyState
-				applyState.Unmarshal(v)
-				log.S().Infof("get latest apply index %d", applyState.appliedIndex)
-			}
-		}
-
-	}
 	regionMeta.mu.Lock()
 	defer regionMeta.mu.Unlock()
-	for _, l0Meta := range e.AddedL0Files {
+	for _, id := range e. {
+		regionMeta.removeFile(id)
+	}
+	for _, l0Meta := range e.L0Creates {
 		regionMeta.addL0(l0Meta)
-	}
-	for _, id := range e.RemovedL0Files {
-		regionMeta.removeL0(id)
-	}
-	for _, meta := range e.RemovedFiles {
-		if meta.Level == 0 {
-			regionMeta.removeL0(meta.ID)
-		} else {
-			regionMeta.removeFile(meta)
+		for i, key := range l0Meta.Properties.Keys {
+			if key == applyStateKey {
+				val := l0Meta.Properties.Values[i]
+				var applyState applyState
+				applyState.Unmarshal(val)
+				regionMeta.stableIdx = applyState.appliedIndex
+			}
 		}
 	}
-	for _, meta := range e.AddedFiles {
+	for _, meta := range e.TableCreates {
 		regionMeta.addFile(meta)
 	}
 }
@@ -494,18 +381,22 @@ func (mm *MetaManager) applySnapshot(snap *snapData) {
 	regionMeta := newRegionFileMeta(snap.region, mm.engine.NumCFs(), badger.ShardMaxLevel)
 	regionMeta.snapTS = snap.maxReadTS
 	delta := snap.deltaEntries
-	arenaSize := len(delta.data)*3/2 + 1024 // Make sure the arena is large enough.
-	cfTable := memtable.NewCFTable(int64(arenaSize), mm.engine.NumCFs())
+	arenaSize := int64(len(delta.data)*3/2) // Make sure the arena is large enough.
+	maxTblSize := mm.engine.GetOpt().MaxMemTableSize
+	if arenaSize < maxTblSize {
+		arenaSize = maxTblSize
+	}
+	cfTable := memtable.NewCFTable(arenaSize, mm.engine.NumCFs())
 	for len(delta.data) > 0 {
 		entry := delta.decodeEntry()
 		v := y.ValueStruct{Value: entry.val, UserMeta: entry.userMeta, Version: entry.version}
 		cfTable.Put(entry.cf, entry.key, v)
 	}
 	regionMeta.memTbls = append(regionMeta.memTbls, cfTable)
-	for _, l0Meta := range snap.changeEvent.AddedL0Files {
+	for _, l0Meta := range snap.changeSet.L0Creates {
 		regionMeta.addL0(l0Meta)
 	}
-	for _, fileMeta := range snap.changeEvent.AddedFiles {
+	for _, fileMeta := range snap.changeSet.TableCreates {
 		regionMeta.addFile(fileMeta)
 	}
 	mm.regionMetas.Store(regionMeta.id, regionMeta)
@@ -534,6 +425,10 @@ func (mm *MetaManager) split(derived *metapb.Region, regions []*metapb.Region) {
 		idx := sort.Search(len(newRegionFileMetas), func(i int) bool {
 			return bytes.Compare(smallest, newRegionFileMetas[i].endKey) < 0
 		})
+		if idx == len(newRegionFileMetas) {
+			log.S().Errorf("smallest %v, end key %v, old end key %v",
+				smallest, newRegionFileMetas[len(newRegionFileMetas)-1].endKey, oldRegionFileMeta.endKey)
+		}
 		newRegionMeta := newRegionFileMetas[idx]
 		newRegionMeta.l0s = append(newRegionMeta.l0s, l0)
 	}
@@ -555,10 +450,9 @@ func (mm *MetaManager) split(derived *metapb.Region, regions []*metapb.Region) {
 	}
 }
 
-func (mm *MetaManager) followerApply(regionID, index uint64, rlog raftlog.RaftLog) {
+func (mm *MetaManager) followerApply(regionID, index uint64) {
 	meta := mm.mustLoad(regionID)
-	meta.pending = append(meta.pending, rlog)
-	meta.pendingIdx = append(meta.pendingIdx, index)
+	meta.appliedIdx = index
 }
 
 func (mm *MetaManager) ingestRegionFiles(regionID uint64) {
@@ -579,16 +473,30 @@ func (mm *MetaManager) ingestRegionFiles(regionID uint64) {
 	}
 }
 
-func (mm *MetaManager) loadFilesAndApplyToLatestLog(meta *regionFileMeta, tree *badger.IngestTree, wg *sync.WaitGroup) {
+func (mm *MetaManager) clearFiles(regionID uint64) {
+	val, ok := mm.regionMetas.Load(regionID)
+	if !ok {
+		return
+	}
+	meta := val.(*regionFileMeta)
+	go mm.engine.DeleteRange(meta.startKey, meta.endKey, false)
+}
+
+func (mm *MetaManager) loadFilesAndApplyToLatestLog(meta *regionFileMeta, tree *badger.IngestTree, wg *sync.WaitGroup) error {
 	var err error
 	defer func() {
 		finishState := &loadingState{ok: err == nil, err: err}
 		atomic.SwapPointer(&meta.state, unsafe.Pointer(finishState))
 		wg.Done()
 	}()
+	log.Info("ingest region", zap.Uint64("id", meta.id))
 	err = mm.engine.Ingest(tree)
 	if err != nil {
-		return
+		return err
+	}
+	entries, _, err := fetchEntriesTo(mm.raftEngine, meta.id, atomic.LoadUint64(&meta.stableIdx)+1, meta.appliedIdx, meta.appliedIdx, nil)
+	if err != nil {
+		return err
 	}
 	e := tree.Meta
 	snap := mm.engine.NewSnapshot(e.StartKey, e.EndKey)
@@ -597,12 +505,18 @@ func (mm *MetaManager) loadFilesAndApplyToLatestLog(meta *regionFileMeta, tree *
 	snap.SetBuffer(buffer)
 	aCtx := &applyContext{dbSnap: snap, wb: new(WriteBatch)}
 	applier := &applier{}
-	for i := 0; i < len(meta.pending); i++ {
-		applier.execWriteCmd(aCtx, meta.pending[i])
+	for i := 0; i < len(entries); i++ {
+		entry := &entries[i]
+		if entry.EntryType != eraftpb.EntryType_EntryNormal || len(entry.Data) == 0 {
+			continue
+		}
+		rlog := raftlog.DecodeLog(entry)
+		applier.execWriteCmd(aCtx, rlog)
 		aCtx.wb.WriteToBuffer(buffer, snap.GetReadTS())
 		aCtx.wb.Reset()
 	}
 	mm.engine.IngestBuffer(tree.Meta.StartKey, buffer)
+	return nil
 }
 
 func (mm *MetaManager) mustLoad(regionID uint64) *regionFileMeta {
@@ -614,6 +528,8 @@ func (mm *MetaManager) mustLoad(regionID uint64) *regionFileMeta {
 func (mm *MetaManager) onRoleChange(regionID uint64, raftState raft.StateType) {
 	if raftState == raft.StateLeader {
 		mm.ingestRegionFiles(regionID)
+	} else if raftState == raft.StateFollower {
+		mm.clearFiles(regionID)
 	}
 }
 
@@ -626,21 +542,27 @@ func (mm *MetaManager) isReady(regionID uint64) (ok bool, wg *sync.WaitGroup) {
 // regionFileMeta organize file metas in LSM tree structure for easier update.
 type regionFileMeta struct {
 	id         uint64
+	version    uint64
 	mu         sync.Mutex
 	state      unsafe.Pointer
-	pending    []raftlog.RaftLog
-	pendingIdx []uint64
+	appliedIdx uint64
+	stableIdx  uint64
 
 	snapTS   uint64
 	startKey []byte
 	endKey   []byte
 	memTbls  []*memtable.CFTable
-	l0s      []*protos.L0FileMeta
+	l0s      []*protos.L0Create
 	cfs      []cfFileMeta
 }
 
 func newRegionFileMeta(region *metapb.Region, numCFs, maxLevel int) *regionFileMeta {
-	rfm := &regionFileMeta{id: region.Id, startKey: RawStartKey(region), endKey: RawEndKey(region)}
+	rfm := &regionFileMeta{
+		id: region.Id,
+		version: region.RegionEpoch.Version,
+		startKey: RawStartKey(region),
+		endKey: RawEndKey(region),
+	}
 	rfm.state = unsafe.Pointer(new(loadingState))
 	rfm.cfs = make([]cfFileMeta, numCFs)
 	for cf := 0; cf < numCFs; cf++ {
@@ -649,7 +571,7 @@ func newRegionFileMeta(region *metapb.Region, numCFs, maxLevel int) *regionFileM
 	return rfm
 }
 
-func (rfm *regionFileMeta) removeL0(id uint64) {
+func (rfm *regionFileMeta) removeFile(id uint64) {
 	var i int
 	for ; i < len(rfm.l0s); i++ {
 		if rfm.l0s[i].ID == id {
@@ -658,14 +580,27 @@ func (rfm *regionFileMeta) removeL0(id uint64) {
 	}
 	if i < len(rfm.l0s) {
 		rfm.l0s = append(rfm.l0s[i:], rfm.l0s[:i+1]...)
+		return
 	}
+	for _, cf := range rfm.cfs {
+		for _, l := range cf.levels {
+			for _, f := range l.files {
+				if f.ID == id {
+					l.files = append(l.files[i:], l.files[i+1:]...)
+					return
+				}
+			}
+		}
+	}
+	log.Error("region file meta remove file not found", zap.Uint64("fileID", id))
+	return
 }
 
 func (rfm *regionFileMeta) getLoadingState() *loadingState {
 	return (*loadingState)(atomic.LoadPointer(&rfm.state))
 }
 
-func (rfm *regionFileMeta) addL0(meta *protos.L0FileMeta) {
+func (rfm *regionFileMeta) addL0(meta *protos.L0Create) {
 	for i := 0; i < len(rfm.l0s); i++ {
 		if rfm.l0s[i].ID == meta.ID {
 			// The meta is already added.
@@ -675,20 +610,7 @@ func (rfm *regionFileMeta) addL0(meta *protos.L0FileMeta) {
 	rfm.l0s = append(rfm.l0s, meta)
 }
 
-func (rfm *regionFileMeta) removeFile(meta *protos.FileMeta) {
-	level := &rfm.cfs[meta.CF].levels[meta.Level-1]
-	var i int
-	for ; i < len(level.files); i++ {
-		if level.files[i].ID == meta.ID {
-			break
-		}
-	}
-	if i < len(level.files) {
-		level.files = append(level.files[i:], level.files[i+1:]...)
-	}
-}
-
-func (rfm *regionFileMeta) addFile(meta *protos.FileMeta) {
+func (rfm *regionFileMeta) addFile(meta *protos.TableCreate) {
 	level := &rfm.cfs[meta.CF].levels[meta.Level-1]
 	for i := 0; i < len(level.files); i++ {
 		if level.files[i].ID == meta.ID {
@@ -713,16 +635,16 @@ func (rfm *regionFileMeta) convertToChangeEvent() *protos.MetaChangeEvent {
 	// TODO: MetaChangeEvent is not the best pb to represent snapshot we just use it for convenience.
 	// Only AddedL0s and AddedFiles fields are used.
 	e := &protos.MetaChangeEvent{
-		AddedL0Files: make([]*protos.L0FileMeta, 0, l0Cnt),
-		AddedFiles:   make([]*protos.FileMeta, 0, lnCnt),
+		L0Creates:    make([]*protos.L0Create, 0, l0Cnt),
+		TableCreates: make([]*protos.TableCreate, 0, lnCnt),
 	}
 	rfm.mu.Lock()
 	e.StartKey = rfm.startKey
 	e.EndKey = rfm.endKey
-	e.AddedL0Files = append(e.AddedL0Files, rfm.l0s...)
+	e.L0Creates = append(e.L0Creates, rfm.l0s...)
 	for _, cf := range rfm.cfs {
 		for _, lvl := range cf.levels {
-			e.AddedFiles = append(e.AddedFiles, lvl.files...)
+			e.TableCreates = append(e.TableCreates, lvl.files...)
 		}
 	}
 	rfm.mu.Unlock()
@@ -734,7 +656,7 @@ type cfFileMeta struct {
 }
 
 type levelFileMeta struct {
-	files []*protos.FileMeta
+	files []*protos.TableCreate
 }
 
 type loadingState struct {
@@ -742,3 +664,4 @@ type loadingState struct {
 	wg  *sync.WaitGroup
 	err error
 }
+*/

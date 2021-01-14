@@ -60,8 +60,13 @@ func (w writeDBWorker) run() {
 }
 
 func (w writeDBWorker) updateBatchGroup(batchGroup []*writeBatch) {
-	wb := w.writer.db.NewWriteBatch()
+	wbMap := map[uint64]*badger.WriteBatch{}
 	for _, batch := range batchGroup {
+		wb, ok := wbMap[batch.regionID]
+		if !ok {
+			wb = w.writer.db.NewWriteBatch(w.writer.db.GetShard(batch.regionID))
+			wbMap[batch.regionID] = wb
+		}
 		for _, entry := range batch.dbEntries {
 			var err error
 			if len(entry.UserMeta) == 0 {
@@ -84,7 +89,11 @@ func (w writeDBWorker) updateBatchGroup(batchGroup []*writeBatch) {
 			y.Assert(wb.Put(extraCF, entry.Key.UserKey, y.ValueStruct{UserMeta: entry.UserMeta, Version: entry.Key.Version}) == nil)
 		}
 	}
-	e := w.writer.db.Write(wb)
+	wbs := make([]*badger.WriteBatch, 0, len(wbMap))
+	for _, wb := range wbMap {
+		wbs = append(wbs, wb)
+	}
+	e := w.writer.db.Write(wbs...)
 	for _, batch := range batchGroup {
 		batch.err = e
 		batch.wg.Done()
@@ -131,6 +140,7 @@ func (writer *dbWriter) Write(batch mvcc.WriteBatch) error {
 }
 
 type writeBatch struct {
+	regionID     uint64
 	startTS      uint64
 	commitTS     uint64
 	dbEntries    []*badger.Entry
@@ -212,6 +222,7 @@ func (writer *dbWriter) NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Con
 		writer.updateLatestTS(startTS)
 	}
 	return &writeBatch{
+		regionID: ctx.RegionId,
 		startTS:  startTS,
 		commitTS: commitTS,
 	}
@@ -229,7 +240,8 @@ func (writer *dbWriter) updateLatestTS(ts uint64) {
 }
 
 func (writer *dbWriter) DeleteRange(startKey, endKey []byte, latchHandle mvcc.LatchHandle) error {
-	return writer.db.DeleteRange(startKey, endKey)
+	// TODO
+	return nil
 }
 
 func (writer *dbWriter) collectRangeKeys(it *badger.Iterator, startKey, endKey []byte, keys []y.Key) []y.Key {

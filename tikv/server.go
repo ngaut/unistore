@@ -121,7 +121,8 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCt
 func (req *requestCtx) getDBReader() *dbreader.DBReader {
 	if req.reader == nil {
 		mvccStore := req.svr.mvccStore
-		snap := mvccStore.db.NewSnapshot(req.regCtx.startKey, req.regCtx.endKey)
+		shd := mvccStore.db.GetShard(req.rpcCtx.RegionId)
+		snap := mvccStore.db.NewSnapshot(shd)
 		req.reader = dbreader.NewDBReader(req.regCtx.startKey, req.regCtx.endKey, snap)
 	}
 	return req.reader
@@ -560,7 +561,10 @@ func (svr *Server) SplitRegion(ctx context.Context, req *kvrpcpb.SplitRegionRequ
 		return &kvrpcpb.SplitRegionResponse{RegionError: &errorpb.Error{Message: err.Error()}}, nil
 	}
 	defer reqCtx.finish()
-	return svr.regionManager.SplitRegion(req), nil
+	if reqCtx.regErr != nil {
+		return &kvrpcpb.SplitRegionResponse{RegionError: reqCtx.regErr}, nil
+	}
+	return svr.regionManager.SplitRegion(req, reqCtx), nil
 }
 
 func (svr *Server) ReadIndex(context.Context, *kvrpcpb.ReadIndexRequest) (*kvrpcpb.ReadIndexResponse, error) {
@@ -607,12 +611,8 @@ func (svr *Server) MvccGetByStartTs(ctx context.Context, req *kvrpcpb.MvccGetByS
 }
 
 func (svr *Server) UnsafeDestroyRange(ctx context.Context, req *kvrpcpb.UnsafeDestroyRangeRequest) (*kvrpcpb.UnsafeDestroyRangeResponse, error) {
-	start, end := req.GetStartKey(), req.GetEndKey()
-	err := svr.mvccStore.db.DeleteRange(start, end)
+	// TODO
 	resp := &kvrpcpb.UnsafeDestroyRangeResponse{}
-	if err != nil {
-		resp.Error = err.Error()
-	}
 	return resp, nil
 }
 

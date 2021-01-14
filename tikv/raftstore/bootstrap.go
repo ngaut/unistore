@@ -15,20 +15,18 @@ package raftstore
 
 import (
 	"bytes"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
+	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
-	"github.com/pingcap/log"
 	"math"
 )
 
 const (
 	InitEpochVer     uint64 = 1
 	InitEpochConfVer uint64 = 1
-	KvTS             uint64 = 0
 	RaftTS           uint64 = 0
 )
 
@@ -55,30 +53,12 @@ func isRaftRangeEmpty(engine *badger.DB, startKey, endKey []byte) (bool, error) 
 	return !hasData, nil
 }
 
-func isKVRaftCFRangeEmpty(engine *badger.ShardingDB, startKey, endKey []byte) (bool, error) {
-	var hasData bool
-	dbSnap := engine.NewSnapshot(startKey, endKey)
-	it := dbSnap.NewIterator(mvcc.RaftCF, false, false)
-	it.Seek(startKey)
-	if it.Valid() {
-		item := it.Item()
-		if bytes.Compare(item.Key(), endKey) < 0 {
-			hasData = true
-		}
-	}
-	return !hasData, nil
-}
-
 func BootstrapStore(engines *Engines, clussterID, storeID uint64) error {
 	ident := new(rspb.StoreIdent)
-	empty, err := isKVRaftCFRangeEmpty(engines.kv, MinKey, MaxDataKey)
-	if err != nil {
-		return err
-	}
-	if !empty {
+	if engines.kv.Size() != 0 {
 		return errors.New("kv store is not empty and ahs alread had data.")
 	}
-	empty, err = isRaftRangeEmpty(engines.raft, MinKey, MaxDataKey)
+	empty, err := isRaftRangeEmpty(engines.raft, MinKey, MaxDataKey)
 	if err != nil {
 		return err
 	}
@@ -87,13 +67,13 @@ func BootstrapStore(engines *Engines, clussterID, storeID uint64) error {
 	}
 	ident.ClusterId = clussterID
 	ident.StoreId = storeID
-	wb := new(WriteBatch)
+	wb := new(RaftWriteBatch)
 	val, err := ident.Marshal()
 	if err != nil {
 		return err
 	}
-	wb.SetRaftCF(y.KeyWithTs(storeIdentKey, 0), val)
-	return wb.WriteToKV(engines.kv)
+	wb.Set(y.KeyWithTs(storeIdentKey, 0), val)
+	return wb.WriteToRaft(engines.raft)
 }
 
 var (
@@ -125,75 +105,55 @@ func PrepareBootstrap(engines *Engines, storeID, regionID, peerID uint64) (*meta
 func writePrepareBootstrap(engines *Engines, region *metapb.Region) error {
 	state := new(rspb.RegionLocalState)
 	state.Region = region
-	kvWB := new(WriteBatch)
+	raftWB := new(RaftWriteBatch)
 	val, _ := state.Marshal()
-	kvWB.SetRaftCF(y.KeyWithTs(prepareBootstrapKey, KvTS), val)
-	kvWB.SetRaftCF(y.KeyWithTs(RegionStateKey(region.Id), KvTS), val)
-	writeInitialApplyState(kvWB, region.Id)
-	err := engines.WriteKV(kvWB)
+	raftWB.Set(y.KeyWithTs(prepareBootstrapKey, RaftTS), val)
+	raftWB.Set(y.KeyWithTs(RegionStateKey(region), RaftTS), val)
+	writeInitialRaftState(raftWB, region)
+	err := engines.WriteRaft(raftWB)
 	if err != nil {
 		return err
 	}
-	log.S().Infof("write initial region local state")
-	err = engines.SyncKVWAL()
-	if err != nil {
-		return err
+	ingestTree := &badger.IngestTree{
+		ChangeSet: &protos.ShardChangeSet{
+			ShardID:  region.Id,
+			ShardVer: region.RegionEpoch.Version,
+			Snapshot: &protos.ShardSnapshot{
+				Start: nil,
+				End:   []byte{255, 255, 255, 255, 255, 255, 255, 255},
+				Properties: &protos.ShardProperties{
+					ShardID: region.Id,
+					Keys:    []string{applyStateKey},
+					Values:  [][]byte{newInitialApplyState().Marshal()},
+				},
+			},
+		},
 	}
-	raftWB := new(WriteBatch)
-	writeInitialRaftState(raftWB, region.Id)
-	err = engines.WriteRaft(raftWB)
-	if err != nil {
-		return err
-	}
-	err = engines.metaManager.prepareBootstrap(region)
-	if err != nil {
-		return err
-	}
-	return engines.SyncRaftWAL()
+	return engines.kv.Ingest(ingestTree)
 }
 
-func writeInitialApplyState(kvWB *WriteBatch, regionID uint64) {
-	applyState := applyState{
-		appliedIndex:     RaftInitLogIndex,
-		appliedIndexTerm: RaftInitLogTerm,
-		truncatedIndex:   RaftInitLogIndex,
-		truncatedTerm:    RaftInitLogTerm,
-	}
-	kvWB.SetRaftCF(y.KeyWithTs(ShardingApplyStateKey(rawInitialStartKey, regionID), KvTS), applyState.Marshal())
-}
-
-func writeInitialRaftState(raftWB *WriteBatch, regionID uint64) {
+func writeInitialRaftState(raftWB *RaftWriteBatch, region *metapb.Region) {
 	raftState := raftState{
 		lastIndex: RaftInitLogIndex,
 		term:      RaftInitLogTerm,
 		commit:    RaftInitLogIndex,
 	}
-	raftWB.Set(y.KeyWithTs(RaftStateKey(regionID), RaftTS), raftState.Marshal())
+	raftWB.Set(y.KeyWithTs(RaftStateKey(region), RaftTS), raftState.Marshal())
 }
 
-func ClearPrepareBootstrap(engines *Engines, regionID uint64) error {
+func ClearPrepareBootstrap(engines *Engines, region *metapb.Region) error {
 	err := engines.raft.Update(func(txn *badger.Txn) error {
-		return txn.Delete(RaftStateKey(regionID))
+		return txn.Delete(RaftStateKey(region))
 	})
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	wb := new(WriteBatch)
-	wb.SetRaftCF(y.KeyWithTs(prepareBootstrapKey, KvTS), nil)
-	// should clear raft initial state too.
-	wb.SetRaftCF(y.KeyWithTs(RegionStateKey(regionID), KvTS), nil)
-	wb.SetRaftCF(y.KeyWithTs(ShardingApplyStateKey(rawInitialStartKey, regionID), KvTS), nil)
-	err = engines.WriteKV(wb)
-	if err != nil {
-		return err
-	}
-	engines.metaManager.clearPrepareBootstrap(regionID)
-	return engines.SyncKVWAL()
+	return engines.kv.RemoveShard(region.Id, true)
 }
 
 func ClearPrepareBootstrapState(engines *Engines) error {
-	wb := new(WriteBatch)
-	wb.SetRaftCF(y.KeyWithTs(prepareBootstrapKey, KvTS), nil)
-	err := wb.WriteToKV(engines.kv)
+	wb := new(RaftWriteBatch)
+	wb.Delete(y.KeyWithTs(prepareBootstrapKey, RaftTS))
+	err := wb.WriteToRaft(engines.raft)
 	return errors.WithStack(err)
 }

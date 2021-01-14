@@ -31,7 +31,7 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 	engines := newTestEngines(t)
 	defer cleanUpTestEngineData(engines)
 	apply := new(applier)
-	applyCtx := newApplyContext("test", nil, engines, nil, nil, NewDefaultConfig())
+	applyCtx := newApplyContext("test", nil, engines, nil, NewDefaultConfig())
 	wb := &raftWriteBatch{
 		startTS:  100,
 		commitTS: 0,
@@ -63,11 +63,9 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 			Header:   new(rfpb.RaftRequestHeader),
 			Requests: wb.requests,
 		}))
-		err := applyCtx.wb.WriteToKV(engines.kv)
-		assert.Nil(t, err)
-		applyCtx.wb.Reset()
+		applyCtx.flush()
 		wb.requests = nil
-		snap := engines.kv.NewSnapshot(primary, primary)
+		snap := engines.kv.NewSnapshot(engines.kv.GetShard(apply.region.Id))
 		item, err := snap.Get(mvcc.LockCF, y.KeyWithTs(primary, 0))
 		assert.Nil(t, err)
 		val, _ := item.Value()
@@ -97,11 +95,9 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 			Header:   new(rfpb.RaftRequestHeader),
 			Requests: wb.requests,
 		}))
-		err := applyCtx.wb.WriteToKV(engines.kv)
-		assert.Nil(t, err)
-		applyCtx.wb.Reset()
+		applyCtx.flush()
 		wb.requests = nil
-		snap := engines.kv.NewSnapshot(primary, primary)
+		snap := engines.kv.NewSnapshot(engines.kv.GetShard(apply.region.Id))
 		item, err := snap.Get(mvcc.WriteCF, y.KeyWithTs(primary, wb.commitTS))
 		assert.Nil(t, err)
 		curVal, err := item.Value()
@@ -119,7 +115,7 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 	engines := newTestEngines(t)
 	defer cleanUpTestEngineData(engines)
 	apply := new(applier)
-	applyCtx := newApplyContext("test", nil, engines, nil, nil, NewDefaultConfig())
+	applyCtx := newApplyContext("test", nil, engines, nil, NewDefaultConfig())
 	wb := &raftWriteBatch{
 		startTS:  100,
 		commitTS: 0,
@@ -144,9 +140,7 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 			Header:   new(rfpb.RaftRequestHeader),
 			Requests: wb.requests,
 		}))
-		err := applyCtx.wb.WriteToKV(engines.kv)
-		assert.Nil(t, err)
-		applyCtx.wb.Reset()
+		applyCtx.flush()
 		wb.requests = nil
 	}
 
@@ -161,9 +155,7 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 		Header:   new(rfpb.RaftRequestHeader),
 		Requests: wb.requests,
 	}))
-	err := applyCtx.wb.WriteToKV(engines.kv)
-	assert.Nil(t, err)
-	applyCtx.wb.Reset()
+	applyCtx.flush()
 
 	wb = &raftWriteBatch{
 		startTS:  100,
@@ -175,11 +167,9 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 		Header:   new(rfpb.RaftRequestHeader),
 		Requests: wb.requests,
 	}))
-	err = applyCtx.wb.WriteToKV(engines.kv)
-	assert.Nil(t, err)
-	applyCtx.wb.Reset()
+	applyCtx.flush()
 	// The lock should be deleted.
-	snap := engines.kv.NewSnapshot(primary, primary)
+	snap := engines.kv.NewSnapshot(engines.kv.GetShard(apply.region.Id))
 	item, _ := snap.Get(mvcc.LockCF, y.KeyWithTs(primary, 0))
 	assert.Nil(t, item)
 }

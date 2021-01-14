@@ -37,7 +37,7 @@ func newTestEngines(t *testing.T) *Engines {
 	raftOpts.ValueThreshold = 256
 	engines.raft, err = badger.Open(raftOpts)
 	require.Nil(t, err)
-	engines.metaManager, err = NewEngineMetaManager(engines.kv, engines.kvPath, new(MetaChangeListener))
+	engines.metaManager, err = NewEngineMetaManager(engines.kv, engines.raft, engines.kvPath, new(MetaChangeListener))
 	require.Nil(t, err)
 	return engines
 }
@@ -55,9 +55,9 @@ func newTestPeerStorage(t *testing.T) *PeerStorage {
 
 func newTestPeerStorageFromEnts(t *testing.T, ents []eraftpb.Entry) *PeerStorage {
 	peerStore := newTestPeerStorage(t)
-	kvWB := new(WriteBatch)
+	kvWB := new(RaftWriteBatch)
 	ctx := NewInvokeContext(peerStore)
-	raftWB := new(WriteBatch)
+	raftWB := new(RaftWriteBatch)
 	require.Nil(t, peerStore.Append(ctx, ents[1:], raftWB))
 	ctx.ApplyState.truncatedIndex = ents[0].Index
 	ctx.ApplyState.truncatedTerm = ents[0].Term

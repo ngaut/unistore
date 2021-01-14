@@ -25,12 +25,10 @@ import (
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	rcpb "github.com/pingcap/kvproto/pkg/raft_cmdpb"
-	"github.com/pingcap/tidb/util/codec"
 )
 
 type raftDBWriter struct {
-	router           *router
-	useCustomRaftLog bool
+	router *router
 }
 
 func (writer *raftDBWriter) Open() {
@@ -41,132 +39,8 @@ func (writer *raftDBWriter) Close() {
 	// TODO: stub
 }
 
-type raftWriteBatch struct {
-	ctx      *kvrpcpb.Context
-	requests []*rcpb.Request
-	startTS  uint64
-	commitTS uint64
-}
-
-func (wb *raftWriteBatch) Prewrite(key []byte, lock *mvcc.MvccLock) {
-	encodedKey := codec.EncodeBytes(nil, key)
-	putLock, putDefault := mvcc.EncodeLockCFValue(lock)
-	if len(putDefault) != 0 {
-		// Prewrite with large value.
-		putDefaultReq := &rcpb.Request{
-			CmdType: rcpb.CmdType_Put,
-			Put: &rcpb.PutRequest{
-				Cf:    "",
-				Key:   codec.EncodeUintDesc(encodedKey, lock.StartTS),
-				Value: putDefault,
-			},
-		}
-		putLockReq := &rcpb.Request{
-			CmdType: rcpb.CmdType_Put,
-			Put: &rcpb.PutRequest{
-				Cf:    CFLock,
-				Key:   encodedKey,
-				Value: putLock,
-			},
-		}
-		wb.requests = append(wb.requests, putDefaultReq, putLockReq)
-	} else {
-		putLockReq := &rcpb.Request{
-			CmdType: rcpb.CmdType_Put,
-			Put: &rcpb.PutRequest{
-				Cf:    CFLock,
-				Key:   encodedKey,
-				Value: putLock,
-			},
-		}
-		wb.requests = append(wb.requests, putLockReq)
-	}
-}
-
-func (wb *raftWriteBatch) Commit(key []byte, lock *mvcc.MvccLock) {
-	encodedKey := codec.EncodeBytes(nil, key)
-	writeType := mvcc.WriteTypePut
-	switch lock.Op {
-	case byte(kvrpcpb.Op_Lock):
-		writeType = mvcc.WriteTypeLock
-	case byte(kvrpcpb.Op_Del):
-		writeType = mvcc.WriteTypeDelete
-	}
-	putWriteReq := &rcpb.Request{
-		CmdType: rcpb.CmdType_Put,
-		Put: &rcpb.PutRequest{
-			Cf:    CFWrite,
-			Key:   codec.EncodeUintDesc(encodedKey, wb.commitTS),
-			Value: mvcc.EncodeWriteCFValue(writeType, lock.StartTS, lock.Value),
-		},
-	}
-	delLockReq := &rcpb.Request{
-		CmdType: rcpb.CmdType_Delete,
-		Delete: &rcpb.DeleteRequest{
-			Cf:  CFLock,
-			Key: encodedKey,
-		},
-	}
-	wb.requests = append(wb.requests, putWriteReq, delLockReq)
-}
-
-func (wb *raftWriteBatch) Rollback(key []byte, deleteLock bool) {
-	encodedKey := codec.EncodeBytes(nil, key)
-	rollBackReq := &rcpb.Request{
-		CmdType: rcpb.CmdType_Put,
-		Put: &rcpb.PutRequest{
-			Cf:    CFWrite,
-			Key:   codec.EncodeUintDesc(encodedKey, wb.startTS),
-			Value: mvcc.EncodeWriteCFValue(mvcc.WriteTypeRollback, wb.startTS, nil),
-		},
-	}
-	if deleteLock {
-		delLockReq := &rcpb.Request{
-			CmdType: rcpb.CmdType_Delete,
-			Delete: &rcpb.DeleteRequest{
-				Cf:  CFLock,
-				Key: encodedKey,
-			},
-		}
-		wb.requests = append(wb.requests, rollBackReq, delLockReq)
-	} else {
-		wb.requests = append(wb.requests, rollBackReq)
-	}
-}
-
-func (wb *raftWriteBatch) PessimisticLock(key []byte, lock *mvcc.MvccLock) {
-	encodedKey := codec.EncodeBytes(nil, key)
-	val, _ := mvcc.EncodeLockCFValue(lock)
-	wb.requests = append(wb.requests, &rcpb.Request{
-		CmdType: rcpb.CmdType_Put,
-		Put: &rcpb.PutRequest{
-			Cf:    CFLock,
-			Key:   encodedKey,
-			Value: val,
-		},
-	})
-}
-
-func (wb *raftWriteBatch) PessimisticRollback(key []byte) {
-	encodedKey := codec.EncodeBytes(nil, key)
-	wb.requests = append(wb.requests, &rcpb.Request{
-		CmdType: rcpb.CmdType_Delete,
-		Delete: &rcpb.DeleteRequest{
-			Cf:  CFLock,
-			Key: encodedKey,
-		},
-	})
-}
-
 func (writer *raftDBWriter) NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Context) mvcc.WriteBatch {
-	if writer.useCustomRaftLog {
-		return NewCustomWriteBatch(startTS, commitTS, ctx)
-	}
-	return &raftWriteBatch{
-		ctx:      ctx,
-		startTS:  startTS,
-		commitTS: commitTS,
-	}
+	return NewCustomWriteBatch(startTS, commitTS, ctx)
 }
 
 func (writer *raftDBWriter) Write(batch mvcc.WriteBatch) error {
@@ -176,19 +50,6 @@ func (writer *raftDBWriter) Write(batch mvcc.WriteBatch) error {
 	}
 	var reqLen int
 	switch x := batch.(type) {
-	case *raftWriteBatch:
-		ctx := x.ctx
-		header := &rcpb.RaftRequestHeader{
-			RegionId:    ctx.RegionId,
-			Peer:        ctx.Peer,
-			RegionEpoch: ctx.RegionEpoch,
-			Term:        ctx.Term,
-		}
-		cmd.Request = raftlog.NewRequest(&rcpb.RaftCmdRequest{
-			Header:   header,
-			Requests: x.requests,
-		})
-		reqLen = len(x.requests)
 	case *customWriteBatch:
 		cmd.Request = x.builder.Build()
 		reqLen = x.builder.Len()
@@ -236,8 +97,7 @@ func (writer *raftDBWriter) DeleteRange(startKey, endKey []byte, latchHandle mvc
 
 func NewDBWriter(conf *config.Config, router *RaftstoreRouter) mvcc.DBWriter {
 	return &raftDBWriter{
-		router:           router.router,
-		useCustomRaftLog: conf.RaftStore.CustomRaftLog,
+		router: router.router,
 	}
 }
 
@@ -260,10 +120,7 @@ func (w *TestRaftWriter) Write(batch mvcc.WriteBatch) error {
 	applier := new(applier)
 	applyCtx := newApplyContext("test", nil, w.engine, nil, NewDefaultConfig())
 	applier.execWriteCmd(applyCtx, raftLog)
-	err := applyCtx.wb.WriteToKV(w.engine.kv)
-	if err != nil {
-		return err
-	}
+	applyCtx.writeToDB()
 	return nil
 }
 
@@ -308,7 +165,7 @@ func (wb *customWriteBatch) Commit(key []byte, lock *mvcc.MvccLock) {
 }
 
 func (wb *customWriteBatch) Rollback(key []byte, deleleLock bool) {
-	wb.setType(raftlog.TypeRolback)
+	wb.setType(raftlog.TypeRollback)
 	wb.builder.AppendRollback(key, wb.startTS, deleleLock)
 }
 
@@ -319,7 +176,7 @@ func (wb *customWriteBatch) PessimisticLock(key []byte, lock *mvcc.MvccLock) {
 
 func (wb *customWriteBatch) PessimisticRollback(key []byte) {
 	wb.setType(raftlog.TypePessimisticRollback)
-	wb.builder.AppendPessimisticRollback(key)
+	wb.builder.AppendKeyOnly(key)
 }
 
 func NewCustomWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Context) mvcc.WriteBatch {
@@ -328,7 +185,6 @@ func NewCustomWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Context) mvcc.Wr
 		Epoch:    raftlog.NewEpoch(ctx.RegionEpoch.Version, ctx.RegionEpoch.ConfVer),
 		PeerID:   ctx.Peer.Id,
 		StoreID:  ctx.Peer.StoreId,
-		Term:     ctx.Term,
 	}
 	b := raftlog.NewBuilder(header)
 	return &customWriteBatch{

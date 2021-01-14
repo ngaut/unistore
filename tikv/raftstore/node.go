@@ -26,7 +26,6 @@ import (
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
-	"github.com/pingcap/tidb/util/codec"
 )
 
 type Node struct {
@@ -60,7 +59,7 @@ func NewNode(system *raftBatchSystem, store *metapb.Store, cfg *Config, pdClient
 	}
 }
 
-func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, snapMgr *SnapManager, pdWorker *worker, router *router) error {
+func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, pdWorker *worker, router *router) error {
 	storeID, err := n.checkStore(engines)
 	if err != nil {
 		return err
@@ -90,34 +89,16 @@ func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, sna
 	if err != nil {
 		return err
 	}
-	if err = n.startNode(engines, trans, snapMgr, pdWorker); err != nil {
+	if err = n.startNode(engines, trans, pdWorker); err != nil {
 		return err
 	}
 
 	if newCluster {
+		n.system.ctx.storeMeta.regionRanges.Put(RawEndKey(firstRegion), regionIDToBytes(firstRegion.Id))
 		log.S().Info("pre-split regions")
-		cb := NewCallback()
-		msg := &MsgSplitRegion{
-			RegionEpoch: firstRegion.GetRegionEpoch(),
-			SplitKeys: [][]byte{
-				codec.EncodeBytes(nil, []byte{'m'}),
-				codec.EncodeBytes(nil, []byte{'n'}),
-				codec.EncodeBytes(nil, []byte{'t'}),
-				codec.EncodeBytes(nil, []byte{'u'}),
-			},
-			Callback: cb,
-		}
-		err := router.send(firstRegion.Id, Msg{
-			Type:     MsgTypeSplitRegion,
-			RegionID: firstRegion.Id,
-			Data:     msg,
-		})
+		_, err = splitEngineAndRegion(router, engines.kv, firstRegion.Peers[0], firstRegion, [][]byte{{'m'}, {'n'}, {'t'}, {'u'}})
 		if err != nil {
 			return err
-		}
-		cb.wg.Wait()
-		if cb.resp.Header.Error != nil {
-			return &RaftError{RequestErr: cb.resp.Header.Error}
 		}
 	}
 
@@ -125,7 +106,7 @@ func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, sna
 }
 
 func (n *Node) checkStore(engines *Engines) (uint64, error) {
-	val, err := getKVValue(engines.kv, storeIdentKey)
+	val, err := getValue(engines.raft, storeIdentKey)
 	if err != nil {
 		if err == badger.ErrKeyNotFound {
 			return 0, nil
@@ -167,7 +148,7 @@ func (n *Node) allocID(ctx context.Context) (uint64, error) {
 
 func (n *Node) checkOrPrepareBootstrapCluster(ctx context.Context, engines *Engines, storeID uint64) (*metapb.Region, error) {
 	var state raft_serverpb.RegionLocalState
-	if err := getKVMsg(engines.kv, prepareBootstrapKey, &state); err == nil {
+	if err := getMsg(engines.raft, prepareBootstrapKey, &state); err == nil {
 		return state.Region, nil
 	}
 	bootstrapped, err := n.checkClusterBootstrapped(ctx)
@@ -239,16 +220,16 @@ func (n *Node) BootstrapCluster(ctx context.Context, engines *Engines, firstRegi
 				return false, ClearPrepareBootstrapState(engines)
 			}
 			log.S().Infof("cluster is already bootstrapped, clusterID: %v", n.clusterID)
-			return false, ClearPrepareBootstrap(engines, regionID)
+			return false, ClearPrepareBootstrap(engines, firstRegion)
 		}
 		log.S().Errorf("bootstrap cluster, clusterID: %v, err: %v", n.clusterID, err)
 	}
 	return false, errors.New("bootstrap cluster failed")
 }
 
-func (n *Node) startNode(engines *Engines, trans Transport, snapMgr *SnapManager, pdWorker *worker) error {
+func (n *Node) startNode(engines *Engines, trans Transport, pdWorker *worker) error {
 	log.S().Infof("start raft store node, storeID: %d", n.store.GetId())
-	return n.system.start(n.store, n.cfg, engines, trans, n.pdClient, snapMgr, pdWorker, n.observer)
+	return n.system.start(n.store, n.cfg, engines, trans, n.pdClient, pdWorker, n.observer)
 }
 
 func (n *Node) stopNode(storeID uint64) {

@@ -121,7 +121,7 @@ func (r *DBReader) GetLock(key []byte, buf []byte) []byte {
 		return nil
 	}
 	val, _ := item.Value()
-	return val
+	return append(buf[:0], val...)
 }
 
 func (r *DBReader) GetLockIter() *badger.Iterator {

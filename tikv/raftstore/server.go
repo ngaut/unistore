@@ -30,7 +30,6 @@ type RaftInnerServer struct {
 	eventObserver PeerEventObserver
 
 	node        *Node
-	snapManager *SnapManager
 	router      *router
 	batchSystem *raftBatchSystem
 	pdWorker    *worker
@@ -97,10 +96,9 @@ func (ris *RaftInnerServer) Setup(pdClient pd.Client) {
 
 	cfg := ris.raftConfig
 	router, batchSystem := createRaftBatchSystem(ris.globalConfig, cfg)
-	ris.engines.metaManager.listener.initMsgCh(router.storeSender)
+	ris.engines.listener.initMsgCh(router.storeSender)
 
 	ris.router = router // TODO: init with local reader
-	ris.snapManager = NewSnapManager(cfg.SnapPath, router)
 	ris.batchSystem = batchSystem
 }
 
@@ -121,12 +119,12 @@ func (ris *RaftInnerServer) Start(pdClient pd.Client) error {
 
 	raftClient := newRaftClient(ris.raftConfig, pdClient)
 	trans := NewServerTransport(raftClient, ris.snapWorker.sender, ris.router)
-	err := ris.node.Start(context.TODO(), ris.engines, trans, ris.snapManager, ris.pdWorker, ris.router)
+	err := ris.node.Start(context.TODO(), ris.engines, trans, ris.pdWorker, ris.router)
 	if err != nil {
 		return err
 	}
 	ris.raftCli = raftClient
-	snapRunner := newSnapRunner(ris.snapManager, ris.raftConfig, ris.router, pdClient)
+	snapRunner := newSnapRunner(ris.raftConfig, ris.router, pdClient)
 	ris.snapWorker.start(snapRunner)
 	return nil
 }

@@ -16,6 +16,7 @@ package raftlog
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/pingcap/badger/protos"
 	"unsafe"
 
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
@@ -28,9 +29,11 @@ const (
 
 	TypePrewrite            CustomRaftLogType = 1
 	TypeCommit              CustomRaftLogType = 2
-	TypeRolback             CustomRaftLogType = 3
+	TypeRollback            CustomRaftLogType = 3
 	TypePessimisticLock     CustomRaftLogType = 4
 	TypePessimisticRollback CustomRaftLogType = 5
+	TypePreSplit            CustomRaftLogType = 6
+	TypeChangeSet           CustomRaftLogType = 7
 )
 
 // CustomRaftLog is the raft log format for unistore to store Prewrite/Commit/PessimisticLock.
@@ -70,7 +73,7 @@ func (c *CustomRaftLog) Epoch() Epoch {
 }
 
 func (c *CustomRaftLog) Term() uint64 {
-	return c.header.Term
+	return 0
 }
 
 func (c *CustomRaftLog) Marshal() []byte {
@@ -86,7 +89,6 @@ type CustomHeader struct {
 	Epoch    Epoch
 	PeerID   uint64
 	StoreID  uint64
-	Term     uint64
 }
 
 const headerSize = int(unsafe.Sizeof(CustomHeader{}))
@@ -165,7 +167,7 @@ func (rl *CustomRaftLog) IterateRollback(itFunc func(key []byte, startTS uint64,
 	}
 }
 
-func (rl *CustomRaftLog) IteratePessimisticRollback(itFunc func(key []byte)) {
+func (rl *CustomRaftLog) IterateKeysOnly(itFunc func(key []byte)) {
 	i := 4 + headerSize
 	for i < len(rl.Data) {
 		keyLen := endian.Uint16(rl.Data[i:])
@@ -174,6 +176,15 @@ func (rl *CustomRaftLog) IteratePessimisticRollback(itFunc func(key []byte)) {
 		i += int(keyLen)
 		itFunc(key)
 	}
+}
+
+func (rl *CustomRaftLog) GetShardChangeSet() (*protos.ShardChangeSet, error) {
+	changeSet := new(protos.ShardChangeSet)
+	err := changeSet.Unmarshal(rl.Data[4+headerSize:])
+	if err != nil {
+		return nil, err
+	}
+	return changeSet, nil
 }
 
 type CustomBuilder struct {
@@ -217,10 +228,15 @@ func (b *CustomBuilder) AppendRollback(key []byte, startTS uint64, deleteLock bo
 	b.cnt++
 }
 
-func (b *CustomBuilder) AppendPessimisticRollback(key []byte) {
+func (b *CustomBuilder) AppendKeyOnly(key []byte) {
 	b.data = append(b.data, u16ToBytes(uint16(len(key)))...)
 	b.data = append(b.data, key...)
 	b.cnt++
+}
+
+func (b *CustomBuilder) AppendChangeSet(changeSet *protos.ShardChangeSet) {
+	changeSetData, _ := changeSet.Marshal()
+	b.data = append(b.data, changeSetData...)
 }
 
 func (b *CustomBuilder) SetType(tp CustomRaftLogType) {

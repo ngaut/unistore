@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"github.com/ngaut/unistore/tikv/mvcc"
+	"github.com/pingcap/badger/protos"
 	"github.com/zhangjinpeng1987/raft"
 	"strconv"
 	"sync"
@@ -226,7 +227,7 @@ type RegionOptions struct {
 
 type RegionManager interface {
 	GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error)
-	SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse
+	SplitRegion(req *kvrpcpb.SplitRegionRequest, ctx *requestCtx) *kvrpcpb.SplitRegionResponse
 	Close() error
 }
 
@@ -279,7 +280,7 @@ func (rm *regionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
 }
 
 func (rm *regionManager) loadFromLocal(db *badger.ShardingDB, f func(*regionCtx)) error {
-	snap := db.NewSnapshot(InternalKeyPrefix, nil)
+	snap := db.NewSnapshot(db.GetShard(1))
 	defer snap.Discard()
 	item, err := snap.Get(mvcc.RaftCF, y.KeyWithTs(InternalStoreMetaKey, 0))
 	if err != nil && err != badger.ErrKeyNotFound {
@@ -462,12 +463,8 @@ func (rm *RaftRegionManager) runEventHandler() {
 	}
 }
 
-func (rm *RaftRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse {
-	splitKeys := make([][]byte, 0, len(req.SplitKeys))
-	for _, rawKey := range req.SplitKeys {
-		splitKeys = append(splitKeys, codec.EncodeBytes(nil, rawKey))
-	}
-	regions, err := rm.router.SplitRegion(req.GetContext(), splitKeys)
+func (rm *RaftRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest, ctx *requestCtx) *kvrpcpb.SplitRegionResponse {
+	regions, err := rm.router.SplitRegion(req.GetContext(), ctx.svr.mvccStore.db, ctx.regCtx.meta, req.SplitKeys)
 	if err != nil {
 		return &kvrpcpb.SplitRegionResponse{RegionError: &errorpb.Error{Message: err.Error()}}
 	}
@@ -482,6 +479,7 @@ type StandAloneRegionManager struct {
 	regionSize int64
 	closeCh    chan struct{}
 	wg         sync.WaitGroup
+	regionIDs  map[uint64]uint64
 }
 
 func NewStandAloneRegionManager(db *badger.ShardingDB, opts RegionOptions, pdc pd.Client) *StandAloneRegionManager {
@@ -538,7 +536,7 @@ func (rm *StandAloneRegionManager) initStore(storeAddr string) error {
 	rootRegion := &metapb.Region{
 		Id:          regionID,
 		RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
-		Peers:       []*metapb.Peer{&metapb.Peer{Id: peerID, StoreId: storeID}},
+		Peers:       []*metapb.Peer{{Id: peerID, StoreId: storeID}},
 	}
 	rm.regions[rootRegion.Id] = newRegionCtx(rootRegion, rm.latches, nil)
 	_, err = rm.pdc.Bootstrap(ctx, rm.storeMeta, rootRegion)
@@ -551,7 +549,7 @@ func (rm *StandAloneRegionManager) initStore(storeAddr string) error {
 	if err != nil {
 		log.Fatal("marshal store meta failed", zap.Error(err))
 	}
-	wb := rm.db.NewWriteBatch()
+	wb := rm.db.NewWriteBatch(rm.db.GetShard(1))
 	err = wb.Put(raftCF, InternalStoreMetaKey, y.ValueStruct{Value: storeBuf})
 	y.Assert(err == nil)
 	for rid, region := range rm.regions {
@@ -580,11 +578,7 @@ func (rm *StandAloneRegionManager) initialSplit(root *metapb.Region) {
 	root.EndKey = codec.EncodeBytes(nil, []byte{'m'})
 	root.RegionEpoch.Version = 2
 	rm.regions[root.Id] = newRegionCtx(root, rm.latches, nil)
-	preSplitStartKeys := [][]byte{{'m'}, {'t'}, {255}}
-	err := rm.db.Split(preSplitStartKeys)
-	if err != nil {
-		log.Fatal("pre split failed", zap.Error(err))
-	}
+	preSplitStartKeys := [][]byte{{'m'}, {'n'}, {'t'}, {'u'}}
 	ids, err := rm.allocIDs(len(preSplitStartKeys) * 2)
 	if err != nil {
 		log.Fatal("alloc ids failed", zap.Error(err))
@@ -597,7 +591,7 @@ func (rm *StandAloneRegionManager) initialSplit(root *metapb.Region) {
 		newRegion := &metapb.Region{
 			Id:          ids[i*2],
 			RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
-			Peers:       []*metapb.Peer{&metapb.Peer{Id: ids[i*2+1], StoreId: rm.storeMeta.Id}},
+			Peers:       []*metapb.Peer{{Id: ids[i*2+1], StoreId: rm.storeMeta.Id}},
 			StartKey:    codec.EncodeBytes(nil, startKey),
 			EndKey:      endKey,
 		}
@@ -701,12 +695,26 @@ func (rm *StandAloneRegionManager) runSplitWorker() {
 	defer rm.wg.Done()
 	ticker := time.NewTicker(time.Second * 10)
 	for {
-		keys := rm.db.GetSplitSuggestion(rm.regionSize)
+		var keys [][]byte
+		var regionID, version uint64
+		for regionID, version = range rm.regionIDs {
+			keys = rm.db.GetSplitSuggestion(regionID, rm.regionSize)
+			if len(keys) > 0 {
+				break
+			}
+		}
 		if len(keys) > 0 {
-			err := rm.db.Split(keys)
+			err := rm.db.PreSplit(regionID, version, keys)
 			if err != nil {
 				log.Error("failed to split engine", zap.Error(err))
 			}
+			err = rm.db.SplitShardFiles(regionID, version)
+			if err != nil {
+				log.Error("failed to split shard files", zap.Error(err))
+			}
+			// TODO: init properties
+			var properties []*protos.ShardProperties
+			_, err = rm.db.FinishSplit(regionID, version, properties)
 			for _, key := range keys {
 				var splitRegion *regionCtx
 				rm.mu.RLock()
@@ -761,7 +769,7 @@ func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey
 		Peers: oldRegion.Peers,
 	}
 	left := newRegionCtx(leftMeta, rm.latches, nil)
-	wb := rm.db.NewWriteBatch()
+	wb := rm.db.NewWriteBatch(rm.db.GetShard(1))
 	err = wb.Put(raftCF, InternalRegionMetaKey(left.meta.Id), y.ValueStruct{Value: left.marshal()})
 	y.Assert(err == nil)
 	err = wb.Put(raftCF, InternalRegionMetaKey(right.meta.Id), y.ValueStruct{Value: right.marshal()})
@@ -790,13 +798,7 @@ func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey
 	return nil
 }
 
-func (rm *StandAloneRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse {
-	err := rm.db.Split(req.SplitKeys)
-	if err != nil {
-		log.Info("split db failed", zap.Error(err))
-	} else {
-		log.Info("split db")
-	}
+func (rm *StandAloneRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest, _ *requestCtx) *kvrpcpb.SplitRegionResponse {
 	return &kvrpcpb.SplitRegionResponse{}
 }
 

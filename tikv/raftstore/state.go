@@ -16,6 +16,8 @@ package raftstore
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/pingcap/kvproto/pkg/metapb"
+	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 )
 
 type applyState struct {
@@ -45,6 +47,15 @@ func (s applyState) String() string {
 	return fmt.Sprintf("{appliedIndex:%d, appliedIndexTerm:%d, truncatedIndex:%d, truncatedTerm:%d}", s.appliedIndex, s.appliedIndexTerm, s.truncatedIndex, s.truncatedTerm)
 }
 
+func newInitialApplyState() applyState {
+	return applyState{
+		appliedIndex:     RaftInitLogIndex,
+		appliedIndexTerm: RaftInitLogTerm,
+		truncatedIndex:   RaftInitLogIndex,
+		truncatedTerm:    RaftInitLogTerm,
+	}
+}
+
 type raftState struct {
 	term      uint64
 	vote      uint64
@@ -70,4 +81,11 @@ func (s *raftState) Unmarshal(data []byte) {
 	s.vote = binary.LittleEndian.Uint64(data[8:])
 	s.commit = binary.LittleEndian.Uint64(data[16:])
 	s.lastIndex = binary.LittleEndian.Uint64(data[24:])
+}
+
+type regionLocalState struct {
+	region     *metapb.Region
+	peerState  int32
+	mergeState *rspb.MergeState
+	firstIndex uint64
 }

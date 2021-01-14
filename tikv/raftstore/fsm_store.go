@@ -16,9 +16,7 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger/protos"
-	"github.com/pingcap/tidb/util/codec"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -86,7 +84,6 @@ type GlobalContext struct {
 	store                 *metapb.Store
 	storeMeta             *storeMeta
 	storeMetaLock         *sync.RWMutex
-	snapMgr               *SnapManager
 	router                *router
 	trans                 Transport
 	pdTaskSender          chan<- task
@@ -109,8 +106,7 @@ type RaftContext struct {
 	*GlobalContext
 	applyMsgs    *applyMsgs
 	ReadyRes     []*ReadyICPair
-	kvWB         *WriteBatch
-	raftWB       *WriteBatch
+	raftWB       *RaftWriteBatch
 	pendingCount int
 	hasReady     bool
 	queuedSnaps  map[uint64]struct{}
@@ -178,8 +174,6 @@ func (d *storeMsgHandler) onTick(tick StoreTick) {
 		d.onCompactCheckTick()
 	case StoreTickPdStoreHeartbeat:
 		d.onPDStoreHearbeatTick()
-	case StoreTickSnapGC:
-		d.onSnapMgrGC()
 	case StoreTickConsistencyCheck:
 		d.onComputeHashTick()
 	}
@@ -202,7 +196,7 @@ func (d *storeMsgHandler) handleMsg(msg Msg) {
 		d.onTick(msg.Data.(StoreTick))
 	case MsgTypeStoreStart:
 		d.start(msg.Data.(*metapb.Store))
-	case MsgTypeGenerateEngineMetaChange:
+	case MsgTypeGenerateEngineChangeSet:
 		d.onGenerateEngineMetaChange(msg)
 	}
 }
@@ -216,7 +210,6 @@ func (d *storeMsgHandler) start(store *metapb.Store) {
 	d.startTime = &now
 	d.ticker.scheduleStore(StoreTickCompactCheck)
 	d.ticker.scheduleStore(StoreTickPdStoreHeartbeat)
-	d.ticker.scheduleStore(StoreTickSnapGC)
 	d.ticker.scheduleStore(StoreTickConsistencyCheck)
 }
 
@@ -228,81 +221,82 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 	startKey := RegionMetaMinKey
 	endKey := RegionMetaMaxKey
 	ctx := bs.ctx
-	kvEngine := ctx.engine.kv
+	raftEngine := ctx.engine.raft
 	storeID := ctx.store.Id
 
 	var totalCount, tombStoneCount, applyingCount int
 	var regionPeers []*peerFsm
 
 	t := time.Now()
-	kvWB := new(WriteBatch)
-	raftWB := new(WriteBatch)
+	raftWB := new(RaftWriteBatch)
 	var applyingRegions []*metapb.Region
 	var mergingCount int
 	ctx.storeMetaLock.Lock()
 	defer ctx.storeMetaLock.Unlock()
 	meta := ctx.storeMeta
-	dbSnap := kvEngine.NewSnapshot(startKey, endKey)
-	iter := dbSnap.NewIterator(mvcc.RaftCF, false, false)
-	iter.SetBound(endKey)
-	for iter.Seek(startKey); iter.Valid(); iter.Next() {
-		item := iter.Item()
-		if bytes.Compare(item.Key(), endKey) >= 0 {
-			break
-		}
-		regionID, suffix, err := decodeRegionMetaKey(item.Key())
-		if err != nil {
-			return nil, err
-		}
-		if suffix != RegionStateSuffix {
-			continue
-		}
-		val, err := item.Value()
-		if err != nil {
-			return nil, errors.WithStack(err)
-		}
-		totalCount++
-		localState := new(rspb.RegionLocalState)
-		err = localState.Unmarshal(val)
-		if err != nil {
-			return nil, errors.WithStack(err)
-		}
-		region := localState.Region
-		if localState.State == rspb.PeerState_Tombstone {
-			tombStoneCount++
-			bs.clearStaleMeta(kvWB, raftWB, localState)
-			continue
-		}
-		if localState.State == rspb.PeerState_Applying {
-			// in case of restart happen when we just write region state to Applying,
-			// but not write raft_local_state to raft rocksdb in time.
-			err = recoverFromApplyingState(ctx.engine, raftWB, regionID)
-			if err != nil {
-				return nil, errors.WithStack(err)
+	err := raftEngine.View(func(txn *badger.Txn) error {
+		opt := badger.DefaultIteratorOptions
+		opt.Reverse = true
+		iter := txn.NewIterator(opt)
+		defer iter.Close()
+		var lastRegionID uint64
+		for iter.Seek(endKey); iter.Valid(); iter.Next() {
+			item := iter.Item()
+			if bytes.Compare(item.Key(), startKey) <= 0 {
+				break
 			}
-			applyingCount++
-			applyingRegions = append(applyingRegions, region)
-			continue
-		}
+			regionID, _, _, err := decodeRegionMetaKey(item.Key())
+			if err != nil {
+				return err
+			}
+			if regionID == lastRegionID {
+				continue
+			}
+			lastRegionID = regionID
+			val, err := item.Value()
+			if err != nil {
+				return errors.WithStack(err)
+			}
+			totalCount++
+			localState := new(rspb.RegionLocalState)
+			err = localState.Unmarshal(val)
+			if err != nil {
+				return errors.WithStack(err)
+			}
+			region := localState.Region
+			if localState.State == rspb.PeerState_Tombstone {
+				tombStoneCount++
+				bs.clearStaleMeta(raftWB, localState)
+				continue
+			}
+			if localState.State == rspb.PeerState_Applying {
+				// in case of restart happen when we just write region state to Applying,
+				// but not write raft_local_state to raft rocksdb in time.
+				applyingCount++
+				applyingRegions = append(applyingRegions, region)
+				continue
+			}
 
-		peer, err := createPeerFsm(storeID, ctx.cfg, ctx.regionTaskSender, ctx.engine, region)
-		if err != nil {
-			return nil, err
+			peer, err := createPeerFsm(storeID, ctx.cfg, ctx.regionTaskSender, ctx.engine, region)
+			if err != nil {
+				return err
+			}
+			ctx.peerEventObserver.OnPeerCreate(peer.peer.getEventContext(), region)
+			if localState.State == rspb.PeerState_Merging {
+				log.S().Infof("region %d is merging", regionID)
+				mergingCount++
+				peer.setPendingMergeState(localState.MergeState)
+			}
+			meta.regionRanges.Put(region.EndKey, regionIDToBytes(regionID))
+			meta.regions[regionID] = region
+			// No need to check duplicated here, because we use region id as the key
+			// in DB.
+			regionPeers = append(regionPeers, peer)
 		}
-		ctx.peerEventObserver.OnPeerCreate(peer.peer.getEventContext(), region)
-		if localState.State == rspb.PeerState_Merging {
-			log.S().Infof("region %d is merging", regionID)
-			mergingCount++
-			peer.setPendingMergeState(localState.MergeState)
-		}
-		meta.regionRanges.Put(region.EndKey, regionIDToBytes(regionID))
-		meta.regions[regionID] = region
-		// No need to check duplicated here, because we use region id as the key
-		// in DB.
-		regionPeers = append(regionPeers, peer)
-	}
-	if kvWB.size > 0 {
-		kvWB.MustWriteToKV(ctx.engine.kv)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	if raftWB.size > 0 {
 		raftWB.MustWriteToRaft(ctx.engine.raft)
@@ -329,9 +323,9 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 	return regionPeers, nil
 }
 
-func (bs *raftBatchSystem) clearStaleMeta(kvWB, raftWB *WriteBatch, originState *rspb.RegionLocalState) {
+func (bs *raftBatchSystem) clearStaleMeta(raftWB *RaftWriteBatch, originState *rspb.RegionLocalState) {
 	region := originState.Region
-	raftKey := RaftStateKey(region.Id)
+	raftKey := RaftStateKey(region)
 	raftState := raftState{}
 	val, err := getValue(bs.ctx.engine.raft, raftKey)
 	if err != nil {
@@ -339,13 +333,10 @@ func (bs *raftBatchSystem) clearStaleMeta(kvWB, raftWB *WriteBatch, originState 
 		return
 	}
 	raftState.Unmarshal(val)
-	err = ClearMeta(bs.ctx.engine, kvWB, raftWB, region, raftState.lastIndex)
+	err = ClearMeta(bs.ctx.engine, raftWB, region, raftState.lastIndex)
 	if err != nil {
 		panic(err)
 	}
-	key := y.KeyWithTs(RegionStateKey(region.Id), KvTS)
-	originVal, _ := originState.Marshal()
-	kvWB.SetRaftCF(key, originVal)
 }
 
 type workers struct {
@@ -373,16 +364,11 @@ func (bs *raftBatchSystem) start(
 	engines *Engines,
 	trans Transport,
 	pdClient pd.Client,
-	snapMgr *SnapManager,
 	pdWorker *worker,
 	observer PeerEventObserver) error {
 	y.Assert(bs.workers == nil)
 	// TODO: we can get cluster meta regularly too later.
 	if err := cfg.Validate(); err != nil {
-		return err
-	}
-	err := snapMgr.init()
-	if err != nil {
 		return err
 	}
 	wg := new(sync.WaitGroup)
@@ -401,7 +387,6 @@ func (bs *raftBatchSystem) start(
 		store:                 meta,
 		storeMeta:             newStoreMeta(),
 		storeMetaLock:         new(sync.RWMutex),
-		snapMgr:               snapMgr,
 		router:                bs.router,
 		trans:                 trans,
 		pdTaskSender:          bs.workers.pdWorker.sender,
@@ -448,7 +433,7 @@ func (bs *raftBatchSystem) startWorkers(peers []*peerFsm) {
 	engines := ctx.engine
 	cfg := ctx.cfg
 	workers.splitCheckWorker.start(newSplitCheckRunner(engines.kv, router, cfg.SplitCheck))
-	workers.regionWorker.start(newRegionTaskHandler(bs.globalCfg, engines, ctx.snapMgr, cfg.SnapApplyBatchSize))
+	workers.regionWorker.start(newRegionTaskHandler(bs.globalCfg, engines, cfg.SnapApplyBatchSize))
 	workers.raftLogGCWorker.start(&raftLogGCTaskHandler{})
 	workers.compactWorker.start(&compactTaskHandler{engine: engines.kv})
 	workers.pdWorker.start(newPDTaskHandler(ctx.store.Id, ctx.pdClient, bs.router))
@@ -496,9 +481,9 @@ func (d *storeMsgHandler) checkMsg(msg *rspb.RaftMessage) (bool, error) {
 	fromStoreID := msg.FromPeer.StoreId
 
 	// Check if the target is tombstone,
-	stateKey := RegionStateKey(regionID)
+	stateKey := RegionStateKeyByIDEpoch(regionID, fromEpoch)
 	localState := new(rspb.RegionLocalState)
-	err := getKVMsg(d.ctx.engine.kv, stateKey, localState)
+	err := getMsg(d.ctx.engine.raft, stateKey, localState)
 	if err != nil {
 		if err == badger.ErrKeyNotFound {
 			return false, nil
@@ -669,14 +654,15 @@ func (d *storeMsgHandler) onCompactCheckTick() {
 
 func (d *storeMsgHandler) storeHeartbeatPD() {
 	stats := new(pdpb.StoreStats)
-	stats.UsedSize = d.ctx.snapMgr.GetTotalSnapSize()
+	// TODO: cache used size
+	stats.UsedSize = uint64(d.ctx.engine.kv.Size())
 	stats.StoreId = d.ctx.store.Id
 	d.ctx.storeMetaLock.RLock()
 	stats.RegionCount = uint32(len(d.ctx.storeMeta.regions))
 	d.ctx.storeMetaLock.RUnlock()
-	snapStats := d.ctx.snapMgr.Stats()
-	stats.SendingSnapCount = uint32(snapStats.SendingCount)
-	stats.ReceivingSnapCount = uint32(snapStats.ReceivingCount)
+	// TODO: update snap stats
+	stats.SendingSnapCount = 0
+	stats.ReceivingSnapCount = 0
 	stats.ApplyingSnapCount = uint32(atomic.LoadUint64(d.ctx.applyingSnapCount))
 	stats.StartTime = uint32(d.startTime.Second())
 	globalStats := d.ctx.globalStats
@@ -695,72 +681,6 @@ func (d *storeMsgHandler) storeHeartbeatPD() {
 func (d *storeMsgHandler) onPDStoreHearbeatTick() {
 	d.storeHeartbeatPD()
 	d.ticker.scheduleStore(StoreTickPdStoreHeartbeat)
-}
-
-func (d *storeMsgHandler) handleSnapMgrGC() error {
-	mgr := d.ctx.snapMgr
-	snapKeys, err := mgr.ListIdleSnap()
-	if err != nil {
-		return err
-	}
-	if len(snapKeys) == 0 {
-		return nil
-	}
-	var lastRegionID uint64
-	var keys []SnapKeyWithSending
-	for _, pair := range snapKeys {
-		key := pair.SnapKey
-		if lastRegionID == key.RegionID {
-			keys = append(keys, pair)
-			continue
-		}
-		if len(keys) > 0 {
-			err = d.scheduleGCSnap(lastRegionID, keys)
-			if err != nil {
-				return err
-			}
-			keys = nil
-		}
-		lastRegionID = key.RegionID
-		keys = append(keys, pair)
-	}
-	if len(keys) > 0 {
-		return d.scheduleGCSnap(lastRegionID, keys)
-	}
-	return nil
-}
-
-func (d *storeMsgHandler) scheduleGCSnap(regionID uint64, keys []SnapKeyWithSending) error {
-	gcSnap := Msg{Type: MsgTypeGcSnap, Data: &MsgGCSnap{Snaps: keys}}
-	if d.ctx.router.send(regionID, gcSnap) != nil {
-		// The snapshot exists because MsgAppend has been rejected. So the
-		// peer must have been exist. But now it's disconnected, so the peer
-		// has to be destroyed instead of being created.
-		log.S().Infof("region %d is disconnected, remove snaps %v", regionID, keys)
-		for _, pair := range keys {
-			key := pair.SnapKey
-			isSending := pair.IsSending
-			var snap Snapshot
-			var err error
-			if isSending {
-				snap, err = d.ctx.snapMgr.GetSnapshotForSending(key)
-			} else {
-				snap, err = d.ctx.snapMgr.GetSnapshotForApplying(key)
-			}
-			if err != nil {
-				return err
-			}
-			d.ctx.snapMgr.DeleteSnapshot(key, snap, false)
-		}
-	}
-	return nil
-}
-
-func (d *storeMsgHandler) onSnapMgrGC() {
-	if err := d.handleSnapMgrGC(); err != nil {
-		log.S().Errorf("handle snap GC failed store_id %d, err %s", d.storeFsm.id, err)
-	}
-	d.ticker.scheduleStore(StoreTickSnapGC)
 }
 
 func (d *storeMsgHandler) onComputeHashTick() {
@@ -873,11 +793,10 @@ func (d *storeMsgHandler) onGenerateEngineMetaChange(msg Msg) {
 	// GenerateEngineMetaChange message is first sent to store handler to find a region id for this change,
 	// Once we got the region ID, we send it to the router to create a raft log then propose this log, replicate to
 	// followers.
-	e := msg.Data.(*protos.MetaChangeEvent)
-	it := d.ctx.storeMeta.regionRanges.NewIterator()
-	it.Seek(codec.EncodeBytes(nil, e.StartKey))
-	y.Assert(it.Valid())
-	regionID := regionIDFromBytes(it.Value())
-	err := d.ctx.router.send(regionID, msg)
-	y.Assert(err == nil)
+	e := msg.Data.(*protos.ShardChangeSet)
+	err := d.ctx.router.send(e.ShardID, msg)
+	if err != nil {
+		log.S().Errorf("failed to generate engine meta change for %d", e.ShardID)
+		panic(err)
+	}
 }

@@ -26,6 +26,7 @@ type MockRegionManager struct {
 	regionManager
 
 	db            *badger.ShardingDB
+	regionShard   *badger.Shard
 	sortedRegions *btree.BTree
 	stores        map[uint64]*metapb.Store
 	id            uint64
@@ -202,13 +203,13 @@ func (rm *MockRegionManager) Bootstrap(stores []*metapb.Store, region *metapb.Re
 	if err != nil {
 		return err
 	}
-	wb := rm.db.NewWriteBatch()
+	wb := rm.db.NewWriteBatch(rm.regionShard)
 	y.Assert(wb.Put(raftCF, InternalStoreMetaKey, y.ValueStruct{Value: storeBuf}) == nil)
 	return rm.db.Write(wb)
 }
 
 func (rm *MockRegionManager) IsBootstrapped() (bool, error) {
-	snap := rm.db.NewSnapshot(InternalKeyPrefix, nil)
+	snap := rm.db.NewSnapshot(rm.regionShard)
 	defer snap.Discard()
 	item, err := snap.Get(raftCF, y.KeyWithTs(InternalStoreMetaKey, 0))
 	if err != nil && err != badger.ErrKeyNotFound {
@@ -262,7 +263,7 @@ func (rm *MockRegionManager) SplitKeys(start, end kv.Key, count int) {
 	}
 }
 
-func (rm *MockRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse {
+func (rm *MockRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest, _ *requestCtx) *kvrpcpb.SplitRegionResponse {
 	if _, err := rm.GetRegionFromCtx(req.Context); err != nil {
 		return &kvrpcpb.SplitRegionResponse{RegionError: err}
 	}
@@ -287,8 +288,9 @@ func (rm *MockRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpc
 }
 
 func (rm *MockRegionManager) calculateSplitKeys(start, end []byte, count int) [][]byte {
+	region, _ := rm.GetRegionByEndKey(end)
 	var keys [][]byte
-	snap := rm.db.NewSnapshot(start, end)
+	snap := rm.db.NewSnapshot(rm.db.GetShard(region.Id))
 	defer snap.Discard()
 	it := snap.NewIterator(writeCF, false, true)
 	for it.Seek(start); it.Valid(); it.Next() {
@@ -442,7 +444,7 @@ func (rm *MockRegionManager) saveRegions(regions []*regionCtx) error {
 	if atomic.LoadUint32(&rm.closed) == 1 {
 		return nil
 	}
-	wb := rm.db.NewWriteBatch()
+	wb := rm.db.NewWriteBatch(rm.regionShard)
 	for _, r := range regions {
 		y.Assert(wb.Put(raftCF, InternalRegionMetaKey(r.meta.Id), y.ValueStruct{Value: r.marshal()}) == nil)
 	}

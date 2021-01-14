@@ -200,16 +200,13 @@ func (d *peerMsgHandler) HandleMsgs(msgs ...Msg) {
 		case MsgTypeMergeResult:
 			result := msg.Data.(*MsgMergeResult)
 			d.onMergeResult(result.TargetPeer, result.Stale)
-		case MsgTypeGcSnap:
-			gcSnap := msg.Data.(*MsgGCSnap)
-			d.onGCSnap(gcSnap.Snaps)
 		case MsgTypeClearRegionSize:
 			d.onClearRegionSize()
 		case MsgTypeStart:
 			d.startTicker()
 		case MsgTypeNoop:
-		case MsgTypeGenerateEngineMetaChange:
-			d.onGenerateMetaChangeEvent(msg.Data.(*protos.MetaChangeEvent))
+		case MsgTypeGenerateEngineChangeSet:
+			d.onGenerateMetaChangeEvent(msg.Data.(*protos.ShardChangeSet))
 		}
 	}
 }
@@ -260,42 +257,6 @@ func (d *peerMsgHandler) resumeHandlePendingApplyResult() bool {
 	return false // TODO: merge func
 }
 
-func (d *peerMsgHandler) onGCSnap(snaps []SnapKeyWithSending) {
-	store := d.peer.Store()
-	compactedIdx := store.truncatedIndex()
-	compactedTerm := store.truncatedTerm()
-	isApplyingSnap := store.IsApplyingSnapshot()
-	for _, snapKeyWithSending := range snaps {
-		key := snapKeyWithSending.SnapKey
-		if snapKeyWithSending.IsSending {
-			snap, err := d.ctx.snapMgr.GetSnapshotForSending(key)
-			if err != nil {
-				log.S().Errorf("%s failed to load snapshot for %s %v", d.tag(), key, err)
-				continue
-			}
-			if key.Term < compactedTerm || key.Index < compactedIdx {
-				log.S().Infof("%s snap file %s has been compacted, delete", d.tag(), key)
-				d.ctx.snapMgr.DeleteSnapshot(key, snap, false)
-			} else if fi, err1 := snap.Meta(); err1 == nil {
-				modTime := fi.ModTime()
-				if time.Since(modTime) > d.ctx.cfg.SnapGcTimeout {
-					log.S().Infof("%s snap file %s has been expired, delete", d.tag(), key)
-					d.ctx.snapMgr.DeleteSnapshot(key, snap, false)
-				}
-			}
-		} else if key.Term <= compactedTerm &&
-			(key.Index < compactedIdx || (key.Index == compactedIdx && !isApplyingSnap)) {
-			log.S().Infof("%s snap file %s has been applied, delete", d.tag(), key)
-			a, err := d.ctx.snapMgr.GetSnapshotForApplying(key)
-			if err != nil {
-				log.S().Errorf("%s failed to load snapshot for %s %v", d.tag(), key, err)
-				continue
-			}
-			d.ctx.snapMgr.DeleteSnapshot(key, a, false)
-		}
-	}
-}
-
 func (d *peerMsgHandler) onClearRegionSize() {
 	d.peer.ApproximateSize = nil
 	d.peer.ApproximateKeys = nil
@@ -333,7 +294,7 @@ func (d *peerMsgHandler) HandleRaftReadyAppend(proposals []*regionProposal) []*r
 	if p := d.peer.TakeApplyProposals(); p != nil {
 		proposals = append(proposals, p)
 	}
-	readyRes := d.peer.HandleRaftReadyAppend(d.ctx.trans, d.ctx.applyMsgs, d.ctx.kvWB, d.ctx.raftWB, d.ctx.peerEventObserver)
+	readyRes := d.peer.HandleRaftReadyAppend(d.ctx.trans, d.ctx.applyMsgs, d.ctx.raftWB, d.ctx.peerEventObserver)
 	if readyRes != nil {
 		d.ctx.ReadyRes = append(d.ctx.ReadyRes, readyRes)
 		ss := readyRes.Ready.SoftState
@@ -896,7 +857,6 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 			}
 		}
 	}
-	d.ctx.engine.metaManager.split(derived, regions)
 	d.ctx.peerEventObserver.OnSplitRegion(derived, regions, newPeers)
 }
 
@@ -1103,20 +1063,21 @@ func (d *peerMsgHandler) findSiblingRegion() *metapb.Region {
 func (d *peerMsgHandler) onRaftGCLogTick() {
 	d.ticker.schedule(PeerTickRaftLogGC)
 
+	stableIdx := d.peer.Store().stableApplyState.appliedIndex
+	if !d.peer.IsLeader() {
+		if stableIdx == 0 {
+			// No flushed L0 files yet, we delay the raft log GC.
+			return
+		}
+		d.peer.Store().CompactTo(stableIdx + 1)
+		return
+	}
 	// As leader, we would not keep caches for the peers that didn't response heartbeat in the
 	// last few seconds. That happens probably because another TiKV is down. In this case if we
 	// do not clean up the cache, it may keep growing.
 	dropCacheDuration := time.Duration(d.ctx.cfg.RaftHeartbeatTicks)*d.ctx.cfg.RaftBaseTickInterval +
 		d.ctx.cfg.RaftEntryCacheLifeTime
 	cacheAliveLimit := time.Now().Add(-dropCacheDuration)
-
-	totalGCLogs := uint64(0)
-
-	appliedIdx := d.peer.Store().AppliedIndex()
-	if !d.peer.IsLeader() {
-		d.peer.Store().CompactTo(appliedIdx + 1)
-		return
-	}
 
 	// Leader will replicate the compact log command to followers,
 	// If we use current replicated_index (like 10) as the compact index,
@@ -1152,14 +1113,20 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 	if replicatedIdx > 0 {
 		y.Assert(lastIdx >= replicatedIdx)
 	}
-	d.peer.Store().MaybeGCCache(replicatedIdx, appliedIdx)
+	d.peer.Store().MaybeGCCache(replicatedIdx, d.peer.Store().AppliedIndex())
+
+	totalGCLogs := uint64(0)
+	if stableIdx == 0 {
+		// No flushed L0 files yet, we delay the raft log GC.
+		return
+	}
 	firstIdx, _ := d.peer.Store().FirstIndex()
 	var compactIdx uint64
-	if appliedIdx > firstIdx &&
-		appliedIdx-firstIdx >= d.ctx.cfg.RaftLogGcCountLimit {
-		compactIdx = appliedIdx
+	if stableIdx > firstIdx &&
+		stableIdx-firstIdx >= d.ctx.cfg.RaftLogGcCountLimit {
+		compactIdx = stableIdx
 	} else if d.peer.RaftLogSizeHint >= d.ctx.cfg.RaftLogGcSizeLimit {
-		compactIdx = appliedIdx
+		compactIdx = stableIdx
 	} else if replicatedIdx < firstIdx || replicatedIdx-firstIdx <= d.ctx.cfg.RaftLogGcThreshold {
 		return
 	} else {
@@ -1205,6 +1172,7 @@ func (d *peerMsgHandler) onSplitRegionCheckTick() {
 		tp: taskTypeSplitCheck,
 		data: &splitCheckTask{
 			region: d.region(),
+			peer:   d.peer.Meta,
 		},
 	}
 	d.peer.SizeDiffHint = 0
@@ -1306,6 +1274,7 @@ func (d *peerMsgHandler) onScheduleHalfSplitRegion(regionEpoch *metapb.RegionEpo
 		tp: taskTypeHalfSplitCheck,
 		data: &splitCheckTask{
 			region: region,
+			peer:   d.peer.Meta,
 		},
 	}
 }
@@ -1530,7 +1499,7 @@ func (d *peerMsgHandler) executeRegionDetail(request *raft_cmdpb.RaftCmdRequest)
 	return resp, nil
 }
 
-func (d *peerMsgHandler) onGenerateMetaChangeEvent(e *protos.MetaChangeEvent) {
+func (d *peerMsgHandler) onGenerateMetaChangeEvent(e *protos.ShardChangeSet) {
 	region := d.region()
 	header := raftlog.CustomHeader{
 		RegionID: region.Id,
@@ -1538,6 +1507,8 @@ func (d *peerMsgHandler) onGenerateMetaChangeEvent(e *protos.MetaChangeEvent) {
 		PeerID:   d.peer.Meta.Id,
 		StoreID:  d.storeID(),
 	}
-	rlog := raftlog.BuildEngineMetaChangeLog(header, e)
-	d.proposeRaftCommand(rlog, nil)
+	b := raftlog.NewBuilder(header)
+	b.SetType(raftlog.TypeChangeSet)
+	b.AppendChangeSet(e)
+	d.proposeRaftCommand(b.Build(), nil)
 }

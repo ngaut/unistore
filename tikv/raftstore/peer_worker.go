@@ -35,6 +35,10 @@ type applyBatch struct {
 	proposals []*regionProposal
 }
 
+func newApplyBatch() *applyBatch {
+	return &applyBatch{peers: map[uint64]*peerState{}}
+}
+
 func (b *applyBatch) iterCallbacks(f func(cb *Callback)) {
 	for _, rp := range b.proposals {
 		for _, p := range rp.Props {
@@ -67,8 +71,7 @@ func newRaftWorker(ctx *GlobalContext, ch chan Msg, pm *router) *raftWorker {
 		GlobalContext: ctx,
 		applyMsgs:     new(applyMsgs),
 		queuedSnaps:   make(map[uint64]struct{}),
-		kvWB:          new(WriteBatch),
-		raftWB:        new(WriteBatch),
+		raftWB:        new(RaftWriteBatch),
 		localStats:    new(storeStats),
 	}
 	applyResCh := make(chan Msg, cap(ch))
@@ -122,9 +125,7 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 		rw.raftCtx.pendingCount = 0
 		rw.raftCtx.hasReady = false
 		rw.raftStartTime = time.Now()
-		batch := &applyBatch{
-			peers: peerStateMap,
-		}
+		batch := newApplyBatch()
 		for _, msg := range msgs {
 			peerState := rw.getPeerState(peerStateMap, msg.RegionID)
 			newRaftMsgHandler(peerState.peer, rw.raftCtx).HandleMsgs(msg)
@@ -169,14 +170,6 @@ func (rw *raftWorker) handleRaftReady(peers map[uint64]*peerState, batch *applyB
 	for _, proposal := range batch.proposals {
 		msg := Msg{Type: MsgTypeApplyProposal, Data: proposal}
 		rw.raftCtx.applyMsgs.appendMsg(proposal.RegionId, msg)
-	}
-	kvWB := rw.raftCtx.kvWB
-	if len(kvWB.entries) > 0 {
-		err := kvWB.WriteToKV(rw.raftCtx.engine.kv)
-		if err != nil {
-			panic(err)
-		}
-		kvWB.Reset()
 	}
 	raftWB := rw.raftCtx.raftWB
 	if len(raftWB.entries) > 0 {

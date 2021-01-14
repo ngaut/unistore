@@ -14,27 +14,24 @@
 package raftstore
 
 import (
-	"bytes"
 	"encoding/binary"
 	"encoding/hex"
-	"fmt"
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/badger/table/memtable"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ngaut/unistore/config"
-	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
-	"github.com/pingcap/badger/table/sstable"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
-	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/util/codec"
@@ -67,7 +64,8 @@ const (
 	/// Destroy data between [start_key, end_key).
 	///
 	/// The deletion may and may not succeed.
-	taskTypeRegionDestroy taskType = 403
+	taskTypeRegionDestroy           taskType = 403
+	taskTypeRegionFollowerChangeSet taskType = 404
 
 	taskTypeResolveAddr taskType = 501
 
@@ -81,7 +79,7 @@ type task struct {
 }
 
 type regionTask struct {
-	regionId uint64
+	region   *metapb.Region
 	notifier chan<- *eraftpb.Snapshot
 	status   *JobStatus
 	snapData *snapData
@@ -99,6 +97,7 @@ type raftLogGCTask struct {
 
 type splitCheckTask struct {
 	region *metapb.Region
+	peer   *metapb.Peer
 }
 
 type computeHashTask struct {
@@ -164,16 +163,6 @@ type flowStats struct {
 	readKeys  uint64
 }
 
-type compactTask struct {
-	keyRange keyRange
-}
-
-type checkAndCompactTask struct {
-	ranges                    []keyRange
-	tombStoneNumThreshold     uint64 // The minimum RocksDB tombstones a range that need compacting has
-	tombStonePercentThreshold uint64
-}
-
 type sendSnapTask struct {
 	storeID  uint64
 	msg      *raft_serverpb.RaftMessage
@@ -235,10 +224,9 @@ func newWorker(name string, wg *sync.WaitGroup) *worker {
 }
 
 type splitCheckHandler struct {
-	engine   *badger.ShardingDB
-	router   *router
-	config   *splitCheckConfig
-	checkers []splitChecker
+	engine *badger.ShardingDB
+	router *router
+	config *splitCheckConfig
 }
 
 func newSplitCheckRunner(engine *badger.ShardingDB, router *router, config *splitCheckConfig) *splitCheckHandler {
@@ -248,15 +236,6 @@ func newSplitCheckRunner(engine *badger.ShardingDB, router *router, config *spli
 		config: config,
 	}
 	return runner
-}
-
-func (r *splitCheckHandler) newCheckers() {
-	r.checkers = r.checkers[:0]
-	// the checker append order is the priority order
-	sizeChecker := newSizeSplitChecker(r.config.regionMaxSize, r.config.regionSplitSize, r.config.batchSplitLimit)
-	r.checkers = append(r.checkers, sizeChecker)
-	keysChecker := newKeysSplitChecker(r.config.RegionMaxKeys, r.config.RegionSplitKeys, r.config.batchSplitLimit)
-	r.checkers = append(r.checkers, keysChecker)
 }
 
 /// run checks a region with split checkers to produce split keys and generates split admin command.
@@ -276,31 +255,9 @@ func (r *splitCheckHandler) handle(t task) {
 	}
 	log.S().Debugf("executing split check task: [regionId: %d, startKey: %s, endKey: %s]", regionId,
 		hex.EncodeToString(startKey), hex.EncodeToString(endKey))
-	snap := r.engine.NewSnapshot(startKey, endKey)
-	reader := dbreader.NewDBReader(startKey, endKey, snap)
-	defer reader.Close()
-	var keys [][]byte
-	switch t.tp {
-	case taskTypeHalfSplitCheck:
-		keys = r.halfSplitCheck(startKey, endKey, reader)
-	case taskTypeSplitCheck:
-		keys = r.splitCheck(startKey, endKey, reader)
-	}
+	keys := r.engine.GetSplitSuggestion(regionId, int64(r.config.regionSplitSize))
 	if len(keys) != 0 {
-		regionEpoch := region.GetRegionEpoch()
-		for i, k := range keys {
-			keys[i] = codec.EncodeBytes(nil, k)
-		}
-		msg := Msg{
-			Type:     MsgTypeSplitRegion,
-			RegionID: regionId,
-			Data: &MsgSplitRegion{
-				RegionEpoch: regionEpoch,
-				SplitKeys:   keys,
-				Callback:    NewCallback(),
-			},
-		}
-		err = r.router.send(regionId, msg)
+		_, err = splitEngineAndRegion(r.router, r.engine, spCheckTask.peer, region, keys)
 		if err != nil {
 			log.Warn("failed to send check result", zap.Uint64("region id", regionId), zap.Error(err))
 		}
@@ -309,198 +266,56 @@ func (r *splitCheckHandler) handle(t task) {
 	}
 }
 
-func exceedEndKey(current, endKey []byte) bool {
-	return bytes.Compare(current, endKey) >= 0
-}
-
-// doCheck checks kvs using every checker
-func (r *splitCheckHandler) doCheck(startKey, endKey []byte, ite *badger.Iterator) {
-	r.newCheckers()
-	for ite.Seek(startKey); ite.Valid(); ite.Next() {
-		item := ite.Item()
-		key := item.Key()
-		if exceedEndKey(key, endKey) {
-			break
-		}
-		for _, checker := range r.checkers {
-			if checker.onKv(key, item) {
-				return
-			}
-		}
+// splitEngineAndRegion execute the complete procedure to split a region.
+// 1. execute PreSplit on raft command.
+// 2. Split the engine files.
+// 3. Split the region.
+func splitEngineAndRegion(router *router, engine *badger.ShardingDB, peer *metapb.Peer, region *metapb.Region, rawKeys [][]byte) ([]*metapb.Region, error) {
+	header := raftlog.CustomHeader{
+		RegionID: region.Id,
+		Epoch:    raftlog.NewEpoch(region.RegionEpoch.Version, region.RegionEpoch.ConfVer),
+		PeerID:   peer.Id,
+		StoreID:  peer.StoreId,
 	}
-}
-
-/// SplitCheck gets the split keys by scanning the range.
-func (r *splitCheckHandler) splitCheck(startKey, endKey []byte, reader *dbreader.DBReader) [][]byte {
-	ite := reader.GetIter()
-	splitKeys := r.tryTableSplit(startKey, endKey, ite)
-	if len(splitKeys) > 0 {
-		return splitKeys
+	builder := raftlog.NewBuilder(header)
+	for _, k := range rawKeys {
+		builder.AppendKeyOnly(k)
 	}
-	r.doCheck(startKey, endKey, ite)
-	for _, checker := range r.checkers {
-		keys := checker.getSplitKeys()
-		if len(keys) > 0 {
-			return keys
-		}
+	builder.SetType(raftlog.TypePreSplit)
+	cb := NewCallback()
+	cmd := &MsgRaftCmd{
+		SendTime: time.Now(),
+		Callback: cb,
+		Request:  builder.Build(),
 	}
-	return nil
-}
-
-func (r *splitCheckHandler) tryTableSplit(startKey, endKey []byte, it *badger.Iterator) [][]byte {
-	if !isTableKey(startKey) || isSameTable(startKey, endKey) {
-		return nil
+	err := router.sendRaftCommand(cmd)
+	if err != nil {
+		return nil, err
 	}
-	var splitKeys [][]byte
-	prevKey := startKey
-	for {
-		it.Seek(nextTableKey(prevKey))
-		if !it.Valid() {
-			break
-		}
-		key := it.Item().Key()
-		if exceedEndKey(key, endKey) {
-			break
-		}
-		splitKey := safeCopy(key)
-		splitKeys = append(splitKeys, splitKey)
-		prevKey = splitKey
+	cb.wg.Wait()
+	if cb.resp.GetHeader().GetError() != nil {
+		return nil, errors.New(cb.resp.Header.Error.Message)
 	}
-	return splitKeys
-}
-
-func nextTableKey(key []byte) []byte {
-	result := make([]byte, 9)
-	result[0] = 't'
-	if len(key) >= 9 {
-		curTableID := binary.BigEndian.Uint64(key[1:])
-		binary.BigEndian.PutUint64(result[1:], curTableID+1)
+	err = engine.SplitShardFiles(region.Id, region.RegionEpoch.Version)
+	if err != nil {
+		return nil, err
 	}
-	return result
-}
-
-type splitChecker interface {
-	onKv(key []byte, item *badger.Item) bool
-	getSplitKeys() [][]byte
-}
-
-type sizeSplitChecker struct {
-	maxSize         uint64
-	splitSize       uint64
-	currentSize     uint64
-	splitKeys       [][]byte
-	batchSplitLimit uint64
-}
-
-func newSizeSplitChecker(maxSize, splitSize, batchSplitLimit uint64) *sizeSplitChecker {
-	return &sizeSplitChecker{
-		maxSize:         maxSize,
-		splitSize:       splitSize,
-		batchSplitLimit: batchSplitLimit,
+	encodedKeys := make([][]byte, len(rawKeys))
+	for i := 0; i < len(rawKeys); i++ {
+		encodedKeys[i] = codec.EncodeBytes(nil, rawKeys[i])
 	}
-}
-
-func safeCopy(b []byte) []byte {
-	return append([]byte{}, b...)
-}
-
-func (checker *sizeSplitChecker) onKv(key []byte, item *badger.Item) bool {
-	valueSize := uint64(item.ValueSize())
-	size := uint64(len(key)) + valueSize
-	checker.currentSize += size
-	overLimit := uint64(len(checker.splitKeys)) >= checker.batchSplitLimit
-	if checker.currentSize > checker.splitSize && !overLimit {
-		checker.splitKeys = append(checker.splitKeys, safeCopy(key))
-		// If for previous onKv(), checker.current_size == checker.split_size,
-		// the split key would be pushed this time, but the entry size for this time should not be ignored.
-		if checker.currentSize-size == checker.splitSize {
-			checker.currentSize = size
-		} else {
-			checker.currentSize = 0
-		}
-		overLimit = uint64(len(checker.splitKeys)) >= checker.batchSplitLimit
+	splitRegionCB := NewCallback()
+	splitRegionMsg := &MsgSplitRegion{
+		RegionEpoch: region.RegionEpoch,
+		SplitKeys:   encodedKeys,
+		Callback:    splitRegionCB,
 	}
-	// For a large region, scan over the range maybe cost too much time,
-	// so limit the number of produced splitKeys for one batch.
-	// Also need to scan over checker.maxSize for last part.
-	return overLimit && checker.currentSize+checker.splitSize >= checker.maxSize
-}
-
-func (checker *sizeSplitChecker) getSplitKeys() [][]byte {
-	// Make sure not to split when less than maxSize for last part
-	if checker.currentSize+checker.splitSize < checker.maxSize {
-		splitKeyLen := len(checker.splitKeys)
-		if splitKeyLen != 0 {
-			checker.splitKeys = checker.splitKeys[:splitKeyLen-1]
-		}
+	err = router.send(region.Id, Msg{Type: MsgTypeSplitRegion, Data: splitRegionMsg})
+	if err != nil {
+		return nil, err
 	}
-	keys := checker.splitKeys
-	checker.splitKeys = nil
-	return keys
-}
-
-func newKeysSplitChecker(regionMaxKeys, regionSplitKeys, batchSplitLimit uint64) *keysSplitChecker {
-	checker := &keysSplitChecker{
-		regionMaxKeys:   regionMaxKeys,
-		regionSplitKeys: regionSplitKeys,
-		batchSplitLimit: batchSplitLimit,
-	}
-	return checker
-}
-
-type keysSplitChecker struct {
-	regionMaxKeys   uint64
-	regionSplitKeys uint64
-	batchSplitLimit uint64
-	curCnt          uint64
-	splitKeys       [][]byte
-}
-
-func (c *keysSplitChecker) onKv(key []byte, item *badger.Item) bool {
-	c.curCnt++
-	overLimit := uint64(len(c.splitKeys)) >= c.batchSplitLimit
-	if c.curCnt > c.regionSplitKeys && !overLimit {
-		// if for previous on_kv() self.current_count == self.split_threshold,
-		// the split key would be pushed this time, but the entry for this time should not be ignored.
-		c.splitKeys = append(c.splitKeys, safeCopy(key))
-		c.curCnt = 1
-		overLimit = uint64(len(c.splitKeys)) >= c.batchSplitLimit
-	}
-	return overLimit && c.curCnt+c.regionSplitKeys >= c.regionMaxKeys
-}
-
-func (c *keysSplitChecker) getSplitKeys() [][]byte {
-	// make sure not to split when less than max_keys_count for last part
-	if c.curCnt+c.regionSplitKeys < c.regionMaxKeys {
-		if len(c.splitKeys) > 0 {
-			c.splitKeys = c.splitKeys[:len(c.splitKeys)-1]
-		}
-	}
-	keys := c.splitKeys
-	c.splitKeys = nil
-	return keys
-}
-
-func (r *splitCheckHandler) halfSplitCheck(startKey, endKey []byte, reader *dbreader.DBReader) [][]byte {
-	var sampleKeys [][]byte
-	cnt := 0
-	ite := reader.GetIter()
-	for ite.Seek(startKey); ite.Valid(); ite.Next() {
-		cnt++
-		key := ite.Item().Key()
-		if exceedEndKey(key, endKey) {
-			break
-		}
-		if cnt%r.config.rowsPerSample == 0 {
-			sampleKeys = append(sampleKeys, safeCopy(key))
-		}
-	}
-	mid := len(sampleKeys) / 2
-	if len(sampleKeys) > mid {
-		splitKey := sampleKeys[mid]
-		return [][]byte{splitKey}
-	}
-	return nil
+	splitRegionCB.wg.Wait()
+	return splitRegionCB.resp.GetAdminResponse().GetSplits().GetRegions(), nil
 }
 
 type stalePeerInfo struct {
@@ -541,125 +356,60 @@ func (s stalePeerInfo) setEndKey(endKey []byte) {
 
 type snapContext struct {
 	engines   *Engines
-	wb        *WriteBatch
+	wb        *RaftWriteBatch
 	batchSize uint64
-	mgr       *SnapManager
 }
 
 // handleGen handles the task of generating snapshot of the Region. It calls `generateSnap` to do the actual work.
 func (snapCtx *snapContext) handleGen(task *regionTask) {
-	snap, err := snapCtx.engines.metaManager.getSnapshotData(task.regionId)
-	if err != nil {
-		log.Error("failed to generate snapshot", zap.Error(err))
+	kv := snapCtx.engines.kv
+	shard := kv.GetShard(task.region.Id)
+	if shard.Ver != task.region.RegionEpoch.Version {
+		log.Error("failed to generate snapshot, version not match")
+		task.notifier <- new(eraftpb.Snapshot)
 		return
 	}
-	task.notifier <- snap
-}
-
-// generateSnap generates the snapshots of the Region
-func (snapCtx *snapContext) generateSnap(task *regionTask) error {
-	// do we need to check leader here?
-	snap, err := doSnapshot(snapCtx.engines, snapCtx.mgr, task)
-	if err != nil {
-		return err
+	changeSet := kv.GetShardChangeSet(task.region.Id)
+	if changeSet.Version != shard.Ver {
+		log.Error("failed to generate snapshot, version not match")
+		task.notifier <- new(eraftpb.Snapshot)
 	}
-	task.notifier <- snap
-	return nil
-}
-
-// cleanUpOriginData clear up the region data before applying snapshot
-func (snapCtx *snapContext) cleanUpOriginData(regionState *rspb.RegionLocalState, status *JobStatus) error {
-	startKey := RawStartKey(regionState.GetRegion())
-	endKey := RawEndKey(regionState.GetRegion())
-	if err := checkAbort(status); err != nil {
-		return err
-	}
-	if err := snapCtx.engines.kv.DeleteRange(startKey, endKey); err != nil {
-		return err
-	}
-	if err := checkAbort(status); err != nil {
-		return err
-	}
-	return nil
-}
-
-// applySnap applies snapshot data of the Region.
-func (snapCtx *snapContext) applySnap(regionId uint64, status *JobStatus, builder *sstable.Builder) (ApplyResult, error) {
-	log.Info("begin apply snap data", zap.Uint64("region id", regionId))
-	var result ApplyResult
-	if err := checkAbort(status); err != nil {
-		return result, err
-	}
-
-	regionKey := RegionStateKey(regionId)
-	regionState, err := getRegionLocalState(snapCtx.engines.kv, regionId)
-	if err != nil {
-		return result, errors.New(fmt.Sprintf("failed to get regionState from %v", regionKey))
-	}
-
-	// Clean up origin data
-	if err := snapCtx.cleanUpOriginData(regionState, status); err != nil {
-		return result, err
-	}
-
-	applyState, err := getApplyState(snapCtx.engines.kv, regionId)
-	if err != nil {
-		return result, errors.New(fmt.Sprintf("failed to get raftState from %v", ApplyStateKey(regionId)))
-	}
-	snapKey := SnapKey{RegionID: regionId, Index: applyState.truncatedIndex, Term: applyState.truncatedTerm}
-	snapCtx.mgr.Register(snapKey, SnapEntryApplying)
-	defer snapCtx.mgr.Deregister(snapKey, SnapEntryApplying)
-
-	snap, err := snapCtx.mgr.GetSnapshotForApplying(snapKey)
-	if err != nil {
-		return result, errors.New(fmt.Sprintf("missing snapshot file %s", snapKey))
-	}
-
-	t := time.Now()
-	applyOptions := newApplyOptions(snapCtx.engines.kv, regionState.GetRegion(), status, builder, snapCtx.wb)
-	if result, err = snap.Apply(*applyOptions); err != nil {
-		return result, err
-	}
-
-	regionState.State = rspb.PeerState_Normal
-	result.RegionState = regionState
-
-	log.Info("applying new data", zap.Uint64("region id", regionId), zap.Duration("takes", time.Since(t)))
-	return result, nil
-}
-
-// handleApply tries to apply the snapshot of the specified Region. It calls `applySnap` to do the actual work.
-func (snapCtx *snapContext) handleApply(regionId uint64, status *JobStatus, builder *sstable.Builder) (ApplyResult, error) {
-	atomic.CompareAndSwapUint32(status, JobStatus_Pending, JobStatus_Running)
-	result, err := snapCtx.applySnap(regionId, status, builder)
-	switch err.(type) {
-	case nil:
-		atomic.SwapUint32(status, JobStatus_Finished)
-	case applySnapAbortError:
-		log.Warn("applying snapshot is aborted", zap.Uint64("region id", regionId))
-		y.Assert(atomic.SwapUint32(status, JobStatus_Cancelled) == JobStatus_Cancelling)
-	default:
-		log.Error("failed to apply snap!!!", zap.Error(err))
-		atomic.SwapUint32(status, JobStatus_Failed)
-	}
-	return result, err
-}
-
-/// ingestMaybeStall checks the number of files at level 0 to avoid write stall after ingesting sst.
-/// Returns true if the ingestion causes write stall.
-func (snapCtx *snapContext) ingestMaybeStall() bool {
-	for _, cf := range snapshotCFs {
-		if plainFileUsed(cf) {
-			continue
+	propertyVals, dbSnap := kv.GetPropertiesWithSnap(shard, []string{applyStateKey})
+	defer dbSnap.Discard()
+	var deltaEntries deltaEntries
+	for cf := 0; cf < kv.NumCFs(); cf++ {
+		iter := dbSnap.NewDeltaIterator(cf, changeSet.Snapshot.CommitTS)
+		for iter.Rewind(); iter.Valid(); iter.Next() {
+			item := iter.Item()
+			val, _ := item.ValueCopy(nil)
+			deltaEntry := deltaEntry{
+				cf:       cf,
+				key:      item.Key(),
+				val:      val,
+				userMeta: item.UserMeta(),
+				version:  item.Version(),
+			}
+			deltaEntries.encodeEntry(deltaEntry)
 		}
-		// todo, related to cf.
 	}
-	return false
-}
-
-type regionApplyState struct {
-	localState *rspb.RegionLocalState
-	tableCount int
+	applyState := new(applyState)
+	applyState.Unmarshal(propertyVals[0])
+	snapData := &snapData{
+		region:       task.region,
+		applyState:   applyState,
+		changeSet:    changeSet,
+		deltaEntries: deltaEntries,
+		maxReadTS:    dbSnap.GetReadTS(),
+	}
+	snap := &eraftpb.Snapshot{
+		Metadata: &eraftpb.SnapshotMetadata{},
+		Data:     snapData.Marshal(),
+	}
+	snap.Metadata.Index = applyState.appliedIndex
+	snap.Metadata.Term = applyState.appliedIndexTerm
+	confState := confStateFromRegion(task.region)
+	snap.Metadata.ConfState = &confState
+	task.notifier <- snap
 }
 
 type regionTaskHandler struct {
@@ -668,12 +418,11 @@ type regionTaskHandler struct {
 	conf *config.Config
 }
 
-func newRegionTaskHandler(conf *config.Config, engines *Engines, mgr *SnapManager, batchSize uint64) *regionTaskHandler {
+func newRegionTaskHandler(conf *config.Config, engines *Engines, batchSize uint64) *regionTaskHandler {
 	return &regionTaskHandler{
 		conf: conf,
 		ctx: &snapContext{
 			engines:   engines,
-			mgr:       mgr,
 			batchSize: batchSize,
 		},
 	}
@@ -682,7 +431,7 @@ func newRegionTaskHandler(conf *config.Config, engines *Engines, mgr *SnapManage
 // handlePendingApplies tries to apply pending tasks if there is some.
 func (r *regionTaskHandler) handleApply(task *regionTask) {
 	atomic.StoreUint32(task.status, JobStatus_Running)
-	r.ctx.wb = new(WriteBatch)
+	r.ctx.wb = new(RaftWriteBatch)
 	snapData := task.snapData
 	db := r.ctx.engines.kv
 	delta := snapData.deltaEntries
@@ -691,16 +440,13 @@ func (r *regionTaskHandler) handleApply(task *regionTask) {
 		entry := delta.decodeEntry()
 		cfTable.Put(entry.cf, entry.key, y.ValueStruct{Value: entry.val, UserMeta: entry.userMeta, Version: entry.version})
 	}
-	r.ctx.engines.metaManager.applySnapshot(task.snapData)
-	wb := r.ctx.wb
-	r.ctx.wb = nil
-	rs := new(rspb.RegionLocalState)
-	rs.Region = snapData.region
-	regionID := rs.Region.Id
-	rsVal, _ := rs.Marshal()
-	wb.SetRaftCF(y.KeyWithTs(RegionStateKey(regionID), KvTS), rsVal)
-	wb.SetRaftCF(y.KeyWithTs(SnapshotRaftStateKey(regionID), KvTS), nil)
-	if err := wb.WriteToKV(r.ctx.engines.kv); err != nil {
+	inTree := &badger.IngestTree{
+		ChangeSet: snapData.changeSet,
+		MaxTS:     snapData.maxReadTS,
+		Delta:     []*memtable.CFTable{cfTable},
+	}
+	err := r.ctx.engines.kv.Ingest(inTree)
+	if err != nil {
 		log.Error("update region status failed", zap.Error(err))
 		atomic.StoreUint32(task.status, JobStatus_Failed)
 	} else {
@@ -722,10 +468,19 @@ func (r *regionTaskHandler) handle(t task) {
 	case taskTypeRegionDestroy:
 		// We don't need to delay the range deletion because DeleteRange operation
 		// doesn't affect the existing badger.Snapshot
-		regionTask := t.data.(regionTask)
-		err := r.ctx.engines.kv.DeleteRange(regionTask.startKey, regionTask.endKey)
+		regionTask := t.data.(*regionTask)
+		err := r.ctx.engines.kv.RemoveShard(regionTask.region.Id, true)
 		if err != nil {
 			log.Error("failed to destroy region", zap.Error(err))
+		}
+	case taskTypeRegionFollowerChangeSet:
+		changeSet := t.data.(*protos.ShardChangeSet)
+		kv := r.ctx.engines.kv
+		shd := kv.GetShard(changeSet.ShardID)
+		y.Assert(shd.Ver == changeSet.Version)
+		err := kv.ApplySlowPassiveChangeSet(shd, changeSet)
+		if err != nil {
+			log.Error("failed to apply passive change set")
 		}
 	}
 }
@@ -773,7 +528,7 @@ func (r *raftLogGCTaskHandler) gcRaftLog(raftDb *badger.DB, regionId, startIdx, 
 		return 0, nil
 	}
 
-	raftWb := WriteBatch{}
+	raftWb := RaftWriteBatch{}
 	for idx := firstIdx; idx < endIdx; idx += 1 {
 		key := y.KeyWithTs(RaftLogKey(regionId, idx), RaftTS)
 		raftWb.Delete(key)

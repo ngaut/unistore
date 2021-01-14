@@ -14,7 +14,6 @@
 package raftstore
 
 import (
-	"github.com/pingcap/badger/table/memtable"
 	"math"
 	"time"
 
@@ -39,30 +38,30 @@ type Engines struct {
 	kvPath   string
 	raft     *badger.DB
 	raftPath string
-
-	metaManager *MetaManager
+	listener *MetaChangeListener
 }
 
-func NewEngines(kvEngine *badger.ShardingDB, raftEngine *badger.DB, kvPath, raftPath string, metaManager *MetaManager) *Engines {
+func NewEngines(kvEngine *badger.ShardingDB, raftEngine *badger.DB, kvPath, raftPath string, listener *MetaChangeListener) *Engines {
 	return &Engines{
-		kv:          kvEngine,
-		kvPath:      kvPath,
-		raft:        raftEngine,
-		raftPath:    raftPath,
-		metaManager: metaManager,
+		kv:       kvEngine,
+		kvPath:   kvPath,
+		raft:     raftEngine,
+		raftPath: raftPath,
+		listener: listener,
 	}
 }
 
+/*
 func (en *Engines) newRegionSnapshot(task *regionTask) (snap *regionSnapshot, err error) {
 	// We need to get the old region state out of the snapshot transaction to fetch data in lockStore.
 	// The lockStore data must be fetch before we start the snapshot transaction to make sure there is no newer data
 	// in the lockStore. The missing old data can be restored by raft log.
-	oldRegionState, err := getRegionLocalState(en.kv, task.regionId)
+	oldRegionState, err := getRegionLocalState(en.kv, task.region)
 	if err != nil {
 		return nil, err
 	}
 
-	dbSnap := en.kv.NewSnapshot(task.startKey, task.endKey)
+	dbSnap := en.kv.NewSnapshot(en.kv.GetShard(task.region.Id))
 	defer func() {
 		if err != nil {
 			dbSnap.Discard()
@@ -71,7 +70,7 @@ func (en *Engines) newRegionSnapshot(task *regionTask) (snap *regionSnapshot, er
 
 	// Verify that the region version to make sure the start key and end key has not changed.
 	regionState := new(raft_serverpb.RegionLocalState)
-	val, err := getKVValueBySnap(dbSnap, RegionStateKey(task.regionId))
+	val, err := getKVValueBySnap(dbSnap, RegionStateKey(task.region))
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +82,7 @@ func (en *Engines) newRegionSnapshot(task *regionTask) (snap *regionSnapshot, er
 		return nil, errors.New("region changed during newRegionSnapshot")
 	}
 
-	index, term, err := getAppliedIdxTermForSnapshot(en.raft, dbSnap, task.regionId)
+	index, term, err := getAppliedIdxTermForSnapshot(en.raft, dbSnap, task.region.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -95,12 +94,13 @@ func (en *Engines) newRegionSnapshot(task *regionTask) (snap *regionSnapshot, er
 	}
 	return snap, nil
 }
+*/
 
-func (en *Engines) WriteKV(wb *WriteBatch) error {
-	return wb.WriteToKV(en.kv)
+func (en *Engines) WriteKV(wb *KVWriteBatch) error {
+	return wb.WriteToEngine()
 }
 
-func (en *Engines) WriteRaft(wb *WriteBatch) error {
+func (en *Engines) WriteRaft(wb *RaftWriteBatch) error {
 	return wb.WriteToRaft(en.raft)
 }
 
@@ -114,11 +114,85 @@ func (en *Engines) SyncRaftWAL() error {
 	return nil
 }
 
-type WriteBatch struct {
+type KVWriteBatch struct {
+	kv      *badger.ShardingDB
+	batches map[uint64]*badger.WriteBatch
+}
+
+func NewKVWriteBatch(kv *badger.ShardingDB) *KVWriteBatch {
+	return &KVWriteBatch{
+		kv:      kv,
+		batches: map[uint64]*badger.WriteBatch{},
+	}
+}
+
+func (kvWB *KVWriteBatch) getEngineWriteBatch(regionID uint64) *badger.WriteBatch {
+	wb, ok := kvWB.batches[regionID]
+	if !ok {
+		wb = kvWB.kv.NewWriteBatch(kvWB.kv.GetShard(regionID))
+		kvWB.batches[regionID] = wb
+	}
+	return wb
+}
+
+func (kvWB *KVWriteBatch) SetLock(regionID uint64, key, val []byte) {
+	wb := kvWB.getEngineWriteBatch(regionID)
+	y.Assert(wb.Put(mvcc.LockCF, key, y.ValueStruct{Value: val}) == nil)
+}
+
+func (kvWB *KVWriteBatch) DeleteLock(regionID uint64, key []byte) {
+	wb := kvWB.getEngineWriteBatch(regionID)
+	y.Assert(wb.Delete(mvcc.LockCF, key, 0) == nil)
+}
+
+func (kvWB *KVWriteBatch) Rollback(regionID uint64, key y.Key) {
+	wb := kvWB.getEngineWriteBatch(regionID)
+	rollbackKey := mvcc.EncodeExtraTxnStatusKey(key.UserKey, key.Version)
+	y.Assert(wb.Put(mvcc.ExtraCF, rollbackKey, y.ValueStruct{
+		UserMeta: mvcc.NewDBUserMeta(key.Version, 0),
+		Version:  key.Version,
+	}) == nil)
+}
+
+func (kvWB *KVWriteBatch) SetWithUserMeta(regionID uint64, key y.Key, val, userMeta []byte) {
+	wb := kvWB.getEngineWriteBatch(regionID)
+	y.Assert(wb.Put(mvcc.WriteCF, key.UserKey, y.ValueStruct{
+		UserMeta: userMeta,
+		Value:    val,
+		Version:  key.Version,
+	}) == nil)
+}
+
+func (kvWB *KVWriteBatch) SetOpLock(regionID uint64, key y.Key, userMeta []byte) {
+	wb := kvWB.getEngineWriteBatch(regionID)
+	startTS := mvcc.DBUserMeta(userMeta).StartTS()
+	opLockKey := mvcc.EncodeExtraTxnStatusKey(key.UserKey, startTS)
+	y.Assert(wb.Put(mvcc.ExtraCF, opLockKey, y.ValueStruct{UserMeta: userMeta, Version: key.Version}) == nil)
+}
+
+func (kvWB *KVWriteBatch) SetApplyState(regionID uint64, state applyState) {
+	wb := kvWB.getEngineWriteBatch(regionID)
+	wb.SetProperty(applyStateKey, state.Marshal())
+}
+
+func (kvWB *KVWriteBatch) WriteToEngine() error {
+	batches := make([]*badger.WriteBatch, 0, len(kvWB.batches))
+	for _, wb := range kvWB.batches {
+		batches = append(batches, wb)
+	}
+	return kvWB.kv.Write(batches...)
+}
+
+func (kvWB *KVWriteBatch) Reset() {
+	kvWB.batches = make(map[uint64]*badger.WriteBatch, len(kvWB.batches))
+}
+
+type RaftWriteBatch struct {
 	entries       []*badger.Entry
 	lockEntries   []*badger.Entry
 	extraEntries  []*badger.Entry
 	raftEntries   []*badger.Entry
+	applyState    applyState
 	size          int
 	safePoint     int
 	safePointLock int
@@ -126,11 +200,11 @@ type WriteBatch struct {
 	safePointUndo int
 }
 
-func (wb *WriteBatch) Len() int {
+func (wb *RaftWriteBatch) Len() int {
 	return len(wb.entries) + len(wb.lockEntries) + len(wb.extraEntries) + len(wb.raftEntries)
 }
 
-func (wb *WriteBatch) Set(key y.Key, val []byte) {
+func (wb *RaftWriteBatch) Set(key y.Key, val []byte) {
 	wb.entries = append(wb.entries, &badger.Entry{
 		Key:   key,
 		Value: val,
@@ -138,58 +212,14 @@ func (wb *WriteBatch) Set(key y.Key, val []byte) {
 	wb.size += key.Len() + len(val)
 }
 
-func (wb *WriteBatch) SetLock(key, val []byte) {
-	wb.lockEntries = append(wb.lockEntries, &badger.Entry{
-		Key:   y.KeyWithTs(key, 0),
-		Value: val,
-	})
-	wb.size += len(key) + len(val)
-}
-
-func (wb *WriteBatch) DeleteLock(key []byte) {
-	wb.lockEntries = append(wb.lockEntries, &badger.Entry{
-		Key: y.KeyWithTs(key, 0),
-	})
-	wb.size += len(key)
-}
-
-func (wb *WriteBatch) Rollback(key y.Key) {
-	rollbackKey := mvcc.EncodeExtraTxnStatusKey(key.UserKey, key.Version)
-	wb.extraEntries = append(wb.extraEntries, &badger.Entry{
-		Key:      y.KeyWithTs(rollbackKey, key.Version),
-		UserMeta: mvcc.NewDBUserMeta(key.Version, 0),
-	})
-	wb.size += len(rollbackKey)
-}
-
-func (wb *WriteBatch) SetWithUserMeta(key y.Key, val, userMeta []byte) {
-	wb.entries = append(wb.entries, &badger.Entry{
-		Key:      key,
-		Value:    val,
-		UserMeta: userMeta,
-	})
-	wb.size += key.Len() + len(val) + len(userMeta)
-}
-
-func (wb *WriteBatch) SetOpLock(key y.Key, userMeta []byte) {
-	startTS := mvcc.DBUserMeta(userMeta).StartTS()
-	opLockKey := y.KeyWithTs(mvcc.EncodeExtraTxnStatusKey(key.UserKey, startTS), key.Version)
-	e := &badger.Entry{
-		Key:      opLockKey,
-		UserMeta: userMeta,
-	}
-	wb.extraEntries = append(wb.extraEntries, e)
-	wb.size += key.Len() + len(userMeta)
-}
-
-func (wb *WriteBatch) Delete(key y.Key) {
+func (wb *RaftWriteBatch) Delete(key y.Key) {
 	wb.entries = append(wb.entries, &badger.Entry{
 		Key: key,
 	})
 	wb.size += key.Len()
 }
 
-func (wb *WriteBatch) SetMsg(key y.Key, msg proto.Message) error {
+func (wb *RaftWriteBatch) SetMsg(key y.Key, msg proto.Message) error {
 	val, err := proto.Marshal(msg)
 	if err != nil {
 		return errors.WithStack(err)
@@ -198,132 +228,16 @@ func (wb *WriteBatch) SetMsg(key y.Key, msg proto.Message) error {
 	return nil
 }
 
-func (wb *WriteBatch) SetApplyState(key y.Key, applyState applyState) {
-	wb.SetRaftCF(key, applyState.Marshal())
-}
-
-func (wb *WriteBatch) SetRegionLocalState(key y.Key, state *raft_serverpb.RegionLocalState) error {
+func (wb *RaftWriteBatch) SetRegionLocalState(key y.Key, state *raft_serverpb.RegionLocalState) error {
 	data, err := state.Marshal()
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	wb.SetRaftCF(key, data)
+	wb.Set(key, data)
 	return nil
 }
 
-func (wb *WriteBatch) SetRaftCF(key y.Key, val []byte) {
-	wb.raftEntries = append(wb.raftEntries, &badger.Entry{
-		Key:   key,
-		Value: val,
-	})
-	wb.size += len(key.UserKey) + len(val)
-}
-
-func (wb *WriteBatch) SetSafePoint() {
-	wb.safePoint = len(wb.entries)
-	wb.safePointLock = len(wb.lockEntries)
-	wb.safePointSize = wb.size
-}
-
-func (wb *WriteBatch) RollbackToSafePoint() {
-	wb.entries = wb.entries[:wb.safePoint]
-	wb.lockEntries = wb.lockEntries[:wb.safePointLock]
-	wb.size = wb.safePointSize
-}
-
-// WriteToKV flush WriteBatch to DB by two steps:
-// 	1. Write entries to badger. After save ApplyState to badger, subsequent regionSnapshot will start at new raft index.
-//	2. Update lockStore, the date in lockStore may be older than the DB, so we need to restore then entries from raft log.
-func (wb *WriteBatch) WriteToKV(db *badger.ShardingDB) error {
-	dbWB := db.NewWriteBatch()
-	start := time.Now()
-	if len(wb.entries) > 0 {
-		for _, entry := range wb.entries {
-			if len(entry.UserMeta) == 0 && len(entry.Value) == 0 {
-				y.Assert(dbWB.Delete(mvcc.WriteCF, entry.Key.UserKey, entry.Key.Version) == nil)
-			} else {
-				val := y.ValueStruct{
-					Value:    entry.Value,
-					UserMeta: entry.UserMeta,
-					Version:  entry.Key.Version,
-				}
-				y.Assert(dbWB.Put(mvcc.WriteCF, entry.Key.UserKey, val) == nil)
-			}
-		}
-	}
-	if len(wb.lockEntries) > 0 {
-		for _, entry := range wb.lockEntries {
-			if len(entry.Value) == 0 {
-				y.Assert(dbWB.Delete(mvcc.LockCF, entry.Key.UserKey, 0) == nil)
-			} else {
-				y.Assert(dbWB.Put(mvcc.LockCF, entry.Key.UserKey, y.ValueStruct{Value: entry.Value}) == nil)
-			}
-		}
-	}
-	if len(wb.extraEntries) > 0 {
-		for _, entry := range wb.extraEntries {
-			if len(entry.UserMeta) == 0 {
-				y.Assert(dbWB.Delete(mvcc.ExtraCF, entry.Key.UserKey, entry.Key.Version) == nil)
-			} else {
-				val := y.ValueStruct{
-					Value:    entry.Value,
-					UserMeta: entry.UserMeta,
-					Version:  entry.Key.Version,
-				}
-				y.Assert(dbWB.Put(mvcc.ExtraCF, entry.Key.UserKey, val) == nil)
-			}
-		}
-	}
-	if len(wb.raftEntries) > 0 {
-		for _, entry := range wb.raftEntries {
-			if len(entry.Value) == 0 {
-				y.Assert(dbWB.Delete(mvcc.RaftCF, entry.Key.UserKey, 0) == nil)
-			} else {
-				y.Assert(dbWB.Put(mvcc.RaftCF, entry.Key.UserKey, y.ValueStruct{Value: entry.Value}) == nil)
-			}
-		}
-	}
-	err := db.Write(dbWB)
-	metrics.KVDBUpdate.Observe(time.Since(start).Seconds())
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	return nil
-}
-
-func (wb *WriteBatch) WriteToBuffer(buffer *memtable.CFTable, readTS uint64) {
-	if len(wb.entries) > 0 {
-		for _, entry := range wb.entries {
-			val := y.ValueStruct{
-				Value:    entry.Value,
-				UserMeta: entry.UserMeta,
-				Version:  entry.Key.Version,
-			}
-			buffer.Put(mvcc.WriteCF, entry.Key.UserKey, val)
-		}
-	}
-	if len(wb.lockEntries) > 0 {
-		for _, entry := range wb.lockEntries {
-			if len(entry.Value) == 0 {
-				buffer.DeleteKey(mvcc.LockCF, entry.Key.UserKey)
-			} else {
-				buffer.Put(mvcc.LockCF, entry.Key.UserKey, y.ValueStruct{Value: entry.Value, Version: readTS})
-			}
-		}
-	}
-	if len(wb.extraEntries) > 0 {
-		for _, entry := range wb.extraEntries {
-			val := y.ValueStruct{
-				Value:    entry.Value,
-				UserMeta: entry.UserMeta,
-				Version:  entry.Key.Version,
-			}
-			buffer.Put(mvcc.ExtraCF, entry.Key.UserKey, val)
-		}
-	}
-}
-
-func (wb *WriteBatch) WriteToRaft(db *badger.DB) error {
+func (wb *RaftWriteBatch) WriteToRaft(db *badger.DB) error {
 	if len(wb.entries) > 0 {
 		start := time.Now()
 		err := db.Update(func(txn *badger.Txn) error {
@@ -346,21 +260,14 @@ func (wb *WriteBatch) WriteToRaft(db *badger.DB) error {
 	return nil
 }
 
-func (wb *WriteBatch) MustWriteToKV(db *badger.ShardingDB) {
-	err := wb.WriteToKV(db)
-	if err != nil {
-		panic(err)
-	}
-}
-
-func (wb *WriteBatch) MustWriteToRaft(db *badger.DB) {
+func (wb *RaftWriteBatch) MustWriteToRaft(db *badger.DB) {
 	err := wb.WriteToRaft(db)
 	if err != nil {
 		panic(err)
 	}
 }
 
-func (wb *WriteBatch) Reset() {
+func (wb *RaftWriteBatch) Reset() {
 	for i := range wb.entries {
 		wb.entries[i] = nil
 	}
@@ -394,7 +301,7 @@ func (r *raftLogFilter) Filter(key, val, userMeta []byte) badger.Decision {
 }
 
 var raftLogGuard = badger.Guard{
-	Prefix:   []byte{LocalPrefix, RegionRaftPrefix},
+	Prefix:   []byte{LocalPrefix, RaftStatePrefix},
 	MatchLen: 10,
 	MinSize:  1024 * 1024,
 }

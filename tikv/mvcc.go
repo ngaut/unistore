@@ -1132,7 +1132,8 @@ func (store *MVCCStore) ScanLock(reqCtx *requestCtx, maxTS uint64, limit int) ([
 
 func (store *MVCCStore) PhysicalScanLock(startKey []byte, maxTS uint64, limit int) []*kvrpcpb.LockInfo {
 	var locks []*kvrpcpb.LockInfo
-	snap := store.db.NewSnapshot(startKey, nil)
+	// TODO: support physicalScan
+	snap := store.db.NewSnapshot(nil)
 	defer snap.Discard()
 	it := snap.NewIterator(1, false, false)
 	for it.Seek(startKey); it.Valid(); it.Next() {

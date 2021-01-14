@@ -31,19 +31,11 @@ const (
 	// When the store starts, we should iterate all region meta data to
 	// construct peer, no need to travel large raft data, so we separate them
 	// with different prefixes.
-	RegionRaftPrefix byte = 0x02
 	RegionMetaPrefix byte = 0x03
-	RegionRaftLogLen      = 19 // REGION_RAFT_PREFIX_KEY + region_id + suffix + index
-
-	// Following are the suffix after the local prefix.
-	// For region id
-	RaftLogSuffix           byte = 0x01
-	RaftStateSuffix         byte = 0x02
-	ApplyStateSuffix        byte = 0x03
-	SnapshotRaftStateSuffix byte = 0x04
-
-	// For region meta
-	RegionStateSuffix byte = 0x01
+	RaftStatePrefix  byte = 0x04
+	RaftLogPrefix    byte = 0x05
+	RegionRaftLogLen      = 18     // REGION_RAFT_PREFIX_KEY + region_id + index
+	regionMetaKeyLen      = 2 + 16 // prefix(2) + region_id(8) + version(4) + confVersion(4)
 )
 
 var (
@@ -63,39 +55,30 @@ var (
 	storeIdentKey       = []byte{LocalPrefix, 0x02}
 )
 
-func makeRaftRegionPrefix(regionID uint64, suffix byte) []byte {
-	key := make([]byte, 11)
-	key[0] = LocalPrefix
-	key[1] = RegionRaftPrefix
-	binary.BigEndian.PutUint64(key[2:], regionID)
-	key[10] = suffix
-	return key
-}
-
-func makeRaftRegionKey(regionID uint64, suffix byte, subID uint64) []byte {
-	key := make([]byte, 19)
-	key[0] = LocalPrefix
-	key[1] = RegionRaftPrefix
-	binary.BigEndian.PutUint64(key[2:], regionID)
-	key[10] = suffix
-	binary.BigEndian.PutUint64(key[11:], subID)
-	return key
-}
-
 func RegionRaftPrefixKey(regionID uint64) []byte {
 	key := make([]byte, 10)
 	key[0] = LocalPrefix
-	key[1] = RegionRaftPrefix
+	key[1] = RaftStatePrefix
 	binary.BigEndian.PutUint64(key[2:], regionID)
 	return key
 }
 
 func RaftLogKey(regionID, index uint64) []byte {
-	return makeRaftRegionKey(regionID, RaftLogSuffix, index)
+	key := make([]byte, 18)
+	key[0] = LocalPrefix
+	key[1] = RaftLogPrefix
+	binary.BigEndian.PutUint64(key[2:], regionID)
+	binary.BigEndian.PutUint64(key[10:], index)
+	return key
 }
 
-func RaftStateKey(regionID uint64) []byte {
-	return makeRaftRegionPrefix(regionID, RaftStateSuffix)
+func RaftStateKey(region *metapb.Region) []byte {
+	key := make([]byte, 18)
+	key[0] = LocalPrefix
+	key[1] = RaftStatePrefix
+	binary.BigEndian.PutUint64(key[2:], region.Id)
+	binary.BigEndian.PutUint32(key[10:], uint32(region.RegionEpoch.Version))
+	return key
 }
 
 func ApplyStateKey(regionID uint64) []byte {
@@ -103,19 +86,17 @@ func ApplyStateKey(regionID uint64) []byte {
 	// return makeRaftRegionPrefix(regionID, ApplyStateSuffix)
 }
 
-func SnapshotRaftStateKey(regionID uint64) []byte {
-	return makeRaftRegionPrefix(regionID, SnapshotRaftStateSuffix)
-}
-
-func decodeRegionMetaKey(key []byte) (uint64, byte, error) {
-	if len(RegionMetaMinKey)+8+1 != len(key) {
-		return 0, 0, errors.Errorf("invalid region meta key length for key %v", key)
+func decodeRegionMetaKey(key []byte) (uint64, uint64, uint64, error) {
+	if regionMetaKeyLen != len(key) {
+		return 0, 0, 0, errors.Errorf("invalid region meta key length for key %v", key)
 	}
 	if !bytes.HasPrefix(key, RegionMetaMinKey) {
-		return 0, 0, errors.Errorf("invalid region meta key prefix for key %v", key)
+		return 0, 0, 0, errors.Errorf("invalid region meta key prefix for key %v", key)
 	}
-	regionID := binary.BigEndian.Uint64(key[len(RegionMetaMinKey):])
-	return regionID, key[len(key)-1], nil
+	regionID := binary.BigEndian.Uint64(key[2:])
+	version := binary.BigEndian.Uint32(key[10:])
+	confVer := binary.BigEndian.Uint32(key[14:])
+	return regionID, uint64(version), uint64(confVer), nil
 }
 
 func RegionMetaPrefixKey(regionID uint64) []byte {
@@ -126,12 +107,17 @@ func RegionMetaPrefixKey(regionID uint64) []byte {
 	return key
 }
 
-func RegionStateKey(regionID uint64) []byte {
-	key := make([]byte, 11)
+func RegionStateKey(region *metapb.Region) []byte {
+	return RegionStateKeyByIDEpoch(region.Id, region.RegionEpoch)
+}
+
+func RegionStateKeyByIDEpoch(regionID uint64, epoch *metapb.RegionEpoch) []byte {
+	key := make([]byte, 18)
 	key[0] = LocalPrefix
 	key[1] = RegionMetaPrefix
 	binary.BigEndian.PutUint64(key[2:], regionID)
-	key[10] = RegionStateSuffix
+	binary.BigEndian.PutUint32(key[10:], uint32(epoch.Version))
+	binary.BigEndian.PutUint32(key[14:], uint32(epoch.ConfVer))
 	return key
 }
 
@@ -168,16 +154,4 @@ func RaftLogIndex(key []byte) (uint64, error) {
 		return 0, errors.Errorf("key %v is not a valid raft log key", key)
 	}
 	return binary.BigEndian.Uint64(key[RegionRaftLogLen-8:]), nil
-}
-
-func ShardingApplyStateKey(regionStartKey []byte, regionID uint64) []byte {
-	// The applied index key is composed of region start key and region and version.
-	key := make([]byte, len(regionStartKey)+
-		8+ // reserve 8 zeros to make sure this key doesn't expand region.
-		1+ // state suffix.
-		8) // regionID
-	copy(key, regionStartKey)
-	key[len(key)-9] = ApplyStateSuffix
-	binary.LittleEndian.PutUint64(key[len(key)-8:], regionID)
-	return key
 }

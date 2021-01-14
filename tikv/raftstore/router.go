@@ -14,6 +14,8 @@
 package raftstore
 
 import (
+	"github.com/pingcap/badger"
+	"github.com/pingcap/log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -115,19 +117,9 @@ func (r *RaftstoreRouter) SendCommand(req *raft_cmdpb.RaftCmdRequest, cb *Callba
 	return r.router.sendRaftCommand(msg)
 }
 
-func (r *RaftstoreRouter) SplitRegion(ctx *kvrpcpb.Context, keys [][]byte) ([]*metapb.Region, error) {
-	cb := NewCallback()
-	msg := &MsgSplitRegion{
-		RegionEpoch: ctx.RegionEpoch,
-		SplitKeys:   keys,
-		Callback:    cb,
-	}
-	err := r.router.send(ctx.RegionId, Msg{Type: MsgTypeSplitRegion, Data: msg})
-	if err != nil {
-		return nil, err
-	}
-	cb.wg.Wait()
-	return cb.resp.GetAdminResponse().GetSplits().GetRegions(), nil
+func (r *RaftstoreRouter) SplitRegion(ctx *kvrpcpb.Context, engine *badger.ShardingDB, region *metapb.Region, keys [][]byte) ([]*metapb.Region, error) {
+	log.Info("split region by RPC")
+	return splitEngineAndRegion(r.router, engine, ctx.Peer, region, keys)
 }
 
 var errPeerNotFound = errors.New("peer not found")
