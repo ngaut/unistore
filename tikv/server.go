@@ -540,6 +540,10 @@ func (svr *Server) Coprocessor(_ context.Context, req *coprocessor.Request) (*co
 		if mppTaskHandlerMap != nil {
 			if th, ok := mppTaskHandlerMap[int64(req.Context.TaskId)]; ok {
 				mppTaskHandler = th
+				// release resources after query.
+				defer func() {
+					delete(mppTaskHandlerMap, int64(req.Context.TaskId))
+				}()
 			}
 		}
 	}
