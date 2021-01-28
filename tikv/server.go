@@ -540,12 +540,15 @@ func (svr *Server) Coprocessor(_ context.Context, req *coprocessor.Request) (*co
 		if mppTaskHandlerMap != nil {
 			if th, ok := mppTaskHandlerMap[int64(req.Context.TaskId)]; ok {
 				mppTaskHandler = th
+				resp := cophandler.HandleCopRequestWithMPPCtx(reqCtx.getDBReader(), svr.mvccStore.lockStore, req, &cophandler.MPPCtx{
+					RPCClient: svr.RPCClient, StoreAddr: reqCtx.storeAddr, TaskHandler: mppTaskHandler,
+				})
+				err = mockRegionRM.removeMPPTaskHandler(int64(req.Context.TaskId), reqCtx.storeId)
+				return resp, errors.Trace(err)
 			}
 		}
 	}
-	return cophandler.HandleCopRequestWithMPPCtx(reqCtx.getDBReader(), svr.mvccStore.lockStore, req, &cophandler.MPPCtx{
-		RPCClient: svr.RPCClient, StoreAddr: reqCtx.storeAddr, TaskHandler: mppTaskHandler,
-	}), nil
+	return cophandler.HandleCopRequestWithMPPCtx(reqCtx.getDBReader(), svr.mvccStore.lockStore, req, nil), nil
 }
 
 func (svr *Server) CoprocessorStream(*coprocessor.Request, tikvpb.Tikv_CoprocessorStreamServer) error {
@@ -608,7 +611,7 @@ func (svr *Server) BatchCoprocessor(req *coprocessor.BatchRequest, batchCopServe
 	return nil
 }
 
-func (mrm *MockRegionManager) getMPPTaskHandle(rpcClient client.Client, meta *mpp.TaskMeta, createdIfNotExist bool, storeId uint64) (*cophandler.MPPTaskHandler, bool, error) {
+func (mrm *MockRegionManager) getMPPTaskHandler(rpcClient client.Client, meta *mpp.TaskMeta, createdIfNotExist bool, storeId uint64) (*cophandler.MPPTaskHandler, bool, error) {
 	set := mrm.getMPPTaskSet(storeId)
 	if set == nil {
 		return nil, false, errors.New("cannot find mpp task set for store")
@@ -629,6 +632,18 @@ func (mrm *MockRegionManager) getMPPTaskHandle(rpcClient client.Client, meta *mp
 	}
 }
 
+func (mrm *MockRegionManager) removeMPPTaskHandler(taskId int64, storeId uint64) error {
+	set := mrm.getMPPTaskSet(storeId)
+	if set == nil {
+		return errors.New("cannot find mpp task set for store")
+	}
+	if _, ok := set[taskId]; ok {
+		delete(set, taskId)
+		return nil
+	}
+	return errors.New("cannot find mpp task")
+}
+
 func (svr *Server) DispatchMPPTask(_ context.Context, _ *mpp.DispatchTaskRequest) (*mpp.DispatchTaskResponse, error) {
 	panic("todo")
 }
@@ -636,7 +651,7 @@ func (svr *Server) DispatchMPPTask(_ context.Context, _ *mpp.DispatchTaskRequest
 // func DispatchMPPTask do not have enough information(lack of target store id)
 func (svr *Server) DispatchMPPTaskWithStoreId(ctx context.Context, req *mpp.DispatchTaskRequest, storeId uint64) (*mpp.DispatchTaskResponse, error) {
 	if mockRegionManager, ok := svr.regionManager.(*MockRegionManager); ok {
-		mppHandler, created, err := mockRegionManager.getMPPTaskHandle(svr.RPCClient, req.Meta, true, storeId)
+		mppHandler, created, err := mockRegionManager.getMPPTaskHandler(svr.RPCClient, req.Meta, true, storeId)
 		if err != nil {
 			return nil, errors.Trace(err)
 		}
@@ -674,7 +689,7 @@ func (svr *Server) EstablishMPPConnectionWithStoreId(req *mpp.EstablishMPPConnec
 		)
 		maxRetryTime := 5
 		for i := 0; i < maxRetryTime; i++ {
-			mppHandler, _, err = mockRegionManager.getMPPTaskHandle(svr.RPCClient, req.SenderMeta, false, storeId)
+			mppHandler, _, err = mockRegionManager.getMPPTaskHandler(svr.RPCClient, req.SenderMeta, false, storeId)
 			if err != nil {
 				return errors.Trace(err)
 			}
