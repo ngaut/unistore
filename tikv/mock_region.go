@@ -26,6 +26,11 @@ import (
 	"golang.org/x/net/context"
 )
 
+type MPPTaskHandlerMap struct {
+	mu           sync.RWMutex
+	taskHandlers map[int64]*cophandler.MPPTaskHandler
+}
+
 type MockRegionManager struct {
 	regionManager
 
@@ -38,7 +43,7 @@ type MockRegionManager struct {
 	closed        uint32
 
 	// used for mpp test
-	mppTaskSet map[uint64]map[int64]*cophandler.MPPTaskHandler
+	mppTaskSet map[uint64]*MPPTaskHandlerMap
 }
 
 func NewMockRegionManager(bundle *mvcc.DBBundle, clusterID uint64, opts RegionOptions) (*MockRegionManager, error) {
@@ -48,7 +53,7 @@ func NewMockRegionManager(bundle *mvcc.DBBundle, clusterID uint64, opts RegionOp
 		regionSize:    opts.RegionSize,
 		sortedRegions: btree.New(32),
 		stores:        make(map[uint64]*metapb.Store),
-		mppTaskSet:    make(map[uint64]map[int64]*cophandler.MPPTaskHandler),
+		mppTaskSet:    make(map[uint64]*MPPTaskHandlerMap),
 		regionManager: regionManager{
 			regions:   make(map[uint64]*regionCtx),
 			storeMeta: new(metapb.Store),
@@ -598,10 +603,12 @@ func (rm *MockRegionManager) AddStore(storeID uint64, addr string, labels ...*me
 		Address: addr,
 		Labels:  labels,
 	}
-	rm.mppTaskSet[storeID] = make(map[int64]*cophandler.MPPTaskHandler)
+	rm.mppTaskSet[storeID] = &MPPTaskHandlerMap{
+		taskHandlers: make(map[int64]*cophandler.MPPTaskHandler),
+	}
 }
 
-func (rm *MockRegionManager) getMPPTaskSet(storeID uint64) map[int64]*cophandler.MPPTaskHandler {
+func (rm *MockRegionManager) getMPPTaskSet(storeID uint64) *MPPTaskHandlerMap {
 	return rm.mppTaskSet[storeID]
 }
 
