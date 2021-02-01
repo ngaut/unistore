@@ -534,14 +534,15 @@ func (svr *Server) Coprocessor(_ context.Context, req *coprocessor.Request) (*co
 	if reqCtx.regErr != nil {
 		return &coprocessor.Response{RegionError: reqCtx.regErr}, nil
 	}
-	var mppTaskHandler *cophandler.MPPTaskHandler
 	if mockRegionRM, ok := svr.regionManager.(*MockRegionManager); ok {
 		mppTaskHandlerMap := mockRegionRM.getMPPTaskSet(reqCtx.storeId)
 		if mppTaskHandlerMap != nil {
-			if th, ok := mppTaskHandlerMap[int64(req.Context.TaskId)]; ok {
-				mppTaskHandler = th
+			mppTaskHandlerMap.mu.Lock()
+			th, ok := mppTaskHandlerMap.taskHandlers[int64(req.Context.TaskId)]
+			mppTaskHandlerMap.mu.Unlock()
+			if ok {
 				resp := cophandler.HandleCopRequestWithMPPCtx(reqCtx.getDBReader(), svr.mvccStore.lockStore, req, &cophandler.MPPCtx{
-					RPCClient: svr.RPCClient, StoreAddr: reqCtx.storeAddr, TaskHandler: mppTaskHandler,
+					RPCClient: svr.RPCClient, StoreAddr: reqCtx.storeAddr, TaskHandler: th,
 				})
 				err = mockRegionRM.removeMPPTaskHandler(int64(req.Context.TaskId), reqCtx.storeId)
 				return resp, errors.Trace(err)
@@ -591,18 +592,7 @@ func (svr *Server) BatchCoprocessor(req *coprocessor.BatchRequest, batchCopServe
 		if reqCtx.regErr != nil {
 			return &RegionError{err: reqCtx.regErr}
 		}
-		var mppTaskHandler *cophandler.MPPTaskHandler
-		if mockRegionRM, ok := svr.regionManager.(*MockRegionManager); ok {
-			mppTaskHandlerMap := mockRegionRM.getMPPTaskSet(reqCtx.storeId)
-			if mppTaskHandlerMap != nil {
-				if th, ok := mppTaskHandlerMap[int64(req.Context.TaskId)]; ok {
-					mppTaskHandler = th
-				}
-			}
-		}
-		copResponse := cophandler.HandleCopRequestWithMPPCtx(reqCtx.getDBReader(), svr.mvccStore.lockStore, &cop, &cophandler.MPPCtx{
-			RPCClient: svr.RPCClient, StoreAddr: reqCtx.storeAddr, TaskHandler: mppTaskHandler,
-		})
+		copResponse := cophandler.HandleCopRequestWithMPPCtx(reqCtx.getDBReader(), svr.mvccStore.lockStore, &cop, nil)
 		err = batchCopServer.Send(&coprocessor.BatchResponse{Data: copResponse.Data})
 		if err != nil {
 			return err
@@ -616,7 +606,9 @@ func (mrm *MockRegionManager) getMPPTaskHandler(rpcClient client.Client, meta *m
 	if set == nil {
 		return nil, false, errors.New("cannot find mpp task set for store")
 	}
-	if handler, ok := set[meta.TaskId]; ok {
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	if handler, ok := set.taskHandlers[meta.TaskId]; ok {
 		return handler, false, nil
 	}
 	if createdIfNotExist {
@@ -625,7 +617,7 @@ func (mrm *MockRegionManager) getMPPTaskHandler(rpcClient client.Client, meta *m
 			Meta:      meta,
 			RPCClient: rpcClient,
 		}
-		set[meta.TaskId] = handler
+		set.taskHandlers[meta.TaskId] = handler
 		return handler, true, nil
 	} else {
 		return nil, false, nil
@@ -637,8 +629,10 @@ func (mrm *MockRegionManager) removeMPPTaskHandler(taskId int64, storeId uint64)
 	if set == nil {
 		return errors.New("cannot find mpp task set for store")
 	}
-	if _, ok := set[taskId]; ok {
-		delete(set, taskId)
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	if _, ok := set.taskHandlers[taskId]; ok {
+		delete(set.taskHandlers, taskId)
 		return nil
 	}
 	return errors.New("cannot find mpp task")
