@@ -697,9 +697,9 @@ func (svr *Server) EstablishMPPConnectionWithStoreId(req *mpp.EstablishMPPConnec
 			return errors.New("tatsk not found")
 		}
 		ctx1, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		tunnel, err := mppHandler.HandleEstablishConn(ctx1, req)
 		if err != nil {
-			cancel()
 			return errors.Trace(err)
 		}
 		var sendError error = nil
@@ -732,6 +732,7 @@ func (svr *Server) EstablishMPPConnectionWithStoreId(req *mpp.EstablishMPPConnec
 func (svr *Server) Raft(stream tikvpb.Tikv_RaftServer) error {
 	return svr.innerServer.Raft(stream)
 }
+
 func (svr *Server) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
 	return svr.innerServer.Snapshot(stream)
 }
