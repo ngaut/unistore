@@ -28,6 +28,7 @@ import (
 	deadlockPb "github.com/pingcap/kvproto/pkg/deadlock"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/mpp"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
@@ -534,22 +535,7 @@ func (svr *Server) Coprocessor(_ context.Context, req *coprocessor.Request) (*co
 	if reqCtx.regErr != nil {
 		return &coprocessor.Response{RegionError: reqCtx.regErr}, nil
 	}
-	if mockRegionRM, ok := svr.regionManager.(*MockRegionManager); ok {
-		mppTaskHandlerMap := mockRegionRM.getMPPTaskSet(reqCtx.storeId)
-		if mppTaskHandlerMap != nil {
-			mppTaskHandlerMap.mu.Lock()
-			th, ok := mppTaskHandlerMap.taskHandlers[int64(req.Context.TaskId)]
-			mppTaskHandlerMap.mu.Unlock()
-			if ok {
-				resp := cophandler.HandleCopRequestWithMPPCtx(reqCtx.getDBReader(), svr.mvccStore.lockStore, req, &cophandler.MPPCtx{
-					RPCClient: svr.RPCClient, StoreAddr: reqCtx.storeAddr, TaskHandler: th,
-				})
-				err = mockRegionRM.removeMPPTaskHandler(int64(req.Context.TaskId), reqCtx.storeId)
-				return resp, errors.Trace(err)
-			}
-		}
-	}
-	return cophandler.HandleCopRequestWithMPPCtx(reqCtx.getDBReader(), svr.mvccStore.lockStore, req, nil), nil
+	return cophandler.HandleCopRequest(reqCtx.getDBReader(), svr.mvccStore.lockStore, req), nil
 }
 
 func (svr *Server) CoprocessorStream(*coprocessor.Request, tikvpb.Tikv_CoprocessorStreamServer) error {
@@ -642,32 +628,114 @@ func (svr *Server) DispatchMPPTask(_ context.Context, _ *mpp.DispatchTaskRequest
 	panic("todo")
 }
 
+func (svr *Server) executeMPPDispatch(ctx context.Context, req *mpp.DispatchTaskRequest, storeAddr string, storeId uint64, handler *cophandler.MPPTaskHandler) error {
+	var reqCtx *requestCtx
+	if len(req.Regions) > 0 {
+		kvContext := &kvrpcpb.Context{
+			RegionId:    req.Regions[0].RegionId,
+			RegionEpoch: req.Regions[0].RegionEpoch,
+			// this is a hack to reuse task id in kvContext to pass mpp task id
+			TaskId: uint64(handler.Meta.TaskId),
+			Peer:   &metapb.Peer{StoreId: storeId},
+		}
+		var err error
+		reqCtx, err = newRequestCtx(svr, kvContext, "Mpp")
+		if err != nil {
+			return errors.Trace(err)
+		}
+	}
+	copReq := &coprocessor.Request{
+		Tp:      kv.ReqTypeDAG,
+		Data:    req.EncodedPlan,
+		StartTs: req.Meta.StartTs,
+	}
+	for _, regionMeta := range req.Regions {
+		copReq.Ranges = append(copReq.Ranges, regionMeta.Ranges...)
+	}
+	go func() {
+		var dbreader *dbreader.DBReader
+		if reqCtx != nil {
+			dbreader = reqCtx.getDBReader()
+		}
+		resp := cophandler.HandleCopRequestWithMPPCtx(dbreader, svr.mvccStore.lockStore, copReq, &cophandler.MPPCtx{
+			RPCClient:   svr.RPCClient,
+			StoreAddr:   storeAddr,
+			TaskHandler: handler,
+		})
+		handler.Err = svr.RemoveMPPTaskHandler(req.Meta.TaskId, storeId)
+		if len(resp.OtherError) > 0 {
+			handler.Err = errors.New(resp.OtherError)
+		}
+	}()
+	return nil
+}
+
 // func DispatchMPPTask do not have enough information(lack of target store id)
 func (svr *Server) DispatchMPPTaskWithStoreId(ctx context.Context, req *mpp.DispatchTaskRequest, storeId uint64) (*mpp.DispatchTaskResponse, error) {
-	if mockRegionManager, ok := svr.regionManager.(*MockRegionManager); ok {
-		mppHandler, created, err := mockRegionManager.getMPPTaskHandler(svr.RPCClient, req.Meta, true, storeId)
-		if err != nil {
-			return nil, errors.Trace(err)
-		}
-		if !created {
-			return nil, errors.New("task has been created")
-		}
-		storeAddr, err := svr.GetStoreAddrByStoreId(storeId)
-		if err != nil {
-			return nil, err
-		}
-		taskResp, err := mppHandler.HandleMPPDispatch(ctx, req, storeAddr, storeId)
-		if err != nil {
-			return nil, errors.Trace(err)
-		}
-		return taskResp, nil
-	} else {
-		return nil, errors.New("only mock region manager support MPP")
+	mppHandler, err := svr.CreateMPPTaskHandler(req.Meta, storeId)
+	if err != nil {
+		return nil, errors.Trace(err)
 	}
+	storeAddr, err := svr.GetStoreAddrByStoreId(storeId)
+	if err != nil {
+		return nil, err
+	}
+	err = svr.executeMPPDispatch(ctx, req, storeAddr, storeId, mppHandler)
+	resp := &mpp.DispatchTaskResponse{}
+	if err != nil {
+		resp.Error = &mpp.Error{Msg: err.Error()}
+	}
+	return resp, nil
 }
 
 func (svr *Server) CancelMPPTask(_ context.Context, _ *mpp.CancelTaskRequest) (*mpp.CancelTaskResponse, error) {
 	panic("todo")
+}
+
+func (svr *Server) GetMPPTaskHandler(taskId int64, storeId uint64) (*cophandler.MPPTaskHandler, error) {
+	if mrm, ok := svr.regionManager.(*MockRegionManager); ok {
+		set := mrm.getMPPTaskSet(storeId)
+		if set == nil {
+			return nil, errors.New("cannot find mpp task set for store")
+		}
+		set.mu.Lock()
+		defer set.mu.Unlock()
+		if handler, ok := set.taskHandlers[taskId]; ok {
+			return handler, nil
+		}
+		return nil, nil
+	}
+	return nil, errors.New("Only mock region mgr supports get mpp task")
+}
+
+func (svr *Server) RemoveMPPTaskHandler(taskId int64, storeId uint64) error {
+	if mrm, ok := svr.regionManager.(*MockRegionManager); ok {
+		err := mrm.removeMPPTaskHandler(int64(taskId), storeId)
+		return errors.Trace(err)
+	}
+	return errors.New("Only mock region mgr supports remove mpp task")
+}
+
+func (svr *Server) CreateMPPTaskHandler(meta *mpp.TaskMeta, storeId uint64) (*cophandler.MPPTaskHandler, error) {
+	if mrm, ok := svr.regionManager.(*MockRegionManager); ok {
+		set := mrm.getMPPTaskSet(storeId)
+		if set == nil {
+			return nil, errors.New("cannot find mpp task set for store")
+		}
+		set.mu.Lock()
+		defer set.mu.Unlock()
+		if handler, ok := set.taskHandlers[meta.TaskId]; ok {
+			return handler, errors.Errorf("Task %d has been created", meta.TaskId)
+		}
+		handler := &cophandler.MPPTaskHandler{
+			TunnelSet: make(map[int64]*cophandler.ExchangerTunnel),
+			Meta:      meta,
+			RPCClient: svr.RPCClient,
+		}
+		set.taskHandlers[meta.TaskId] = handler
+		return handler, nil
+	}
+	return nil, errors.New("Only mock region mgr supports get mpp task")
 }
 
 func (svr *Server) EstablishMPPConnection(*mpp.EstablishMPPConnectionRequest, tikvpb.Tikv_EstablishMPPConnectionServer) error {
@@ -676,56 +744,52 @@ func (svr *Server) EstablishMPPConnection(*mpp.EstablishMPPConnectionRequest, ti
 
 // func EstablishMPPConnection do not have enough information(lack of target store id)
 func (svr *Server) EstablishMPPConnectionWithStoreId(req *mpp.EstablishMPPConnectionRequest, server tikvpb.Tikv_EstablishMPPConnectionServer, storeId uint64) error {
-	if mockRegionManager, ok := svr.regionManager.(*MockRegionManager); ok {
-		var (
-			mppHandler *cophandler.MPPTaskHandler
-			err        error
-		)
-		maxRetryTime := 5
-		for i := 0; i < maxRetryTime; i++ {
-			mppHandler, _, err = mockRegionManager.getMPPTaskHandler(svr.RPCClient, req.SenderMeta, false, storeId)
-			if err != nil {
-				return errors.Trace(err)
-			}
-			if mppHandler == nil {
-				time.Sleep(time.Second)
-			} else {
-				break
-			}
-		}
-		if mppHandler == nil {
-			return errors.New("tatsk not found")
-		}
-		ctx1, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		tunnel, err := mppHandler.HandleEstablishConn(ctx1, req)
+	var (
+		mppHandler *cophandler.MPPTaskHandler
+		err        error
+	)
+	maxRetryTime := 5
+	for i := 0; i < maxRetryTime; i++ {
+		mppHandler, err = svr.GetMPPTaskHandler(req.SenderMeta.TaskId, storeId)
 		if err != nil {
 			return errors.Trace(err)
 		}
-		var sendError error = nil
-		for sendError == nil {
-			chunk, err := tunnel.RecvChunk()
-			if err != nil {
-				sendError = server.Send(&mpp.MPPDataPacket{Error: &mpp.Error{Msg: err.Error()}})
-				break
-			}
-			if chunk == nil {
-				// todo return io.EOF error?
-				break
-			}
-			res := tipb.SelectResponse{
-				Chunks: []tipb.Chunk{*chunk},
-			}
-			raw, err := res.Marshal()
-			if err != nil {
-				sendError = server.Send(&mpp.MPPDataPacket{Error: &mpp.Error{Msg: err.Error()}})
-			}
-			sendError = server.Send(&mpp.MPPDataPacket{Data: raw})
+		if mppHandler == nil {
+			time.Sleep(time.Second)
+		} else {
+			break
 		}
-		return sendError
-	} else {
-		return errors.New("only mock region manager support MPP")
 	}
+	if mppHandler == nil {
+		return errors.New("tatsk not found")
+	}
+	ctx1, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tunnel, err := mppHandler.HandleEstablishConn(ctx1, req)
+	if err != nil {
+		return errors.Trace(err)
+	}
+	var sendError error = nil
+	for sendError == nil {
+		chunk, err := tunnel.RecvChunk()
+		if err != nil {
+			sendError = server.Send(&mpp.MPPDataPacket{Error: &mpp.Error{Msg: err.Error()}})
+			break
+		}
+		if chunk == nil {
+			// todo return io.EOF error?
+			break
+		}
+		res := tipb.SelectResponse{
+			Chunks: []tipb.Chunk{*chunk},
+		}
+		raw, err := res.Marshal()
+		if err != nil {
+			sendError = server.Send(&mpp.MPPDataPacket{Error: &mpp.Error{Msg: err.Error()}})
+		}
+		sendError = server.Send(&mpp.MPPDataPacket{Data: raw})
+	}
+	return sendError
 }
 
 // Raft commands (tikv <-> tikv).
