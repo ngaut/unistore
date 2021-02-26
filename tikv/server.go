@@ -366,6 +366,11 @@ func (svr *Server) KvCommit(ctx context.Context, req *kvrpcpb.CommitRequest) (*k
 	return resp, nil
 }
 
+func (svr *Server) RawGetKeyTTL(ctx context.Context, req *kvrpcpb.RawGetKeyTTLRequest) (*kvrpcpb.RawGetKeyTTLResponse, error) {
+	// TODO
+	return &kvrpcpb.RawGetKeyTTLResponse{}, nil
+}
+
 func (svr *Server) KvImport(context.Context, *kvrpcpb.ImportRequest) (*kvrpcpb.ImportResponse, error) {
 	// TODO
 	return &kvrpcpb.ImportResponse{}, nil
