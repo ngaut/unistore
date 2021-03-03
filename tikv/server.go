@@ -648,6 +648,7 @@ func (svr *Server) executeMPPDispatch(ctx context.Context, req *mpp.DispatchTask
 		if err != nil {
 			return errors.Trace(err)
 		}
+		defer reqCtx.finish()
 	}
 	copReq := &coprocessor.Request{
 		Tp:      kv.ReqTypeDAG,
