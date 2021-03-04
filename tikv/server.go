@@ -671,7 +671,9 @@ func (svr *Server) executeMPPDispatch(ctx context.Context, req *mpp.DispatchTask
 		if len(resp.OtherError) > 0 {
 			handler.Err = errors.New(resp.OtherError)
 		}
-		reqCtx.finish()
+		if reqCtx != nil {
+			reqCtx.finish()
+		}
 	}()
 	return nil
 }
