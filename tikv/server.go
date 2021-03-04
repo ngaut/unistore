@@ -658,11 +658,11 @@ func (svr *Server) executeMPPDispatch(ctx context.Context, req *mpp.DispatchTask
 	for _, regionMeta := range req.Regions {
 		copReq.Ranges = append(copReq.Ranges, regionMeta.Ranges...)
 	}
+	var dbreader *dbreader.DBReader
+	if reqCtx != nil {
+		dbreader = reqCtx.getDBReader()
+	}
 	go func() {
-		var dbreader *dbreader.DBReader
-		if reqCtx != nil {
-			dbreader = reqCtx.getDBReader()
-		}
 		resp := cophandler.HandleCopRequestWithMPPCtx(dbreader, svr.mvccStore.lockStore, copReq, &cophandler.MPPCtx{
 			RPCClient:   svr.RPCClient,
 			StoreAddr:   storeAddr,
