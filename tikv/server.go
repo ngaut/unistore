@@ -648,7 +648,6 @@ func (svr *Server) executeMPPDispatch(ctx context.Context, req *mpp.DispatchTask
 		if err != nil {
 			return errors.Trace(err)
 		}
-		defer reqCtx.finish()
 	}
 	copReq := &coprocessor.Request{
 		Tp:      kv.ReqTypeDAG,
@@ -671,6 +670,9 @@ func (svr *Server) executeMPPDispatch(ctx context.Context, req *mpp.DispatchTask
 		handler.Err = svr.RemoveMPPTaskHandler(req.Meta.TaskId, storeId)
 		if len(resp.OtherError) > 0 {
 			handler.Err = errors.New(resp.OtherError)
+		}
+		if reqCtx != nil {
+			reqCtx.finish()
 		}
 	}()
 	return nil
