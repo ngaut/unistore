@@ -666,7 +666,7 @@ func (svr *Server) executeMPPDispatch(ctx context.Context, req *mpp.DispatchTask
 			RPCClient:   svr.RPCClient,
 			StoreAddr:   storeAddr,
 			TaskHandler: handler,
-			Ctx: ctx,
+			Ctx:         ctx,
 		})
 		handler.Err = svr.RemoveMPPTaskHandler(req.Meta.TaskId, storeId)
 		if len(resp.OtherError) > 0 {
