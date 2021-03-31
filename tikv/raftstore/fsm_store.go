@@ -433,7 +433,7 @@ func (bs *raftBatchSystem) startWorkers(peers []*peerFsm) {
 	engines := ctx.engine
 	cfg := ctx.cfg
 	workers.splitCheckWorker.start(newSplitCheckRunner(engines.kv, router, cfg.SplitCheck))
-	workers.regionWorker.start(newRegionTaskHandler(bs.globalCfg, engines, cfg.SnapApplyBatchSize))
+	workers.regionWorker.start(newRegionTaskHandler(bs.globalCfg, engines))
 	workers.raftLogGCWorker.start(&raftLogGCTaskHandler{})
 	workers.compactWorker.start(&compactTaskHandler{engine: engines.kv})
 	workers.pdWorker.start(newPDTaskHandler(ctx.store.Id, ctx.pdClient, bs.router))

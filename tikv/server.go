@@ -15,14 +15,13 @@ package tikv
 
 import (
 	"context"
-	"github.com/ngaut/unistore/tikv/raftstore"
 	"io"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ngaut/unistore/tikv/dbreader"
-	//"github.com/ngaut/unistore/tikv/raftstore"
+	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/ngaut/unistore/util/lockwaiter"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/coprocessor"

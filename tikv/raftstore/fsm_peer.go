@@ -709,6 +709,7 @@ func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
 		}
 		d.peer.RecentAddedPeer.Update(peerID, now)
 		d.peer.insertPeerCache(cp.peer)
+		WritePeerState(d.ctx.raftWB, cp.region, rspb.PeerState_Normal, nil)
 	case eraftpb.ConfChangeType_RemoveNode:
 		// Remove this peer from cache.
 		delete(d.peer.PeerHeartbeats, peerID)
@@ -716,6 +717,7 @@ func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
 			delete(d.peer.PeersStartPendingTime, peerID)
 		}
 		d.peer.removePeerCache(peerID)
+		WritePeerState(d.ctx.raftWB, cp.region, rspb.PeerState_Tombstone, nil)
 	}
 
 	// In pattern matching above, if the peer is the leader,
@@ -760,6 +762,9 @@ func (d *peerMsgHandler) onReadyCompactLog(firstIndex uint64, truncatedIndex uin
 }
 
 func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*metapb.Region) {
+	for _, region := range regions {
+		WritePeerState(d.ctx.raftWB, region, rspb.PeerState_Normal, nil)
+	}
 	d.ctx.storeMetaLock.Lock()
 	defer d.ctx.storeMetaLock.Unlock()
 	meta := d.ctx.storeMeta

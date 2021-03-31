@@ -19,7 +19,7 @@ const (
 
 func NewMock(conf *config.Config, clusterID uint64) (*tikv.Server, *tikv.MockRegionManager, *tikv.MockPD, error) {
 	safePoint := &tikv.SafePoint{}
-	db, err := createShardingDB(subPathKV, safePoint, nil, nil, &conf.Engine)
+	db, err := createShardingDB(subPathKV, safePoint, nil, nil, nil, &conf.Engine)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -41,11 +41,11 @@ func NewMock(conf *config.Config, clusterID uint64) (*tikv.Server, *tikv.MockReg
 }
 
 func New(conf *config.Config, pdClient pd.Client) (*tikv.Server, error) {
-	safePoint := &tikv.SafePoint{}
 	if conf.Server.Raft {
-		return setupRaftServer(safePoint, pdClient, conf)
+		return setupRaftServer(pdClient, conf)
 	}
-	db, err := createShardingDB(subPathKV, safePoint, nil, nil, &conf.Engine)
+	safePoint := &tikv.SafePoint{}
+	db, err := createShardingDB(subPathKV, safePoint, nil, nil, nil, &conf.Engine)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func getRegionOptions(conf *config.Config) tikv.RegionOptions {
 	}
 }
 
-func setupRaftServer(safePoint *tikv.SafePoint, pdClient pd.Client, conf *config.Config) (*tikv.Server, error) {
+func setupRaftServer(pdClient pd.Client, conf *config.Config) (*tikv.Server, error) {
 	dbPath := conf.Engine.DBPath
 	kvPath := filepath.Join(dbPath, "kv")
 	raftPath := filepath.Join(dbPath, "raft")
@@ -79,11 +79,16 @@ func setupRaftServer(safePoint *tikv.SafePoint, pdClient pd.Client, conf *config
 	allocator := &idAllocator{
 		pdCli: pdClient,
 	}
-	db, err := createShardingDB(subPathKV, safePoint, listener, allocator, &conf.Engine)
+	raftDB, err := createDB(subPathRaft, nil, &conf.Engine)
 	if err != nil {
 		return nil, err
 	}
-	raftDB, err := createDB(subPathRaft, nil, &conf.Engine)
+	recoverHandler, err := raftstore.NewRecoverHandler(raftDB)
+	if err != nil {
+		return nil, err
+	}
+	safePoint := &tikv.SafePoint{}
+	db, err := createShardingDB(subPathKV, safePoint, listener, allocator, recoverHandler, &conf.Engine)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +191,8 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*
 	return badger.Open(opts)
 }
 
-func createShardingDB(subPath string, safePoint *tikv.SafePoint, listener *raftstore.MetaChangeListener, allocator badger.IDAllocator, conf *config.Engine) (*badger.ShardingDB, error) {
+func createShardingDB(subPath string, safePoint *tikv.SafePoint, listener *raftstore.MetaChangeListener,
+	allocator badger.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*badger.ShardingDB, error) {
 	opts := badger.ShardingDBDefaultOpt
 	opts.NumCompactors = conf.NumCompactors
 	opts.CFs = []badger.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}, {Managed: false}}
@@ -205,5 +211,6 @@ func createShardingDB(subPath string, safePoint *tikv.SafePoint, listener *rafts
 		opts.IDAllocator = allocator
 	}
 	opts.MetaChangeListener = listener
+	opts.RecoverHandler = recoverHandler
 	return badger.OpenShardingDB(opts)
 }

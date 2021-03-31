@@ -809,7 +809,9 @@ func (a *applier) execAdminCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdReques
 func (a *applier) execWriteCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 	resp *raft_cmdpb.RaftCmdResponse, result applyResult) {
 	if cl, ok := rlog.(*raftlog.CustomRaftLog); ok {
-		resp = a.execCustomLog(aCtx, cl)
+		cnt := a.execCustomLog(aCtx, cl)
+		resp = &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
+		resp.Responses = make([]*raft_cmdpb.Response, cnt)
 		return
 	}
 	req := rlog.GetRaftCmdRequest()
@@ -832,8 +834,7 @@ func (a *applier) isFollower(rlog raftlog.RaftLog) bool {
 	return a.id != rlog.PeerID()
 }
 
-func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) (
-	resp *raft_cmdpb.RaftCmdResponse) {
+func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) int {
 	var cnt int
 	switch cl.Type() {
 	case raftlog.TypePrewrite, raftlog.TypePessimisticLock:
@@ -871,9 +872,7 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) (
 		y.Assert(err == nil)
 		a.executeChangeSet(aCtx, changeSet, a.isFollower(cl))
 	}
-	resp = &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
-	resp.Responses = make([]*raft_cmdpb.Response, cnt)
-	return
+	return cnt
 }
 
 func (a *applier) executeChangeSet(aCtx *applyContext, changeSet *protos.ShardChangeSet, isFollower bool) {
@@ -1026,41 +1025,72 @@ func (a *applier) execSplit(aCtx *applyContext, req *raft_cmdpb.AdminRequest) (
 
 func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminRequest) (
 	resp *raft_cmdpb.AdminResponse, result applyResult, err error) {
-	splitReqs := req.Splits
-	rightDerive := splitReqs.RightDerive
-	if len(splitReqs.Requests) == 0 {
-		err = errors.New("missing split key")
+	var derived *metapb.Region
+	var regions []*metapb.Region
+	derived, regions, err = a.splitGenNewRegionMetas(req.Splits)
+	if err != nil {
 		return
 	}
-	derived := new(metapb.Region)
+	a.applyState.appliedIndex = aCtx.execCtx.index
+	newShardProps := make([]*protos.ShardProperties, len(regions))
+	for i := 0; i < len(regions); i++ {
+		props := new(protos.ShardProperties)
+		props.ShardID = regions[i].Id
+		props.Keys = append(props.Keys, applyStateKey)
+		if regions[i].Id == a.region.Id {
+			props.Values = append(props.Values, a.applyState.Marshal())
+		} else {
+			props.Values = append(props.Values, newInitialApplyState().Marshal())
+		}
+		newShardProps[i] = props
+	}
+	_, err = aCtx.engines.kv.FinishSplit(a.region.Id, a.region.RegionEpoch.Version, newShardProps)
+	if err != nil {
+		return
+	}
+	resp = &raft_cmdpb.AdminResponse{
+		Splits: &raft_cmdpb.BatchSplitResponse{
+			Regions: regions,
+		},
+	}
+	result = applyResult{tp: applyResultTypeExecResult, data: &execResultSplitRegion{
+		regions: regions,
+		derived: derived,
+	}}
+	return
+}
+
+func (a *applier) splitGenNewRegionMetas(splitReqs *raft_cmdpb.BatchSplitRequest) (derived *metapb.Region, regions []*metapb.Region, err error) {
+	if len(splitReqs.Requests) == 0 {
+		return nil, nil, errors.New("missing split key")
+	}
+	derived = new(metapb.Region)
 	if err := CloneMsg(a.region, derived); err != nil {
 		panic(err)
 	}
+	rightDerive := splitReqs.RightDerive
 	newRegionCnt := len(splitReqs.Requests)
-	regions := make([]*metapb.Region, 0, newRegionCnt+1)
+	regions = make([]*metapb.Region, 0, newRegionCnt+1)
 	keys := make([][]byte, 0, newRegionCnt+1)
 	keys = append(keys, derived.StartKey)
 	for _, request := range splitReqs.Requests {
 		splitKey := request.SplitKey
 		if len(splitKey) == 0 {
-			err = errors.New("missing split key")
-			return
+			return nil, nil, errors.New("missing split key")
 		}
 		if bytes.Compare(splitKey, keys[len(keys)-1]) <= 0 {
-			err = errors.Errorf("invalid split request:%s", splitReqs)
-			return
+			return nil, nil, errors.Errorf("invalid split request:%s", splitReqs)
 		}
 		if len(request.NewPeerIds) != len(derived.Peers) {
-			err = errors.Errorf("invalid new peer id count, need %d but got %d",
+			return nil, nil, errors.Errorf("invalid new peer id count, need %d but got %d",
 				len(derived.Peers), len(request.NewPeerIds))
-			return
 		}
 		keys = append(keys, splitKey)
 	}
 	keys = append(keys, derived.EndKey)
 	err = CheckKeyInRegion(keys[len(keys)-2], a.region)
 	if err != nil {
-		return
+		return nil, nil, err
 	}
 	log.S().Infof("%s split region %s, keys %v", a.tag, a.region, keys)
 	derived.RegionEpoch.Version += uint64(newRegionCnt)
@@ -1092,32 +1122,7 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 		derived.StartKey = keys[len(keys)-2]
 		regions = append(regions, derived)
 	}
-	newShardProps := make([]*protos.ShardProperties, len(regions))
-	for i := 0; i < len(regions); i++ {
-		props := new(protos.ShardProperties)
-		props.ShardID = regions[i].Id
-		props.Keys = append(props.Keys, applyStateKey)
-		if regions[i].Id == a.region.Id {
-			props.Values = append(props.Values, a.applyState.Marshal())
-		} else {
-			props.Values = append(props.Values, newInitialApplyState().Marshal())
-		}
-		newShardProps[i] = props
-	}
-	_, err = aCtx.engines.kv.FinishSplit(a.region.Id, a.region.RegionEpoch.Version, newShardProps)
-	if err != nil {
-		return
-	}
-	resp = &raft_cmdpb.AdminResponse{
-		Splits: &raft_cmdpb.BatchSplitResponse{
-			Regions: regions,
-		},
-	}
-	result = applyResult{tp: applyResultTypeExecResult, data: &execResultSplitRegion{
-		regions: regions,
-		derived: derived,
-	}}
-	return
+	return derived, regions, nil
 }
 
 func (a *applier) execPrepareMerge(aCtx *applyContext, req *raft_cmdpb.AdminRequest) (

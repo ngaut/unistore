@@ -26,13 +26,6 @@ import (
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 )
 
-type regionSnapshot struct {
-	regionState *raft_serverpb.RegionLocalState
-	dbSnap      *badger.Snapshot
-	term        uint64
-	index       uint64
-}
-
 type Engines struct {
 	kv       *badger.ShardingDB
 	kvPath   string
@@ -50,51 +43,6 @@ func NewEngines(kvEngine *badger.ShardingDB, raftEngine *badger.DB, kvPath, raft
 		listener: listener,
 	}
 }
-
-/*
-func (en *Engines) newRegionSnapshot(task *regionTask) (snap *regionSnapshot, err error) {
-	// We need to get the old region state out of the snapshot transaction to fetch data in lockStore.
-	// The lockStore data must be fetch before we start the snapshot transaction to make sure there is no newer data
-	// in the lockStore. The missing old data can be restored by raft log.
-	oldRegionState, err := getRegionLocalState(en.kv, task.region)
-	if err != nil {
-		return nil, err
-	}
-
-	dbSnap := en.kv.NewSnapshot(en.kv.GetShard(task.region.Id))
-	defer func() {
-		if err != nil {
-			dbSnap.Discard()
-		}
-	}()
-
-	// Verify that the region version to make sure the start key and end key has not changed.
-	regionState := new(raft_serverpb.RegionLocalState)
-	val, err := getKVValueBySnap(dbSnap, RegionStateKey(task.region))
-	if err != nil {
-		return nil, err
-	}
-	err = regionState.Unmarshal(val)
-	if err != nil {
-		return nil, err
-	}
-	if regionState.Region.RegionEpoch.Version != oldRegionState.Region.RegionEpoch.Version {
-		return nil, errors.New("region changed during newRegionSnapshot")
-	}
-
-	index, term, err := getAppliedIdxTermForSnapshot(en.raft, dbSnap, task.region.Id)
-	if err != nil {
-		return nil, err
-	}
-	snap = &regionSnapshot{
-		regionState: regionState,
-		dbSnap:      dbSnap,
-		term:        term,
-		index:       index,
-	}
-	return snap, nil
-}
-*/
 
 func (en *Engines) WriteKV(wb *KVWriteBatch) error {
 	return wb.WriteToEngine()

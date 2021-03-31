@@ -354,15 +354,20 @@ func (s stalePeerInfo) setEndKey(endKey []byte) {
 	copy(s.data[16:], endKey)
 }
 
-type snapContext struct {
-	engines   *Engines
-	wb        *RaftWriteBatch
-	batchSize uint64
+type regionTaskHandler struct {
+	kv   *badger.ShardingDB
+	conf *config.Config
 }
 
-// handleGen handles the task of generating snapshot of the Region. It calls `generateSnap` to do the actual work.
-func (snapCtx *snapContext) handleGen(task *regionTask) {
-	kv := snapCtx.engines.kv
+func newRegionTaskHandler(conf *config.Config, engines *Engines) *regionTaskHandler {
+	return &regionTaskHandler{
+		conf: conf,
+		kv:   engines.kv,
+	}
+}
+
+func (r *regionTaskHandler) handleGen(task *regionTask) {
+	kv := r.kv
 	shard := kv.GetShard(task.region.Id)
 	if shard.Ver != task.region.RegionEpoch.Version {
 		log.Error("failed to generate snapshot, version not match")
@@ -412,28 +417,11 @@ func (snapCtx *snapContext) handleGen(task *regionTask) {
 	task.notifier <- snap
 }
 
-type regionTaskHandler struct {
-	ctx *snapContext
-
-	conf *config.Config
-}
-
-func newRegionTaskHandler(conf *config.Config, engines *Engines, batchSize uint64) *regionTaskHandler {
-	return &regionTaskHandler{
-		conf: conf,
-		ctx: &snapContext{
-			engines:   engines,
-			batchSize: batchSize,
-		},
-	}
-}
-
 // handlePendingApplies tries to apply pending tasks if there is some.
 func (r *regionTaskHandler) handleApply(task *regionTask) {
 	atomic.StoreUint32(task.status, JobStatus_Running)
-	r.ctx.wb = new(RaftWriteBatch)
 	snapData := task.snapData
-	db := r.ctx.engines.kv
+	db := r.kv
 	delta := snapData.deltaEntries
 	cfTable := memtable.NewCFTable(r.conf.Engine.MaxMemTableSize, db.NumCFs())
 	for len(delta.data) > 0 {
@@ -445,7 +433,7 @@ func (r *regionTaskHandler) handleApply(task *regionTask) {
 		MaxTS:     snapData.maxReadTS,
 		Delta:     []*memtable.CFTable{cfTable},
 	}
-	err := r.ctx.engines.kv.Ingest(inTree)
+	err := r.kv.Ingest(inTree)
 	if err != nil {
 		log.Error("update region status failed", zap.Error(err))
 		atomic.StoreUint32(task.status, JobStatus_Failed)
@@ -460,7 +448,7 @@ func (r *regionTaskHandler) handle(t task) {
 		// It is safe for now to handle generating and applying snapshot concurrently,
 		// but it may not when merge is implemented.
 		regionTask := t.data.(*regionTask)
-		r.ctx.handleGen(regionTask)
+		r.handleGen(regionTask)
 	case taskTypeRegionApply:
 		// To make sure applying snapshots in order.
 		task := t.data.(*regionTask)
@@ -469,13 +457,13 @@ func (r *regionTaskHandler) handle(t task) {
 		// We don't need to delay the range deletion because DeleteRange operation
 		// doesn't affect the existing badger.Snapshot
 		regionTask := t.data.(*regionTask)
-		err := r.ctx.engines.kv.RemoveShard(regionTask.region.Id, true)
+		err := r.kv.RemoveShard(regionTask.region.Id, true)
 		if err != nil {
 			log.Error("failed to destroy region", zap.Error(err))
 		}
 	case taskTypeRegionFollowerChangeSet:
 		changeSet := t.data.(*protos.ShardChangeSet)
-		kv := r.ctx.engines.kv
+		kv := r.kv
 		shd := kv.GetShard(changeSet.ShardID)
 		y.Assert(shd.Ver == changeSet.Version)
 		err := kv.ApplySlowPassiveChangeSet(shd, changeSet)

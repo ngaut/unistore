@@ -106,21 +106,12 @@ func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, pdW
 }
 
 func (n *Node) checkStore(engines *Engines) (uint64, error) {
-	val, err := getValue(engines.raft, storeIdentKey)
+	ident, err := loadStoreIdent(engines.raft)
 	if err != nil {
-		if err == badger.ErrKeyNotFound {
-			return 0, nil
-		}
 		return 0, err
 	}
-	if len(val) == 0 {
+	if ident == nil {
 		return 0, nil
-	}
-
-	var ident raft_serverpb.StoreIdent
-	err = proto.Unmarshal(val, &ident)
-	if err != nil {
-		return 0, err
 	}
 
 	if ident.ClusterId != n.clusterID {
@@ -131,6 +122,25 @@ func (n *Node) checkStore(engines *Engines) (uint64, error) {
 		return 0, errors.Errorf("invalid store ident %s", &ident)
 	}
 	return ident.StoreId, nil
+}
+
+func loadStoreIdent(raft *badger.DB) (ident *raft_serverpb.StoreIdent, err error) {
+	val, err := getValue(raft, storeIdentKey)
+	if err != nil {
+		if err == badger.ErrKeyNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(val) == 0 {
+		return nil, nil
+	}
+	ident = new(raft_serverpb.StoreIdent)
+	err = proto.Unmarshal(val, ident)
+	if err != nil {
+		return nil, err
+	}
+	return ident, nil
 }
 
 func (n *Node) bootstrapStore(ctx context.Context, engines *Engines) (uint64, error) {
