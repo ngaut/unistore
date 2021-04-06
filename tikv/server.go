@@ -378,14 +378,17 @@ func (svr *Server) KvImport(context.Context, *kvrpcpb.ImportRequest) (*kvrpcpb.I
 }
 
 func (svr *Server) RawCompareAndSwap(context.Context, *kvrpcpb.RawCASRequest) (*kvrpcpb.RawCASResponse, error) {
+	// TODO
 	return &kvrpcpb.RawCASResponse{}, nil
 }
 
 func (svr *Server) CoprocessorV2(context.Context, *coprocessor_v2.RawCoprocessorRequest) (*coprocessor_v2.RawCoprocessorResponse, error) {
+	// TODO
 	return &coprocessor_v2.RawCoprocessorResponse{}, nil
 }
 
 func (svr *Server) GetStoreSafeTS(context.Context, *kvrpcpb.StoreSafeTSRequest) (*kvrpcpb.StoreSafeTSResponse, error) {
+	// TODO
 	return &kvrpcpb.StoreSafeTSResponse{}, nil
 }
 
