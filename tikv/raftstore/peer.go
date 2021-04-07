@@ -23,14 +23,13 @@ import (
 	"unsafe"
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
-
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
 	"github.com/zhangjinpeng1987/raft"
 )
 
@@ -1429,7 +1428,7 @@ func (p *Peer) readIndex(cfg *Config, req *raft_cmdpb.RaftCmdRequest, errResp *r
 		return false
 	}
 
-	cmds := []*ReqCbPair{&ReqCbPair{req, cb}}
+	cmds := []*ReqCbPair{{req, cb}}
 	p.pendingReads.reads = append(p.pendingReads.reads, NewReadIndexRequest(id, cmds, renewLeaseTime))
 
 	// TimeoutNow has been sent out, so we need to propose explicitly to

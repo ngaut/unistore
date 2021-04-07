@@ -318,6 +318,7 @@ func TestPeerStorageCacheFetch(t *testing.T) {
 	for low := uint64(4); low < 9; low++ {
 		for high := low; high < 9; high++ {
 			fetched, err = peerStore.Entries(low, high, math.MaxUint64)
+			assert.Nil(t, err)
 			assert.Equal(t, expRes[low-4:high-4], fetched)
 		}
 	}

@@ -19,8 +19,6 @@ import (
 	"time"
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
-
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -28,6 +26,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
 	"github.com/pingcap/tidb/tablecodec"
 	"github.com/zhangjinpeng1987/raft"
 )
@@ -1191,6 +1190,7 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 	}
 
 	totalGCLogs += compactIdx - firstIdx
+	_ = totalGCLogs
 
 	term, err := d.peer.RaftGroup.Raft.RaftLog.Term(compactIdx)
 	if err != nil {

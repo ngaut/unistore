@@ -17,14 +17,14 @@ import (
 	"time"
 
 	"github.com/ngaut/unistore/config"
-	"github.com/ngaut/unistore/metrics"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
-	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	rcpb "github.com/pingcap/kvproto/pkg/raft_cmdpb"
+	"github.com/pingcap/tidb/store/mockstore/unistore/metrics"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/pberror"
 	"github.com/pingcap/tidb/util/codec"
 )
 
@@ -48,7 +48,7 @@ type raftWriteBatch struct {
 	commitTS uint64
 }
 
-func (wb *raftWriteBatch) Prewrite(key []byte, lock *mvcc.MvccLock) {
+func (wb *raftWriteBatch) Prewrite(key []byte, lock *mvcc.Lock) {
 	encodedKey := codec.EncodeBytes(nil, key)
 	putLock, putDefault := mvcc.EncodeLockCFValue(lock)
 	if len(putDefault) != 0 {
@@ -83,7 +83,7 @@ func (wb *raftWriteBatch) Prewrite(key []byte, lock *mvcc.MvccLock) {
 	}
 }
 
-func (wb *raftWriteBatch) Commit(key []byte, lock *mvcc.MvccLock) {
+func (wb *raftWriteBatch) Commit(key []byte, lock *mvcc.Lock) {
 	encodedKey := codec.EncodeBytes(nil, key)
 	writeType := mvcc.WriteTypePut
 	switch lock.Op {
@@ -134,7 +134,7 @@ func (wb *raftWriteBatch) Rollback(key []byte, deleteLock bool) {
 	}
 }
 
-func (wb *raftWriteBatch) PessimisticLock(key []byte, lock *mvcc.MvccLock) {
+func (wb *raftWriteBatch) PessimisticLock(key []byte, lock *mvcc.Lock) {
 	encodedKey := codec.EncodeBytes(nil, key)
 	val, _ := mvcc.EncodeLockCFValue(lock)
 	wb.requests = append(wb.requests, &rcpb.Request{
@@ -211,17 +211,9 @@ func (writer *raftDBWriter) Write(batch mvcc.WriteBatch) error {
 	return writer.checkResponse(cb.resp, reqLen)
 }
 
-type RaftError struct {
-	RequestErr *errorpb.Error
-}
-
-func (re *RaftError) Error() string {
-	return re.RequestErr.String()
-}
-
 func (writer *raftDBWriter) checkResponse(resp *rcpb.RaftCmdResponse, reqCount int) error {
 	if resp.Header.Error != nil {
-		return &RaftError{RequestErr: resp.Header.Error}
+		return &pberror.PBError{RequestErr: resp.Header.Error}
 	}
 	if len(resp.Responses) != reqCount {
 		return errors.Errorf("responses count %d is not equal to requests count %d",
@@ -298,12 +290,12 @@ func (wb *customWriteBatch) setType(tp raftlog.CustomRaftLogType) {
 	}
 }
 
-func (wb *customWriteBatch) Prewrite(key []byte, lock *mvcc.MvccLock) {
+func (wb *customWriteBatch) Prewrite(key []byte, lock *mvcc.Lock) {
 	wb.setType(raftlog.TypePrewrite)
 	wb.builder.AppendLock(key, lock.MarshalBinary())
 }
 
-func (wb *customWriteBatch) Commit(key []byte, lock *mvcc.MvccLock) {
+func (wb *customWriteBatch) Commit(key []byte, lock *mvcc.Lock) {
 	wb.setType(raftlog.TypeCommit)
 	wb.builder.AppendCommit(key, lock.MarshalBinary(), wb.commitTS)
 }
@@ -313,7 +305,7 @@ func (wb *customWriteBatch) Rollback(key []byte, deleleLock bool) {
 	wb.builder.AppendRollback(key, wb.startTS, deleleLock)
 }
 
-func (wb *customWriteBatch) PessimisticLock(key []byte, lock *mvcc.MvccLock) {
+func (wb *customWriteBatch) PessimisticLock(key []byte, lock *mvcc.Lock) {
 	wb.setType(raftlog.TypePessimisticLock)
 	wb.builder.AppendLock(key, lock.MarshalBinary())
 }

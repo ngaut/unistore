@@ -18,12 +18,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/ngaut/unistore/tikv/mvcc"
-
-	"github.com/ngaut/unistore/lockstore"
-
 	"github.com/pingcap/badger"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
+	"github.com/pingcap/tidb/store/mockstore/unistore/lockstore"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
 	"github.com/stretchr/testify/require"
 )
 

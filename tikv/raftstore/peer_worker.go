@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ngaut/unistore/metrics"
+	"github.com/pingcap/tidb/store/mockstore/unistore/metrics"
 )
 
 // peerState contains the peer states that needs to run raft command and apply command.

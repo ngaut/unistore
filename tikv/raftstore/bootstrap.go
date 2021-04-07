@@ -16,12 +16,12 @@ package raftstore
 import (
 	"bytes"
 
-	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/dbreader"
 )
 
 const (
