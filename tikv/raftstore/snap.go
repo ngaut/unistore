@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"github.com/ngaut/unistore/rocksdb"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/util"
 	"github.com/pingcap/badger/table/sstable"
 	"github.com/pingcap/badger/y"
@@ -35,6 +34,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/metapb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
 )
 
 type CFName = string

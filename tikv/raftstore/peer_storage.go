@@ -22,7 +22,6 @@ import (
 
 	"github.com/cznic/mathutil"
 	"github.com/golang/protobuf/proto"
-	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -30,6 +29,7 @@ import (
 	"github.com/pingcap/kvproto/pkg/metapb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/dbreader"
 	"github.com/zhangjinpeng1987/raft"
 )
 
@@ -491,6 +491,9 @@ func (ps *PeerStorage) Entries(low, high, maxSize uint64) ([]eraftpb.Entry, erro
 	if low < cacheLow {
 		ps.stats.miss++
 		ents, fetchedSize, err = fetchEntriesTo(ps.Engines.raft, reginID, low, cacheLow, maxSize, ents)
+		if err != nil {
+			return ents, err
+		}
 		if fetchedSize > maxSize {
 			// maxSize exceed.
 			return ents, nil

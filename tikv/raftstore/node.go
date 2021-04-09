@@ -19,13 +19,14 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/ngaut/unistore/pd"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
+	"github.com/pingcap/tidb/store/mockstore/unistore/pd"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/pberror"
 	"github.com/pingcap/tidb/util/codec"
 )
 
@@ -117,7 +118,7 @@ func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, sna
 		}
 		cb.wg.Wait()
 		if cb.resp.Header.Error != nil {
-			return &RaftError{RequestErr: cb.resp.Header.Error}
+			return &pberror.PBError{RequestErr: cb.resp.Header.Error}
 		}
 	}
 

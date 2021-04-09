@@ -19,11 +19,10 @@ import (
 	"testing"
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
-
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	rfpb "github.com/pingcap/kvproto/pkg/raft_cmdpb"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -48,8 +47,8 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		primary := []byte(fmt.Sprintf("t%08d_r%08d", i, i))
-		expectLock := mvcc.MvccLock{
-			MvccLockHdr: mvcc.MvccLockHdr{
+		expectLock := mvcc.Lock{
+			LockHdr: mvcc.LockHdr{
 				StartTS:    100,
 				TTL:        10,
 				Op:         uint8(kvrpcpb.Op_Put),
@@ -80,8 +79,8 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 	}
 	for i := 0; i < 3; i++ {
 		primary := []byte(fmt.Sprintf("t%08d_r%08d", i, i))
-		expectLock := &mvcc.MvccLock{
-			MvccLockHdr: mvcc.MvccLockHdr{
+		expectLock := &mvcc.Lock{
+			LockHdr: mvcc.LockHdr{
 				StartTS: 100,
 				TTL:     10,
 				Op:      uint8(mvcc.LockTypePut),
@@ -126,8 +125,8 @@ func TestRaftWriteBatch_Rollback(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		primary := []byte(fmt.Sprintf("t%08d_r%08d", i, i))
-		expectLock := mvcc.MvccLock{
-			MvccLockHdr: mvcc.MvccLockHdr{
+		expectLock := mvcc.Lock{
+			LockHdr: mvcc.LockHdr{
 				StartTS:    100,
 				TTL:        10,
 				Op:         uint8(kvrpcpb.Op_Put),

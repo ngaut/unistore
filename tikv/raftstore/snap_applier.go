@@ -19,10 +19,10 @@ import (
 	"os"
 
 	"github.com/ngaut/unistore/rocksdb"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
 	"github.com/pingcap/tidb/util/codec"
 )
 
@@ -132,7 +132,7 @@ func (ai *snapApplier) nextLock() (*applySnapItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	mvccLock := new(mvcc.MvccLock)
+	mvccLock := new(mvcc.Lock)
 	mvccLock.Op = lv.lockType
 	mvccLock.StartTS = lv.startTS
 	mvccLock.TTL = uint32(lv.ttl)

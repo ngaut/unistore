@@ -20,13 +20,13 @@ import (
 	"os"
 	"testing"
 
-	"github.com/ngaut/unistore/lockstore"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"github.com/pingcap/tidb/store/mockstore/unistore/lockstore"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -160,6 +160,7 @@ func fillDBBundleData(t *testing.T, dbBundle *mvcc.DBBundle) {
 		require.Nil(t, txn.SetEntry(e))
 		return nil
 	})
+	require.Nil(t, err)
 	err = dbBundle.DB.Update(func(txn *badger.Txn) error {
 		e := &badger.Entry{
 			Key:      y.KeyWithTs(snapTestKey, 200),
@@ -171,8 +172,8 @@ func fillDBBundleData(t *testing.T, dbBundle *mvcc.DBBundle) {
 	})
 
 	require.Nil(t, err)
-	lockVal := &mvcc.MvccLock{
-		MvccLockHdr: mvcc.MvccLockHdr{
+	lockVal := &mvcc.Lock{
+		LockHdr: mvcc.LockHdr{
 			StartTS:    250,
 			TTL:        100,
 			Op:         byte(kvrpcpb.Op_Put),

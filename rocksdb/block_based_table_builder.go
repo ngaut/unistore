@@ -145,7 +145,7 @@ func (b *BlockBasedTableBuilder) Finish() error {
 	footerBuf[cursor] = byte(b.opts.ChecksumType)
 	cursor += 1
 	cursor += metaIndexBlockHandle.EncodeTo(footerBuf[cursor:])
-	cursor += indexBlockHandle.EncodeTo(footerBuf[cursor:])
+	indexBlockHandle.EncodeTo(footerBuf[cursor:])
 	cursor = footerEncodedLength - 12
 	rocksEndian.PutUint32(footerBuf[cursor:], 2)
 	cursor += 4

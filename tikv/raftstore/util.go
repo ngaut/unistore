@@ -20,16 +20,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
-
-	"github.com/ngaut/unistore/tikv/mvcc"
-
 	"github.com/golang/protobuf/proto"
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/log"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
 )
 
 const RaftInvalidIndex uint64 = 0

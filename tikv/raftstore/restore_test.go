@@ -16,11 +16,11 @@ package raftstore
 import (
 	"testing"
 
-	"github.com/ngaut/unistore/lockstore"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	rcpb "github.com/pingcap/kvproto/pkg/raft_cmdpb"
+	"github.com/pingcap/tidb/store/mockstore/unistore/lockstore"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -51,8 +51,8 @@ func TestRestore(t *testing.T) {
 
 	lockStore := lockstore.NewMemStore(1000)
 	// Restore prewrite
-	expectLock := mvcc.MvccLock{
-		MvccLockHdr: mvcc.MvccLockHdr{
+	expectLock := mvcc.Lock{
+		LockHdr: mvcc.LockHdr{
 			StartTS:    1,
 			TTL:        10,
 			Op:         uint8(kvrpcpb.Op_Put),

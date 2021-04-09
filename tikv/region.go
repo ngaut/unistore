@@ -16,28 +16,24 @@ package tikv
 import (
 	"bytes"
 	"encoding/binary"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
 
-	"github.com/ngaut/unistore/metrics"
-	"github.com/ngaut/unistore/pd"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/pingcap/badger"
-	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
-	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/log"
+	"github.com/pingcap/tidb/store/mockstore/unistore/metrics"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv"
+	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/zhangjinpeng1987/raft"
 	"go.uber.org/zap"
-	"golang.org/x/net/context"
 )
 
 var (
@@ -47,15 +43,11 @@ var (
 	InternalSafePointKey     = append(InternalKeyPrefix, "safepoint"...)
 )
 
-func InternalRegionMetaKey(regionId uint64) []byte {
-	return []byte(string(InternalRegionMetaPrefix) + strconv.FormatUint(regionId, 10))
-}
-
 type regionCtx struct {
 	meta            *metapb.Region
 	regionEpoch     unsafe.Pointer // *metapb.RegionEpoch
-	startKey        []byte
-	endKey          []byte
+	rawStartKey     []byte
+	rawEndKey       []byte
 	approximateSize int64
 	diff            int64
 
@@ -128,13 +120,29 @@ func newRegionCtx(meta *metapb.Region, latches *latches, checker raftstore.Leade
 		regionEpoch:   unsafe.Pointer(meta.GetRegionEpoch()),
 		leaderChecker: checker,
 	}
-	regCtx.startKey = regCtx.rawStartKey()
-	regCtx.endKey = regCtx.rawEndKey()
-	if len(regCtx.endKey) == 0 {
+	regCtx.rawStartKey = regCtx.decodeRawStartKey()
+	regCtx.rawEndKey = regCtx.decodeRawEndKey()
+	if len(regCtx.rawEndKey) == 0 {
 		// Avoid reading internal meta data.
-		regCtx.endKey = InternalKeyPrefix
+		regCtx.rawEndKey = InternalKeyPrefix
 	}
 	return regCtx
+}
+
+func (ri *regionCtx) Meta() *metapb.Region {
+	return ri.meta
+}
+
+func (ri *regionCtx) Diff() *int64 {
+	return &ri.diff
+}
+
+func (ri *regionCtx) RawStart() []byte {
+	return ri.rawStartKey
+}
+
+func (ri *regionCtx) RawEnd() []byte {
+	return ri.rawEndKey
 }
 
 func (ri *regionCtx) getRegionEpoch() *metapb.RegionEpoch {
@@ -145,7 +153,7 @@ func (ri *regionCtx) updateRegionEpoch(epoch *metapb.RegionEpoch) {
 	atomic.StorePointer(&ri.regionEpoch, (unsafe.Pointer)(epoch))
 }
 
-func (ri *regionCtx) rawStartKey() []byte {
+func (ri *regionCtx) decodeRawStartKey() []byte {
 	if len(ri.meta.StartKey) == 0 {
 		return nil
 	}
@@ -156,7 +164,7 @@ func (ri *regionCtx) rawStartKey() []byte {
 	return rawKey
 }
 
-func (ri *regionCtx) rawEndKey() []byte {
+func (ri *regionCtx) decodeRawEndKey() []byte {
 	if len(ri.meta.EndKey) == 0 {
 		return nil
 	}
@@ -168,15 +176,15 @@ func (ri *regionCtx) rawEndKey() []byte {
 }
 
 func (ri *regionCtx) lessThanStartKey(key []byte) bool {
-	return bytes.Compare(key, ri.startKey) < 0
+	return bytes.Compare(key, ri.rawStartKey) < 0
 }
 
 func (ri *regionCtx) greaterEqualEndKey(key []byte) bool {
-	return len(ri.endKey) > 0 && bytes.Compare(key, ri.endKey) >= 0
+	return len(ri.rawEndKey) > 0 && bytes.Compare(key, ri.rawEndKey) >= 0
 }
 
 func (ri *regionCtx) greaterThanEndKey(key []byte) bool {
-	return len(ri.endKey) > 0 && bytes.Compare(key, ri.endKey) > 0
+	return len(ri.rawEndKey) > 0 && bytes.Compare(key, ri.rawEndKey) > 0
 }
 
 func newPeerMeta(peerID, storeID uint64) *metapb.Peer {
@@ -207,8 +215,8 @@ func (ri *regionCtx) unmarshal(data []byte) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
-	ri.startKey = ri.rawStartKey()
-	ri.endKey = ri.rawEndKey()
+	ri.rawStartKey = ri.decodeRawStartKey()
+	ri.rawEndKey = ri.decodeRawEndKey()
 	ri.regionEpoch = unsafe.Pointer(ri.meta.RegionEpoch)
 	return nil
 }
@@ -246,11 +254,11 @@ type RegionOptions struct {
 }
 
 type RegionManager interface {
-	GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error)
+	GetRegionFromCtx(ctx *kvrpcpb.Context) (tikv.RegionCtx, *errorpb.Error)
 	GetStoreInfoFromCtx(ctx *kvrpcpb.Context) (string, uint64, *errorpb.Error)
 	SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse
 	GetStoreIDByAddr(addr string) (uint64, error)
-	GetStoreAddrByStoreId(storeId uint64) (string, error)
+	GetStoreAddrByStoreID(storeID uint64) (string, error)
 	Close() error
 }
 
@@ -268,8 +276,8 @@ func (rm *regionManager) GetStoreIDByAddr(addr string) (uint64, error) {
 	return rm.storeMeta.Id, nil
 }
 
-func (rm *regionManager) GetStoreAddrByStoreId(storeId uint64) (string, error) {
-	if rm.storeMeta.Id != storeId {
+func (rm *regionManager) GetStoreAddrByStoreID(storeID uint64) (string, error) {
+	if rm.storeMeta.Id != storeID {
 		return "", errors.New("store not match")
 	}
 	return rm.storeMeta.Address, nil
@@ -285,7 +293,7 @@ func (rm *regionManager) GetStoreInfoFromCtx(ctx *kvrpcpb.Context) (string, uint
 	return rm.storeMeta.Address, rm.storeMeta.Id, nil
 }
 
-func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
+func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (tikv.RegionCtx, *errorpb.Error) {
 	ctxPeer := ctx.GetPeer()
 	if ctxPeer != nil && ctxPeer.GetStoreId() != rm.storeMeta.Id {
 		return nil, &errorpb.Error{
@@ -372,10 +380,10 @@ type RaftRegionManager struct {
 	regionManager
 	router   *raftstore.RaftstoreRouter
 	eventCh  chan interface{}
-	detector *DetectorServer
+	detector *tikv.DetectorServer
 }
 
-func NewRaftRegionManager(store *metapb.Store, router *raftstore.RaftstoreRouter, detector *DetectorServer) *RaftRegionManager {
+func NewRaftRegionManager(store *metapb.Store, router *raftstore.RaftstoreRouter, detector *tikv.DetectorServer) *RaftRegionManager {
 	m := &RaftRegionManager{
 		router: router,
 		regionManager: regionManager{
@@ -457,15 +465,15 @@ func (rm *RaftRegionManager) OnRoleChange(regionId uint64, newState raft.StateTy
 	rm.eventCh <- &regionRoleChangeEvent{regionId: regionId, newState: newState}
 }
 
-func (rm *RaftRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *errorpb.Error) {
-	regionCtx, err := rm.regionManager.GetRegionFromCtx(ctx)
+func (rm *RaftRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (tikv.RegionCtx, *errorpb.Error) {
+	ri, err := rm.regionManager.GetRegionFromCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := regionCtx.leaderChecker.IsLeader(ctx, rm.router); err != nil {
+	if err := ri.(*regionCtx).leaderChecker.IsLeader(ctx, rm.router); err != nil {
 		return nil, err
 	}
-	return regionCtx, nil
+	return ri, nil
 }
 
 func (rm *RaftRegionManager) Close() error {
@@ -503,10 +511,10 @@ func (rm *RaftRegionManager) runEventHandler() {
 			rm.mu.RLock()
 			region := rm.regions[x.regionId]
 			rm.mu.RUnlock()
-			if bytes.Compare(region.startKey, []byte{}) == 0 && len(region.meta.Peers) > 0 {
-				newRole := Follower
+			if bytes.Compare(region.rawStartKey, []byte{}) == 0 && len(region.meta.Peers) > 0 {
+				newRole := tikv.Follower
 				if x.newState == raft.StateLeader {
-					newRole = Leader
+					newRole = tikv.Leader
 				}
 				log.Info("first region role changed", zap.Int("new role", newRole))
 				rm.detector.ChangeRole(int32(newRole))
@@ -525,395 +533,4 @@ func (rm *RaftRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpc
 		return &kvrpcpb.SplitRegionResponse{RegionError: &errorpb.Error{Message: err.Error()}}
 	}
 	return &kvrpcpb.SplitRegionResponse{Regions: regions}
-}
-
-type StandAloneRegionManager struct {
-	regionManager
-	bundle     *mvcc.DBBundle
-	pdc        pd.Client
-	clusterID  uint64
-	regionSize int64
-	closeCh    chan struct{}
-	wg         sync.WaitGroup
-}
-
-func NewStandAloneRegionManager(bundle *mvcc.DBBundle, opts RegionOptions, pdc pd.Client) *StandAloneRegionManager {
-	var err error
-	clusterID := pdc.GetClusterID(context.TODO())
-	log.S().Infof("cluster id %v", clusterID)
-	rm := &StandAloneRegionManager{
-		bundle:     bundle,
-		pdc:        pdc,
-		clusterID:  clusterID,
-		regionSize: opts.RegionSize,
-		closeCh:    make(chan struct{}),
-		regionManager: regionManager{
-			regions:   make(map[uint64]*regionCtx),
-			storeMeta: new(metapb.Store),
-			latches:   newLatches(),
-		},
-	}
-	err = rm.loadFromLocal(bundle, func(r *regionCtx) {
-		req := &pdpb.RegionHeartbeatRequest{
-			Region:          r.meta,
-			Leader:          r.meta.Peers[0],
-			ApproximateSize: uint64(r.approximateSize),
-		}
-		rm.pdc.ReportRegion(req)
-	})
-	if rm.storeMeta.Id == 0 {
-		err = rm.initStore(opts.StoreAddr)
-		if err != nil {
-			log.Fatal("init store failed", zap.Error(err))
-		}
-	}
-	rm.storeMeta.Address = opts.StoreAddr
-	rm.pdc.PutStore(context.TODO(), rm.storeMeta)
-	rm.wg.Add(2)
-	go rm.runSplitWorker()
-	go rm.storeHeartBeatLoop()
-	return rm
-}
-
-func (rm *StandAloneRegionManager) initStore(storeAddr string) error {
-	log.Info("initializing store")
-	ids, err := rm.allocIDs(3)
-	if err != nil {
-		return err
-	}
-	storeID, regionID, peerID := ids[0], ids[1], ids[2]
-	rm.storeMeta.Id = storeID
-	rm.storeMeta.Address = storeAddr
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	rootRegion := &metapb.Region{
-		Id:          regionID,
-		RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
-		Peers:       []*metapb.Peer{{Id: peerID, StoreId: storeID}},
-	}
-	rm.regions[rootRegion.Id] = newRegionCtx(rootRegion, rm.latches, nil)
-	_, err = rm.pdc.Bootstrap(ctx, rm.storeMeta, rootRegion)
-	cancel()
-	if err != nil {
-		log.Fatal("initialize failed", zap.Error(err))
-	}
-	rm.initialSplit(rootRegion)
-	storeBuf, err := rm.storeMeta.Marshal()
-	if err != nil {
-		log.Fatal("marshal store meta failed", zap.Error(err))
-	}
-	err = rm.bundle.DB.Update(func(txn *badger.Txn) error {
-		ts := atomic.AddUint64(&rm.bundle.StateTS, 1)
-		err = txn.SetEntry(&badger.Entry{
-			Key:   y.KeyWithTs(InternalStoreMetaKey, ts),
-			Value: storeBuf,
-		})
-		if err != nil {
-			return err
-		}
-		for rid, region := range rm.regions {
-			regionBuf := region.marshal()
-			err = txn.SetEntry(&badger.Entry{
-				Key:   y.KeyWithTs(InternalRegionMetaKey(rid), ts),
-				Value: regionBuf,
-			})
-			if err != nil {
-				log.Fatal("save region info failed", zap.Error(err))
-			}
-		}
-		return nil
-	})
-	for _, region := range rm.regions {
-		req := &pdpb.RegionHeartbeatRequest{
-			Region:          region.meta,
-			Leader:          region.meta.Peers[0],
-			ApproximateSize: uint64(region.approximateSize),
-		}
-		rm.pdc.ReportRegion(req)
-	}
-	log.Info("Initialize success")
-	return nil
-}
-
-// initSplit splits the cluster into multiple regions.
-func (rm *StandAloneRegionManager) initialSplit(root *metapb.Region) {
-	root.EndKey = codec.EncodeBytes(nil, []byte{'m'})
-	root.RegionEpoch.Version = 2
-	rm.regions[root.Id] = newRegionCtx(root, rm.latches, nil)
-	preSplitStartKeys := [][]byte{{'m'}, {'n'}, {'t'}, {'u'}}
-	ids, err := rm.allocIDs(len(preSplitStartKeys) * 2)
-	if err != nil {
-		log.Fatal("alloc ids failed", zap.Error(err))
-	}
-	for i, startKey := range preSplitStartKeys {
-		var endKey []byte
-		if i < len(preSplitStartKeys)-1 {
-			endKey = codec.EncodeBytes(nil, preSplitStartKeys[i+1])
-		}
-		newRegion := &metapb.Region{
-			Id:          ids[i*2],
-			RegionEpoch: &metapb.RegionEpoch{ConfVer: 1, Version: 1},
-			Peers:       []*metapb.Peer{{Id: ids[i*2+1], StoreId: rm.storeMeta.Id}},
-			StartKey:    codec.EncodeBytes(nil, startKey),
-			EndKey:      endKey,
-		}
-		rm.regions[newRegion.Id] = newRegionCtx(newRegion, rm.latches, nil)
-	}
-}
-
-func (rm *StandAloneRegionManager) allocIDs(n int) ([]uint64, error) {
-	ids := make([]uint64, n)
-	for i := 0; i < n; i++ {
-		id, err := rm.pdc.AllocID(context.Background())
-		if err != nil {
-			return nil, errors.Trace(err)
-		}
-		ids[i] = id
-	}
-	return ids, nil
-}
-
-func (rm *StandAloneRegionManager) storeHeartBeatLoop() {
-	defer rm.wg.Done()
-	ticker := time.Tick(time.Second * 3)
-	for {
-		select {
-		case <-rm.closeCh:
-			return
-		case <-ticker:
-		}
-		storeStats := new(pdpb.StoreStats)
-		storeStats.StoreId = rm.storeMeta.Id
-		storeStats.Available = 1024 * 1024 * 1024
-		rm.mu.RLock()
-		storeStats.RegionCount = uint32(len(rm.regions))
-		rm.mu.RUnlock()
-		storeStats.Capacity = 2048 * 1024 * 1024
-		if err := rm.pdc.StoreHeartbeat(context.Background(), storeStats); err != nil {
-			log.Warn("store heartbeat failed", zap.Error(err))
-		}
-	}
-}
-
-type keySample struct {
-	key      []byte
-	leftSize int64
-}
-
-// sampler samples keys in a region for later pick a split key.
-type sampler struct {
-	samples   [64]keySample
-	length    int
-	step      int
-	scanned   int
-	totalSize int64
-}
-
-func newSampler() *sampler {
-	return &sampler{step: 1}
-}
-
-func (s *sampler) shrinkIfNeeded() {
-	if s.length < len(s.samples) {
-		return
-	}
-	for i := 0; i < len(s.samples)/2; i++ {
-		s.samples[i], s.samples[i*2] = s.samples[i*2], s.samples[i]
-	}
-	s.length /= 2
-	s.step *= 2
-}
-
-func (s *sampler) shouldSample() bool {
-	// It's an optimization for 's.scanned % s.step == 0'
-	return s.scanned&(s.step-1) == 0
-}
-
-func (s *sampler) scanKey(key []byte, size int64) {
-	s.totalSize += size
-	s.scanned++
-	if s.shouldSample() {
-		sample := s.samples[s.length]
-		// safe copy the key.
-		sample.key = append(sample.key[:0], key...)
-		sample.leftSize = s.totalSize
-		s.samples[s.length] = sample
-		s.length++
-		s.shrinkIfNeeded()
-	}
-}
-
-func (s *sampler) getSplitKeyAndSize() ([]byte, int64) {
-	targetSize := s.totalSize * 2 / 3
-	for _, sample := range s.samples[:s.length] {
-		if sample.leftSize >= targetSize {
-			return sample.key, sample.leftSize
-		}
-	}
-	return []byte{}, 0
-}
-
-func (rm *StandAloneRegionManager) runSplitWorker() {
-	defer rm.wg.Done()
-	ticker := time.NewTicker(time.Second * 5)
-	var regionsToCheck []*regionCtx
-	var regionsToSave []*regionCtx
-	for {
-		regionsToCheck = regionsToCheck[:0]
-		rm.mu.RLock()
-		for _, ri := range rm.regions {
-			if ri.approximateSize+atomic.LoadInt64(&ri.diff) > rm.regionSize*3/2 {
-				regionsToCheck = append(regionsToCheck, ri)
-			}
-		}
-		rm.mu.RUnlock()
-		for _, ri := range regionsToCheck {
-			rm.splitCheckRegion(ri)
-		}
-
-		regionsToSave = regionsToSave[:0]
-		rm.mu.RLock()
-		for _, ri := range rm.regions {
-			if atomic.LoadInt64(&ri.diff) > rm.regionSize/8 {
-				regionsToSave = append(regionsToSave, ri)
-			}
-		}
-		rm.mu.RUnlock()
-		rm.saveSize(regionsToSave)
-		select {
-		case <-rm.closeCh:
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
-func (rm *StandAloneRegionManager) saveSize(regionsToSave []*regionCtx) {
-	err1 := rm.bundle.DB.Update(func(txn *badger.Txn) error {
-		ts := atomic.AddUint64(&rm.bundle.StateTS, 1)
-		for _, ri := range regionsToSave {
-			ri.approximateSize += atomic.LoadInt64(&ri.diff)
-			err := txn.SetEntry(&badger.Entry{
-				Key:   y.KeyWithTs(InternalRegionMetaKey(ri.meta.Id), ts),
-				Value: ri.marshal(),
-			})
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err1 != nil {
-		log.Error("region manager save size failed", zap.Error(err1))
-	}
-}
-
-func (rm *StandAloneRegionManager) splitCheckRegion(region *regionCtx) error {
-	s := newSampler()
-	err := rm.bundle.DB.View(func(txn *badger.Txn) error {
-		iter := txn.NewIterator(badger.IteratorOptions{})
-		defer iter.Close()
-		for iter.Seek(region.startKey); iter.Valid(); iter.Next() {
-			item := iter.Item()
-			if region.greaterEqualEndKey(item.Key()) {
-				break
-			}
-			s.scanKey(item.Key(), int64(len(item.Key())+item.ValueSize()))
-		}
-		return nil
-	})
-	if err != nil {
-		log.Error("sample region failed", zap.Error(err))
-		return errors.Trace(err)
-	}
-	// Need to update the diff to avoid split check again.
-	atomic.StoreInt64(&region.diff, s.totalSize-region.approximateSize)
-	if s.totalSize < rm.regionSize {
-		return nil
-	}
-	splitKey, leftSize := s.getSplitKeyAndSize()
-	log.Info("try to split region", zap.Uint64("id", region.meta.Id), zap.Binary("split key", splitKey),
-		zap.Int64("left size", leftSize), zap.Int64("right size", s.totalSize-leftSize))
-	err = rm.splitRegion(region, splitKey, s.totalSize, leftSize)
-	if err != nil {
-		log.Error("split region failed", zap.Error(err))
-	}
-	return errors.Trace(err)
-}
-
-func (rm *StandAloneRegionManager) splitRegion(oldRegionCtx *regionCtx, splitKey []byte, oldSize, leftSize int64) error {
-	oldRegion := oldRegionCtx.meta
-	rightMeta := &metapb.Region{
-		Id:       oldRegion.Id,
-		StartKey: codec.EncodeBytes(nil, splitKey),
-		EndKey:   oldRegion.EndKey,
-		RegionEpoch: &metapb.RegionEpoch{
-			ConfVer: oldRegion.RegionEpoch.ConfVer,
-			Version: oldRegion.RegionEpoch.Version + 1,
-		},
-		Peers: oldRegion.Peers,
-	}
-	right := newRegionCtx(rightMeta, rm.latches, nil)
-	right.approximateSize = oldSize - leftSize
-	id, err := rm.pdc.AllocID(context.Background())
-	if err != nil {
-		return errors.Trace(err)
-	}
-	leftMeta := &metapb.Region{
-		Id:       id,
-		StartKey: oldRegion.StartKey,
-		EndKey:   codec.EncodeBytes(nil, splitKey),
-		RegionEpoch: &metapb.RegionEpoch{
-			ConfVer: 1,
-			Version: 1,
-		},
-		Peers: oldRegion.Peers,
-	}
-	left := newRegionCtx(leftMeta, rm.latches, nil)
-	left.approximateSize = leftSize
-	err1 := rm.bundle.DB.Update(func(txn *badger.Txn) error {
-		ts := atomic.AddUint64(&rm.bundle.StateTS, 1)
-		err := txn.SetEntry(&badger.Entry{
-			Key:   y.KeyWithTs(InternalRegionMetaKey(left.meta.Id), ts),
-			Value: left.marshal(),
-		})
-		if err != nil {
-			return errors.Trace(err)
-		}
-		err = txn.SetEntry(&badger.Entry{
-			Key:   y.KeyWithTs(InternalRegionMetaKey(right.meta.Id), ts),
-			Value: right.marshal(),
-		})
-		return errors.Trace(err)
-	})
-	if err1 != nil {
-		return errors.Trace(err1)
-	}
-	rm.mu.Lock()
-	rm.regions[left.meta.Id] = left
-	rm.regions[right.meta.Id] = right
-	rm.mu.Unlock()
-	rm.pdc.ReportRegion(&pdpb.RegionHeartbeatRequest{
-		Region:          right.meta,
-		Leader:          right.meta.Peers[0],
-		ApproximateSize: uint64(right.approximateSize),
-	})
-	rm.pdc.ReportRegion(&pdpb.RegionHeartbeatRequest{
-		Region:          left.meta,
-		Leader:          left.meta.Peers[0],
-		ApproximateSize: uint64(left.approximateSize),
-	})
-	log.Info("region splitted", zap.Uint64("old id", oldRegion.Id),
-		zap.Uint64("left id", left.meta.Id), zap.Int64("left size", left.approximateSize),
-		zap.Uint64("right id", right.meta.Id), zap.Int64("right size", right.approximateSize))
-	return nil
-}
-
-func (rm *StandAloneRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse {
-	return &kvrpcpb.SplitRegionResponse{}
-}
-
-func (rm *StandAloneRegionManager) Close() error {
-	close(rm.closeCh)
-	rm.wg.Wait()
-	return nil
 }
