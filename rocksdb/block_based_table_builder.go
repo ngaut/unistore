@@ -35,6 +35,7 @@ const (
 	bloomBlockHandleKey = "fullfilter.rocksdb.BuiltinBloomFilter"
 )
 
+// BlockBasedTableBuilder is used in building a block-based table.
 type BlockBasedTableBuilder struct {
 	props      TableProperties
 	writer     *fileutil.BufferedWriter
@@ -56,6 +57,7 @@ type BlockBasedTableBuilder struct {
 	alignment               int
 }
 
+// NewBlockBasedTableBuilder makes a new BlockBasedTableBuilder.
 func NewBlockBasedTableBuilder(f *os.File, opts *BlockBasedTableOptions) *BlockBasedTableBuilder {
 	w := fileutil.NewBufferedWriter(f, opts.BufferSize, opts.RateLimiter)
 	blockSizeDeviationLimit := ((opts.BlockSize * (100 - opts.BlockSizeDeviation)) + 99) / 100
@@ -76,6 +78,7 @@ func NewBlockBasedTableBuilder(f *os.File, opts *BlockBasedTableOptions) *BlockB
 	}
 }
 
+// Add adds a key-value pair to the BlockBasedTableBuilder.
 func (b *BlockBasedTableBuilder) Add(key, value []byte) error {
 	var ikey InternalKey
 	ikey.Decode(key)
@@ -110,6 +113,7 @@ const (
 	footerEncodedLength        = 1 + 2*maxBlockHandleLength + 4 + 8
 )
 
+// Finish finishes the BlockBasedTableBuilder.
 func (b *BlockBasedTableBuilder) Finish() error {
 	if err := b.flush(); err != nil {
 		return err
@@ -143,7 +147,7 @@ func (b *BlockBasedTableBuilder) Finish() error {
 	var footerBuf [footerEncodedLength]byte
 	cursor := 0
 	footerBuf[cursor] = byte(b.opts.ChecksumType)
-	cursor += 1
+	cursor++
 	cursor += metaIndexBlockHandle.EncodeTo(footerBuf[cursor:])
 	indexBlockHandle.EncodeTo(footerBuf[cursor:])
 	cursor = footerEncodedLength - 12
@@ -170,7 +174,7 @@ func (b *BlockBasedTableBuilder) flush() error {
 	}
 
 	b.props.DataSize = b.offset
-	b.props.NumDataBlocks += 1
+	b.props.NumDataBlocks++
 	b.dataBlockBuilder.Reset()
 
 	return nil
@@ -208,7 +212,7 @@ func (b *BlockBasedTableBuilder) writePropsBlock(metaIndexBuilder *metaIndexBuil
 	for _, f := range b.opts.PropsInjectors {
 		f(propsBuilder)
 	}
-	propsBuilder.AddUint64(propColumnFamilyId, p.ColumnFamilyID)
+	propsBuilder.AddUint64(propColumnFamilyID, p.ColumnFamilyID)
 	propsBuilder.AddString(propCompression, p.CompressionName)
 	propsBuilder.AddUint64(propCreationTime, p.CreationTime)
 	propsBuilder.AddUint64(propDataSize, p.DataSize)

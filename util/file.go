@@ -21,6 +21,7 @@ import (
 	"github.com/pingcap/errors"
 )
 
+// GetFileSize gets the file size of the file.
 func GetFileSize(path string) (uint64, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -29,6 +30,7 @@ func GetFileSize(path string) (uint64, error) {
 	return uint64(fi.Size()), nil
 }
 
+// FileExists checks whether a file exists in the given path. It also fails if the path points to a directory or there is an error when trying to check the file.
 func FileExists(path string) bool {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -37,6 +39,7 @@ func FileExists(path string) bool {
 	return !fi.IsDir()
 }
 
+// DirExists checks whether a directory exists in the given path. It also fails if the path is a file rather a directory or there is an error checking whether it exists.
 func DirExists(path string) bool {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -45,6 +48,7 @@ func DirExists(path string) bool {
 	return fi.IsDir()
 }
 
+// DeleteFileIfExists deletes the file if the file exists.
 func DeleteFileIfExists(path string) (bool, error) {
 	err := os.Remove(path)
 	if os.IsNotExist(err) {

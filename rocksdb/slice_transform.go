@@ -28,67 +28,83 @@ var (
 	_ SliceTransform = new(NoopSliceTransform)
 )
 
+// SliceTransform can be used as a extractor.
 type SliceTransform interface {
 	Transform([]byte) []byte
 	InDomain([]byte) bool
 	InRange([]byte) bool
 }
 
+// FixedPrefixSliceTransform represents the fixed prefix SliceTransform.
 type FixedPrefixSliceTransform struct {
 	prefixLen int
 }
 
+// NewFixedPrefixSliceTransform returns a new fixed prefix SliceTransform.
 func NewFixedPrefixSliceTransform(prefixLen int) *FixedPrefixSliceTransform {
 	return &FixedPrefixSliceTransform{prefixLen: prefixLen}
 }
 
+// Transform implements the SliceTransform Transform method.
 func (st *FixedPrefixSliceTransform) Transform(key []byte) []byte {
 	return key[:st.prefixLen]
 }
 
+// InDomain implements the SliceTransform InDomain method.
 func (st *FixedPrefixSliceTransform) InDomain(key []byte) bool {
 	return len(key) >= st.prefixLen
 }
 
+// InRange implements the SliceTransform InRange method.
 func (st *FixedPrefixSliceTransform) InRange(key []byte) bool {
 	return true
 }
 
+// FixedSuffixSliceTransform represents the fixed suffix SliceTransform.
 type FixedSuffixSliceTransform struct {
 	suffixLen int
 }
 
+// NewFixedSuffixSliceTransform returns a new fixed suffix SliceTransform.
 func NewFixedSuffixSliceTransform(suffixLen int) *FixedSuffixSliceTransform {
 	return &FixedSuffixSliceTransform{suffixLen: suffixLen}
 }
 
+// Transform implements the SliceTransform Transform method.
 func (st *FixedSuffixSliceTransform) Transform(key []byte) []byte {
 	mid := len(key) - st.suffixLen
 	return key[:mid]
 }
 
+// InDomain implements the SliceTransform InDomain method.
 func (st *FixedSuffixSliceTransform) InDomain(key []byte) bool {
 	return len(key) >= st.suffixLen
 }
 
+// InRange implements the SliceTransform InRange method.
 func (st *FixedSuffixSliceTransform) InRange(key []byte) bool {
 	return true
 }
 
+// NoopSliceTransform represents the noop SliceTransform.
 type NoopSliceTransform struct{}
 
+// NewNoopSliceTransform returns a new noop SliceTransform.
 func NewNoopSliceTransform() *NoopSliceTransform {
 	return &NoopSliceTransform{}
 }
 
+// Transform implements the SliceTransform Transform method.
 func (st *NoopSliceTransform) Transform(key []byte) []byte {
 	return key
 }
 
+// InDomain implements the SliceTransform InDomain method.
 func (st *NoopSliceTransform) InDomain(key []byte) bool {
 	return true
 }
 
+// InRange implements the SliceTransform InRange method.
 func (st *NoopSliceTransform) InRange(key []byte) bool {
 	return true
 }
