@@ -23,6 +23,7 @@ const (
 	subPathKV   = "kv"
 )
 
+// New returns a new tikv.Server.
 func New(conf *config.Config, pdClient pd.Client) (*tikv.Server, error) {
 	physical, logical, err := pdClient.GetTS(context.Background())
 	if err != nil {
@@ -93,7 +94,7 @@ func setupRaftServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient 
 	innerServer.Setup(pdClient)
 	router := innerServer.GetRaftstoreRouter()
 	storeMeta := innerServer.GetStoreMeta()
-	store := tikv.NewMVCCStore(convertToTidbConfig(conf), bundle, dbPath, safePoint, raftstore.NewDBWriter(conf, router), pdClient)
+	store := tikv.NewMVCCStore(&conf.Config, bundle, dbPath, safePoint, raftstore.NewDBWriter(conf, router), pdClient)
 	rm := unistoretikv.NewRaftRegionManager(storeMeta, router, store.DeadlockDetectSvr)
 	innerServer.SetPeerEventObserver(rm)
 
@@ -109,7 +110,7 @@ func setupRaftServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient 
 func setupStandAlongInnerServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, rm tikv.RegionManager, pdClient pd.Client, conf *config.Config) (*tikv.Server, error) {
 	innerServer := tikv.NewStandAlongInnerServer(bundle)
 	innerServer.Setup(pdClient)
-	store := tikv.NewMVCCStore(convertToTidbConfig(conf), bundle, conf.Engine.DBPath, safePoint, tikv.NewDBWriter(bundle), pdClient)
+	store := tikv.NewMVCCStore(&conf.Config, bundle, conf.Engine.DBPath, safePoint, tikv.NewDBWriter(bundle), pdClient)
 	store.DeadlockDetectSvr.ChangeRole(tikv.Leader)
 
 	if err := innerServer.Start(pdClient); err != nil {
@@ -136,7 +137,7 @@ func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	raftConf.SplitCheck.RegionSplitKeys = uint64(conf.Coprocessor.RegionSplitKeys)
 }
 
-func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*badger.DB, error) {
+func createDB(subPath string, safePoint *tikv.SafePoint, conf *tidbconfig.Engine) (*badger.DB, error) {
 	opts := badger.DefaultOptions
 	opts.NumCompactors = conf.NumCompactors
 	opts.ValueThreshold = conf.ValueThreshold
@@ -173,55 +174,4 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*
 	opts.CompactL0WhenClose = conf.CompactL0WhenClose
 	opts.VolatileMode = conf.VolatileMode
 	return badger.Open(opts)
-}
-
-func convertToTidbConfig(conf *config.Config) *tidbconfig.Config {
-	return &tidbconfig.Config{
-		Server: tidbconfig.Server{
-			PDAddr:      conf.Server.PDAddr,
-			StoreAddr:   conf.Server.StoreAddr,
-			StatusAddr:  conf.Server.StatusAddr,
-			LogLevel:    conf.Server.LogLevel,
-			RegionSize:  conf.Server.RegionSize,
-			MaxProcs:    conf.Server.MaxProcs,
-			Raft:        conf.Server.Raft,
-			LogfilePath: conf.Server.LogfilePath,
-		},
-		RaftStore: tidbconfig.RaftStore{
-			PdHeartbeatTickInterval:  conf.RaftStore.PdHeartbeatTickInterval,
-			RaftStoreMaxLeaderLease:  conf.RaftStore.RaftStoreMaxLeaderLease,
-			RaftBaseTickInterval:     conf.RaftStore.RaftBaseTickInterval,
-			RaftHeartbeatTicks:       conf.RaftStore.RaftHeartbeatTicks,
-			RaftElectionTimeoutTicks: conf.RaftStore.RaftElectionTimeoutTicks,
-			CustomRaftLog:            conf.RaftStore.CustomRaftLog,
-		},
-		Engine: tidbconfig.Engine{
-			DBPath:             conf.Engine.DBPath,
-			ValueThreshold:     conf.Engine.ValueThreshold,
-			MaxMemTableSize:    conf.Engine.MaxMemTableSize,
-			MaxTableSize:       conf.Engine.MaxTableSize,
-			L1Size:             conf.Engine.L1Size,
-			NumMemTables:       conf.Engine.NumMemTables,
-			NumL0Tables:        conf.Engine.NumL0Tables,
-			NumL0TablesStall:   conf.Engine.NumL0TablesStall,
-			VlogFileSize:       conf.Engine.VlogFileSize,
-			SyncWrite:          conf.Engine.SyncWrite,
-			NumCompactors:      conf.Engine.NumCompactors,
-			SurfStartLevel:     conf.Engine.SurfStartLevel,
-			BlockCacheSize:     conf.Engine.BlockCacheSize,
-			IndexCacheSize:     conf.Engine.IndexCacheSize,
-			Compression:        conf.Engine.Compression,
-			IngestCompression:  conf.Engine.IngestCompression,
-			VolatileMode:       conf.Engine.VolatileMode,
-			CompactL0WhenClose: conf.Engine.CompactL0WhenClose,
-		},
-		Coprocessor: tidbconfig.Coprocessor{
-			RegionMaxKeys:   conf.Coprocessor.RegionMaxKeys,
-			RegionSplitKeys: conf.Coprocessor.RegionSplitKeys,
-		},
-		PessimisticTxn: tidbconfig.PessimisticTxn{
-			WaitForLockTimeout:  conf.PessimisticTxn.WaitForLockTimeout,
-			WakeUpDelayDuration: conf.PessimisticTxn.WakeUpDelayDuration,
-		},
-	}
 }
