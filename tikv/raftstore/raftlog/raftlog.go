@@ -15,6 +15,7 @@ package raftlog
 
 import "github.com/pingcap/kvproto/pkg/raft_cmdpb"
 
+// RaftLog defines the raft log interface.
 type RaftLog interface {
 	RegionID() uint64
 	Epoch() Epoch
