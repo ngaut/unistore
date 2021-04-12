@@ -36,6 +36,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// InternalKey
 var (
 	InternalKeyPrefix        = []byte{0xff}
 	InternalRegionMetaPrefix = append(InternalKeyPrefix, "region"...)
@@ -247,12 +248,14 @@ func (ri *regionCtx) ReleaseLatches(hashVals []uint64) {
 	ri.latches.release(hashVals)
 }
 
+// RegionOptions represents the region options.
 type RegionOptions struct {
 	StoreAddr  string
 	PDAddr     string
 	RegionSize int64
 }
 
+// RegionManager defines the region manager interface.
 type RegionManager interface {
 	GetRegionFromCtx(ctx *kvrpcpb.Context) (tikv.RegionCtx, *errorpb.Error)
 	GetStoreInfoFromCtx(ctx *kvrpcpb.Context) (string, uint64, *errorpb.Error)
@@ -376,6 +379,7 @@ func (rm *regionManager) loadFromLocal(bundle *mvcc.DBBundle, f func(*regionCtx)
 	return err
 }
 
+// RaftRegionManager represents a raft region manager.
 type RaftRegionManager struct {
 	regionManager
 	router   *raftstore.RaftstoreRouter
@@ -383,6 +387,7 @@ type RaftRegionManager struct {
 	detector *tikv.DetectorServer
 }
 
+// NewRaftRegionManager returns a new raft region manager.
 func NewRaftRegionManager(store *metapb.Store, router *raftstore.RaftstoreRouter, detector *tikv.DetectorServer) *RaftRegionManager {
 	m := &RaftRegionManager{
 		router: router,
@@ -403,6 +408,7 @@ type peerCreateEvent struct {
 	region *metapb.Region
 }
 
+// OnPeerCreate will be invoked when there is a new peer created.
 func (rm *RaftRegionManager) OnPeerCreate(ctx *raftstore.PeerEventContext, region *metapb.Region) {
 	rm.eventCh <- &peerCreateEvent{
 		ctx:    ctx,
@@ -415,6 +421,7 @@ type peerApplySnapEvent struct {
 	region *metapb.Region
 }
 
+// OnPeerApplySnap will be invoked when there is a replicate peer's snapshot applied.
 func (rm *RaftRegionManager) OnPeerApplySnap(ctx *raftstore.PeerEventContext, region *metapb.Region) {
 	rm.eventCh <- &peerApplySnapEvent{
 		ctx:    ctx,
@@ -426,6 +433,7 @@ type peerDestroyEvent struct {
 	regionID uint64
 }
 
+// OnPeerDestroy will be invoked when a peer is destroyed.
 func (rm *RaftRegionManager) OnPeerDestroy(ctx *raftstore.PeerEventContext) {
 	rm.eventCh <- &peerDestroyEvent{regionID: ctx.RegionId}
 }
@@ -436,6 +444,7 @@ type splitRegionEvent struct {
 	peers   []*raftstore.PeerEventContext
 }
 
+// OnSplitRegion will be invoked when region split into new regions with corresponding peers.
 func (rm *RaftRegionManager) OnSplitRegion(derived *metapb.Region, regions []*metapb.Region, peers []*raftstore.PeerEventContext) {
 	rm.eventCh <- &splitRegionEvent{
 		derived: derived,
@@ -449,6 +458,7 @@ type regionConfChangeEvent struct {
 	epoch *metapb.RegionEpoch
 }
 
+// OnRegionConfChange will be invoked after conf change updated region's epoch.
 func (rm *RaftRegionManager) OnRegionConfChange(ctx *raftstore.PeerEventContext, epoch *metapb.RegionEpoch) {
 	rm.eventCh <- &regionConfChangeEvent{
 		ctx:   ctx,
@@ -457,14 +467,16 @@ func (rm *RaftRegionManager) OnRegionConfChange(ctx *raftstore.PeerEventContext,
 }
 
 type regionRoleChangeEvent struct {
-	regionId uint64
+	regionID uint64
 	newState raft.StateType
 }
 
-func (rm *RaftRegionManager) OnRoleChange(regionId uint64, newState raft.StateType) {
-	rm.eventCh <- &regionRoleChangeEvent{regionId: regionId, newState: newState}
+// OnRoleChange will be invoked after peer state has changed
+func (rm *RaftRegionManager) OnRoleChange(regionID uint64, newState raft.StateType) {
+	rm.eventCh <- &regionRoleChangeEvent{regionID: regionID, newState: newState}
 }
 
+// GetRegionFromCtx implements the RegionManager interface.
 func (rm *RaftRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (tikv.RegionCtx, *errorpb.Error) {
 	ri, err := rm.regionManager.GetRegionFromCtx(ctx)
 	if err != nil {
@@ -476,6 +488,7 @@ func (rm *RaftRegionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (tikv.Region
 	return ri, nil
 }
 
+// Close implements the RegionManager interface.
 func (rm *RaftRegionManager) Close() error {
 	return nil
 }
@@ -509,7 +522,7 @@ func (rm *RaftRegionManager) runEventHandler() {
 			rm.mu.Unlock()
 		case *regionRoleChangeEvent:
 			rm.mu.RLock()
-			region := rm.regions[x.regionId]
+			region := rm.regions[x.regionID]
 			rm.mu.RUnlock()
 			if bytes.Compare(region.rawStartKey, []byte{}) == 0 && len(region.meta.Peers) > 0 {
 				newRole := tikv.Follower
@@ -523,6 +536,7 @@ func (rm *RaftRegionManager) runEventHandler() {
 	}
 }
 
+// SplitRegion implements the RegionManager interface.
 func (rm *RaftRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse {
 	splitKeys := make([][]byte, 0, len(req.SplitKeys))
 	for _, rawKey := range req.SplitKeys {
