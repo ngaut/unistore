@@ -224,9 +224,18 @@ type PeerStorage struct {
 
 	// stableApplyState is the applyState that is persisted to L0 file.
 	stableApplyState applyState
+	flushState       int32
 
 	Tag string
 }
+
+const (
+	flushStateInitial           int32 = 0
+	flushStateFlushing          int32 = 1
+	flushStateFlushDone         int32 = 2
+	flushStatePreSplitFlushing  int32 = 3
+	flushStatePreSplitFlushDone int32 = 4
+)
 
 func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- task, peerID uint64, tag string) (*PeerStorage, error) {
 	log.S().Debugf("%s creating storage for %s", tag, region.String())
@@ -312,7 +321,7 @@ func initApplyState(kvEngine *badger.ShardingDB, region *metapb.Region) (applySt
 	shard := kvEngine.GetShard(region.Id)
 	applyState := applyState{}
 	if shard != nil {
-		props, _ := kvEngine.GetPropertiesWithSnap(shard, []string{applyStateKey})
+		props := kvEngine.GetProperties(shard, []string{applyStateKey})
 		y.Assert(len(props) == 1)
 		y.Assert(len(props[0]) == 32)
 		applyState.Unmarshal(props[0])
@@ -498,6 +507,10 @@ func (ps *PeerStorage) validateSnap(snap *eraftpb.Snapshot) bool {
 
 func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 	var snap eraftpb.Snapshot
+	if atomic.LoadInt32(&ps.flushState) < flushStateFlushDone {
+		log.S().Infof("shard %d:%d has not flushed for generating snapshot", ps.region.Id, ps.region.RegionEpoch.Version)
+		return snap, raft.ErrSnapshotTemporarilyUnavailable
+	}
 	if ps.snapState.StateType == SnapState_Generating {
 		select {
 		case s := <-ps.snapState.Receiver:
@@ -649,6 +662,7 @@ func fetchEntriesTo(engine *badger.DB, regionID, low, high, maxSize uint64, buf 
 			key := RaftLogKey(regionID, i)
 			item, err := txn.Get(key)
 			if err == badger.ErrKeyNotFound {
+				log.S().Errorf("no enough entries, low %d high %d, idx %d", low, high, i)
 				return nil, 0, raft.ErrUnavailable
 			} else if err != nil {
 				return nil, 0, err

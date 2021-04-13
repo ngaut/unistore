@@ -45,8 +45,6 @@ type storeMeta struct {
 	/// `MsgRequestPreVote` or `MsgRequestVote` messages from newly split Regions shouldn't be dropped if there is no
 	/// such Region in this store now. So the messages are recorded temporarily and will be handled later.
 	pendingVotes []*rspb.RaftMessage
-	/// The regions with pending snapshots.
-	pendingSnapshotMessages []*rspb.RaftMessage
 	/// A marker used to indicate the peer of a Region has received a merge target message and waits to be destroyed.
 	/// target_region_id -> (source_region_id -> merge_target_epoch)
 	pendingMergeTargets map[uint64]map[uint64]*metapb.RegionEpoch
@@ -109,7 +107,6 @@ type RaftContext struct {
 	raftWB       *RaftWriteBatch
 	pendingCount int
 	hasReady     bool
-	queuedSnaps  map[uint64]struct{}
 	isBusy       bool
 	localStats   *storeStats
 }
@@ -433,7 +430,7 @@ func (bs *raftBatchSystem) startWorkers(peers []*peerFsm) {
 	engines := ctx.engine
 	cfg := ctx.cfg
 	workers.splitCheckWorker.start(newSplitCheckRunner(engines.kv, router, cfg.SplitCheck))
-	workers.regionWorker.start(newRegionTaskHandler(bs.globalCfg, engines))
+	workers.regionWorker.start(newRegionTaskHandler(bs.globalCfg, engines, router))
 	workers.raftLogGCWorker.start(&raftLogGCTaskHandler{})
 	workers.compactWorker.start(&compactTaskHandler{engine: engines.kv})
 	workers.pdWorker.start(newPDTaskHandler(ctx.store.Id, ctx.pdClient, bs.router))
@@ -796,7 +793,6 @@ func (d *storeMsgHandler) onGenerateEngineMetaChange(msg Msg) {
 	e := msg.Data.(*protos.ShardChangeSet)
 	err := d.ctx.router.send(e.ShardID, msg)
 	if err != nil {
-		log.S().Errorf("failed to generate engine meta change for %d", e.ShardID)
-		panic(err)
+		log.S().Errorf("failed to send change event for %d:%d err %v", e.ShardID, e.ShardVer, err)
 	}
 }

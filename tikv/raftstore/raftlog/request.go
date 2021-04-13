@@ -13,7 +13,9 @@
 
 package raftlog
 
-import "github.com/pingcap/kvproto/pkg/raft_cmdpb"
+import (
+	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
+)
 
 type RequestRaftLog struct {
 	*raft_cmdpb.RaftCmdRequest

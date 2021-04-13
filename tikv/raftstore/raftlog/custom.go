@@ -274,3 +274,7 @@ func u64ToBytes(v uint64) []byte {
 	endian.PutUint64(b, v)
 	return b
 }
+
+func IsChangeSetLog(data []byte) bool {
+	return len(data) > 2 && data[0] == CustomRaftLogFlag && data[1] == byte(TypeChangeSet)
+}

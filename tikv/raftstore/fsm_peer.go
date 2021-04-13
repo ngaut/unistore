@@ -69,7 +69,7 @@ func createPeerFsm(storeID uint64, cfg *Config, sched chan<- task,
 	if metaPeer == nil {
 		return nil, errors.Errorf("find no peer for store %d in region %v", storeID, region)
 	}
-	log.S().Infof("region %v create peer with ID %d", region, metaPeer.Id)
+	log.S().Infof("region %d:%d create peer with ID %d", region, region.RegionEpoch.Version, metaPeer.Id)
 	peer, err := NewPeer(storeID, cfg, engines, region, sched, metaPeer)
 	if err != nil {
 		return nil, err
@@ -561,16 +561,6 @@ func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) error {
 			panic(fmt.Sprintf("%s meta corrupted %s != %s", d.tag(), meta.regions[d.regionID()], d.region()))
 		}
 	}
-	for _, snapMsg := range meta.pendingSnapshotMessages {
-		if bytes.Compare(snapMsg.StartKey, msg.EndKey) < 0 &&
-			bytes.Compare(snapMsg.EndKey, msg.StartKey) > 0 &&
-			// Same region can overlap, we will apply the latest version of snapshot.
-			snapMsg.RegionId != msg.RegionId {
-			log.S().Infof("pending region overlapped regionID %d peerID %d region %d snap %s",
-				d.regionID(), d.peerID(), snapMsg.RegionId, snap)
-			return nil
-		}
-	}
 
 	// In some extreme cases, it may cause source peer destroyed improperly so that a later
 	// CommitMerge may panic because source is already destroyed, so just drop the message:
@@ -593,8 +583,6 @@ func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) error {
 		}
 		return nil
 	}
-	meta.pendingSnapshotMessages = append(meta.pendingSnapshotMessages, msg)
-	d.ctx.queuedSnaps[msg.RegionId] = struct{}{}
 	return nil
 }
 
@@ -681,6 +669,10 @@ func (d *peerMsgHandler) destroyPeer(mergeByTarget bool) {
 }
 
 func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
+	if cp.confChange == nil {
+		log.S().Warnf("%s conf change is aborted", d.tag())
+		return
+	}
 	changeType := cp.confChange.ChangeType
 	d.peer.RaftGroup.ApplyConfChange(*cp.confChange)
 	if cp.confChange.NodeId == 0 {
@@ -803,7 +795,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 		}
 
 		// Insert new regions and validation
-		log.S().Infof("[region %d] inserts new region %s", regionID, newRegion)
+		log.S().Infof("[region %d:%d] inserts new region %d:%d", derived.Id, d.region().RegionEpoch.Version, newRegion.Id, newRegion.RegionEpoch.Version)
 		if r, ok := meta.regions[newRegionID]; ok {
 			// Suppose a new node is added by conf change and the snapshot comes slowly.
 			// Then, the region splits and the first vote message comes to the new node
@@ -1505,6 +1497,7 @@ func (d *peerMsgHandler) executeRegionDetail(request *raft_cmdpb.RaftCmdRequest)
 }
 
 func (d *peerMsgHandler) onGenerateMetaChangeEvent(e *protos.ShardChangeSet) {
+	log.S().Infof("region %d:%d generate meta change event", e.ShardID, e.ShardVer)
 	region := d.region()
 	header := raftlog.CustomHeader{
 		RegionID: region.Id,

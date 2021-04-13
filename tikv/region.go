@@ -321,6 +321,8 @@ type RaftRegionManager struct {
 	router   *raftstore.RaftstoreRouter
 	eventCh  chan interface{}
 	detector *DetectorServer
+	splitMu  sync.Mutex
+	splits   map[uint64]bool
 }
 
 func NewRaftRegionManager(store *metapb.Store, router *raftstore.RaftstoreRouter, detector *DetectorServer) *RaftRegionManager {
@@ -333,6 +335,7 @@ func NewRaftRegionManager(store *metapb.Store, router *raftstore.RaftstoreRouter
 		},
 		eventCh:  make(chan interface{}, 1024),
 		detector: detector,
+		splits:   map[uint64]bool{},
 	}
 	go m.runEventHandler()
 	return m
@@ -464,7 +467,19 @@ func (rm *RaftRegionManager) runEventHandler() {
 }
 
 func (rm *RaftRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest, ctx *requestCtx) *kvrpcpb.SplitRegionResponse {
+	rm.splitMu.Lock()
+	splitting := rm.splits[req.Context.RegionId]
+	if !splitting {
+		rm.splits[req.Context.RegionId] = true
+	}
+	rm.splitMu.Unlock()
+	if splitting {
+		return &kvrpcpb.SplitRegionResponse{RegionError: &errorpb.Error{Message: "splitting"}}
+	}
 	regions, err := rm.router.SplitRegion(req.GetContext(), ctx.svr.mvccStore.db, ctx.regCtx.meta, req.SplitKeys)
+	rm.splitMu.Lock()
+	delete(rm.splits, req.Context.RegionId)
+	rm.splitMu.Unlock()
 	if err != nil {
 		return &kvrpcpb.SplitRegionResponse{RegionError: &errorpb.Error{Message: err.Error()}}
 	}
@@ -708,9 +723,14 @@ func (rm *StandAloneRegionManager) runSplitWorker() {
 			if err != nil {
 				log.Error("failed to split engine", zap.Error(err))
 			}
-			err = rm.db.SplitShardFiles(regionID, version)
+			change, err := rm.db.SplitShardFiles(regionID, version)
 			if err != nil {
 				log.Error("failed to split shard files", zap.Error(err))
+			} else {
+				err = rm.db.ApplyChangeSet(change)
+				if err != nil {
+					log.Error("failed to apply change", zap.Error(err))
+				}
 			}
 			// TODO: init properties
 			var properties []*protos.ShardProperties

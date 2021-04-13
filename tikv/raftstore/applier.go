@@ -310,7 +310,7 @@ func (ac *applyContext) commitOpt(d *applier, persistent bool) {
 /// Writes all the changes into badger.
 func (ac *applyContext) writeToDB() {
 	err := ac.wb.WriteToEngine()
-	y.Assert(err == nil)
+	y.AssertTruef(err == nil, "%v", err)
 	ac.wb.Reset()
 	doneApply := time.Now()
 	for _, cb := range ac.cbs {
@@ -499,11 +499,15 @@ type applier struct {
 func newApplier(reg *registration) *applier {
 	return &applier{
 		id:         reg.id,
-		tag:        fmt.Sprintf("[region %d] %d", reg.region.Id, reg.id),
+		tag:        makeTag(reg.region, reg.id),
 		region:     reg.region,
 		applyState: reg.applyState,
 		term:       reg.term,
 	}
+}
+
+func makeTag(region *metapb.Region, peerID uint64) string {
+	return fmt.Sprintf("[region %d:%d] %d", region.Id, region.RegionEpoch.Version, peerID)
 }
 
 /// Handles all the committed_entries, namely, applies the committed entries.
@@ -724,6 +728,7 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 			a.isMerging = false
 		default:
 		}
+		a.tag = makeTag(a.region, a.id)
 	}
 	return resp, applyResult
 }
@@ -866,20 +871,14 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 			splitKeys = append(splitKeys, key)
 		})
 		err := aCtx.engines.kv.PreSplit(a.region.Id, a.region.RegionEpoch.Version, splitKeys)
-		y.AssertTruef(err == nil, "preSplit error %v", err)
+		if err != nil {
+			log.S().Warn("region %d:%d failed to execute pre-split, may be already pre-split by ingest.",
+				a.region.Id, a.region.RegionEpoch.Version)
+		}
 	case raftlog.TypeChangeSet:
-		changeSet, err := cl.GetShardChangeSet()
-		y.Assert(err == nil)
-		a.executeChangeSet(aCtx, changeSet, a.isFollower(cl))
+		// It is already scheduled in peer worker. Do nothing here.
 	}
 	return cnt
-}
-
-func (a *applier) executeChangeSet(aCtx *applyContext, changeSet *protos.ShardChangeSet, isFollower bool) {
-	if isFollower {
-		y.Assert(changeSet.Flush != nil || changeSet.SplitFiles != nil || changeSet.Compaction != nil)
-		aCtx.regionScheduler <- task{tp: taskTypeRegionFollowerChangeSet, data: changeSet}
-	}
 }
 
 func (a *applier) commitLock(aCtx *applyContext, regionID uint64, rawKey []byte, val []byte, commitTS uint64) {
@@ -1025,6 +1024,16 @@ func (a *applier) execSplit(aCtx *applyContext, req *raft_cmdpb.AdminRequest) (
 
 func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminRequest) (
 	resp *raft_cmdpb.AdminResponse, result applyResult, err error) {
+
+	// Write the engine before run finish split, or we will get shard not match error.
+	oldBatch, ok := aCtx.wb.batches[a.region.Id]
+	if ok {
+		delete(aCtx.wb.batches, a.region.Id)
+		err = aCtx.engines.kv.Write(oldBatch)
+		if err != nil {
+			return
+		}
+	}
 	var derived *metapb.Region
 	var regions []*metapb.Region
 	derived, regions, err = a.splitGenNewRegionMetas(req.Splits)
@@ -1048,6 +1057,8 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	if err != nil {
 		return
 	}
+	newShard := aCtx.engines.kv.GetShard(a.region.Id)
+	aCtx.engines.kv.TriggerFlush(newShard)
 	resp = &raft_cmdpb.AdminResponse{
 		Splits: &raft_cmdpb.BatchSplitResponse{
 			Regions: regions,
@@ -1204,7 +1215,7 @@ func newApplierFromPeer(peer *peerFsm) *applier {
 
 /// Handles peer registration. When a peer is created, it will register an applier.
 func (a *applier) handleRegistration(reg *registration) {
-	log.S().Infof("%s re-register to applier, term %d", a.tag, reg.term)
+	log.S().Infof("region %d:%d re-register to applier, term %d", a.region.Id, a.region.RegionEpoch.Version, reg.term)
 	y.Assert(a.id == reg.id)
 	a.term = reg.term
 	a.clearAllCommandsAsStale()

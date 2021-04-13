@@ -70,7 +70,6 @@ func newRaftWorker(ctx *GlobalContext, ch chan Msg, pm *router) *raftWorker {
 	raftCtx := &RaftContext{
 		GlobalContext: ctx,
 		applyMsgs:     new(applyMsgs),
-		queuedSnaps:   make(map[uint64]struct{}),
 		raftWB:        new(RaftWriteBatch),
 		localStats:    new(storeStats),
 	}
@@ -152,7 +151,6 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 			applyMsgs.msgs[i] = Msg{}
 		}
 		applyMsgs.msgs = applyMsgs.msgs[:0]
-		rw.removeQueuedSnapshots()
 		rw.applyCh <- batch
 	}
 }
@@ -193,22 +191,6 @@ func (rw *raftWorker) handleRaftReady(peers map[uint64]*peerState, batch *applyB
 		if dur > electionTimeout {
 			rw.raftCtx.isBusy = true
 		}
-	}
-}
-
-func (rw *raftWorker) removeQueuedSnapshots() {
-	if len(rw.raftCtx.queuedSnaps) > 0 {
-		rw.raftCtx.storeMetaLock.Lock()
-		meta := rw.raftCtx.storeMeta
-		retained := meta.pendingSnapshotMessages[:0]
-		for _, snapMsg := range meta.pendingSnapshotMessages {
-			if _, ok := rw.raftCtx.queuedSnaps[snapMsg.RegionId]; !ok {
-				retained = append(retained, snapMsg)
-			}
-		}
-		meta.pendingSnapshotMessages = retained
-		rw.raftCtx.storeMetaLock.Unlock()
-		rw.raftCtx.queuedSnaps = map[uint64]struct{}{}
 	}
 }
 

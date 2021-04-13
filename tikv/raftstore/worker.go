@@ -18,7 +18,6 @@ import (
 	"encoding/hex"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/badger/protos"
-	"github.com/pingcap/badger/table/memtable"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,8 +63,9 @@ const (
 	/// Destroy data between [start_key, end_key).
 	///
 	/// The deletion may and may not succeed.
-	taskTypeRegionDestroy           taskType = 403
-	taskTypeRegionFollowerChangeSet taskType = 404
+	taskTypeRegionDestroy        taskType = 403
+	taskTypeRegionApplyChangeSet taskType = 404
+	taskTypeRecoverSplit         taskType = 405
 
 	taskTypeResolveAddr taskType = 501
 
@@ -86,6 +86,10 @@ type regionTask struct {
 	startKey []byte
 	endKey   []byte
 	redoIdx  uint64
+
+	change     *protos.ShardChangeSet
+	flushState *int32
+	peer       *metapb.Peer
 }
 
 type raftLogGCTask struct {
@@ -271,6 +275,32 @@ func (r *splitCheckHandler) handle(t task) {
 // 2. Split the engine files.
 // 3. Split the region.
 func splitEngineAndRegion(router *router, engine *badger.ShardingDB, peer *metapb.Peer, region *metapb.Region, rawKeys [][]byte) ([]*metapb.Region, error) {
+	// Make sure the region doesn't has parent before split.
+	err := preSplitRegion(router, engine, peer, region, rawKeys)
+	if err != nil {
+		return nil, err
+	}
+	err = splitShardFiles(router, engine, peer, region)
+	if err != nil {
+		return nil, err
+	}
+	// Wait for the followers to reach split file done state.
+	time.Sleep(time.Second * 2)
+	return finishSplit(router, region, rawKeys)
+}
+
+func preSplitRegion(router *router, engine *badger.ShardingDB, peer *metapb.Peer, region *metapb.Region, rawKeys [][]byte) error {
+	shard := engine.GetShard(region.Id)
+	for {
+		if shard.IsInitialFlushed() {
+			break
+		}
+		time.Sleep(time.Second)
+		log.S().Infof("shard %d:%d wait for initial flush", shard.ID, shard.Ver)
+	}
+	if shard.GetSplitState() != protos.SplitState_INITIAL {
+		return errors.New("wrong split state " + shard.GetSplitState().String())
+	}
 	header := raftlog.CustomHeader{
 		RegionID: region.Id,
 		Epoch:    raftlog.NewEpoch(region.RegionEpoch.Version, region.RegionEpoch.ConfVer),
@@ -290,16 +320,47 @@ func splitEngineAndRegion(router *router, engine *badger.ShardingDB, peer *metap
 	}
 	err := router.sendRaftCommand(cmd)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	cb.wg.Wait()
 	if cb.resp.GetHeader().GetError() != nil {
-		return nil, errors.New(cb.resp.Header.Error.Message)
+		return errors.New(cb.resp.Header.Error.Message)
 	}
-	err = engine.SplitShardFiles(region.Id, region.RegionEpoch.Version)
+	return nil
+}
+
+func splitShardFiles(router *router, engine *badger.ShardingDB, peer *metapb.Peer, region *metapb.Region) error {
+	change, err := engine.SplitShardFiles(region.Id, region.RegionEpoch.Version)
 	if err != nil {
-		return nil, err
+		return err
 	}
+	header := raftlog.CustomHeader{
+		RegionID: region.Id,
+		Epoch:    raftlog.NewEpoch(region.RegionEpoch.Version, region.RegionEpoch.ConfVer),
+		PeerID:   peer.Id,
+		StoreID:  peer.StoreId,
+	}
+	builder := raftlog.NewBuilder(header)
+	builder.AppendChangeSet(change)
+	builder.SetType(raftlog.TypeChangeSet)
+	cb := NewCallback()
+	cmd := &MsgRaftCmd{
+		SendTime: time.Now(),
+		Callback: cb,
+		Request:  builder.Build(),
+	}
+	err = router.sendRaftCommand(cmd)
+	if err != nil {
+		return err
+	}
+	cb.wg.Wait()
+	if cb.resp.GetHeader().GetError() != nil {
+		return errors.New(cb.resp.Header.Error.Message)
+	}
+	return nil
+}
+
+func finishSplit(router *router, region *metapb.Region, rawKeys [][]byte) ([]*metapb.Region, error) {
 	encodedKeys := make([][]byte, len(rawKeys))
 	for i := 0; i < len(rawKeys); i++ {
 		encodedKeys[i] = codec.EncodeBytes(nil, rawKeys[i])
@@ -310,7 +371,7 @@ func splitEngineAndRegion(router *router, engine *badger.ShardingDB, peer *metap
 		SplitKeys:   encodedKeys,
 		Callback:    splitRegionCB,
 	}
-	err = router.send(region.Id, Msg{Type: MsgTypeSplitRegion, Data: splitRegionMsg})
+	err := router.send(region.Id, Msg{Type: MsgTypeSplitRegion, Data: splitRegionMsg})
 	if err != nil {
 		return nil, err
 	}
@@ -355,18 +416,21 @@ func (s stalePeerInfo) setEndKey(endKey []byte) {
 }
 
 type regionTaskHandler struct {
-	kv   *badger.ShardingDB
-	conf *config.Config
+	kv     *badger.ShardingDB
+	conf   *config.Config
+	router *router
 }
 
-func newRegionTaskHandler(conf *config.Config, engines *Engines) *regionTaskHandler {
+func newRegionTaskHandler(conf *config.Config, engines *Engines, router *router) *regionTaskHandler {
 	return &regionTaskHandler{
-		conf: conf,
-		kv:   engines.kv,
+		conf:   conf,
+		kv:     engines.kv,
+		router: router,
 	}
 }
 
 func (r *regionTaskHandler) handleGen(task *regionTask) {
+	log.S().Infof("region %d:%d handle snapshot gen", task.region.Id, task.region.RegionEpoch.Version)
 	kv := r.kv
 	shard := kv.GetShard(task.region.Id)
 	if shard.Ver != task.region.RegionEpoch.Version {
@@ -374,37 +438,24 @@ func (r *regionTaskHandler) handleGen(task *regionTask) {
 		task.notifier <- new(eraftpb.Snapshot)
 		return
 	}
-	changeSet := kv.GetShardChangeSet(task.region.Id)
-	if changeSet.Version != shard.Ver {
-		log.Error("failed to generate snapshot, version not match")
+	changeSet, err := kv.GetShardChangeSet(task.region.Id)
+	if changeSet == nil {
+		log.Error("failed to generate snapshot", zap.Error(err))
+		task.notifier <- new(eraftpb.Snapshot)
+		return
+	}
+	if changeSet.ShardVer != shard.Ver {
+		log.S().Errorf("failed to generate snapshot, version not match, expect %d, got %d", shard.Ver, changeSet.ShardVer)
 		task.notifier <- new(eraftpb.Snapshot)
 	}
-	propertyVals, dbSnap := kv.GetPropertiesWithSnap(shard, []string{applyStateKey})
-	defer dbSnap.Discard()
-	var deltaEntries deltaEntries
-	for cf := 0; cf < kv.NumCFs(); cf++ {
-		iter := dbSnap.NewDeltaIterator(cf, changeSet.Snapshot.CommitTS)
-		for iter.Rewind(); iter.Valid(); iter.Next() {
-			item := iter.Item()
-			val, _ := item.ValueCopy(nil)
-			deltaEntry := deltaEntry{
-				cf:       cf,
-				key:      item.Key(),
-				val:      val,
-				userMeta: item.UserMeta(),
-				version:  item.Version(),
-			}
-			deltaEntries.encodeEntry(deltaEntry)
-		}
-	}
-	applyState := new(applyState)
-	applyState.Unmarshal(propertyVals[0])
+	val, ok := badger.GetShardProperty(applyStateKey, changeSet.Snapshot.Properties)
+	y.Assert(ok)
+	var applyState applyState
+	applyState.Unmarshal(val)
 	snapData := &snapData{
-		region:       task.region,
-		applyState:   applyState,
-		changeSet:    changeSet,
-		deltaEntries: deltaEntries,
-		maxReadTS:    dbSnap.GetReadTS(),
+		region:    task.region,
+		changeSet: changeSet,
+		maxReadTS: kv.GetReadTS(),
 	}
 	snap := &eraftpb.Snapshot{
 		Metadata: &eraftpb.SnapshotMetadata{},
@@ -421,17 +472,10 @@ func (r *regionTaskHandler) handleGen(task *regionTask) {
 func (r *regionTaskHandler) handleApply(task *regionTask) {
 	atomic.StoreUint32(task.status, JobStatus_Running)
 	snapData := task.snapData
-	db := r.kv
-	delta := snapData.deltaEntries
-	cfTable := memtable.NewCFTable(r.conf.Engine.MaxMemTableSize, db.NumCFs())
-	for len(delta.data) > 0 {
-		entry := delta.decodeEntry()
-		cfTable.Put(entry.cf, entry.key, y.ValueStruct{Value: entry.val, UserMeta: entry.userMeta, Version: entry.version})
-	}
 	inTree := &badger.IngestTree{
 		ChangeSet: snapData.changeSet,
 		MaxTS:     snapData.maxReadTS,
-		Delta:     []*memtable.CFTable{cfTable},
+		Passive:   true,
 	}
 	err := r.kv.Ingest(inTree)
 	if err != nil {
@@ -461,20 +505,56 @@ func (r *regionTaskHandler) handle(t task) {
 		if err != nil {
 			log.Error("failed to destroy region", zap.Error(err))
 		}
-	case taskTypeRegionFollowerChangeSet:
-		changeSet := t.data.(*protos.ShardChangeSet)
+	case taskTypeRegionApplyChangeSet:
+		regionTask := t.data.(*regionTask)
+		changeSet := regionTask.change
 		kv := r.kv
-		shd := kv.GetShard(changeSet.ShardID)
-		y.Assert(shd.Ver == changeSet.Version)
-		err := kv.ApplySlowPassiveChangeSet(shd, changeSet)
+		var changeSetTp string
+		if changeSet.Flush != nil {
+			changeSetTp = "flush"
+		} else if changeSet.Compaction != nil {
+			changeSetTp = "compaction"
+		} else if changeSet.SplitFiles != nil {
+			changeSetTp = "split_files"
+		}
+		log.S().Infof("shard %d:%d apply change set %s split state %s", changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.State)
+		err := kv.ApplyChangeSet(changeSet)
 		if err != nil {
-			log.Error("failed to apply passive change set")
+			log.Error("failed to apply passive change set", zap.Error(err), zap.String("changeSet", changeSet.String()))
+		} else {
+			// Apply succeed.
+			if changeSet.Flush != nil {
+				if changeSet.State == protos.SplitState_INITIAL {
+					atomic.CompareAndSwapInt32(regionTask.flushState, flushStateFlushing, flushStateFlushDone)
+				} else if changeSet.State == protos.SplitState_PRE_SPLIT {
+					atomic.CompareAndSwapInt32(regionTask.flushState, flushStatePreSplitFlushing, flushStatePreSplitFlushDone)
+				}
+			}
+		}
+	case taskTypeRecoverSplit:
+		regionTask := t.data.(*regionTask)
+		err := r.handleRecoverSplit(regionTask.region, regionTask.peer)
+		if err != nil {
+			log.S().Errorf("region %d:%d failed to recover split err %s", regionTask.region.Id, regionTask.region.RegionEpoch.Version, err.Error())
 		}
 	}
 }
 
 func (r *regionTaskHandler) shutdown() {
 	// todo, currently it is a a place holder.
+}
+
+func (r *regionTaskHandler) handleRecoverSplit(region *metapb.Region, peer *metapb.Peer) error {
+	shard := r.kv.GetShard(region.Id)
+	switch shard.GetSplitState() {
+	case protos.SplitState_PRE_SPLIT, protos.SplitState_PRE_SPLIT_FLUSH_DONE:
+		err := splitShardFiles(r.router, r.kv, peer, region)
+		if err != nil {
+			return err
+		}
+	}
+	_, err := finishSplit(r.router, region, shard.GetPreSplitKeys())
+	return err
 }
 
 type raftLogGcTaskRes uint64

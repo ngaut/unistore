@@ -57,6 +57,7 @@ func (pr *router) get(regionID uint64) *peerState {
 
 func (pr *router) register(peer *peerFsm) {
 	id := peer.peer.regionId
+	log.S().Infof("register region %d", id)
 	apply := newApplierFromPeer(peer)
 	newPeer := &peerState{
 		peer:  peer,
@@ -118,7 +119,7 @@ func (r *RaftstoreRouter) SendCommand(req *raft_cmdpb.RaftCmdRequest, cb *Callba
 }
 
 func (r *RaftstoreRouter) SplitRegion(ctx *kvrpcpb.Context, engine *badger.ShardingDB, region *metapb.Region, keys [][]byte) ([]*metapb.Region, error) {
-	log.Info("split region by RPC")
+	log.S().Infof("split region %d:%d by RPC keys %v", region.Id, region.RegionEpoch.Version, keys)
 	return splitEngineAndRegion(r.router, engine, ctx.Peer, region, keys)
 }
 

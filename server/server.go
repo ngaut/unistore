@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"github.com/ngaut/unistore/tikv/raftstore"
+	"github.com/pingcap/errors"
 	"os"
 	"path/filepath"
 
@@ -90,7 +91,7 @@ func setupRaftServer(pdClient pd.Client, conf *config.Config) (*tikv.Server, err
 	safePoint := &tikv.SafePoint{}
 	db, err := createShardingDB(subPathKV, safePoint, listener, allocator, recoverHandler, &conf.Engine)
 	if err != nil {
-		return nil, err
+		return nil, errors.AddStack(err)
 	}
 	engines := raftstore.NewEngines(db, raftDB, kvPath, raftPath, listener)
 	innerServer := raftstore.NewRaftInnerServer(conf, engines, raftConf)

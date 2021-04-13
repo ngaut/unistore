@@ -6,6 +6,7 @@ import (
 	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
+	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
@@ -62,14 +63,14 @@ func (h *RecoverHandler) Recover(db *badger.ShardingDB, shard *badger.Shard, toS
 	}
 	entries, _, err1 := fetchEntriesTo(h.raftDB, shard.ID, lowIdx, highIdx, math.MaxUint64, nil)
 	if err1 != nil {
-		return err1
+		return errors.AddStack(err1)
 	}
 	peer := findPeer(regionMeta, h.storeID)
 	peerID := peer.Id
 	applier := &applier{id: peerID, region: regionMeta, applyState: fromApplyState}
 	for i := range entries {
 		e := &entries[i]
-		if len(e.Data) == 0 {
+		if len(e.Data) == 0 || e.EntryType != eraftpb.EntryType_EntryNormal {
 			continue
 		}
 		rlog := raftlog.DecodeLog(e)
@@ -92,10 +93,12 @@ func (h *RecoverHandler) Recover(db *badger.ShardingDB, shard *badger.Shard, toS
 			if err != nil {
 				return err
 			}
-			err = h.executeChangeSet(db, cs)
+			err = db.ApplyChangeSet(cs)
 			if err != nil {
 				return err
 			}
+		} else if cl.Type() == raftlog.TypePreSplit {
+			// PreSplit is handled by engine.
 		} else {
 			applier.execCustomLog(h.ctx, cl)
 		}
@@ -142,12 +145,6 @@ func (h *RecoverHandler) loadRegionMeta(id, ver uint64) (region *metapb.Region, 
 		return nil, 0, err
 	}
 	return region, committedIdx, nil
-}
-
-func (h *RecoverHandler) executeChangeSet(db *badger.ShardingDB, changeSet *protos.ShardChangeSet) error {
-	shd := db.GetShard(changeSet.ShardID)
-	y.Assert(shd.Ver == changeSet.ShardVer)
-	return db.ApplySlowPassiveChangeSet(shd, changeSet)
 }
 
 func (h *RecoverHandler) executeAdminRequest(a *applier, cmdReq *raft_cmdpb.RaftCmdRequest) error {

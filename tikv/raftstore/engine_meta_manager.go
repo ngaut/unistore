@@ -195,11 +195,9 @@ func (mm *MetaManager) clearPrepareBootstrap(regionID uint64) {
 }
 */
 type snapData struct {
-	region       *metapb.Region
-	applyState   *applyState
-	changeSet    *protos.ShardChangeSet
-	deltaEntries deltaEntries
-	maxReadTS    uint64
+	region    *metapb.Region
+	changeSet *protos.ShardChangeSet
+	maxReadTS uint64
 }
 
 type deltaEntry struct {
@@ -236,13 +234,10 @@ func (d *deltaEntries) decodeEntry() deltaEntry {
 
 func (sd *snapData) Marshal() []byte {
 	regionData, _ := sd.region.Marshal()
-	applyStateData := sd.applyState.Marshal()
 	changeData, _ := sd.changeSet.Marshal()
-	buf := make([]byte, 0, 4+len(regionData)+4+len(applyStateData)+4+len(changeData)+4+len(sd.deltaEntries.data))
+	buf := make([]byte, 0, 4+len(regionData)+4+len(changeData))
 	buf = appendSlice(buf, regionData)
-	buf = appendSlice(buf, applyStateData)
 	buf = appendSlice(buf, changeData)
-	buf = appendSlice(buf, sd.deltaEntries.data)
 	buf = appendU64(buf, sd.maxReadTS)
 	return buf
 }
@@ -254,16 +249,12 @@ func (sd *snapData) Unmarshal(data []byte) error {
 	if err != nil {
 		return err
 	}
-	sd.applyState = new(applyState)
-	element, data = cutSlices(data)
-	sd.applyState.Unmarshal(element)
 	sd.changeSet = new(protos.ShardChangeSet)
 	element, data = cutSlices(data)
 	err = sd.changeSet.Unmarshal(element)
 	if err != nil {
 		return err
 	}
-	sd.deltaEntries.data, data = cutSlices(data)
 	sd.maxReadTS = binary.LittleEndian.Uint64(data)
 	return nil
 }

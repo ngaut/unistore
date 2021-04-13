@@ -18,6 +18,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/pingcap/badger"
+	"github.com/pingcap/badger/protos"
+	"github.com/pingcap/badger/y"
 	"math"
 	"sync/atomic"
 	"time"
@@ -716,7 +718,10 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 	ss := ready.SoftState
 	if ss != nil {
 		shard := p.Store().Engines.kv.GetShard(p.regionId)
-		shard.SetPassive(ss.RaftState != raft.StateLeader)
+		// Newly added peer have not apply snapshot yet.
+		if shard != nil {
+			shard.SetPassive(ss.RaftState != raft.StateLeader)
+		}
 		if ss.RaftState == raft.StateLeader {
 			// The local read can only be performed after a new leader has applied
 			// the first empty entry on its term. After that the lease expiring time
@@ -729,6 +734,26 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 			p.MaybeRenewLeaderLease(time.Now())
 			if !p.PendingRemove {
 				p.leaderChecker.term.Store(p.Term())
+			}
+			store := p.Store()
+			flushState := atomic.LoadInt32(&store.flushState)
+			if flushState == flushStateInitial {
+				// The initial flush command for a newly split region is not replicated, need to re-trigger.
+				p.Store().Engines.kv.TriggerFlush(shard)
+			}
+			if shard.GetSplitState() != protos.SplitState_INITIAL {
+				// Unfinished split need to be recovered by the new leader.
+				if shard.GetSplitState() == protos.SplitState_PRE_SPLIT && flushState < flushStateFlushing {
+					// The pre-split flush command is not replicated, need to re-trigger.
+					p.Store().Engines.kv.TriggerFlush(shard)
+				}
+				p.Store().regionSched <- task{
+					tp: taskTypeRecoverSplit,
+					data: &regionTask{
+						region: p.Region(),
+						peer:   p.Meta,
+					},
+				}
 			}
 			observer.OnRoleChange(p.getEventContext().RegionId, ss.RaftState)
 		} else if ss.RaftState == raft.StateFollower {
@@ -815,6 +840,12 @@ func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, raft
 	if ready.Snapshot.GetMetadata() == nil {
 		ready.Snapshot.Metadata = &eraftpb.SnapshotMetadata{}
 	}
+	for i := 0; i < len(ready.CommittedEntries); i++ {
+		e := &ready.CommittedEntries[i]
+		if raftlog.IsChangeSetLog(e.Data) {
+			p.scheduleApplyShardChangeSet(e)
+		}
+	}
 	p.OnRoleChanged(observer, &ready)
 
 	// The leader can write to disk and replicate to the followers concurrently
@@ -831,6 +862,27 @@ func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, raft
 		panic(fmt.Sprintf("failed to handle raft ready, error: %v", err))
 	}
 	return &ReadyICPair{Ready: ready, IC: invokeCtx}
+}
+
+func (p *Peer) scheduleApplyShardChangeSet(entry *eraftpb.Entry) {
+	clog := raftlog.NewCustom(entry.Data)
+	change, err := clog.GetShardChangeSet()
+	y.Assert(err == nil)
+	store := p.Store()
+	if change.Flush != nil {
+		atomic.CompareAndSwapInt32(&store.flushState, flushStateInitial, flushStateFlushing)
+		if change.State == protos.SplitState_PRE_SPLIT_FLUSH_DONE {
+			atomic.CompareAndSwapInt32(&store.flushState, flushStateFlushDone, flushStatePreSplitFlushing)
+		}
+	}
+	p.Store().regionSched <- task{
+		tp: taskTypeRegionApplyChangeSet,
+		data: &regionTask{
+			region:     p.Region(),
+			change:     change,
+			flushState: &store.flushState,
+		},
+	}
 }
 
 func (p *Peer) PostRaftReadyPersistent(trans Transport, applyMsgs *applyMsgs, ready *raft.Ready, invokeCtx *InvokeContext) *ApplySnapResult {
