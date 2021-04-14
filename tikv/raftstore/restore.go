@@ -25,6 +25,7 @@ import (
 	"github.com/pingcap/tidb/util/codec"
 )
 
+// RestoreLockStore restores the lock store.
 func RestoreLockStore(offset uint64, bundle *mvcc.DBBundle, raftDB *badger.DB) error {
 	appliedIndices := make(map[uint64]uint64)
 	var err error
@@ -57,7 +58,7 @@ func RestoreLockStore(offset uint64, bundle *mvcc.DBBundle, raftDB *badger.DB) e
 		}
 	})
 	if iterCnt > 0 {
-		log.S().Info("restore lock store iterated", iterCnt, "entries fromm offset", offset)
+		log.S().Info("restore lock store iterated", iterCnt, "entries from offset", offset)
 	}
 	if err != nil {
 		return err

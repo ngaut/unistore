@@ -52,7 +52,7 @@ func (pr *router) get(regionID uint64) *peerState {
 }
 
 func (pr *router) register(peer *peerFsm) {
-	id := peer.peer.regionId
+	id := peer.peer.regionID
 	apply := newApplierFromPeer(peer)
 	newPeer := &peerState{
 		peer:  peer,
@@ -97,13 +97,14 @@ func (pr *router) sendStore(msg Msg) {
 	pr.storeSender <- msg
 }
 
-// RaftstoreRouter exports SendCommand method for other packages.
-type RaftstoreRouter struct {
+// Router exports SendCommand method for other packages.
+type Router struct {
 	router *router
 	// TODO: add localReader here.
 }
 
-func (r *RaftstoreRouter) SendCommand(req *raft_cmdpb.RaftCmdRequest, cb *Callback) error {
+// SendCommand sends the RaftCmdRequest with the given Callback.
+func (r *Router) SendCommand(req *raft_cmdpb.RaftCmdRequest, cb *Callback) error {
 	// TODO: support local reader
 	msg := &MsgRaftCmd{
 		SendTime: time.Now(),
@@ -113,7 +114,8 @@ func (r *RaftstoreRouter) SendCommand(req *raft_cmdpb.RaftCmdRequest, cb *Callba
 	return r.router.sendRaftCommand(msg)
 }
 
-func (r *RaftstoreRouter) SplitRegion(ctx *kvrpcpb.Context, keys [][]byte) ([]*metapb.Region, error) {
+// SplitRegion splits region by the split keys.
+func (r *Router) SplitRegion(ctx *kvrpcpb.Context, keys [][]byte) ([]*metapb.Region, error) {
 	cb := NewCallback()
 	msg := &MsgSplitRegion{
 		RegionEpoch: ctx.RegionEpoch,

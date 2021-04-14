@@ -168,7 +168,7 @@ func (rw *raftWorker) getPeerState(peersMap map[uint64]*peerState, regionID uint
 func (rw *raftWorker) handleRaftReady(peers map[uint64]*peerState, batch *applyBatch) {
 	for _, proposal := range batch.proposals {
 		msg := Msg{Type: MsgTypeApplyProposal, Data: proposal}
-		rw.raftCtx.applyMsgs.appendMsg(proposal.RegionId, msg)
+		rw.raftCtx.applyMsgs.appendMsg(proposal.RegionID, msg)
 	}
 	kvWB := rw.raftCtx.kvWB
 	if len(kvWB.entries) > 0 {

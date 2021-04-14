@@ -32,19 +32,17 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// IOLimiter controls how frequently events are allowed to happen.
 type IOLimiter = rate.Limiter
 
-func NewIOLimiter(rateLimit int) *IOLimiter {
-	return rate.NewLimiter(rate.Limit(rateLimit), rateLimit)
-}
-
+// NewInfLimiter returns a new IOLimiter.
 func NewInfLimiter() *IOLimiter {
 	return rate.NewLimiter(rate.Inf, 0)
 }
 
+// LimitWriter represents a limit writer.
 type LimitWriter struct {
-	limiter *IOLimiter
-	writer  io.Writer
+	writer io.Writer
 }
 
 func (lw *LimitWriter) Write(b []byte) (int, error) {

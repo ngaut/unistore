@@ -38,11 +38,13 @@ type peerFsm struct {
 	ticker   *ticker
 }
 
+// PeerEventContext represents a peer event context.
 type PeerEventContext struct {
 	LeaderChecker LeaderChecker
-	RegionId      uint64
+	RegionID      uint64
 }
 
+// PeerEventObserver represents a peer event Observer.
 type PeerEventObserver interface {
 	// OnPeerCreate will be invoked when there is a new peer created.
 	OnPeerCreate(ctx *PeerEventContext, region *metapb.Region)
@@ -55,7 +57,7 @@ type PeerEventObserver interface {
 	// OnRegionConfChange will be invoked after conf change updated region's epoch.
 	OnRegionConfChange(ctx *PeerEventContext, epoch *metapb.RegionEpoch)
 	// OnRoleChange will be invoked after peer state has changed
-	OnRoleChange(regionId uint64, newState raft.StateType)
+	OnRoleChange(regionID uint64, newState raft.StateType)
 }
 
 // If we create the peer actively, like bootstrap/split/merge region, we should
@@ -104,7 +106,7 @@ func (pf *peerFsm) drop() {
 }
 
 func (pf *peerFsm) regionID() uint64 {
-	return pf.peer.regionId
+	return pf.peer.regionID
 }
 
 func (pf *peerFsm) region() *metapb.Region {
@@ -322,9 +324,9 @@ func (d *peerMsgHandler) HandleRaftReadyAppend(proposals []*regionProposal) []*r
 	if !hasReady || d.stopped {
 		return proposals
 	}
-	d.ctx.pendingCount += 1
+	d.ctx.pendingCount++
 	d.ctx.hasReady = true
-	if p := d.peer.TakeApplyProposals(); p != nil {
+	if p := d.peer.takeApplyProposals(); p != nil {
 		proposals = append(proposals, p)
 	}
 	readyRes := d.peer.HandleRaftReadyAppend(d.ctx.trans, d.ctx.applyMsgs, d.ctx.kvWB, d.ctx.raftWB, d.ctx.peerEventObserver)
@@ -470,9 +472,9 @@ func (d *peerMsgHandler) validateRaftMessage(msg *rspb.RaftMessage) bool {
 	return true
 }
 
-/// Checks if the message is sent to the correct peer.
-///
-/// Returns true means that the message can be dropped silently.
+// Checks if the message is sent to the correct peer.
+//
+// Returns true means that the message can be dropped silently.
 func (d *peerMsgHandler) checkMessage(msg *rspb.RaftMessage) bool {
 	fromEpoch := msg.GetRegionEpoch()
 	isVoteMsg := isVoteMessage(msg.Message)
@@ -606,9 +608,8 @@ func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) (*SnapKey, error) 
 		if !d.peer.isInitialized() {
 			log.S().Infof("%s stale delegate detected, skip", d.tag())
 			return &key, nil
-		} else {
-			panic(fmt.Sprintf("%s meta corrupted %s != %s", d.tag(), meta.regions[d.regionID()], d.region()))
 		}
+		panic(fmt.Sprintf("%s meta corrupted %s != %s", d.tag(), meta.regions[d.regionID()], d.region()))
 	}
 	for _, region := range meta.pendingSnapshotRegions {
 		if bytes.Compare(region.StartKey, snapRegion.EndKey) < 0 &&
@@ -673,10 +674,10 @@ func (d *peerMsgHandler) findOverlapRegions(storeMeta *storeMeta, snapRegion *me
 
 func (d *peerMsgHandler) handleDestroyPeer(job *DestroyPeerJob) bool {
 	if job.Initialized {
-		d.ctx.applyMsgs.appendMsg(job.RegionId, NewPeerMsg(MsgTypeApplyDestroy, job.RegionId, nil))
+		d.ctx.applyMsgs.appendMsg(job.RegionID, NewPeerMsg(MsgTypeApplyDestroy, job.RegionID, nil))
 	}
 	if job.AsyncRemove {
-		log.S().Infof("[region %d] %d is destroyed asynchronously", job.RegionId, job.Peer.Id)
+		log.S().Infof("[region %d] %d is destroyed asynchronously", job.RegionID, job.Peer.Id)
 		return false
 	}
 	d.destroyPeer(false)
@@ -1024,7 +1025,7 @@ func (d *peerMsgHandler) preProposeRaftCommand(rlog raftlog.RaftLog) (*raft_cmdp
 
 	// Check whether the store has the right peer to handle the request.
 	regionID := d.regionID()
-	leaderID := d.peer.LeaderId()
+	leaderID := d.peer.LeaderID()
 	if !d.peer.IsLeader() {
 		leader := d.peer.getPeerFromCache(leaderID)
 		return nil, &ErrNotLeader{regionID, leader}
@@ -1183,7 +1184,7 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 
 	// Have no idea why subtract 1 here, but original code did this by magic.
 	y.Assert(compactIdx > 0)
-	compactIdx -= 1
+	compactIdx--
 	if compactIdx < firstIdx {
 		// In case compact_idx == first_idx before subtraction.
 		return
@@ -1274,8 +1275,8 @@ func (d *peerMsgHandler) validateSplitRegion(epoch *metapb.RegionEpoch, splitKey
 		// region on this store is no longer leader, skipped.
 		log.S().Infof("%s not leader, skip", d.tag())
 		return &ErrNotLeader{
-			RegionId: d.regionID(),
-			Leader:   d.peer.getPeerFromCache(d.peer.LeaderId()),
+			RegionID: d.regionID(),
+			Leader:   d.peer.getPeerFromCache(d.peer.LeaderID()),
 		}
 	}
 
@@ -1406,7 +1407,7 @@ func (d *peerMsgHandler) onHashComputed(index uint64, hash []byte) {
 	d.proposeRaftCommand(raftlog.NewRequest(req), nil)
 }
 
-/// Verify and store the hash to state. return true means the hash has been stored successfully.
+// Verify and store the hash to state. return true means the hash has been stored successfully.
 func (d *peerMsgHandler) verifyAndStoreHash(expectedIndex uint64, expectedHash []byte) bool {
 	state := d.peer.ConsistencyState
 	index := state.Index
@@ -1507,7 +1508,7 @@ func (d *peerMsgHandler) executeStatusCommand(request *raft_cmdpb.RaftCmdRequest
 			return nil, err
 		}
 	case raft_cmdpb.StatusCmdType_InvalidStatus:
-		return nil, errors.New("invalid status command!")
+		return nil, errors.New("invalid status command")
 	}
 	response.CmdType = cmdType
 
@@ -1520,7 +1521,7 @@ func (d *peerMsgHandler) executeStatusCommand(request *raft_cmdpb.RaftCmdRequest
 
 func (d *peerMsgHandler) executeRegionLeader() *raft_cmdpb.StatusResponse {
 	resp := &raft_cmdpb.StatusResponse{}
-	if leader := d.peer.getPeerFromCache(d.peer.LeaderId()); leader != nil {
+	if leader := d.peer.getPeerFromCache(d.peer.LeaderID()); leader != nil {
 		resp.RegionLeader = &raft_cmdpb.RegionLeaderResponse{
 			Leader: leader,
 		}
@@ -1538,7 +1539,7 @@ func (d *peerMsgHandler) executeRegionDetail(request *raft_cmdpb.RaftCmdRequest)
 			Region: d.region(),
 		},
 	}
-	if leader := d.peer.getPeerFromCache(d.peer.LeaderId()); leader != nil {
+	if leader := d.peer.getPeerFromCache(d.peer.LeaderID()); leader != nil {
 		resp.RegionDetail = &raft_cmdpb.RegionDetailResponse{
 			Leader: leader,
 		}

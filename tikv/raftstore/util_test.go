@@ -40,13 +40,13 @@ func TestLease(t *testing.T) {
 	require.NotNil(t, remote)
 	inspectTest := func(lease *Lease, ts *time.Time, state LeaseState) {
 		assert.Equal(t, lease.Inspect(ts), state)
-		if state == LeaseState_Expired || state == LeaseState_Suspect {
-			assert.Equal(t, remote.Inspect(ts), LeaseState_Expired)
+		if state == LeaseStateExpired || state == LeaseStateSuspect {
+			assert.Equal(t, remote.Inspect(ts), LeaseStateExpired)
 		}
 	}
 
 	now := time.Now()
-	inspectTest(lease, &now, LeaseState_Expired)
+	inspectTest(lease, &now, LeaseStateExpired)
 
 	now = time.Now()
 	nextExpiredTime := lease.nextExpiredTime(now)
@@ -55,42 +55,42 @@ func TestLease(t *testing.T) {
 	// Transit to the Valid state.
 	now = time.Now()
 	lease.Renew(now)
-	inspectTest(lease, &now, LeaseState_Valid)
-	inspectTest(lease, nil, LeaseState_Valid)
+	inspectTest(lease, &now, LeaseStateValid)
+	inspectTest(lease, nil, LeaseStateValid)
 
 	// After lease expired time.
-	sleepTest(duration, lease, LeaseState_Expired)
+	sleepTest(duration, lease, LeaseStateExpired)
 	now = time.Now()
-	inspectTest(lease, &now, LeaseState_Expired)
-	inspectTest(lease, nil, LeaseState_Expired)
+	inspectTest(lease, &now, LeaseStateExpired)
+	inspectTest(lease, nil, LeaseStateExpired)
 
 	// Transit to the Suspect state.
 	now = time.Now()
 	lease.Suspect(now)
-	inspectTest(lease, &now, LeaseState_Suspect)
-	inspectTest(lease, nil, LeaseState_Suspect)
+	inspectTest(lease, &now, LeaseStateSuspect)
+	inspectTest(lease, nil, LeaseStateSuspect)
 
 	// After lease expired time, still suspect.
-	sleepTest(duration, lease, LeaseState_Suspect)
+	sleepTest(duration, lease, LeaseStateSuspect)
 	now = time.Now()
-	inspectTest(lease, &now, LeaseState_Suspect)
+	inspectTest(lease, &now, LeaseStateSuspect)
 
 	// Clear lease.
 	lease.Expire()
 	now = time.Now()
-	inspectTest(lease, &now, LeaseState_Expired)
-	inspectTest(lease, nil, LeaseState_Expired)
+	inspectTest(lease, &now, LeaseStateExpired)
+	inspectTest(lease, nil, LeaseStateExpired)
 
 	// An expired remote lease can never renew.
 	now = time.Now()
 	lease.Renew(now.Add(1 * time.Minute))
-	assert.Equal(t, remote.Inspect(&now), LeaseState_Expired)
+	assert.Equal(t, remote.Inspect(&now), LeaseStateExpired)
 
 	// A new remote lease.
 	m1 := lease.MaybeNewRemoteLease(1)
 	require.NotNil(t, m1)
 	now = time.Now()
-	assert.Equal(t, m1.Inspect(&now), LeaseState_Valid)
+	assert.Equal(t, m1.Inspect(&now), LeaseStateValid)
 }
 
 func TestTimeU64(t *testing.T) {
@@ -102,8 +102,8 @@ func TestTimeU64(t *testing.T) {
 		{T: time.Unix(0, 0), U: 0},
 		{T: time.Unix(0, 1), U: 0},      // 1ns will be rounded down to 0ms
 		{T: time.Unix(0, 999999), U: 0}, // 999999ns will be rounded down to 0ms
-		{T: time.Unix(1, 0), U: 1 << SEC_SHIFT},
-		{T: time.Unix(1, int64(NSEC_PER_MSEC)), U: (1 << SEC_SHIFT) + 1},
+		{T: time.Unix(1, 0), U: 1 << SecShift},
+		{T: time.Unix(1, int64(NsecPerMsec)), U: (1 << SecShift) + 1},
 	}
 
 	for _, test := range testsTimeToU64 {
@@ -112,9 +112,9 @@ func TestTimeU64(t *testing.T) {
 
 	testsU64ToTime := []TimeU64{
 		{T: time.Unix(0, 0), U: 0},
-		{T: time.Unix(0, int64(NSEC_PER_MSEC)), U: 1},
-		{T: time.Unix(1, 0), U: 1 << SEC_SHIFT},
-		{T: time.Unix(1, int64(NSEC_PER_MSEC)), U: (1 << SEC_SHIFT) + 1},
+		{T: time.Unix(0, int64(NsecPerMsec)), U: 1},
+		{T: time.Unix(1, 0), U: 1 << SecShift},
+		{T: time.Unix(1, int64(NsecPerMsec)), U: (1 << SecShift) + 1},
 	}
 	for _, test := range testsU64ToTime {
 		assert.Equal(t, U64ToTime(test.U), test.T)
@@ -130,7 +130,7 @@ func TestCheckKeyInRegion(t *testing.T) {
 		Inclusive  bool
 		Exclusive  bool
 	}
-	test_cases := []Case{
+	testCases := []Case{
 		{Key: []byte{}, StartKey: []byte{}, EndKey: []byte{}, IsInRegion: true, Inclusive: true, Exclusive: false},
 		{Key: []byte{}, StartKey: []byte{}, EndKey: []byte{6}, IsInRegion: true, Inclusive: true, Exclusive: false},
 		{Key: []byte{}, StartKey: []byte{3}, EndKey: []byte{6}, IsInRegion: false, Inclusive: false, Exclusive: false},
@@ -142,7 +142,7 @@ func TestCheckKeyInRegion(t *testing.T) {
 		{Key: []byte{}, StartKey: []byte{3}, EndKey: []byte{}, IsInRegion: false, Inclusive: false, Exclusive: false},
 		{Key: []byte{6}, StartKey: []byte{3}, EndKey: []byte{6}, IsInRegion: false, Inclusive: true, Exclusive: false},
 	}
-	for _, c := range test_cases {
+	for _, c := range testCases {
 		region := new(metapb.Region)
 		region.StartKey = c.StartKey
 		region.EndKey = c.EndKey

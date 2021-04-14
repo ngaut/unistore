@@ -37,8 +37,10 @@ import (
 	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
 )
 
+// CFName represents a column families name.
 type CFName = string
 
+// snapshot
 const (
 	CFDefault CFName = "default"
 	CFLock    CFName = "lock"
@@ -71,16 +73,19 @@ var (
 	errAbort = applySnapAbortError("abort")
 )
 
+// SnapKey represents the snapshot key.
 type SnapKey struct {
 	RegionID uint64
 	Term     uint64
 	Index    uint64
 }
 
+// String returns a string representation of the snapshot key.
 func (k SnapKey) String() string {
 	return fmt.Sprintf("%d_%d_%d", k.RegionID, k.Term, k.Index)
 }
 
+// SnapKeyFromRegionSnap returns the snapshot key from the region snapshot.
 func SnapKeyFromRegionSnap(regionID uint64, snap *eraftpb.Snapshot) SnapKey {
 	return SnapKey{
 		RegionID: regionID,
@@ -89,6 +94,7 @@ func SnapKeyFromRegionSnap(regionID uint64, snap *eraftpb.Snapshot) SnapKey {
 	}
 }
 
+// SnapKeyFromSnap returns the snapshot key from the snapshot.
 func SnapKeyFromSnap(snap *eraftpb.Snapshot) (SnapKey, error) {
 	data := new(rspb.RaftSnapshotData)
 	err := data.Unmarshal(snap.Data)
@@ -98,11 +104,13 @@ func SnapKeyFromSnap(snap *eraftpb.Snapshot) (SnapKey, error) {
 	return SnapKeyFromRegionSnap(data.Region.Id, snap), nil
 }
 
+// SnapStatistics represents a snapshot statistics.
 type SnapStatistics struct {
 	Size    uint64
 	KVCount int
 }
 
+// ApplyOptions represents the apply snapshot options.
 type ApplyOptions struct {
 	DBBundle *mvcc.DBBundle
 	Region   *metapb.Region
@@ -121,12 +129,13 @@ func newApplyOptions(db *mvcc.DBBundle, region *metapb.Region, abort *uint32, bu
 	}
 }
 
+// ApplyResult represents the apply result.
 type ApplyResult struct {
 	HasPut      bool
 	RegionState *rspb.RegionLocalState
 }
 
-// `Snapshot` is an interface for snapshot.
+// Snapshot is an interface for snapshot.
 // It's used in these scenarios:
 //   1. build local snapshot
 //   2. read local snapshot and then replicate it to remote raftstores
@@ -159,7 +168,7 @@ func copySnapshot(to, from Snapshot) error {
 	return nil
 }
 
-// `SnapshotDeleter` is a trait for deleting snapshot.
+// SnapshotDeleter is a trait for deleting snapshot.
 // It's used to ensure that the snapshot deletion happens under the protection of locking
 // to avoid race case for concurrent read/write.
 type SnapshotDeleter interface {
@@ -233,6 +242,7 @@ func checkFileSizeAndChecksum(path string, expectedSize uint64, expectedChecksum
 	return err
 }
 
+// CFFile represents a column families file.
 type CFFile struct {
 	CF          CFName
 	Path        string
@@ -247,6 +257,7 @@ type CFFile struct {
 	WriteDigest hash.Hash32
 }
 
+// MetaFile represents a meta file.
 type MetaFile struct {
 	Meta *rspb.SnapshotMeta
 	Path string
@@ -258,6 +269,7 @@ type MetaFile struct {
 
 var _ Snapshot = new(Snap)
 
+// Snap implements the Snapshot interface.
 type Snap struct {
 	key         SnapKey
 	displayPath string
@@ -270,6 +282,7 @@ type Snap struct {
 	holdTmpFiles bool
 }
 
+// NewSnap returns a new snap.
 func NewSnap(dir string, key SnapKey, sizeTrack *int64, isSending, toBuild bool,
 	deleter SnapshotDeleter, limiter *IOLimiter) (*Snap, error) {
 	if !util.DirExists(dir) {
@@ -333,6 +346,7 @@ func NewSnap(dir string, key SnapKey, sizeTrack *int64, isSending, toBuild bool,
 	return s, nil
 }
 
+// NewSnapForBuilding returns a new snap for building.
 func NewSnapForBuilding(dir string, key SnapKey, sizeTrack *int64, deleter SnapshotDeleter, limiter *IOLimiter) (*Snap, error) {
 	s, err := NewSnap(dir, key, sizeTrack, true, true, deleter, limiter)
 	if err != nil {
@@ -345,6 +359,7 @@ func NewSnapForBuilding(dir string, key SnapKey, sizeTrack *int64, deleter Snaps
 	return s, nil
 }
 
+// NewSnapForSending returns a new snap for sending.
 func NewSnapForSending(dir string, key SnapKey, sizeTrack *int64, deleter SnapshotDeleter) (*Snap, error) {
 	s, err := NewSnap(dir, key, sizeTrack, true, false, deleter, nil)
 	if err != nil {
@@ -366,6 +381,7 @@ func NewSnapForSending(dir string, key SnapKey, sizeTrack *int64, deleter Snapsh
 	return s, nil
 }
 
+// NewSnapForReceiving returns a new snap for receiving.
 func NewSnapForReceiving(dir string, key SnapKey, snapshotMeta *rspb.SnapshotMeta,
 	sizeTrack *int64, deleter SnapshotDeleter, limiter *IOLimiter) (*Snap, error) {
 	s, err := NewSnap(dir, key, sizeTrack, false, false, deleter, limiter)
@@ -400,6 +416,7 @@ func NewSnapForReceiving(dir string, key SnapKey, snapshotMeta *rspb.SnapshotMet
 	return s, nil
 }
 
+// NewSnapForApplying returns a new snap for applying.
 func NewSnapForApplying(dir string, key SnapKey, sizeTrack *int64, deleter SnapshotDeleter) (*Snap, error) {
 	return NewSnap(dir, key, sizeTrack, false, false, deleter, nil)
 }
@@ -578,6 +595,7 @@ func (s *Snap) saveMetaFile() error {
 	return nil
 }
 
+// Build implements the Snapshot Build method.
 func (s *Snap) Build(dbSnap *regionSnapshot, region *metapb.Region, snapData *rspb.RaftSnapshotData, stat *SnapStatistics, deleter SnapshotDeleter) error {
 	if s.Exists() {
 		err := s.validate()
@@ -628,10 +646,12 @@ func (s *Snap) Build(dbSnap *regionSnapshot, region *metapb.Region, snapData *rs
 	return nil
 }
 
+// Path implements the Snapshot Path method.
 func (s *Snap) Path() string {
 	return s.displayPath
 }
 
+// Exists implements the Snapshot Exists method.
 func (s *Snap) Exists() bool {
 	for _, cfFile := range s.CFFiles {
 		if cfFile.Size > 0 && !util.FileExists(cfFile.Path) {
@@ -641,6 +661,7 @@ func (s *Snap) Exists() bool {
 	return util.FileExists(s.MetaFile.Path)
 }
 
+// Delete implements the Snapshot Delete method.
 func (s *Snap) Delete() {
 	log.S().Debugf("deleting %s", s.Path())
 	for _, cfFile := range s.CFFiles {
@@ -674,6 +695,7 @@ func (s *Snap) Delete() {
 	}
 }
 
+// Meta implements the Snapshot Meta method.
 func (s *Snap) Meta() (os.FileInfo, error) {
 	fi, err := os.Stat(s.MetaFile.Path)
 	if err != nil {
@@ -682,6 +704,7 @@ func (s *Snap) Meta() (os.FileInfo, error) {
 	return fi, nil
 }
 
+// TotalSize implements the Snapshot TotalSize method.
 func (s *Snap) TotalSize() (total uint64) {
 	for _, cf := range s.CFFiles {
 		total += cf.Size
@@ -689,6 +712,7 @@ func (s *Snap) TotalSize() (total uint64) {
 	return
 }
 
+// Save implements the Snapshot Save method.
 func (s *Snap) Save() error {
 	log.S().Debugf("saving to %s", s.MetaFile.Path)
 	for _, cfFile := range s.CFFiles {
@@ -733,6 +757,7 @@ func (s *Snap) Save() error {
 	return nil
 }
 
+// Apply implements the Snapshot Apply method.
 func (s *Snap) Apply(opts ApplyOptions) (ApplyResult, error) {
 	var result ApplyResult
 	err := s.validate()
@@ -777,12 +802,13 @@ func (s *Snap) Apply(opts ApplyOptions) (ApplyResult, error) {
 }
 
 func checkAbort(status *uint32) error {
-	if atomic.LoadUint32(status) == JobStatus_Cancelling {
+	if atomic.LoadUint32(status) == JobStatusCancelling {
 		return errAbort
 	}
 	return nil
 }
 
+// Read implements the Snapshot Read method.
 func (s *Snap) Read(b []byte) (int, error) {
 	if len(b) == 0 {
 		return 0, nil
@@ -808,6 +834,7 @@ func (s *Snap) Read(b []byte) (int, error) {
 	return 0, io.EOF
 }
 
+// Write implements the Snapshot Write method.
 func (s *Snap) Write(b []byte) (int, error) {
 	if len(b) == 0 {
 		return 0, nil
@@ -848,6 +875,7 @@ func (s *Snap) Write(b []byte) (int, error) {
 	return len(b) - len(nextBuf), nil
 }
 
+// Drop implements the Snapshot Drop method.
 func (s *Snap) Drop() {
 	var cfTmpFileExists bool
 	for _, cfFile := range s.CFFiles {

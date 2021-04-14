@@ -24,6 +24,7 @@ import (
 	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/dbreader"
 )
 
+// Bootstrap
 const (
 	InitEpochVer     uint64 = 1
 	InitEpochConfVer uint64 = 1
@@ -51,6 +52,7 @@ func isRangeEmpty(engine *badger.DB, startKey, endKey []byte) (bool, error) {
 	return !hasData, err
 }
 
+// BootstrapStore is used to bootstrap the store.
 func BootstrapStore(engines *Engines, clussterID, storeID uint64) error {
 	ident := new(rspb.StoreIdent)
 	empty, err := isRangeEmpty(engines.kv.DB, MinKey, MaxDataKey)
@@ -58,14 +60,14 @@ func BootstrapStore(engines *Engines, clussterID, storeID uint64) error {
 		return err
 	}
 	if !empty {
-		return errors.New("kv store is not empty and ahs alread had data.")
+		return errors.New("kv store is not empty and ahs alread had data")
 	}
 	empty, err = isRangeEmpty(engines.raft, MinKey, MaxDataKey)
 	if err != nil {
 		return err
 	}
 	if !empty {
-		return errors.New("raft store is not empty and has already had data.")
+		return errors.New("raft store is not empty and has already had data")
 	}
 	ident.ClusterId = clussterID
 	ident.StoreId = storeID
@@ -77,6 +79,7 @@ func BootstrapStore(engines *Engines, clussterID, storeID uint64) error {
 	return wb.WriteToKV(engines.kv)
 }
 
+// PrepareBootstrap initializes cluster information and raft state.
 func PrepareBootstrap(engins *Engines, storeID, regionID, peerID uint64) (*metapb.Region, error) {
 	region := &metapb.Region{
 		Id:       regionID,
@@ -142,6 +145,7 @@ func writeInitialRaftState(raftWB *WriteBatch, regionID uint64) {
 	raftWB.Set(y.KeyWithTs(RaftStateKey(regionID), RaftTS), raftState.Marshal())
 }
 
+// ClearPrepareBootstrap clears the cluster information and raft state.
 func ClearPrepareBootstrap(engines *Engines, regionID uint64) error {
 	err := engines.raft.Update(func(txn *badger.Txn) error {
 		return txn.Delete(RaftStateKey(regionID))
@@ -161,6 +165,7 @@ func ClearPrepareBootstrap(engines *Engines, regionID uint64) error {
 	return engines.SyncKVWAL()
 }
 
+// ClearPrepareBootstrapState clears the cluster information.
 func ClearPrepareBootstrapState(engines *Engines) error {
 	wb := new(WriteBatch)
 	wb.Delete(y.KeyWithTs(prepareBootstrapKey, KvTS))

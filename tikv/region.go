@@ -382,13 +382,13 @@ func (rm *regionManager) loadFromLocal(bundle *mvcc.DBBundle, f func(*regionCtx)
 // RaftRegionManager represents a raft region manager.
 type RaftRegionManager struct {
 	regionManager
-	router   *raftstore.RaftstoreRouter
+	router   *raftstore.Router
 	eventCh  chan interface{}
 	detector *tikv.DetectorServer
 }
 
 // NewRaftRegionManager returns a new raft region manager.
-func NewRaftRegionManager(store *metapb.Store, router *raftstore.RaftstoreRouter, detector *tikv.DetectorServer) *RaftRegionManager {
+func NewRaftRegionManager(store *metapb.Store, router *raftstore.Router, detector *tikv.DetectorServer) *RaftRegionManager {
 	m := &RaftRegionManager{
 		router: router,
 		regionManager: regionManager{
@@ -435,7 +435,7 @@ type peerDestroyEvent struct {
 
 // OnPeerDestroy will be invoked when a peer is destroyed.
 func (rm *RaftRegionManager) OnPeerDestroy(ctx *raftstore.PeerEventContext) {
-	rm.eventCh <- &peerDestroyEvent{regionID: ctx.RegionId}
+	rm.eventCh <- &peerDestroyEvent{regionID: ctx.RegionID}
 }
 
 type splitRegionEvent struct {
@@ -499,7 +499,7 @@ func (rm *RaftRegionManager) runEventHandler() {
 		case *peerCreateEvent:
 			regCtx := newRegionCtx(x.region, rm.latches, x.ctx.LeaderChecker)
 			rm.mu.Lock()
-			rm.regions[x.ctx.RegionId] = regCtx
+			rm.regions[x.ctx.RegionID] = regCtx
 			rm.mu.Unlock()
 		case *splitRegionEvent:
 			rm.mu.Lock()
@@ -509,7 +509,7 @@ func (rm *RaftRegionManager) runEventHandler() {
 			rm.mu.Unlock()
 		case *regionConfChangeEvent:
 			rm.mu.RLock()
-			region := rm.regions[x.ctx.RegionId]
+			region := rm.regions[x.ctx.RegionID]
 			rm.mu.RUnlock()
 			region.updateRegionEpoch(x.epoch)
 		case *peerDestroyEvent:

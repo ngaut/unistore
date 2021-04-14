@@ -71,11 +71,11 @@ func TestIsUrgentRequest(t *testing.T) {
 
 func TestEntryCtx(t *testing.T) {
 	tbl := [][]ProposalContext{
-		{ProposalContext_Split},
-		{ProposalContext_SyncLog},
-		{ProposalContext_PrepareMerge},
-		{ProposalContext_Split, ProposalContext_SyncLog},
-		{ProposalContext_PrepareMerge, ProposalContext_SyncLog},
+		{ProposalContextSplit},
+		{ProposalContextSyncLog},
+		{ProposalContextPrepareMerge},
+		{ProposalContextSplit, ProposalContextSyncLog},
+		{ProposalContextPrepareMerge, ProposalContextSyncLog},
 	}
 	for _, flags := range tbl {
 		var ctx ProposalContext
@@ -125,30 +125,30 @@ func TestRequestInspector(t *testing.T) {
 	// Ok(_)
 	req := new(raft_cmdpb.RaftCmdRequest)
 	req.AdminRequest = new(raft_cmdpb.AdminRequest)
-	tbl = append(tbl, ReqPolicyPair{Req: req, Policy: RequestPolicy_ProposeNormal})
+	tbl = append(tbl, ReqPolicyPair{Req: req, Policy: RequestPolicyProposeNormal})
 
 	req = new(raft_cmdpb.RaftCmdRequest)
 	admReq := new(raft_cmdpb.AdminRequest)
 	admReq.ChangePeer = new(raft_cmdpb.ChangePeerRequest)
 	req.AdminRequest = admReq
-	tbl = append(tbl, ReqPolicyPair{Req: req, Policy: RequestPolicy_ProposeConfChange})
+	tbl = append(tbl, ReqPolicyPair{Req: req, Policy: RequestPolicyProposeConfChange})
 
 	req = new(raft_cmdpb.RaftCmdRequest)
 	admReq = new(raft_cmdpb.AdminRequest)
 	admReq.TransferLeader = new(raft_cmdpb.TransferLeaderRequest)
 	req.AdminRequest = admReq
-	tbl = append(tbl, ReqPolicyPair{Req: req, Policy: RequestPolicy_ProposeTransferLeader})
+	tbl = append(tbl, ReqPolicyPair{Req: req, Policy: RequestPolicyProposeTransferLeader})
 
 	req = new(raft_cmdpb.RaftCmdRequest)
 	admReq = new(raft_cmdpb.AdminRequest)
 
 	Ops := []OpPolicyPair{
-		{Tp: raft_cmdpb.CmdType_Get, Policy: RequestPolicy_ReadLocal},
-		{Tp: raft_cmdpb.CmdType_Snap, Policy: RequestPolicy_ReadLocal},
-		{Tp: raft_cmdpb.CmdType_Put, Policy: RequestPolicy_ProposeNormal},
-		{Tp: raft_cmdpb.CmdType_Delete, Policy: RequestPolicy_ProposeNormal},
-		{Tp: raft_cmdpb.CmdType_DeleteRange, Policy: RequestPolicy_ProposeNormal},
-		{Tp: raft_cmdpb.CmdType_IngestSST, Policy: RequestPolicy_ProposeNormal},
+		{Tp: raft_cmdpb.CmdType_Get, Policy: RequestPolicyReadLocal},
+		{Tp: raft_cmdpb.CmdType_Snap, Policy: RequestPolicyReadLocal},
+		{Tp: raft_cmdpb.CmdType_Put, Policy: RequestPolicyProposeNormal},
+		{Tp: raft_cmdpb.CmdType_Delete, Policy: RequestPolicyProposeNormal},
+		{Tp: raft_cmdpb.CmdType_DeleteRange, Policy: RequestPolicyProposeNormal},
+		{Tp: raft_cmdpb.CmdType_IngestSST, Policy: RequestPolicyProposeNormal},
 	}
 	for _, opPolicy := range Ops {
 		request := new(raft_cmdpb.Request)
@@ -159,7 +159,7 @@ func TestRequestInspector(t *testing.T) {
 	}
 
 	for _, appliedToIndexTerm := range []bool{true, false} {
-		for _, leaseState := range []LeaseState{LeaseState_Expired, LeaseState_Suspect, LeaseState_Valid} {
+		for _, leaseState := range []LeaseState{LeaseStateExpired, LeaseStateSuspect, LeaseStateValid} {
 			for _, reqPolicy := range tbl {
 				policy := reqPolicy.Policy
 				inspector := &DummyInspector{
@@ -168,8 +168,8 @@ func TestRequestInspector(t *testing.T) {
 				}
 				// Leader can not read local as long as
 				// it has not applied to its term or it does has a valid lease.
-				if policy == RequestPolicy_ReadLocal && (!appliedToIndexTerm || LeaseState_Valid != inspector.LeaseState) {
-					policy = RequestPolicy_ReadIndex
+				if policy == RequestPolicyReadLocal && (!appliedToIndexTerm || LeaseStateValid != inspector.LeaseState) {
+					policy = RequestPolicyReadIndex
 				}
 				inspectPolicy, err := inspector.inspect(reqPolicy.Req)
 				assert.Nil(t, err)
@@ -187,11 +187,11 @@ func TestRequestInspector(t *testing.T) {
 	req.Header.ReadQuorum = true
 	inspector := DummyInspector{
 		AppliedToIndexTerm: true,
-		LeaseState:         LeaseState_Valid,
+		LeaseState:         LeaseStateValid,
 	}
 	inspectPolicy, err := inspector.inspect(req)
 	assert.Nil(t, err)
-	assert.Equal(t, inspectPolicy, RequestPolicy_ReadIndex)
+	assert.Equal(t, inspectPolicy, RequestPolicyReadIndex)
 
 	// Err(_)
 	var errTbl []*raft_cmdpb.RaftCmdRequest
@@ -212,7 +212,7 @@ func TestRequestInspector(t *testing.T) {
 	for _, req := range errTbl {
 		inspector := DummyInspector{
 			AppliedToIndexTerm: true,
-			LeaseState:         LeaseState_Valid,
+			LeaseState:         LeaseStateValid,
 		}
 		_, err := inspector.inspect(req)
 		assert.NotNil(t, err)

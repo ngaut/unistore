@@ -34,15 +34,6 @@ import (
 	"github.com/uber-go/atomic"
 )
 
-const (
-	DefaultApplyWBSize = 4 * 1024
-
-	WriteTypeFlagPut      = 'P'
-	WriteTypeFlagDelete   = 'D'
-	WriteTypeFlagLock     = 'L'
-	WriteTypeFlagRollback = 'R'
-)
-
 type pendingCmd struct {
 	index uint64
 	term  uint64
@@ -95,7 +86,7 @@ type keyRange struct {
 }
 
 type apply struct {
-	regionId uint64
+	regionID uint64
 	term     uint64
 	entries  []eraftpb.Entry
 }
@@ -212,15 +203,15 @@ type proposal struct {
 }
 
 type regionProposal struct {
-	Id       uint64
-	RegionId uint64
+	ID       uint64
+	RegionID uint64
 	Props    []*proposal
 }
 
-func newRegionProposal(id uint64, regionId uint64, props []*proposal) *regionProposal {
+func newRegionProposal(id uint64, regionID uint64, props []*proposal) *regionProposal {
 	return &regionProposal{
-		Id:       id,
-		RegionId: regionId,
+		ID:       id,
+		RegionID: regionID,
 		Props:    props,
 	}
 }
@@ -235,7 +226,7 @@ type registration struct {
 
 func newRegistration(peer *Peer) *registration {
 	return &registration{
-		id:               peer.PeerId(),
+		id:               peer.PeerID(),
 		term:             peer.Term(),
 		applyState:       peer.Store().applyState,
 		appliedIndexTerm: peer.Store().appliedIndexTerm,
@@ -243,6 +234,7 @@ func newRegistration(peer *Peer) *registration {
 	}
 }
 
+// GenSnapTask represents a task to generate snapshot.
 type GenSnapTask struct {
 	regionID     uint64
 	snapNotifier chan *eraftpb.Snapshot
@@ -259,7 +251,7 @@ func (t *GenSnapTask) generateAndScheduleSnapshot(regionSched chan<- task, redoI
 	regionSched <- task{
 		tp: taskTypeRegionGen,
 		data: &regionTask{
-			regionId: t.regionID,
+			regionID: t.regionID,
 			notifier: t.snapNotifier,
 			redoIdx:  redoIdx,
 		},
@@ -311,11 +303,11 @@ func newApplyContext(tag string, regionScheduler chan<- task, engines *Engines,
 	}
 }
 
-/// Prepares for applying entries for `applier`.
-///
-/// A general apply progress for an applier is:
-/// `prepare_for` -> `commit` [-> `commit` ...] -> `finish_for`.
-/// After all appliers are handled, `write_to_db` method should be called.
+// Prepares for applying entries for `applier`.
+//
+// A general apply progress for an applier is:
+// `prepare_for` -> `commit` [-> `commit` ...] -> `finish_for`.
+// After all appliers are handled, `write_to_db` method should be called.
 func (ac *applyContext) prepareFor(d *applier) {
 	if ac.wb == nil {
 		ac.wb = new(WriteBatch)
@@ -326,10 +318,10 @@ func (ac *applyContext) prepareFor(d *applier) {
 	ac.lastAppliedIndex = d.applyState.appliedIndex
 }
 
-/// Commits all changes have done for applier. `persistent` indicates whether
-/// write the changes into rocksdb.
-///
-/// This call is valid only when it's between a `prepare_for` and `finish_for`.
+// Commits all changes have done for applier. `persistent` indicates whether
+// write the changes into rocksdb.
+//
+// This call is valid only when it's between a `prepare_for` and `finish_for`.
 func (ac *applyContext) commit(d *applier) {
 	if ac.lastAppliedIndex < d.applyState.appliedIndex {
 		d.writeApplyState(ac.wb)
@@ -349,7 +341,7 @@ func (ac *applyContext) commitOpt(d *applier, persistent bool) {
 	ac.wbLastKeys = uint64(len(ac.wb.entries))
 }
 
-/// Writes all the changes into badger.
+// Writes all the changes into badger.
 func (ac *applyContext) writeToDB() {
 	if ac.wb.size != 0 {
 		if err := ac.wb.WriteToKV(ac.engines.kv); err != nil {
@@ -366,7 +358,7 @@ func (ac *applyContext) writeToDB() {
 	ac.cbs = make([]applyCallback, 0, cap(ac.cbs))
 }
 
-/// Finishes `Apply`s for the applier.
+// Finishes `Apply`s for the applier.
 func (ac *applyContext) finishFor(d *applier, results []execResult) {
 	if !d.pendingRemove {
 		d.writeApplyState(ac.wb)
@@ -424,7 +416,7 @@ func (ac *applyContext) flush() {
 	ac.committedCount = 0
 }
 
-/// Calls the callback of `cmd` when the Region is removed.
+// Calls the callback of `cmd` when the Region is removed.
 func notifyRegionRemoved(regionID, peerID uint64, cmd pendingCmd) {
 	log.S().Debugf("region %d is removed, peerID %d, index %d, term %d", regionID, peerID, cmd.index, cmd.term)
 	notifyReqRegionRemoved(regionID, cmd.cb)
@@ -434,7 +426,7 @@ func notifyReqRegionRemoved(regionID uint64, cb *Callback) {
 	cb.Done(ErrRespRegionNotFound(regionID))
 }
 
-/// Calls the callback of `cmd` when it can not be processed further.
+// Calls the callback of `cmd` when it can not be processed further.
 func notifyStaleCommand(regionID, peerID, term uint64, cmd pendingCmd) {
 	log.S().Infof("command is stale, skip. regionID %d, peerID %d, index %d, term %d",
 		regionID, peerID, cmd.index, cmd.term)
@@ -445,7 +437,7 @@ func notifyStaleReq(term uint64, cb *Callback) {
 	cb.Done(ErrRespStaleCommand(term))
 }
 
-/// Checks if a write is needed to be issued before handling the command.
+// Checks if a write is needed to be issued before handling the command.
 func shouldWriteToEngine(rlog raftlog.RaftLog, wbKeys int) bool {
 	cmd := rlog.GetRaftCmdRequest()
 	if cmd == nil {
@@ -473,33 +465,33 @@ func shouldWriteToEngine(rlog raftlog.RaftLog, wbKeys int) bool {
 	return false
 }
 
-/// A struct that stores the state related to Merge.
-///
-/// When executing a `CommitMerge`, the source peer may have not applied
-/// to the required index, so the target peer has to abort current execution
-/// and wait for it asynchronously.
-///
-/// When rolling the stack, all states required to recover are stored in
-/// this struct.
-/// TODO: check whether generator/coroutine is a good choice in this case.
+// A struct that stores the state related to Merge.
+//
+// When executing a `CommitMerge`, the source peer may have not applied
+// to the required index, so the target peer has to abort current execution
+// and wait for it asynchronously.
+//
+// When rolling the stack, all states required to recover are stored in
+// this struct.
+// TODO: check whether generator/coroutine is a good choice in this case.
 type waitSourceMergeState struct {
-	/// All of the entries that need to continue to be applied after
-	/// the source peer has applied its logs.
+	// All of the entries that need to continue to be applied after
+	// the source peer has applied its logs.
 	pendingEntries []eraftpb.Entry
-	/// All of messages that need to continue to be handled after
-	/// the source peer has applied its logs and pending entries
-	/// are all handled.
+	// All of messages that need to continue to be handled after
+	// the source peer has applied its logs and pending entries
+	// are all handled.
 	pendingMsgs []Msg
-	/// A flag that indicates whether the source peer has applied to the required
-	/// index. If the source peer is ready, this flag should be set to the region id
-	/// of source peer.
+	// A flag that indicates whether the source peer has applied to the required
+	// index. If the source peer is ready, this flag should be set to the region id
+	// of source peer.
 	readyToMerge *atomic.Uint64
-	/// When handling `CatchUpLogs` message, maybe there is a merge cascade, namely,
-	/// a source peer to catch up logs whereas the logs contain a `CommitMerge`.
-	/// In this case, the source peer needs to merge another source peer first, so storing the
-	/// `CatchUpLogs` message in this field, and once the cascaded merge and all other pending
-	/// msgs are handled, the source peer will check this field and then send `LogsUpToDate`
-	/// message to its target peer.
+	// When handling `CatchUpLogs` message, maybe there is a merge cascade, namely,
+	// a source peer to catch up logs whereas the logs contain a `CommitMerge`.
+	// In this case, the source peer needs to merge another source peer first, so storing the
+	// `CatchUpLogs` message in this field, and once the cascaded merge and all other pending
+	// msgs are handled, the source peer will check this field and then send `LogsUpToDate`
+	// message to its target peer.
 	catchUpLogs *catchUpLogs
 }
 
@@ -508,60 +500,60 @@ func (s *waitSourceMergeState) String() string {
 		len(s.pendingEntries), len(s.pendingMsgs), s.readyToMerge.Load(), s.catchUpLogs != nil)
 }
 
-/// The applier of a Region which is responsible for handling committed
-/// raft log entries of a Region.
-///
-/// `Apply` is a term of Raft, which means executing the actual commands.
-/// In Raft, once some log entries are committed, for every peer of the Raft
-/// group will apply the logs one by one. For write commands, it does write or
-/// delete to local engine; for admin commands, it does some meta change of the
-/// Raft group.
-///
-/// The raft worker receives all the apply tasks of different Regions
-/// located at this store, and it will get the corresponding applier to
-/// handle the apply task to make the code logic more clear.
+// The applier of a Region which is responsible for handling committed
+// raft log entries of a Region.
+//
+// `Apply` is a term of Raft, which means executing the actual commands.
+// In Raft, once some log entries are committed, for every peer of the Raft
+// group will apply the logs one by one. For write commands, it does write or
+// delete to local engine; for admin commands, it does some meta change of the
+// Raft group.
+//
+// The raft worker receives all the apply tasks of different Regions
+// located at this store, and it will get the corresponding applier to
+// handle the apply task to make the code logic more clear.
 type applier struct {
 	id     uint64
 	term   uint64
 	region *metapb.Region
 	tag    string
 
-	/// If the applier should be stopped from polling.
-	/// A applier can be stopped in conf change, merge or requested by destroy message.
+	// If the applier should be stopped from polling.
+	// A applier can be stopped in conf change, merge or requested by destroy message.
 	stopped bool
-	/// Set to true when removing itself because of `ConfChangeType::RemoveNode`, and then
-	/// any following committed logs in same Ready should be applied failed.
+	// Set to true when removing itself because of `ConfChangeType::RemoveNode`, and then
+	// any following committed logs in same Ready should be applied failed.
 	pendingRemove bool
 
-	/// The commands waiting to be committed and applied
+	// The commands waiting to be committed and applied
 	pendingCmds pendingCmdQueue
 
-	/// Marks the applier as merged by CommitMerge.
+	// Marks the applier as merged by CommitMerge.
 	merged bool
 
-	/// Indicates the peer is in merging, if that compact log won't be performed.
+	// Indicates the peer is in merging, if that compact log won't be performed.
 	isMerging bool
-	/// Records the epoch version after the last merge.
+	// Records the epoch version after the last merge.
 	lastMergeVersion uint64
-	/// A temporary state that keeps track of the progress of the source peer state when
-	/// CommitMerge is unable to be executed.
+	// A temporary state that keeps track of the progress of the source peer state when
+	// CommitMerge is unable to be executed.
 	waitMergeState *waitSourceMergeState
 	// ID of last region that reports ready.
 	readySourceRegion uint64
 
-	/// We writes apply_state to KV DB, in one write batch together with kv data.
-	///
-	/// If we write it to Raft DB, apply_state and kv data (Put, Delete) are in
-	/// separate WAL file. When power failure, for current raft log, apply_index may synced
-	/// to file, but KV data may not synced to file, so we will lose data.
+	// We writes apply_state to KV DB, in one write batch together with kv data.
+	//
+	// If we write it to Raft DB, apply_state and kv data (Put, Delete) are in
+	// separate WAL file. When power failure, for current raft log, apply_index may synced
+	// to file, but KV data may not synced to file, so we will lose data.
 	applyState applyState
-	/// The term of the raft log at applied index.
+	// The term of the raft log at applied index.
 	appliedIndexTerm uint64
 
 	// redoIdx is the raft log index starts redo for lockStore.
 	redoIndex uint64
 
-	/// The local metrics, and it will be flushed periodically.
+	// The local metrics, and it will be flushed periodically.
 	metrics applyMetrics
 }
 
@@ -576,7 +568,7 @@ func newApplier(reg *registration) *applier {
 	}
 }
 
-/// Handles all the committed_entries, namely, applies the committed entries.
+// Handles all the committed_entries, namely, applies the committed entries.
 func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntries []eraftpb.Entry) {
 	if len(committedEntries) == 0 {
 		return
@@ -754,14 +746,14 @@ func (a *applier) processRaftCmd(aCtx *applyContext, index, term uint64, rlog ra
 	return result
 }
 
-/// Applies raft command.
-///
-/// An apply operation can fail in the following situations:
-///   1. it encounters an error that will occur on all stores, it can continue
-/// applying next entry safely, like epoch not match for example;
-///   2. it encounters an error that may not occur on all stores, in this case
-/// we should try to apply the entry again or panic. Considering that this
-/// usually due to disk operation fail, which is rare, so just panic is ok.
+// Applies raft command.
+//
+// An apply operation can fail in the following situations:
+//   1. it encounters an error that will occur on all stores, it can continue
+// applying next entry safely, like epoch not match for example;
+//   2. it encounters an error that may not occur on all stores, in this case
+// we should try to apply the entry again or panic. Considering that this
+// usually due to disk operation fail, which is rare, so just panic is ok.
 func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 	rlog raftlog.RaftLog) (*raft_cmdpb.RaftCmdResponse, applyResult) {
 	// if pending remove, apply should be aborted already.
@@ -1471,7 +1463,7 @@ func newApplierFromPeer(peer *peerFsm) *applier {
 	return newApplier(reg)
 }
 
-/// Handles peer registration. When a peer is created, it will register an applier.
+// Handles peer registration. When a peer is created, it will register an applier.
 func (a *applier) handleRegistration(reg *registration) {
 	log.S().Infof("%s re-register to applier, term %d", a.tag, reg.term)
 	y.Assert(a.id == reg.id)
@@ -1480,7 +1472,7 @@ func (a *applier) handleRegistration(reg *registration) {
 	*a = *newApplier(reg)
 }
 
-/// Handles apply tasks, and uses the applier to handle the committed entries.
+// Handles apply tasks, and uses the applier to handle the committed entries.
 func (a *applier) handleApply(aCtx *applyContext, apply *apply) {
 	if aCtx.timer == nil {
 		now := time.Now()
@@ -1504,10 +1496,10 @@ func (a *applier) handleApply(aCtx *applyContext, apply *apply) {
 	}
 }
 
-/// Handles proposals, and appends the commands to the applier.
+// Handles proposals, and appends the commands to the applier.
 func (a *applier) handleProposal(regionProposal *regionProposal) {
 	regionID, peerID := a.region.Id, a.id
-	y.Assert(a.id == regionProposal.Id)
+	y.Assert(a.id == regionProposal.ID)
 	if a.stopped {
 		for _, p := range regionProposal.Props {
 			cmd := pendingCmd{index: p.index, term: p.term, cb: p.cb}
@@ -1551,7 +1543,7 @@ func (a *applier) destroy(aCtx *applyContext) {
 	}
 }
 
-/// Handles peer destroy. When a peer is destroyed, the corresponding applier should be removed too.
+// Handles peer destroy. When a peer is destroyed, the corresponding applier should be removed too.
 func (a *applier) handleDestroy(aCtx *applyContext, regionID uint64) {
 	if !a.stopped {
 		a.destroy(aCtx)

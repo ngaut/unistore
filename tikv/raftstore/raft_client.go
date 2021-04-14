@@ -168,6 +168,7 @@ type connKey struct {
 	index   int
 }
 
+// RaftClient represents a raft client.
 type RaftClient struct {
 	config *Config
 	sync.RWMutex
@@ -196,16 +197,19 @@ func (c *RaftClient) getConn(storeID, regionID uint64) *raftConn {
 	return conn
 }
 
+// Send sends the raft message.
 func (c *RaftClient) Send(msg *raft_serverpb.RaftMessage) {
 	storeID := msg.GetToPeer().GetStoreId()
 	conn := c.getConn(storeID, msg.GetRegionId())
 	conn.Send(msg)
 }
 
+// Flush flushes the RaftClient.
 func (c *RaftClient) Flush() {
 	// Not support BufferHint
 }
 
+// Stop stops the RaftClient.
 func (c *RaftClient) Stop() {
 	c.Lock()
 	defer c.Unlock()

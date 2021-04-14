@@ -107,9 +107,8 @@ func (ai *snapApplier) next() (*applySnapItem, error) {
 	if ai.curLockKey != nil && ai.curWriteKey != nil {
 		if bytes.Compare(ai.curLockKey, ai.curWriteKey) <= 0 {
 			return ai.nextLock()
-		} else {
-			return ai.nextWrite()
 		}
+		return ai.nextWrite()
 	} else if ai.curLockKey != nil {
 		return ai.nextLock()
 	} else if ai.curWriteKey != nil {

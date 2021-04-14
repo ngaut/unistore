@@ -28,6 +28,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// RaftInnerServer implements the tikv.InnerServer interface.
 type RaftInnerServer struct {
 	engines       *Engines
 	raftConfig    *Config
@@ -45,6 +46,7 @@ type RaftInnerServer struct {
 	raftCli     *RaftClient
 }
 
+// Raft implements the tikv.InnerServer Raft method.
 func (ris *RaftInnerServer) Raft(stream tikvpb.Tikv_RaftServer) error {
 	for {
 		msg, err := stream.Recv()
@@ -55,6 +57,7 @@ func (ris *RaftInnerServer) Raft(stream tikvpb.Tikv_RaftServer) error {
 	}
 }
 
+// BatchRaft implements the tikv.InnerServer BatchRaft method.
 func (ris *RaftInnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
 	for {
 		msgs, err := stream.Recv()
@@ -67,6 +70,7 @@ func (ris *RaftInnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error 
 	}
 }
 
+// Snapshot implements the tikv.InnerServer Snapshot method.
 func (ris *RaftInnerServer) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
 	var err error
 	done := make(chan struct{})
@@ -84,6 +88,7 @@ func (ris *RaftInnerServer) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
 	return err
 }
 
+// NewRaftInnerServer returns a new RaftInnerServer.
 func NewRaftInnerServer(globalConfig *config.Config, engines *Engines, raftConfig *Config) *RaftInnerServer {
 	return &RaftInnerServer{
 		engines:      engines,
@@ -92,6 +97,7 @@ func NewRaftInnerServer(globalConfig *config.Config, engines *Engines, raftConfi
 	}
 }
 
+// Setup implements the tikv.InnerServer Setup method.
 func (ris *RaftInnerServer) Setup(pdClient pd.Client) {
 	var wg sync.WaitGroup
 	ris.pdWorker = newWorker("pd-worker", &wg)
@@ -115,18 +121,22 @@ func (ris *RaftInnerServer) Setup(pdClient pd.Client) {
 	}
 }
 
-func (ris *RaftInnerServer) GetRaftstoreRouter() *RaftstoreRouter {
-	return &RaftstoreRouter{router: ris.router}
+// GetRaftstoreRouter gets the raftstore Router.
+func (ris *RaftInnerServer) GetRaftstoreRouter() *Router {
+	return &Router{router: ris.router}
 }
 
+// GetStoreMeta gets the store meta of the RaftInnerServer.
 func (ris *RaftInnerServer) GetStoreMeta() *metapb.Store {
 	return &ris.storeMeta
 }
 
+// SetPeerEventObserver sets the peer event observer.
 func (ris *RaftInnerServer) SetPeerEventObserver(ob PeerEventObserver) {
 	ris.eventObserver = ob
 }
 
+// Start implements the tikv.InnerServer Start method.
 func (ris *RaftInnerServer) Start(pdClient pd.Client) error {
 	ris.node = NewNode(ris.batchSystem, &ris.storeMeta, ris.raftConfig, pdClient, ris.eventObserver)
 
@@ -143,6 +153,7 @@ func (ris *RaftInnerServer) Start(pdClient pd.Client) error {
 	return nil
 }
 
+// Stop implements the tikv.InnerServer Stop method.
 func (ris *RaftInnerServer) Stop() error {
 	ris.snapWorker.stop()
 	ris.node.stop()
@@ -150,12 +161,10 @@ func (ris *RaftInnerServer) Stop() error {
 	if err := ris.engines.raft.Close(); err != nil {
 		return err
 	}
-	if err := ris.engines.kv.DB.Close(); err != nil {
-		return err
-	}
-	return nil
+	return ris.engines.kv.DB.Close()
 }
 
+// LockstoreFileName defines the lockstore file name.
 const LockstoreFileName = "lockstore.dump"
 
 type lockStoreDumper struct {

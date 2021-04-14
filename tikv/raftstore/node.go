@@ -30,6 +30,7 @@ import (
 	"github.com/pingcap/tidb/util/codec"
 )
 
+// Node represents a raft store node.
 type Node struct {
 	clusterID uint64
 	store     *metapb.Store
@@ -40,6 +41,7 @@ type Node struct {
 	observer  PeerEventObserver
 }
 
+// NewNode creates a new raft store node.
 func NewNode(system *raftBatchSystem, store *metapb.Store, cfg *Config, pdClient pd.Client, observer PeerEventObserver) *Node {
 	if cfg.AdvertiseAddr != "" {
 		store.Address = cfg.AdvertiseAddr
@@ -61,6 +63,7 @@ func NewNode(system *raftBatchSystem, store *metapb.Store, cfg *Config, pdClient
 	}
 }
 
+//Start starts raft store node.
 func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, snapMgr *SnapManager, pdWorker *worker, router *router) error {
 	storeID, err := n.checkStore(engines)
 	if err != nil {
@@ -181,6 +184,7 @@ func (n *Node) checkOrPrepareBootstrapCluster(ctx context.Context, engines *Engi
 	return n.prepareBootstrapCluster(ctx, engines, storeID)
 }
 
+// node
 const (
 	MaxCheckClusterBootstrappedRetryCount = 60
 	CheckClusterBootstrapRetrySeconds     = 3
@@ -213,6 +217,7 @@ func (n *Node) prepareBootstrapCluster(ctx context.Context, engines *Engines, st
 	return PrepareBootstrap(engines, storeID, regionID, peerID)
 }
 
+// BootstrapCluster is used to bootstrap the cluster.
 func (n *Node) BootstrapCluster(ctx context.Context, engines *Engines, firstRegion *metapb.Region) (newCluster bool, err error) {
 	regionID := firstRegion.GetId()
 	for retry := 0; retry < MaxCheckClusterBootstrappedRetryCount; retry++ {

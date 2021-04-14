@@ -22,53 +22,53 @@ import (
 )
 
 func TestRaftstoreErrToPbError(t *testing.T) {
-	regionId := uint64(1)
-	notLeader := &ErrNotLeader{RegionId: regionId, Leader: nil}
-	pbErr := RaftstoreErrToPbError(notLeader)
+	regionID := uint64(1)
+	notLeader := &ErrNotLeader{RegionID: regionID, Leader: nil}
+	pbErr := ErrToPbError(notLeader)
 	require.NotNil(t, pbErr.NotLeader)
-	assert.Equal(t, pbErr.NotLeader.RegionId, regionId)
+	assert.Equal(t, pbErr.NotLeader.RegionId, regionID)
 
-	regionNotFound := &ErrRegionNotFound{RegionId: regionId}
-	pbErr = RaftstoreErrToPbError(regionNotFound)
+	regionNotFound := &ErrRegionNotFound{RegionID: regionID}
+	pbErr = ErrToPbError(regionNotFound)
 	require.NotNil(t, pbErr.RegionNotFound)
-	assert.Equal(t, pbErr.RegionNotFound.RegionId, regionId)
+	assert.Equal(t, pbErr.RegionNotFound.RegionId, regionID)
 
-	region := &metapb.Region{Id: regionId, StartKey: []byte{0}, EndKey: []byte{1}}
+	region := &metapb.Region{Id: regionID, StartKey: []byte{0}, EndKey: []byte{1}}
 
 	keyNotInRegion := &ErrKeyNotInRegion{Key: []byte{2}, Region: region}
-	pbErr = RaftstoreErrToPbError(keyNotInRegion)
+	pbErr = ErrToPbError(keyNotInRegion)
 	require.NotNil(t, pbErr.KeyNotInRegion)
 	assert.Equal(t, pbErr.KeyNotInRegion.StartKey, []byte{0})
 	assert.Equal(t, pbErr.KeyNotInRegion.EndKey, []byte{1})
 	assert.Equal(t, pbErr.KeyNotInRegion.Key, []byte{2})
 
 	epochNotMatch := &ErrEpochNotMatch{Regions: []*metapb.Region{region}}
-	pbErr = RaftstoreErrToPbError(epochNotMatch)
+	pbErr = ErrToPbError(epochNotMatch)
 	require.NotNil(t, pbErr.EpochNotMatch)
 	assert.Equal(t, pbErr.EpochNotMatch.CurrentRegions, []*metapb.Region{region})
 
 	backOffMs := uint64(10)
 	serverIsBusy := &ErrServerIsBusy{Reason: "tikv is busy", BackoffMs: backOffMs}
-	pbErr = RaftstoreErrToPbError(serverIsBusy)
+	pbErr = ErrToPbError(serverIsBusy)
 	require.NotNil(t, pbErr.ServerIsBusy)
 	assert.Equal(t, pbErr.ServerIsBusy.Reason, "tikv is busy")
 	assert.Equal(t, pbErr.ServerIsBusy.BackoffMs, backOffMs)
 
 	staleCommand := &ErrStaleCommand{}
-	pbErr = RaftstoreErrToPbError(staleCommand)
+	pbErr = ErrToPbError(staleCommand)
 	require.NotNil(t, pbErr.StaleCommand)
 
-	requestStoreId, actualStoreId := uint64(1), uint64(2)
-	storeNotMatch := &ErrStoreNotMatch{RequestStoreId: requestStoreId, ActualStoreId: actualStoreId}
-	pbErr = RaftstoreErrToPbError(storeNotMatch)
+	requestStoreID, actualStoreID := uint64(1), uint64(2)
+	storeNotMatch := &ErrStoreNotMatch{RequestStoreID: requestStoreID, ActualStoreID: actualStoreID}
+	pbErr = ErrToPbError(storeNotMatch)
 	require.NotNil(t, pbErr.StoreNotMatch)
-	assert.Equal(t, pbErr.StoreNotMatch.RequestStoreId, requestStoreId)
-	assert.Equal(t, pbErr.StoreNotMatch.ActualStoreId, actualStoreId)
+	assert.Equal(t, pbErr.StoreNotMatch.RequestStoreId, requestStoreID)
+	assert.Equal(t, pbErr.StoreNotMatch.ActualStoreId, actualStoreID)
 
 	entrySize := uint64(10000000)
-	raftEntryTooLarge := &ErrRaftEntryTooLarge{RegionId: regionId, EntrySize: entrySize}
-	pbErr = RaftstoreErrToPbError(raftEntryTooLarge)
+	raftEntryTooLarge := &ErrRaftEntryTooLarge{RegionID: regionID, EntrySize: entrySize}
+	pbErr = ErrToPbError(raftEntryTooLarge)
 	require.NotNil(t, pbErr.RaftEntryTooLarge)
-	assert.Equal(t, pbErr.RaftEntryTooLarge.RegionId, regionId)
+	assert.Equal(t, pbErr.RaftEntryTooLarge.RegionId, regionID)
 	assert.Equal(t, pbErr.RaftEntryTooLarge.EntrySize, entrySize)
 }

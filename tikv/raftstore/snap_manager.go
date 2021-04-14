@@ -30,8 +30,10 @@ import (
 	"github.com/pingcap/log"
 )
 
+// SnapEntry represents a snapshot entry.
 type SnapEntry int
 
+// SnapEntry
 const (
 	SnapEntryGenerating SnapEntry = 1
 	SnapEntrySending    SnapEntry = 2
@@ -39,6 +41,7 @@ const (
 	SnapEntryApplying   SnapEntry = 4
 )
 
+// String returns a string representation of the snapshot entry.	`
 func (e SnapEntry) String() string {
 	switch e {
 	case SnapEntryGenerating:
@@ -53,6 +56,7 @@ func (e SnapEntry) String() string {
 	return "unknown"
 }
 
+// SnapStats represents a snapshot stats.
 type SnapStats struct {
 	ReceivingCount int
 	SendingCount   int
@@ -64,6 +68,7 @@ func notifyStats(router *router) {
 	}
 }
 
+// SnapManager represents a snapshot manager.
 type SnapManager struct {
 	base         string
 	snapSize     *int64
@@ -74,6 +79,7 @@ type SnapManager struct {
 	MaxTotalSize uint64
 }
 
+// NewSnapManager returns a new SnapManager.
 func NewSnapManager(path string, router *router) *SnapManager {
 	return new(SnapManagerBuilder).Build(path, router)
 }
@@ -112,6 +118,7 @@ func (sm *SnapManager) init() error {
 	return nil
 }
 
+// ListIdleSnap lists all idle snapshots in the SnapManager.
 func (sm *SnapManager) ListIdleSnap() ([]SnapKeyWithSending, error) {
 	fis, err := ioutil.ReadDir(sm.base)
 	if err != nil {
@@ -173,6 +180,7 @@ func (sm *SnapManager) ListIdleSnap() ([]SnapKeyWithSending, error) {
 	return results, nil
 }
 
+// HasRegistered checks if the snapshot key is registered.
 func (sm *SnapManager) HasRegistered(key SnapKey) bool {
 	sm.registryLock.RLock()
 	_, ok := sm.registry[key]
@@ -180,10 +188,12 @@ func (sm *SnapManager) HasRegistered(key SnapKey) bool {
 	return ok
 }
 
+// GetTotalSnapSize gets the total snapshot size.
 func (sm *SnapManager) GetTotalSnapSize() uint64 {
 	return uint64(atomic.LoadInt64(sm.snapSize))
 }
 
+// GetSnapshotForBuilding gets the snapshot for building with the given snapshot key.
 func (sm *SnapManager) GetSnapshotForBuilding(key SnapKey) (Snapshot, error) {
 	if sm.GetTotalSnapSize() > sm.MaxTotalSize {
 		err := sm.deleteOldIdleSnaps()
@@ -233,10 +243,12 @@ func (sm *SnapManager) deleteOldIdleSnaps() error {
 	return nil
 }
 
+// GetSnapshotForSending gets the snapshot for sending with the given snapshot key.
 func (sm *SnapManager) GetSnapshotForSending(snapKey SnapKey) (Snapshot, error) {
 	return NewSnapForSending(sm.base, snapKey, sm.snapSize, sm)
 }
 
+// GetSnapshotForReceiving gets the snapshot for receiving with the given snapshot key and data.
 func (sm *SnapManager) GetSnapshotForReceiving(snapKey SnapKey, data []byte) (Snapshot, error) {
 	snapshotData := new(rspb.RaftSnapshotData)
 	err := snapshotData.Unmarshal(data)
@@ -246,6 +258,7 @@ func (sm *SnapManager) GetSnapshotForReceiving(snapKey SnapKey, data []byte) (Sn
 	return NewSnapForReceiving(sm.base, snapKey, snapshotData.Meta, sm.snapSize, sm, sm.limiter)
 }
 
+// GetSnapshotForApplying gets the snapshot for applying with the given snapshot key.
 func (sm *SnapManager) GetSnapshotForApplying(snapKey SnapKey) (Snapshot, error) {
 	snap, err := NewSnapForApplying(sm.base, snapKey, sm.snapSize, sm)
 	if err != nil {
@@ -257,6 +270,7 @@ func (sm *SnapManager) GetSnapshotForApplying(snapKey SnapKey) (Snapshot, error)
 	return snap, nil
 }
 
+// Register registers a snapshot entry with the given snapshot key.
 func (sm *SnapManager) Register(key SnapKey, entry SnapEntry) {
 	log.S().Debugf("register key:%s, entry:%d", key, entry)
 	sm.registryLock.Lock()
@@ -275,6 +289,7 @@ func (sm *SnapManager) Register(key SnapKey, entry SnapEntry) {
 	notifyStats(sm.router)
 }
 
+// Deregister deregisters a snapshot entry with the given snapshot key.
 func (sm *SnapManager) Deregister(key SnapKey, entry SnapEntry) {
 	log.S().Debugf("deregister key:%s, entry:%s", key, entry)
 	sm.registryLock.Lock()
@@ -302,6 +317,7 @@ func (sm *SnapManager) Deregister(key SnapKey, entry SnapEntry) {
 	log.S().Warnf("stale deregister key:%s, entry:%s", key, entry)
 }
 
+// Stats returns the snapshot stats of the SnapManager.
 func (sm *SnapManager) Stats() SnapStats {
 	sm.registryLock.RLock()
 	defer sm.registryLock.RUnlock()
@@ -326,6 +342,7 @@ func (sm *SnapManager) Stats() SnapStats {
 	return SnapStats{SendingCount: sendingCount, ReceivingCount: receivingCount}
 }
 
+// DeleteSnapshot deletes a snapshot.
 func (sm *SnapManager) DeleteSnapshot(key SnapKey, snapshot Snapshot, checkEntry bool) bool {
 	sm.registryLock.Lock()
 	defer sm.registryLock.Unlock()
@@ -345,15 +362,18 @@ func (sm *SnapManager) DeleteSnapshot(key SnapKey, snapshot Snapshot, checkEntry
 	return true
 }
 
+// SnapManagerBuilder represents a snapshot manager builder.
 type SnapManagerBuilder struct {
 	maxTotalSize uint64
 }
 
+// MaxTotalSize returns the max total size of the SnapManagerBuilder.
 func (smb *SnapManagerBuilder) MaxTotalSize(v uint64) *SnapManagerBuilder {
 	smb.maxTotalSize = v
 	return smb
 }
 
+// Build builds a router with the given path.
 func (smb *SnapManagerBuilder) Build(path string, router *router) *SnapManager {
 	var maxTotalSize uint64 = math.MaxUint64
 	if smb.maxTotalSize > 0 {

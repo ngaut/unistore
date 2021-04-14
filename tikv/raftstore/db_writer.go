@@ -226,7 +226,8 @@ func (writer *raftDBWriter) DeleteRange(startKey, endKey []byte, latchHandle mvc
 	return nil // TODO: stub
 }
 
-func NewDBWriter(conf *config.Config, router *RaftstoreRouter) mvcc.DBWriter {
+// NewDBWriter creates a new mvcc.DBWriter.
+func NewDBWriter(conf *config.Config, router *Router) mvcc.DBWriter {
 	return &raftDBWriter{
 		router:           router.router,
 		useCustomRaftLog: conf.RaftStore.CustomRaftLog,
@@ -240,12 +241,15 @@ type TestRaftWriter struct {
 	engine   *Engines
 }
 
+// Open implements the mvcc.DBWriter Open method.
 func (w *TestRaftWriter) Open() {
 }
 
+// Close implements the mvcc.DBWriter Close method.
 func (w *TestRaftWriter) Close() {
 }
 
+// Write implements the mvcc.DBWriter Write method.
 func (w *TestRaftWriter) Write(batch mvcc.WriteBatch) error {
 	raftWriteBatch := batch.(*customWriteBatch)
 	raftLog := raftWriteBatch.builder.Build()
@@ -259,14 +263,17 @@ func (w *TestRaftWriter) Write(batch mvcc.WriteBatch) error {
 	return nil
 }
 
+// DeleteRange implements the mvcc.DBWriter DeleteRange method.
 func (w *TestRaftWriter) DeleteRange(start, end []byte, latchHandle mvcc.LatchHandle) error {
 	return nil
 }
 
+// NewWriteBatch implements the mvcc.DBWriter NewWriteBatch method.
 func (w *TestRaftWriter) NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Context) mvcc.WriteBatch {
 	return NewCustomWriteBatch(startTS, commitTS, ctx)
 }
 
+// NewTestRaftWriter creates a new mvcc.DBWriter with the given *mvcc.DBBundle and *Engines.
 func NewTestRaftWriter(dbBundle *mvcc.DBBundle, engine *Engines) mvcc.DBWriter {
 	writer := &TestRaftWriter{
 		dbBundle: dbBundle,
@@ -315,6 +322,7 @@ func (wb *customWriteBatch) PessimisticRollback(key []byte) {
 	wb.builder.AppendPessimisticRollback(key)
 }
 
+// NewCustomWriteBatch returns a new mvcc.WriteBatch.
 func NewCustomWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Context) mvcc.WriteBatch {
 	header := raftlog.CustomHeader{
 		RegionID: ctx.RegionId,

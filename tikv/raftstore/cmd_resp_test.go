@@ -30,22 +30,22 @@ func TestCmdResp(t *testing.T) {
 	BindRespTerm(resp, term)
 	assert.Equal(t, resp.Header.CurrentTerm, term)
 
-	regionId := uint64(2)
-	notLeader := &ErrNotLeader{RegionId: regionId}
+	regionID := uint64(2)
+	notLeader := &ErrNotLeader{RegionID: regionID}
 	BindRespError(resp, notLeader)
 	require.NotNil(t, resp.Header.Error.NotLeader)
-	assert.Equal(t, resp.Header.Error.NotLeader.RegionId, regionId)
+	assert.Equal(t, resp.Header.Error.NotLeader.RegionId, regionID)
 
 	resp = ErrResp(notLeader)
 	require.NotNil(t, resp.Header.Error.NotLeader)
-	assert.Equal(t, resp.Header.Error.NotLeader.RegionId, regionId)
+	assert.Equal(t, resp.Header.Error.NotLeader.RegionId, regionID)
 
 	resp = ErrRespWithTerm(notLeader, term)
 	require.NotNil(t, resp.Header.Error.NotLeader)
 	assert.Equal(t, resp.Header.CurrentTerm, term)
-	assert.Equal(t, resp.Header.Error.NotLeader.RegionId, regionId)
+	assert.Equal(t, resp.Header.Error.NotLeader.RegionId, regionID)
 
-	resp = ErrRespRegionNotFound(regionId)
+	resp = ErrRespRegionNotFound(regionID)
 	require.NotNil(t, resp.Header.Error.RegionNotFound)
-	assert.Equal(t, resp.Header.Error.RegionNotFound.RegionId, regionId)
+	assert.Equal(t, resp.Header.Error.RegionNotFound.RegionId, regionID)
 }

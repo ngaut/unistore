@@ -33,30 +33,36 @@ import (
 	"github.com/zhangjinpeng1987/raft"
 )
 
+// ReadyICPair represents a ready IC pair.
 type ReadyICPair struct {
 	Ready raft.Ready
 	IC    *InvokeContext
 }
 
+// StaleState represents a stale state.
 type StaleState int
 
+// StaleState
 const (
 	StaleStateValid StaleState = 0 + iota
 	StaleStateToValidate
 	StaleStateLeaderMissing
 )
 
+// ReqCbPair represents a request callback pair.
 type ReqCbPair struct {
 	Req *raft_cmdpb.RaftCmdRequest
 	Cb  *Callback
 }
 
+// ReadIndexRequest defines a ReadIndex request.
 type ReadIndexRequest struct {
 	id             uint64
 	cmds           []*ReqCbPair
 	renewLeaseTime *time.Time
 }
 
+// NewReadIndexRequest creates a new ReadIndexRequest.
 func NewReadIndexRequest(id uint64, cmds []*ReqCbPair, renewLeaseTime *time.Time) *ReadIndexRequest {
 	return &ReadIndexRequest{
 		id:             id,
@@ -65,18 +71,20 @@ func NewReadIndexRequest(id uint64, cmds []*ReqCbPair, renewLeaseTime *time.Time
 	}
 }
 
-func (r *ReadIndexRequest) binaryId() []byte {
+func (r *ReadIndexRequest) binaryID() []byte {
 	var buf = make([]byte, 8)
 	binary.BigEndian.PutUint64(buf, r.id)
 	return buf
 }
 
+// ReadIndexQueue defines a ReadIndex queue.
 type ReadIndexQueue struct {
 	idAllocator uint64
 	reads       []*ReadIndexRequest
 	readyCnt    int
 }
 
+// PopFront pops the front ReadIndexRequest from the ReadIndex queue.
 func (q *ReadIndexQueue) PopFront() *ReadIndexRequest {
 	if len(q.reads) > 0 {
 		req := q.reads[0]
@@ -86,24 +94,28 @@ func (q *ReadIndexQueue) PopFront() *ReadIndexRequest {
 	return nil
 }
 
+// NotifyStaleReq notifies the callback with a RaftCmdResponse which is bound to the ErrStaleCommand and the term.
 func NotifyStaleReq(term uint64, cb *Callback) {
 	cb.Done(ErrRespStaleCommand(term))
 }
 
-func NotifyReqRegionRemoved(regionId uint64, cb *Callback) {
-	regionNotFound := &ErrRegionNotFound{RegionId: regionId}
+// NotifyReqRegionRemoved notifies the callback with a RaftCmdResponse which is bound to the ErrRegionNotFound.
+func NotifyReqRegionRemoved(regionID uint64, cb *Callback) {
+	regionNotFound := &ErrRegionNotFound{RegionID: regionID}
 	resp := ErrResp(regionNotFound)
 	cb.Done(resp)
 }
 
-func (r *ReadIndexQueue) NextId() uint64 {
-	r.idAllocator += 1
-	return r.idAllocator
+// NextID returns the next id.
+func (q *ReadIndexQueue) NextID() uint64 {
+	q.idAllocator++
+	return q.idAllocator
 }
 
-func (r *ReadIndexQueue) ClearUncommitted(term uint64) {
-	uncommitted := r.reads[r.readyCnt:]
-	r.reads = r.reads[:r.readyCnt]
+// ClearUncommitted clears the uncommitted ReadIndex requests.
+func (q *ReadIndexQueue) ClearUncommitted(term uint64) {
+	uncommitted := q.reads[q.readyCnt:]
+	q.reads = q.reads[:q.readyCnt]
 	for _, read := range uncommitted {
 		for _, reqCbPair := range read.cmds {
 			NotifyStaleReq(term, reqCbPair.Cb)
@@ -112,16 +124,19 @@ func (r *ReadIndexQueue) ClearUncommitted(term uint64) {
 	}
 }
 
+// ProposalMeta represents a proposal meta.
 type ProposalMeta struct {
 	Index          uint64
 	Term           uint64
 	RenewLeaseTime *time.Time
 }
 
+// ProposalQueue represents a proposal queue.
 type ProposalQueue struct {
 	queue []*ProposalMeta
 }
 
+// PopFront pops the front ProposalMeta from the proposal queue.
 func (q *ProposalQueue) PopFront(term uint64) *ProposalMeta {
 	if len(q.queue) == 0 || q.queue[0].Term > term {
 		return nil
@@ -131,10 +146,12 @@ func (q *ProposalQueue) PopFront(term uint64) *ProposalMeta {
 	return meta
 }
 
+// Push pushes the ProposalMeta to the proposal queue.
 func (q *ProposalQueue) Push(meta *ProposalMeta) {
 	q.queue = append(q.queue, meta)
 }
 
+// Clear clears the proposal queue.
 func (q *ProposalQueue) Clear() {
 	for i := range q.queue {
 		q.queue[i] = nil
@@ -142,18 +159,22 @@ func (q *ProposalQueue) Clear() {
 	q.queue = q.queue[:0]
 }
 
+// ProposalContext
 const (
-	ProposalContext_SyncLog      ProposalContext = 1
-	ProposalContext_Split        ProposalContext = 1 << 1
-	ProposalContext_PrepareMerge ProposalContext = 1 << 2
+	ProposalContextSyncLog      ProposalContext = 1
+	ProposalContextSplit        ProposalContext = 1 << 1
+	ProposalContextPrepareMerge ProposalContext = 1 << 2
 )
 
+// ProposalContext represents a proposal context.
 type ProposalContext byte
 
+// ToBytes converts the ProposalContext to bytes.
 func (c ProposalContext) ToBytes() []byte {
 	return []byte{byte(c)}
 }
 
+// NewProposalContextFromBytes creates a ProposalContext with the given bytes.
 func NewProposalContextFromBytes(ctx []byte) *ProposalContext {
 	var res ProposalContext
 	l := len(ctx)
@@ -175,45 +196,50 @@ func (c *ProposalContext) insert(flag ProposalContext) {
 	*c |= flag
 }
 
+// PeerStat represents a peer stat.
 type PeerStat struct {
 	WrittenBytes uint64
 	WrittenKeys  uint64
 }
 
-/// A struct that stores the state to wait for `PrepareMerge` apply result.
-///
-/// When handling the apply result of a `CommitMerge`, the source peer may have
-/// not handle the apply result of the `PrepareMerge`, so the target peer has
-/// to abort current handle process and wait for it asynchronously.
+// WaitApplyResultState is a struct that stores the state to wait for `PrepareMerge` apply result.
+//
+// When handling the apply result of a `CommitMerge`, the source peer may have
+// not handle the apply result of the `PrepareMerge`, so the target peer has
+// to abort current handle process and wait for it asynchronously.
 type WaitApplyResultState struct {
-	/// The following apply results waiting to be handled, including the `CommitMerge`.
-	/// These will be handled once `ReadyToMerge` is true.
+	// The following apply results waiting to be handled, including the `CommitMerge`.
+	// These will be handled once `ReadyToMerge` is true.
 	results []*applyTaskRes
-	/// It is used by target peer to check whether the apply result of `PrepareMerge` is handled.
+	// It is used by target peer to check whether the apply result of `PrepareMerge` is handled.
 	readyToMerge *uint32
 }
 
+// RecentAddedPeer represents a recent added peer.
 type RecentAddedPeer struct {
 	RejectDurationAsSecs uint64
-	Id                   uint64
+	ID                   uint64
 	AddedTime            time.Time
 }
 
+// NewRecentAddedPeer returns a new RecentAddedPeer.
 func NewRecentAddedPeer(rejectDurationAsSecs uint64) *RecentAddedPeer {
 	return &RecentAddedPeer{
 		RejectDurationAsSecs: rejectDurationAsSecs,
-		Id:                   0,
+		ID:                   0,
 		AddedTime:            time.Now(),
 	}
 }
 
+// Update updates the id and time for the RecentAddedPeer.
 func (r *RecentAddedPeer) Update(id uint64, now time.Time) {
-	r.Id = id
+	r.ID = id
 	r.AddedTime = now
 }
 
+// Contains returns true if the given id is equal to the RecentAddedPeer ID and elapsed time is before rejected time.
 func (r *RecentAddedPeer) Contains(id uint64) bool {
-	if r.Id == id {
+	if r.ID == id {
 		now := time.Now()
 		elapsedSecs := now.Sub(r.AddedTime).Seconds()
 		return uint64(elapsedSecs) < r.RejectDurationAsSecs
@@ -221,7 +247,7 @@ func (r *RecentAddedPeer) Contains(id uint64) bool {
 	return false
 }
 
-/// `ConsistencyState` is used for consistency check.
+// ConsistencyState is used for consistency check.
 type ConsistencyState struct {
 	LastCheckTime time.Time
 	// (computed_result_or_to_be_verified, index, hash)
@@ -229,16 +255,18 @@ type ConsistencyState struct {
 	Hash  []byte
 }
 
+// DestroyPeerJob defines a job which is used to destroy a peer.
 type DestroyPeerJob struct {
 	Initialized bool
 	AsyncRemove bool
-	RegionId    uint64
+	RegionID    uint64
 	Peer        *metapb.Peer
 }
 
+// Peer represents a peer.
 type Peer struct {
 	Meta           *metapb.Peer
-	regionId       uint64
+	regionID       uint64
 	RaftGroup      *raft.RawNode
 	peerStorage    *PeerStorage
 	proposals      *ProposalQueue
@@ -250,18 +278,18 @@ type Peer struct {
 	// Record the last instant of each peer's heartbeat response.
 	PeerHeartbeats map[uint64]time.Time
 
-	/// Record the instants of peers being added into the configuration.
-	/// Remove them after they are not pending any more.
+	// Record the instants of peers being added into the configuration.
+	// Remove them after they are not pending any more.
 	PeersStartPendingTime map[uint64]time.Time
 	RecentAddedPeer       *RecentAddedPeer
 
-	/// an inaccurate difference in region size since last reset.
+	// an inaccurate difference in region size since last reset.
 	SizeDiffHint uint64
-	/// delete keys' count since last reset.
+	// delete keys' count since last reset.
 	deleteKeysHint uint64
-	/// approximate size of the region.
+	// approximate size of the region.
 	ApproximateSize *uint64
-	/// approximate keys of the region.
+	// approximate keys of the region.
 	ApproximateKeys         *uint64
 	CompactionDeclinedBytes uint64
 
@@ -294,7 +322,8 @@ type Peer struct {
 	PeerStat                PeerStat
 }
 
-func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Region, regionSched chan<- task,
+// NewPeer creates a new peer.
+func NewPeer(storeID uint64, cfg *Config, engines *Engines, region *metapb.Region, regionSched chan<- task,
 	peer *metapb.Peer) (*Peer, error) {
 	if peer.GetId() == InvalidID {
 		return nil, fmt.Errorf("invalid peer id")
@@ -327,7 +356,7 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 	now := time.Now()
 	p := &Peer{
 		Meta:                  peer,
-		regionId:              region.GetId(),
+		regionID:              region.GetId(),
 		RaftGroup:             raftGroup,
 		peerStorage:           ps,
 		proposals:             new(ProposalQueue),
@@ -347,13 +376,13 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 		leaderLease:           NewLease(cfg.RaftStoreMaxLeaderLease),
 	}
 
-	p.leaderChecker.peerID = p.PeerId()
+	p.leaderChecker.peerID = p.PeerID()
 	p.leaderChecker.region = unsafe.Pointer(region)
 	p.leaderChecker.term.Store(p.Term())
 	p.leaderChecker.appliedIndexTerm.Store(ps.appliedIndexTerm)
 
 	// If this region has only one peer and I am the one, campaign directly.
-	if len(region.GetPeers()) == 1 && region.GetPeers()[0].GetStoreId() == storeId {
+	if len(region.GetPeers()) == 1 && region.GetPeers()[0].GetStoreId() == storeID {
 		err = p.RaftGroup.Campaign()
 		if err != nil {
 			return nil, err
@@ -366,7 +395,7 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 func (p *Peer) getEventContext() *PeerEventContext {
 	return &PeerEventContext{
 		LeaderChecker: &p.leaderChecker,
-		RegionId:      p.regionId,
+		RegionID:      p.regionID,
 	}
 }
 
@@ -391,17 +420,17 @@ func (p *Peer) getPeerFromCache(peerID uint64) *metapb.Peer {
 	return nil
 }
 
-/// Register self to applyMsgs so that the peer is then usable.
-/// Also trigger `RegionChangeEvent::Create` here.
+// Activate registers self to applyMsgs so that the peer is then usable.
+// Also trigger `RegionChangeEvent::Create` here.
 func (p *Peer) Activate(applyMsgs *applyMsgs) {
-	applyMsgs.appendMsg(p.regionId, NewMsg(MsgTypeApplyRegistration, newRegistration(p)))
+	applyMsgs.appendMsg(p.regionID, NewMsg(MsgTypeApplyRegistration, newRegistration(p)))
 }
 
 func (p *Peer) nextProposalIndex() uint64 {
 	return p.RaftGroup.Raft.RaftLog.LastIndex() + 1
 }
 
-/// Tries to destroy itself. Returns a job (if needed) to do more cleaning tasks.
+// MaybeDestroy tries to destroy itself. Returns a job (if needed) to do more cleaning tasks.
 func (p *Peer) MaybeDestroy() *DestroyPeerJob {
 	if p.PendingRemove {
 		log.S().Infof("%v is being destroyed, skip", p.Tag)
@@ -425,15 +454,15 @@ func (p *Peer) MaybeDestroy() *DestroyPeerJob {
 	return &DestroyPeerJob{
 		AsyncRemove: asyncRemove,
 		Initialized: initialized,
-		RegionId:    p.regionId,
+		RegionID:    p.regionID,
 		Peer:        p.Meta,
 	}
 }
 
-/// Does the real destroy task which includes:
-/// 1. Set the region to tombstone;
-/// 2. Clear data;
-/// 3. Notify all pending requests.
+// Destroy does the real destroy task which includes:
+// 1. Set the region to tombstone;
+// 2. Clear data;
+// 3. Notify all pending requests.
 func (p *Peer) Destroy(engine *Engines, keepData bool) error {
 	start := time.Now()
 	region := p.Region()
@@ -488,14 +517,15 @@ func (p *Peer) isInitialized() bool {
 	return p.peerStorage.isInitialized()
 }
 
+// Region returns the region of the peer.
 func (p *Peer) Region() *metapb.Region {
 	return p.peerStorage.Region()
 }
 
-/// Set the region of a peer.
-///
-/// This will update the region of the peer, caller must ensure the region
-/// has been preserved in a durable device.
+// SetRegion sets the region of the peer.
+//
+// This will update the region of the peer, caller must ensure the region
+// has been preserved in a durable device.
 func (p *Peer) SetRegion(region *metapb.Region) {
 	if p.Region().GetRegionEpoch().GetVersion() < region.GetRegionEpoch().GetVersion() {
 		// Epoch version changed, disable read on the localreader for this region.
@@ -510,39 +540,47 @@ func (p *Peer) SetRegion(region *metapb.Region) {
 	}
 }
 
-func (p *Peer) PeerId() uint64 {
+// PeerID returns the peer id.
+func (p *Peer) PeerID() uint64 {
 	return p.Meta.GetId()
 }
 
+// GetRaftStatus gets the raft status.
 func (p *Peer) GetRaftStatus() *raft.Status {
 	return p.RaftGroup.Status()
 }
 
-func (p *Peer) LeaderId() uint64 {
+// LeaderID returns the leader id of the raft group.
+func (p *Peer) LeaderID() uint64 {
 	return p.RaftGroup.Raft.Lead
 }
 
+// IsLeader returns whether the state type is leader or not.
 func (p *Peer) IsLeader() bool {
 	return p.RaftGroup.Raft.State == raft.StateLeader
 }
 
+// GetRole gets the raft state type.
 func (p *Peer) GetRole() raft.StateType {
 	return p.RaftGroup.Raft.State
 }
 
+// Store returns the peer storage.
 func (p *Peer) Store() *PeerStorage {
 	return p.peerStorage
 }
 
+// IsApplyingSnapshot returns whether the peer is applying a snapshot or not.
 func (p *Peer) IsApplyingSnapshot() bool {
 	return p.Store().IsApplyingSnapshot()
 }
 
-/// Returns `true` if the raft group has replicated a snapshot but not committed it yet.
+// HasPendingSnapshot returns `true` if the raft group has replicated a snapshot but not committed it yet.
 func (p *Peer) HasPendingSnapshot() bool {
 	return p.RaftGroup.GetSnap() != nil
 }
 
+// Send sends messages to the transport.
 func (p *Peer) Send(trans Transport, msgs []eraftpb.Message) error {
 	for _, msg := range msgs {
 		msgType := msg.MsgType
@@ -565,20 +603,20 @@ func (p *Peer) Send(trans Transport, msgs []eraftpb.Message) error {
 	return nil
 }
 
-/// Steps the raft message.
+// Step steps the raft message.
 func (p *Peer) Step(m *eraftpb.Message) error {
 	if p.IsLeader() && m.GetFrom() != InvalidID {
 		p.PeerHeartbeats[m.GetFrom()] = time.Now()
 		// As the leader we know we are not missing.
 		p.leaderMissingTime = nil
-	} else if m.GetFrom() == p.LeaderId() {
+	} else if m.GetFrom() == p.LeaderID() {
 		// As another role know we're not missing.
 		p.leaderMissingTime = nil
 	}
 	return p.RaftGroup.Step(*m)
 }
 
-/// Checks and updates `peer_heartbeats` for the peer.
+// CheckPeers checks and updates `peer_heartbeats` for the peer.
 func (p *Peer) CheckPeers() {
 	if !p.IsLeader() {
 		if len(p.PeerHeartbeats) > 0 {
@@ -599,7 +637,7 @@ func (p *Peer) CheckPeers() {
 	}
 }
 
-/// Collects all down peers.
+// CollectDownPeers collects all down peers.
 func (p *Peer) CollectDownPeers(maxDuration time.Duration) []*pdpb.PeerStats {
 	downPeers := make([]*pdpb.PeerStats, 0)
 	for _, peer := range p.Region().GetPeers() {
@@ -620,7 +658,7 @@ func (p *Peer) CollectDownPeers(maxDuration time.Duration) []*pdpb.PeerStats {
 	return downPeers
 }
 
-/// Collects all pending peers and update `peers_start_pending_time`.
+// CollectPendingPeers collects all pending peers and update `peers_start_pending_time`.
 func (p *Peer) CollectPendingPeers() []*metapb.Peer {
 	pendingPeers := make([]*metapb.Peer, 0, len(p.Region().GetPeers()))
 	status := p.RaftGroup.Status()
@@ -651,9 +689,9 @@ func (p *Peer) clearPeersStartPendingTime() {
 	}
 }
 
-/// Returns `true` if any new peer catches up with the leader in replicating logs.
-/// And updates `PeersStartPendingTime` if needed.
-func (p *Peer) AnyNewPeerCatchUp(peerId uint64) bool {
+// AnyNewPeerCatchUp returns `true` if any new peer catches up with the leader in replicating logs.
+// And updates `PeersStartPendingTime` if needed.
+func (p *Peer) AnyNewPeerCatchUp(peerID uint64) bool {
 	if len(p.PeersStartPendingTime) == 0 {
 		return false
 	}
@@ -661,17 +699,17 @@ func (p *Peer) AnyNewPeerCatchUp(peerId uint64) bool {
 		p.clearPeersStartPendingTime()
 		return false
 	}
-	if startPendingTime, ok := p.PeersStartPendingTime[peerId]; ok {
+	if startPendingTime, ok := p.PeersStartPendingTime[peerID]; ok {
 		truncatedIdx := p.Store().truncatedIndex()
-		progress, ok := p.RaftGroup.Raft.Prs[peerId]
+		progress, ok := p.RaftGroup.Raft.Prs[peerID]
 		if !ok {
-			progress, ok = p.RaftGroup.Raft.LearnerPrs[peerId]
+			progress, ok = p.RaftGroup.Raft.LearnerPrs[peerID]
 		}
 		if ok {
 			if progress.Match >= truncatedIdx {
-				delete(p.PeersStartPendingTime, peerId)
+				delete(p.PeersStartPendingTime, peerID)
 				elapsed := time.Since(startPendingTime)
-				log.S().Debugf("%v peer %v has caught up logs, elapsed: %v", p.Tag, peerId, elapsed)
+				log.S().Debugf("%v peer %v has caught up logs, elapsed: %v", p.Tag, peerID, elapsed)
 				return true
 			}
 		}
@@ -679,6 +717,7 @@ func (p *Peer) AnyNewPeerCatchUp(peerId uint64) bool {
 	return false
 }
 
+// CheckStaleState checks the stale state of the peer.
 func (p *Peer) CheckStaleState(cfg *Config) StaleState {
 	if p.IsLeader() {
 		// Leaders always have valid state.
@@ -699,24 +738,24 @@ func (p *Peer) CheckStaleState(cfg *Config) StaleState {
 		now := time.Now()
 		p.leaderMissingTime = &now
 		return StaleStateValid
-	} else {
-		elapsed := time.Since(*p.leaderMissingTime)
-		if elapsed >= cfg.MaxLeaderMissingDuration {
-			// Resets the `leader_missing_time` to avoid sending the same tasks to
-			// PD worker continuously during the leader missing timeout.
-			now := time.Now()
-			p.leaderMissingTime = &now
-			return StaleStateToValidate
-		} else if elapsed >= cfg.AbnormalLeaderMissingDuration && !naivePeer {
-			// A peer is considered as in the leader missing state
-			// if it's initialized but is isolated from its leader or
-			// something bad happens that the raft group can not elect a leader.
-			return StaleStateLeaderMissing
-		}
-		return StaleStateValid
 	}
+	elapsed := time.Since(*p.leaderMissingTime)
+	if elapsed >= cfg.MaxLeaderMissingDuration {
+		// Resets the `leader_missing_time` to avoid sending the same tasks to
+		// PD worker continuously during the leader missing timeout.
+		now := time.Now()
+		p.leaderMissingTime = &now
+		return StaleStateToValidate
+	} else if elapsed >= cfg.AbnormalLeaderMissingDuration && !naivePeer {
+		// A peer is considered as in the leader missing state
+		// if it's initialized but is isolated from its leader or
+		// something bad happens that the raft group can not elect a leader.
+		return StaleStateLeaderMissing
+	}
+	return StaleStateValid
 }
 
+// OnRoleChanged will be invoked after peer state has changed
 func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 	ss := ready.SoftState
 	if ss != nil {
@@ -733,14 +772,15 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 			if !p.PendingRemove {
 				p.leaderChecker.term.Store(p.Term())
 			}
-			observer.OnRoleChange(p.getEventContext().RegionId, ss.RaftState)
+			observer.OnRoleChange(p.getEventContext().RegionID, ss.RaftState)
 		} else if ss.RaftState == raft.StateFollower {
 			p.leaderLease.Expire()
-			observer.OnRoleChange(p.getEventContext().RegionId, ss.RaftState)
+			observer.OnRoleChange(p.getEventContext().RegionID, ss.RaftState)
 		}
 	}
 }
 
+// ReadyToHandlePendingSnap returns a boolean value indicating whether the peer is ready to handle a pending snapshot.
 func (p *Peer) ReadyToHandlePendingSnap() bool {
 	// If apply worker is still working, written apply state may be overwritten
 	// by apply worker. So we have to wait here.
@@ -771,15 +811,16 @@ func (p *Peer) isMerging() bool {
 	return p.lastCommittedPrepareMergeIdx > p.Store().AppliedIndex() || p.PendingMergeState != nil
 }
 
-func (p *Peer) TakeApplyProposals() *regionProposal {
+func (p *Peer) takeApplyProposals() *regionProposal {
 	if len(p.applyProposals) == 0 {
 		return nil
 	}
 	props := p.applyProposals
 	p.applyProposals = nil
-	return newRegionProposal(p.PeerId(), p.regionId, props)
+	return newRegionProposal(p.PeerID(), p.regionID, props)
 }
 
+// HandleRaftReadyAppend returns a ready IC pair
 func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, kvWB, raftWB *WriteBatch, observer PeerEventObserver) *ReadyICPair {
 	if p.PendingRemove {
 		return nil
@@ -806,7 +847,7 @@ func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, kvWB
 	}
 
 	if p.peerStorage.genSnapTask != nil {
-		applyMsgs.appendMsg(p.regionId, Msg{
+		applyMsgs.appendMsg(p.regionID, Msg{
 			Type: MsgTypeApplySnapshot,
 			Data: p.peerStorage.genSnapTask,
 		})
@@ -844,6 +885,7 @@ func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, kvWB
 	return &ReadyICPair{Ready: ready, IC: invokeCtx}
 }
 
+// PostRaftReadyPersistent updates the memory state after ready changes are flushed to disk successfully.
 func (p *Peer) PostRaftReadyPersistent(trans Transport, applyMsgs *applyMsgs, ready *raft.Ready, invokeCtx *InvokeContext) *ApplySnapResult {
 	if invokeCtx.hasSnapshot() {
 		// When apply snapshot, there is no log applied and not compacted yet.
@@ -887,7 +929,7 @@ func (p *Peer) PostRaftReadyPersistent(trans Transport, applyMsgs *applyMsgs, re
 	return applySnapResult
 }
 
-// Try to renew leader lease.
+// MaybeRenewLeaderLease tries to renew leader lease.
 func (p *Peer) MaybeRenewLeaderLease(ts time.Time) {
 	// A non-leader peer should never has leader lease.
 	// A splitting leader should not renew its lease.
@@ -906,6 +948,7 @@ func (p *Peer) MaybeRenewLeaderLease(ts time.Time) {
 	}
 }
 
+// MaybeCampaign tries to campaign.
 func (p *Peer) MaybeCampaign(parentIsLeader bool) bool {
 	// The peer campaigned when it was created, no need to do it again.
 	if len(p.Region().GetPeers()) <= 1 || !parentIsLeader {
@@ -930,14 +973,17 @@ func (p *Peer) findProposeTime(index, term uint64) *time.Time {
 	}
 }
 
+// Term returns the term of the raft.
 func (p *Peer) Term() uint64 {
 	return p.RaftGroup.Raft.Term
 }
 
+// Stop cancels the task of applying a snapshot.
 func (p *Peer) Stop() {
 	p.Store().CancelApplyingSnap()
 }
 
+// HeartbeatPd adds a region heartbeat task to the pd scheduler.
 func (p *Peer) HeartbeatPd(pdScheduler chan<- task) {
 	pdScheduler <- task{
 		tp: taskTypePDHeartbeat,
@@ -956,7 +1002,7 @@ func (p *Peer) HeartbeatPd(pdScheduler chan<- task) {
 
 func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	sendMsg := new(rspb.RaftMessage)
-	sendMsg.RegionId = p.regionId
+	sendMsg.RegionId = p.regionID
 	// set current epoch
 	sendMsg.RegionEpoch = &metapb.RegionEpoch{
 		ConfVer: p.Region().RegionEpoch.ConfVer,
@@ -966,7 +1012,7 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	fromPeer := *p.Meta
 	toPeer := p.getPeerFromCache(msg.To)
 	if toPeer == nil {
-		return fmt.Errorf("failed to lookup recipient peer %v in region %v", msg.To, p.regionId)
+		return fmt.Errorf("failed to lookup recipient peer %v in region %v", msg.To, p.regionID)
 	}
 	log.S().Debugf("%v, send raft msg %v from %v to %v", p.Tag, msg.MsgType, fromPeer.Id, toPeer.Id)
 
@@ -989,6 +1035,7 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	return trans.Send(sendMsg)
 }
 
+// HandleRaftReadyApply handles raft ready apply msgs.
 func (p *Peer) HandleRaftReadyApply(kv *mvcc.DBBundle, applyMsgs *applyMsgs, ready *raft.Ready) {
 	// Call `HandleRaftCommittedEntries` directly here may lead to inconsistency.
 	// In some cases, there will be some pending committed entries when applying a
@@ -1026,7 +1073,7 @@ func (p *Peer) HandleRaftReadyApply(kv *mvcc.DBBundle, applyMsgs *applyMsgs, rea
 			if entry.Term == p.Term() && (splitToBeUpdated || mergeToBeUpdated) {
 				//ctx := NewProposalContextFromBytes(entry.Context)
 				proposalCtx := NewProposalContextFromBytes([]byte{0})
-				if splitToBeUpdated && proposalCtx.contains(ProposalContext_Split) {
+				if splitToBeUpdated && proposalCtx.contains(ProposalContextSplit) {
 					// We dont need to suspect its lease because peers of new region that
 					// in other store do not start election before theirs election timeout
 					// which is longer than the max leader lease.
@@ -1035,7 +1082,7 @@ func (p *Peer) HandleRaftReadyApply(kv *mvcc.DBBundle, applyMsgs *applyMsgs, rea
 					p.lastCommittedSplitIdx = entry.Index
 					splitToBeUpdated = false
 				}
-				if mergeToBeUpdated && proposalCtx.contains(ProposalContext_PrepareMerge) {
+				if mergeToBeUpdated && proposalCtx.contains(ProposalContextPrepareMerge) {
 					// We committed prepare merge, to prevent unsafe read index,
 					// we must record its index.
 					p.lastCommittedPrepareMergeIdx = entry.Index
@@ -1058,11 +1105,11 @@ func (p *Peer) HandleRaftReadyApply(kv *mvcc.DBBundle, applyMsgs *applyMsgs, rea
 				p.lastUrgentProposalIdx = math.MaxUint64
 			}
 			apply := &apply{
-				regionId: p.regionId,
+				regionID: p.regionID,
 				term:     p.Term(),
 				entries:  committedEntries,
 			}
-			applyMsgs.appendMsg(p.regionId, newApplyMsg(apply))
+			applyMsgs.appendMsg(p.regionID, newApplyMsg(apply))
 		}
 	}
 
@@ -1076,6 +1123,7 @@ func (p *Peer) HandleRaftReadyApply(kv *mvcc.DBBundle, applyMsgs *applyMsgs, rea
 	}
 }
 
+// ApplyReads applies reads.
 func (p *Peer) ApplyReads(kv *mvcc.DBBundle, ready *raft.Ready) {
 	var proposeTime *time.Time
 	if p.readyToHandleRead() {
@@ -1084,8 +1132,8 @@ func (p *Peer) ApplyReads(kv *mvcc.DBBundle, ready *raft.Ready) {
 			if read == nil {
 				panic("read should exist")
 			}
-			if bytes.Compare(state.RequestCtx, read.binaryId()) != 0 {
-				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.binaryId()))
+			if bytes.Compare(state.RequestCtx, read.binaryID()) != 0 {
+				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.binaryID()))
 			}
 			for _, reqCb := range read.cmds {
 				resp := p.handleRead(kv, reqCb.Req, true)
@@ -1097,10 +1145,10 @@ func (p *Peer) ApplyReads(kv *mvcc.DBBundle, ready *raft.Ready) {
 	} else {
 		for _, state := range ready.ReadStates {
 			read := p.pendingReads.reads[p.pendingReads.readyCnt]
-			if bytes.Compare(state.RequestCtx, read.binaryId()) != 0 {
-				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.binaryId()))
+			if bytes.Compare(state.RequestCtx, read.binaryID()) != 0 {
+				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.binaryID()))
 			}
-			p.pendingReads.readyCnt += 1
+			p.pendingReads.readyCnt++
 			proposeTime = read.renewLeaseTime
 		}
 	}
@@ -1115,13 +1163,14 @@ func (p *Peer) ApplyReads(kv *mvcc.DBBundle, ready *raft.Ready) {
 	if proposeTime != nil {
 		// `propose_time` is a placeholder, here cares about `Suspect` only,
 		// and if it is in `Suspect` phase, the actual timestamp is useless.
-		if p.leaderLease.Inspect(proposeTime) == LeaseState_Suspect {
+		if p.leaderLease.Inspect(proposeTime) == LeaseStateSuspect {
 			return
 		}
 		p.MaybeRenewLeaderLease(*proposeTime)
 	}
 }
 
+// PostApply returns a boolean value indicating whether the peer has ready.
 func (p *Peer) PostApply(kv *mvcc.DBBundle, applyState applyState, appliedIndexTerm uint64, merged bool, applyMetrics applyMetrics) bool {
 	hasReady := false
 	if p.IsApplyingSnapshot() {
@@ -1173,8 +1222,8 @@ func (p *Peer) PostApply(kv *mvcc.DBBundle, applyState applyState, appliedIndexT
 	return hasReady
 }
 
+// PostSplit resets delete_keys_hint and size_diff_hint.
 func (p *Peer) PostSplit() {
-	// Reset delete_keys_hint and size_diff_hint.
 	p.deleteKeysHint = 0
 	p.SizeDiffHint = 0
 }
@@ -1199,16 +1248,16 @@ func (p *Peer) Propose(kv *mvcc.DBBundle, cfg *Config, cb *Callback, rlog raftlo
 	req := rlog.GetRaftCmdRequest()
 	var idx uint64
 	switch policy {
-	case RequestPolicy_ReadLocal:
+	case RequestPolicyReadLocal:
 		p.readLocal(kv, req, cb)
 		return false
-	case RequestPolicy_ReadIndex:
+	case RequestPolicyReadIndex:
 		return p.readIndex(cfg, req, errResp, cb)
-	case RequestPolicy_ProposeNormal:
+	case RequestPolicyProposeNormal:
 		idx, err = p.ProposeNormal(cfg, rlog)
-	case RequestPolicy_ProposeTransferLeader:
+	case RequestPolicyProposeTransferLeader:
 		return p.ProposeTransferLeader(cfg, req, cb)
-	case RequestPolicy_ProposeConfChange:
+	case RequestPolicyProposeConfChange:
 		isConfChange = true
 		idx, err = p.ProposeConfChange(cfg, req)
 	}
@@ -1234,8 +1283,8 @@ func (p *Peer) Propose(kv *mvcc.DBBundle, cfg *Config, cb *Callback, rlog raftlo
 	return true
 }
 
+// PostPropose tries to renew leader lease on every consistent read/write request.
 func (p *Peer) PostPropose(meta *ProposalMeta, isConfChange bool, cb *Callback) {
-	// Try to renew leader lease on every consistent read/write request.
 	t := time.Now()
 	meta.RenewLeaseTime = &t
 	proposal := &proposal{
@@ -1248,34 +1297,34 @@ func (p *Peer) PostPropose(meta *ProposalMeta, isConfChange bool, cb *Callback) 
 	p.proposals.Push(meta)
 }
 
-/// Count the number of the healthy nodes.
-/// A node is healthy when
-/// 1. it's the leader of the Raft group, which has the latest logs
-/// 2. it's a follower, and it does not lag behind the leader a lot.
-///    If a snapshot is involved between it and the Raft leader, it's not healthy since
-///    it cannot works as a node in the quorum to receive replicating logs from leader.
+// Count the number of the healthy nodes.
+// A node is healthy when
+// 1. it's the leader of the Raft group, which has the latest logs
+// 2. it's a follower, and it does not lag behind the leader a lot.
+//    If a snapshot is involved between it and the Raft leader, it's not healthy since
+//    it cannot works as a node in the quorum to receive replicating logs from leader.
 func (p *Peer) countHealthyNode(progress map[uint64]raft.Progress) int {
 	healthy := 0
 	for _, pr := range progress {
 		if pr.Match >= p.Store().truncatedIndex() {
-			healthy += 1
+			healthy++
 		}
 	}
 	return healthy
 }
 
-/// Validate the `ConfChange` request and check whether it's safe to
-/// propose the specified conf change request.
-/// It's safe iff at least the quorum of the Raft group is still healthy
-/// right after that conf change is applied.
-/// Define the total number of nodes in current Raft cluster to be `total`.
-/// To ensure the above safety, if the cmd is
-/// 1. A `AddNode` request
-///    Then at least '(total + 1)/2 + 1' nodes need to be up to date for now.
-/// 2. A `RemoveNode` request
-///    Then at least '(total - 1)/2 + 1' other nodes (the node about to be removed is excluded)
-///    need to be up to date for now. If 'allow_remove_leader' is false then
-///    the peer to be removed should not be the leader.
+// Validate the `ConfChange` request and check whether it's safe to
+// propose the specified conf change request.
+// It's safe iff at least the quorum of the Raft group is still healthy
+// right after that conf change is applied.
+// Define the total number of nodes in current Raft cluster to be `total`.
+// To ensure the above safety, if the cmd is
+// 1. A `AddNode` request
+//    Then at least '(total + 1)/2 + 1' nodes need to be up to date for now.
+// 2. A `RemoveNode` request
+//    Then at least '(total - 1)/2 + 1' other nodes (the node about to be removed is excluded)
+//    need to be up to date for now. If 'allow_remove_leader' is false then
+//    the peer to be removed should not be the leader.
 func (p *Peer) checkConfChange(cfg *Config, cmd *raft_cmdpb.RaftCmdRequest) error {
 	changePeer := GetChangePeerCmd(cmd)
 	changeType := changePeer.GetChangeType()
@@ -1288,7 +1337,7 @@ func (p *Peer) checkConfChange(cfg *Config, cmd *raft_cmdpb.RaftCmdRequest) erro
 		return fmt.Errorf("invalid conf change request")
 	}
 
-	if changeType == eraftpb.ConfChangeType_RemoveNode && !cfg.AllowRemoveLeader && peer.Id == p.PeerId() {
+	if changeType == eraftpb.ConfChangeType_RemoveNode && !cfg.AllowRemoveLeader && peer.Id == p.PeerID() {
 		log.S().Warnf("%s rejects remove leader request %v", p.Tag, changePeer)
 		return fmt.Errorf("ignore remove leader")
 	}
@@ -1337,6 +1386,7 @@ func (p *Peer) checkConfChange(cfg *Config, cmd *raft_cmdpb.RaftCmdRequest) erro
 		changePeer, total, healthy, quorumAfterChange)
 }
 
+// Quorum returns a quorum with the total.
 func Quorum(total int) int {
 	return total/2 + 1
 }
@@ -1348,10 +1398,10 @@ func (p *Peer) transferLeader(peer *metapb.Peer) {
 }
 
 func (p *Peer) readyToTransferLeader(cfg *Config, peer *metapb.Peer) bool {
-	peerId := peer.GetId()
+	peerID := peer.GetId()
 	status := p.RaftGroup.Status()
 
-	if _, ok := status.Progress[peerId]; !ok {
+	if _, ok := status.Progress[peerID]; !ok {
 		return false
 	}
 
@@ -1360,14 +1410,14 @@ func (p *Peer) readyToTransferLeader(cfg *Config, peer *metapb.Peer) bool {
 			return false
 		}
 	}
-	if p.RecentAddedPeer.Contains(peerId) {
+	if p.RecentAddedPeer.Contains(peerID) {
 		log.S().Debugf("%v reject tranfer leader to %v due to the peer was added recently", p.Tag, peer)
 		return false
 	}
 
 	lastIndex, _ := p.Store().LastIndex()
 
-	return lastIndex <= status.Progress[peerId].Match+cfg.LeaderTransferMaxLogLag
+	return lastIndex <= status.Progress[peerID].Match+cfg.LeaderTransferMaxLogLag
 }
 
 func (p *Peer) readLocal(kv *mvcc.DBBundle, req *raft_cmdpb.RaftCmdRequest, cb *Callback) {
@@ -1414,7 +1464,7 @@ func (p *Peer) readIndex(cfg *Config, req *raft_cmdpb.RaftCmdRequest, errResp *r
 	lastPendingReadCount := p.RaftGroup.Raft.PendingReadCount()
 	lastReadyReadCount := p.RaftGroup.Raft.ReadyReadCount()
 
-	id := p.pendingReads.NextId()
+	id := p.pendingReads.NextID()
 	ctx := make([]byte, 8)
 	binary.BigEndian.PutUint64(ctx, id)
 	p.RaftGroup.ReadIndex(ctx)
@@ -1433,7 +1483,7 @@ func (p *Peer) readIndex(cfg *Config, req *raft_cmdpb.RaftCmdRequest, errResp *r
 
 	// TimeoutNow has been sent out, so we need to propose explicitly to
 	// update leader lease.
-	if p.leaderLease.Inspect(renewLeaseTime) == LeaseState_Suspect {
+	if p.leaderLease.Inspect(renewLeaseTime) == LeaseStateSuspect {
 		req := new(raft_cmdpb.RaftCmdRequest)
 		if index, err := p.ProposeNormal(cfg, raftlog.NewRequest(req)); err == nil {
 			meta := &ProposalMeta{
@@ -1448,6 +1498,7 @@ func (p *Peer) readIndex(cfg *Config, req *raft_cmdpb.RaftCmdRequest, errResp *r
 	return true
 }
 
+// GetMinProgress gets min match.
 func (p *Peer) GetMinProgress() uint64 {
 	var minMatch uint64 = math.MaxUint64
 	hasProgress := false
@@ -1480,7 +1531,7 @@ func (p *Peer) preProposePrepareMerge(cfg *Config, req *raft_cmdpb.RaftCmdReques
 	for _, entry := range ents {
 		entrySize += len(entry.Data)
 		if entry.EntryType == eraftpb.EntryType_EntryConfChange {
-			return fmt.Errorf("log gap contains conf change, skip merging.")
+			return fmt.Errorf("log gap contains conf change, skip merging")
 		}
 		if len(entry.Data) == 0 {
 			continue
@@ -1502,17 +1553,18 @@ func (p *Peer) preProposePrepareMerge(cfg *Config, req *raft_cmdpb.RaftCmdReques
 		}
 
 		// Any command that can change epoch or log gap should be rejected.
-		return fmt.Errorf("log gap contains admin request %v, skip merging.", cmdType)
+		return fmt.Errorf("log gap contains admin request %v, skip merging", cmdType)
 	}
 
 	if float64(entrySize) > float64(cfg.RaftEntryMaxSize)*0.9 {
-		return fmt.Errorf("log gap size exceed entry size limit, skip merging.")
+		return fmt.Errorf("log gap size exceed entry size limit, skip merging")
 	}
 
 	req.AdminRequest.PrepareMerge.MinIndex = minIndex
 	return nil
 }
 
+// PrePropose returns a proposal context.
 func (p *Peer) PrePropose(cfg *Config, rlog raftlog.RaftLog) (*ProposalContext, error) {
 	ctx := new(ProposalContext)
 	req := rlog.GetRaftCmdRequest()
@@ -1520,7 +1572,7 @@ func (p *Peer) PrePropose(cfg *Config, rlog raftlog.RaftLog) (*ProposalContext, 
 		return ctx, nil
 	}
 	if getSyncLogFromRequest(req) {
-		ctx.insert(ProposalContext_SyncLog)
+		ctx.insert(ProposalContextSyncLog)
 	}
 
 	if req.AdminRequest == nil {
@@ -1529,7 +1581,7 @@ func (p *Peer) PrePropose(cfg *Config, rlog raftlog.RaftLog) (*ProposalContext, 
 
 	switch req.AdminRequest.GetCmdType() {
 	case raft_cmdpb.AdminCmdType_Split, raft_cmdpb.AdminCmdType_BatchSplit:
-		ctx.insert(ProposalContext_Split)
+		ctx.insert(ProposalContextSplit)
 	default:
 	}
 
@@ -1538,15 +1590,16 @@ func (p *Peer) PrePropose(cfg *Config, rlog raftlog.RaftLog) (*ProposalContext, 
 		if err != nil {
 			return nil, err
 		}
-		ctx.insert(ProposalContext_PrepareMerge)
+		ctx.insert(ProposalContextPrepareMerge)
 	}
 
 	return ctx, nil
 }
 
+// ProposeNormal returns a propose index.
 func (p *Peer) ProposeNormal(cfg *Config, rlog raftlog.RaftLog) (uint64, error) {
 	if p.PendingMergeState != nil && rlog.GetRaftCmdRequest().GetAdminRequest().GetCmdType() != raft_cmdpb.AdminCmdType_RollbackMerge {
-		return 0, fmt.Errorf("peer in merging mode, can't do proposal.")
+		return 0, fmt.Errorf("peer in merging mode, can't do proposal")
 	}
 
 	// TODO: validate request for unexpected changes.
@@ -1559,7 +1612,7 @@ func (p *Peer) ProposeNormal(cfg *Config, rlog raftlog.RaftLog) (uint64, error) 
 
 	if uint64(len(data)) > cfg.RaftEntryMaxSize {
 		log.S().Errorf("entry is too large, entry size %v", len(data))
-		return 0, &ErrRaftEntryTooLarge{RegionId: p.regionId, EntrySize: uint64(len(data))}
+		return 0, &ErrRaftEntryTooLarge{RegionID: p.regionID, EntrySize: uint64(len(data))}
 	}
 
 	proposeIndex := p.nextProposalIndex()
@@ -1570,13 +1623,13 @@ func (p *Peer) ProposeNormal(cfg *Config, rlog raftlog.RaftLog) (uint64, error) 
 	if proposeIndex == p.nextProposalIndex() {
 		// The message is dropped silently, this usually due to leader absence
 		// or transferring leader. Both cases can be considered as NotLeader error.
-		return 0, &ErrNotLeader{RegionId: p.regionId}
+		return 0, &ErrNotLeader{RegionID: p.regionID}
 	}
 
 	return proposeIndex, nil
 }
 
-// Return true if the transfer leader request is accepted.
+// ProposeTransferLeader returns true if the transfer leader request is accepted.
 func (p *Peer) ProposeTransferLeader(cfg *Config, req *raft_cmdpb.RaftCmdRequest, cb *Callback) bool {
 	transferLeader := getTransferLeaderCmd(req)
 	peer := transferLeader.Peer
@@ -1597,14 +1650,14 @@ func (p *Peer) ProposeTransferLeader(cfg *Config, req *raft_cmdpb.RaftCmdRequest
 	return transferred
 }
 
-// Fails in such cases:
+// ProposeConfChange fails in such cases:
 // 1. A pending conf change has not been applied yet;
 // 2. Removing the leader is not allowed in the configuration;
 // 3. The conf change makes the raft group not healthy;
 // 4. The conf change is dropped by raft group internally.
 func (p *Peer) ProposeConfChange(cfg *Config, req *raft_cmdpb.RaftCmdRequest) (uint64, error) {
 	if p.PendingMergeState != nil {
-		return 0, fmt.Errorf("peer in merging mode, can't do proposal.")
+		return 0, fmt.Errorf("peer in merging mode, can't do proposal")
 	}
 
 	if p.RaftGroup.Raft.PendingConfIndex > p.Store().AppliedIndex() {
@@ -1630,14 +1683,14 @@ func (p *Peer) ProposeConfChange(cfg *Config, req *raft_cmdpb.RaftCmdRequest) (u
 	log.S().Infof("%v propose conf change %v peer %v", p.Tag, cc.ChangeType, cc.NodeId)
 
 	proposeIndex := p.nextProposalIndex()
-	var proposalCtx ProposalContext = ProposalContext_SyncLog
+	var proposalCtx = ProposalContextSyncLog
 	if err = p.RaftGroup.ProposeConfChange(proposalCtx.ToBytes(), cc); err != nil {
 		return 0, err
 	}
 	if p.nextProposalIndex() == proposeIndex {
 		// The message is dropped silently, this usually due to leader absence
 		// or transferring leader. Both cases can be considered as NotLeader error.
-		return 0, &ErrNotLeader{RegionId: p.regionId}
+		return 0, &ErrNotLeader{RegionID: p.regionID}
 	}
 
 	return proposeIndex, nil
@@ -1650,19 +1703,22 @@ func (p *Peer) handleRead(kv *mvcc.DBBundle, req *raft_cmdpb.RaftCmdRequest, che
 	return resp
 }
 
+// RequestPolicy represents a request policy.
 type RequestPolicy int
 
+// RequestPolicy
 const (
 	// Handle the read request directly without dispatch.
-	RequestPolicy_ReadLocal RequestPolicy = 0 + iota
+	RequestPolicyReadLocal RequestPolicy = 0 + iota
 	// Handle the read request via raft's SafeReadIndex mechanism.
-	RequestPolicy_ReadIndex
-	RequestPolicy_ProposeNormal
-	RequestPolicy_ProposeTransferLeader
-	RequestPolicy_ProposeConfChange
-	RequestPolicy_Invalid
+	RequestPolicyReadIndex
+	RequestPolicyProposeNormal
+	RequestPolicyProposeTransferLeader
+	RequestPolicyProposeConfChange
+	RequestPolicyInvalid
 )
 
+// RequestInspector defines a request inspector interface.
 type RequestInspector interface {
 	// Has the current term been applied?
 	hasAppliedToCurrentTerm() bool
@@ -1676,11 +1732,11 @@ func (p *Peer) hasAppliedToCurrentTerm() bool {
 
 func (p *Peer) inspectLease() LeaseState {
 	if !p.RaftGroup.Raft.InLease() {
-		return LeaseState_Suspect
+		return LeaseStateSuspect
 	}
 	// nil means now.
 	state := p.leaderLease.Inspect(nil)
-	if state == LeaseState_Expired {
+	if state == LeaseStateExpired {
 		log.S().Debugf("%v leader lease is expired %v", p.Tag, p.leaderLease)
 		p.leaderLease.Expire()
 	}
@@ -1690,20 +1746,21 @@ func (p *Peer) inspectLease() LeaseState {
 func (p *Peer) inspect(rlog raftlog.RaftLog) (RequestPolicy, error) {
 	req := rlog.GetRaftCmdRequest()
 	if req == nil {
-		return RequestPolicy_ProposeNormal, nil
+		return RequestPolicyProposeNormal, nil
 	}
 	return Inspect(p, req)
 }
 
+// Inspect returns a request policy with the given RaftCmdRequest.
 func Inspect(i RequestInspector, req *raft_cmdpb.RaftCmdRequest) (RequestPolicy, error) {
 	if req.AdminRequest != nil {
 		if GetChangePeerCmd(req) != nil {
-			return RequestPolicy_ProposeConfChange, nil
+			return RequestPolicyProposeConfChange, nil
 		}
 		if getTransferLeaderCmd(req) != nil {
-			return RequestPolicy_ProposeTransferLeader, nil
+			return RequestPolicyProposeTransferLeader, nil
 		}
-		return RequestPolicy_ProposeNormal, nil
+		return RequestPolicyProposeNormal, nil
 	}
 
 	hasRead, hasWrite := false, false
@@ -1715,50 +1772,53 @@ func Inspect(i RequestInspector, req *raft_cmdpb.RaftCmdRequest) (RequestPolicy,
 			raft_cmdpb.CmdType_IngestSST:
 			hasWrite = true
 		case raft_cmdpb.CmdType_Prewrite, raft_cmdpb.CmdType_Invalid:
-			return RequestPolicy_Invalid, fmt.Errorf("invalid cmd type %v, message maybe corrupted", r.CmdType)
+			return RequestPolicyInvalid, fmt.Errorf("invalid cmd type %v, message maybe corrupted", r.CmdType)
 		}
 
 		if hasRead && hasWrite {
-			return RequestPolicy_Invalid, fmt.Errorf("read and write can't be mixed in one batch.")
+			return RequestPolicyInvalid, fmt.Errorf("read and write can't be mixed in one batch")
 		}
 	}
 
 	if hasWrite {
-		return RequestPolicy_ProposeNormal, nil
+		return RequestPolicyProposeNormal, nil
 	}
 
 	if req.Header != nil && req.Header.ReadQuorum {
-		return RequestPolicy_ReadIndex, nil
+		return RequestPolicyReadIndex, nil
 	}
 
 	// If applied index's term is differ from current raft's term, leader transfer
 	// must happened, if read locally, we may read old value.
 	if !i.hasAppliedToCurrentTerm() {
-		return RequestPolicy_ReadIndex, nil
+		return RequestPolicyReadIndex, nil
 	}
 
 	// Local read should be performed, if and only if leader is in lease.
 	// None for now.
 	switch i.inspectLease() {
-	case LeaseState_Valid:
-		return RequestPolicy_ReadLocal, nil
-	case LeaseState_Expired, LeaseState_Suspect:
+	case LeaseStateValid:
+		return RequestPolicyReadLocal, nil
+	case LeaseStateExpired, LeaseStateSuspect:
 		// Perform a consistent read to Raft quorum and try to renew the leader lease.
-		return RequestPolicy_ReadIndex, nil
+		return RequestPolicyReadIndex, nil
 	}
-	return RequestPolicy_ReadLocal, nil
+	return RequestPolicyReadLocal, nil
 }
 
+// ReadExecutor represents a executor which is used to read.
 type ReadExecutor struct {
 	checkEpoch bool
 }
 
+// NewReadExecutor creates a new ReadExecutor.
 func NewReadExecutor(checkEpoch bool) *ReadExecutor {
 	return &ReadExecutor{
 		checkEpoch: checkEpoch,
 	}
 }
 
+// Execute executes the command.
 func (r *ReadExecutor) Execute(msg *raft_cmdpb.RaftCmdRequest, region *metapb.Region) *raft_cmdpb.RaftCmdResponse {
 	if r.checkEpoch {
 		if err := CheckRegionEpoch(msg, region, true); err != nil {
@@ -1804,10 +1864,10 @@ func getSyncLogFromRequest(req *raft_cmdpb.RaftCmdRequest) bool {
 	return req.Header.GetSyncLog()
 }
 
-/// We enable follower lazy commit to get a better performance.
-/// But it may not be appropriate for some requests. This function
-/// checks whether the request should be committed on all followers
-/// as soon as possible.
+// IsUrgentRequest checks whether the request should be committed on all followers
+// as soon as possible.
+// We enable follower lazy commit to get a better performance.
+// But it may not be appropriate for some requests.
 func IsUrgentRequest(rlog raftlog.RaftLog) bool {
 	adminRequest := rlog.GetRaftCmdRequest().GetAdminRequest()
 	if adminRequest == nil {
@@ -1837,6 +1897,7 @@ func makeTransferLeaderResponse() *raft_cmdpb.RaftCmdResponse {
 	return resp
 }
 
+// GetChangePeerCmd gets a command which is used to change peer.
 func GetChangePeerCmd(msg *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.ChangePeerRequest {
 	return msg.GetAdminRequest().GetChangePeer()
 }

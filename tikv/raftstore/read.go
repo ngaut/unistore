@@ -28,8 +28,9 @@ import (
 	"github.com/uber-go/atomic"
 )
 
+// LeaderChecker represents a leader checker interface.
 type LeaderChecker interface {
-	IsLeader(ctx *kvrpcpb.Context, router *RaftstoreRouter) *errorpb.Error
+	IsLeader(ctx *kvrpcpb.Context, router *Router) *errorpb.Error
 }
 
 type leaderChecker struct {
@@ -41,11 +42,11 @@ type leaderChecker struct {
 	region           unsafe.Pointer // *metapb.Region
 }
 
-func (c *leaderChecker) IsLeader(ctx *kvrpcpb.Context, router *RaftstoreRouter) *errorpb.Error {
+func (c *leaderChecker) IsLeader(ctx *kvrpcpb.Context, router *Router) *errorpb.Error {
 	snapTime := time.Now()
 	isExpired, err := c.isExpired(ctx, &snapTime)
 	if err != nil {
-		return RaftstoreErrToPbError(err)
+		return ErrToPbError(err)
 	}
 	if !isExpired {
 		return nil
@@ -72,7 +73,7 @@ func (c *leaderChecker) IsLeader(ctx *kvrpcpb.Context, router *RaftstoreRouter) 
 	}
 	err = router.router.sendRaftCommand(msg)
 	if err != nil {
-		return RaftstoreErrToPbError(err)
+		return ErrToPbError(err)
 	}
 
 	cb.wg.Wait()
@@ -85,7 +86,7 @@ func (c *leaderChecker) IsLeader(ctx *kvrpcpb.Context, router *RaftstoreRouter) 
 
 func (c *leaderChecker) isExpired(ctx *kvrpcpb.Context, snapTime *time.Time) (bool, error) {
 	if c.invalid.Load() {
-		return false, &ErrRegionNotFound{RegionId: ctx.RegionId}
+		return false, &ErrRegionNotFound{RegionID: ctx.RegionId}
 	}
 
 	peerID := c.peerID
@@ -116,5 +117,5 @@ func (c *leaderChecker) isExpired(ctx *kvrpcpb.Context, snapTime *time.Time) (bo
 	if appliedIndexTerm != term {
 		return true, nil
 	}
-	return lease.Inspect(snapTime) == LeaseState_Expired, nil
+	return lease.Inspect(snapTime) == LeaseStateExpired, nil
 }

@@ -21,12 +21,14 @@ import (
 	"go.uber.org/zap"
 )
 
+// ServerTransport represents a server transport.
 type ServerTransport struct {
 	raftClient    *RaftClient
 	router        *router
 	snapScheduler chan<- task
 }
 
+// NewServerTransport creates a new ServerTransport.
 func NewServerTransport(raftClient *RaftClient, snapScheduler chan<- task, router *router) *ServerTransport {
 	return &ServerTransport{
 		raftClient:    raftClient,
@@ -35,6 +37,7 @@ func NewServerTransport(raftClient *RaftClient, snapScheduler chan<- task, route
 	}
 }
 
+// Send sends the RaftMessage.
 func (t *ServerTransport) Send(msg *raft_serverpb.RaftMessage) error {
 	if msg.GetMessage().GetSnapshot() != nil {
 		t.SendSnapshotSock(msg)
@@ -44,6 +47,7 @@ func (t *ServerTransport) Send(msg *raft_serverpb.RaftMessage) error {
 	return nil
 }
 
+// SendSnapshotSock sends the snapshot.
 func (t *ServerTransport) SendSnapshotSock(msg *raft_serverpb.RaftMessage) {
 	callback := func(err error) {
 		if err != nil {
@@ -64,6 +68,7 @@ func (t *ServerTransport) SendSnapshotSock(msg *raft_serverpb.RaftMessage) {
 	t.snapScheduler <- task
 }
 
+// ReportSnapshotStatus reports the snapshot status.
 func (t *ServerTransport) ReportSnapshotStatus(msg *raft_serverpb.RaftMessage, status raft.SnapshotStatus) {
 	regionID := msg.GetRegionId()
 	toPeerID := msg.GetToPeer().GetId()
@@ -78,6 +83,7 @@ func (t *ServerTransport) ReportSnapshotStatus(msg *raft_serverpb.RaftMessage, s
 	}
 }
 
+// ReportUnreachable sends the unreachable message.
 func (t *ServerTransport) ReportUnreachable(msg *raft_serverpb.RaftMessage) {
 	regionID := msg.GetRegionId()
 	toPeerID := msg.GetToPeer().GetId()
@@ -94,6 +100,7 @@ func (t *ServerTransport) ReportUnreachable(msg *raft_serverpb.RaftMessage) {
 	}
 }
 
+// Flush flushes the raft client.
 func (t *ServerTransport) Flush() {
 	t.raftClient.Flush()
 }

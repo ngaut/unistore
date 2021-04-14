@@ -20,12 +20,14 @@ import (
 	"github.com/pingcap/log"
 )
 
+// Config
 const (
 	KB          uint64 = 1024
 	MB          uint64 = 1024 * 1024
 	SplitSizeMb uint64 = 96
 )
 
+// Config is the representation of configuration settings.
 type Config struct {
 	// true for high reliability, prevent data loss when power failure.
 	SyncLog bool
@@ -66,19 +68,19 @@ type Config struct {
 
 	// Interval (ms) to check region whether need to be split or not.
 	SplitRegionCheckTickInterval time.Duration
-	/// When size change of region exceed the diff since last check, it
-	/// will be checked again whether it should be split.
+	// When size change of region exceed the diff since last check, it
+	// will be checked again whether it should be split.
 	RegionSplitCheckDiff uint64
-	/// Interval (ms) to check whether start compaction for a region.
+	// Interval (ms) to check whether start compaction for a region.
 	RegionCompactCheckInterval time.Duration
 	// delay time before deleting a stale peer
 	CleanStalePeerDelay time.Duration
-	/// Number of regions for each time checking.
+	// Number of regions for each time checking.
 	RegionCompactCheckStep uint64
-	/// Minimum number of tombstones to trigger manual compaction.
+	// Minimum number of tombstones to trigger manual compaction.
 	RegionCompactMinTombstones uint64
-	/// Minimum percentage of tombstones to trigger manual compaction.
-	/// Should between 1 and 100.
+	// Minimum percentage of tombstones to trigger manual compaction.
+	// Should between 1 and 100.
 	RegionCompactTombstonesPencent uint64
 	PdHeartbeatTickInterval        time.Duration
 	PdStoreHeartbeatTickInterval   time.Duration
@@ -88,16 +90,16 @@ type Config struct {
 	NotifyCapacity  uint64
 	MessagesPerTick uint64
 
-	/// When a peer is not active for max_peer_down_duration,
-	/// the peer is considered to be down and is reported to PD.
+	// When a peer is not active for max_peer_down_duration,
+	// the peer is considered to be down and is reported to PD.
 	MaxPeerDownDuration time.Duration
 
-	/// If the leader of a peer is missing for longer than max_leader_missing_duration,
-	/// the peer would ask pd to confirm whether it is valid in any region.
-	/// If the peer is stale and is not valid in any region, it will destroy itself.
+	// If the leader of a peer is missing for longer than max_leader_missing_duration,
+	// the peer would ask pd to confirm whether it is valid in any region.
+	// If the peer is stale and is not valid in any region, it will destroy itself.
 	MaxLeaderMissingDuration time.Duration
-	/// Similar to the max_leader_missing_duration, instead it will log warnings and
-	/// try to alert monitoring systems, if there is any.
+	// Similar to the max_leader_missing_duration, instead it will log warnings and
+	// try to alert monitoring systems, if there is any.
 	AbnormalLeaderMissingDuration time.Duration
 	PeerStaleStateCheckInterval   time.Duration
 
@@ -118,10 +120,10 @@ type Config struct {
 
 	AllowRemoveLeader bool
 
-	/// Max log gap allowed to propose merge.
+	// Max log gap allowed to propose merge.
 	MergeMaxLogGap uint64
 
-	/// Interval to re-propose merge.
+	// Interval to re-propose merge.
 	MergeCheckTickInterval time.Duration
 
 	UseDeleteRange bool
@@ -172,10 +174,12 @@ type splitCheckConfig struct {
 	rowsPerSample int
 }
 
+// StoreLabel stores the information of one store label.
 type StoreLabel struct {
 	LabelKey, LabelValue string
 }
 
+// NewDefaultConfig creates a default config.
 func NewDefaultConfig() *Config {
 	splitSize := SplitSizeMb * MB
 	return &Config{
@@ -264,17 +268,18 @@ func newDefaultSplitCheckConfig() *splitCheckConfig {
 	}
 }
 
+// Validate returns an error message if the check is invalid.
 func (c *Config) Validate() error {
 	if c.RaftHeartbeatTicks == 0 {
 		return fmt.Errorf("heartbeat tick must greater than 0")
 	}
 
 	if c.RaftElectionTimeoutTicks != 10 {
-		log.Warn("Election timeout ticks needs to be same across all the cluster, otherwise it may lead to inconsistency.")
+		log.Warn("Election timeout ticks needs to be same across all the cluster, otherwise it may lead to inconsistency")
 	}
 
 	if c.RaftElectionTimeoutTicks <= c.RaftHeartbeatTicks {
-		return fmt.Errorf("election tick must be greater than heartbeat tick.")
+		return fmt.Errorf("election tick must be greater than heartbeat tick")
 	}
 
 	if c.RaftMinElectionTimeoutTicks == 0 {
@@ -296,7 +301,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.RaftLogGcSizeLimit == 0 {
-		return fmt.Errorf("raft log gc size limit should large than 0.")
+		return fmt.Errorf("raft log gc size limit should large than 0")
 	}
 
 	electionTimeout := c.RaftBaseTickInterval * time.Duration(c.RaftElectionTimeoutTicks)
@@ -309,7 +314,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.MergeCheckTickInterval == 0 {
-		return fmt.Errorf("raftstore.merge-check-tick-interval can't be 0.")
+		return fmt.Errorf("raftstore.merge-check-tick-interval can't be 0")
 	}
 
 	if c.PeerStaleStateCheckInterval < electionTimeout*2 {
@@ -318,7 +323,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.LeaderTransferMaxLogLag < 10 {
-		return fmt.Errorf("ratstore.leader-transfer-max-log-lag should be >= 10.")
+		return fmt.Errorf("ratstore.leader-transfer-max-log-lag should be >= 10")
 	}
 
 	if c.AbnormalLeaderMissingDuration < c.PeerStaleStateCheckInterval {

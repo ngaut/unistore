@@ -37,25 +37,25 @@ import (
 )
 
 type storeMeta struct {
-	/// region end key -> region ID
+	// region end key -> region ID
 	regionRanges *lockstore.MemStore
-	/// region_id -> region
+	// region_id -> region
 	regions map[uint64]*metapb.Region
-	/// `MsgRequestPreVote` or `MsgRequestVote` messages from newly split Regions shouldn't be dropped if there is no
-	/// such Region in this store now. So the messages are recorded temporarily and will be handled later.
+	// `MsgRequestPreVote` or `MsgRequestVote` messages from newly split Regions shouldn't be dropped if there is no
+	// such Region in this store now. So the messages are recorded temporarily and will be handled later.
 	pendingVotes []*rspb.RaftMessage
-	/// The regions with pending snapshots.
+	// The regions with pending snapshots.
 	pendingSnapshotRegions []*metapb.Region
-	/// A marker used to indicate the peer of a Region has received a merge target message and waits to be destroyed.
-	/// target_region_id -> (source_region_id -> merge_target_epoch)
+	// A marker used to indicate the peer of a Region has received a merge target message and waits to be destroyed.
+	// target_region_id -> (source_region_id -> merge_target_epoch)
 	pendingMergeTargets map[uint64]map[uint64]*metapb.RegionEpoch
-	/// An inverse mapping of `pending_merge_targets` used to let source peer help target peer to clean up related entry.
-	/// source_region_id -> target_region_id
+	// An inverse mapping of `pending_merge_targets` used to let source peer help target peer to clean up related entry.
+	// source_region_id -> target_region_id
 	targetsMap map[uint64]uint64
-	/// In raftstore, the execute order of `PrepareMerge` and `CommitMerge` is not certain because of the messages
-	/// belongs two regions. To make them in order, `PrepareMerge` will set this structure and `CommitMerge` will retry
-	/// later if there is no related lock.
-	/// source_region_id -> (version, BiLock).
+	// In raftstore, the execute order of `PrepareMerge` and `CommitMerge` is not certain because of the messages
+	// belongs two regions. To make them in order, `PrepareMerge` will set this structure and `CommitMerge` will retry
+	// later if there is no related lock.
+	// source_region_id -> (version, BiLock).
 	mergeLocks map[uint64]*mergeLock
 }
 
@@ -77,6 +77,7 @@ func (m *storeMeta) setRegion(region *metapb.Region, peer *Peer) {
 type mergeLock struct {
 }
 
+// GlobalContext represents a global context.
 type GlobalContext struct {
 	cfg                   *Config
 	engine                *Engines
@@ -97,11 +98,13 @@ type GlobalContext struct {
 	globalStats           *storeStats
 }
 
+// StoreContext represents a store context.
 type StoreContext struct {
 	*GlobalContext
 	applyingSnapCount *uint64
 }
 
+// RaftContext represents a raft context.
 type RaftContext struct {
 	*GlobalContext
 	applyMsgs    *applyMsgs
@@ -121,6 +124,7 @@ type storeStats struct {
 	isBusy                  uint64
 }
 
+// Transport represents the transport interface.
 type Transport interface {
 	Send(msg *rspb.RaftMessage) error
 }
@@ -215,9 +219,9 @@ func (d *storeMsgHandler) start(store *metapb.Store) {
 	d.ticker.scheduleStore(StoreTickConsistencyCheck)
 }
 
-/// loadPeers loads peers in this store. It scans the db engine, loads all regions
-/// and their peers from it, and schedules snapshot worker if necessary.
-/// WARN: This store should not be used before initialized.
+// loadPeers loads peers in this store. It scans the db engine, loads all regions
+// and their peers from it, and schedules snapshot worker if necessary.
+// WARN: This store should not be used before initialized.
 func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 	// Scan region meta to get saved regions.
 	startKey := RegionMetaMinKey
@@ -438,7 +442,7 @@ func (bs *raftBatchSystem) startWorkers(peers []*peerFsm) {
 
 	router.sendStore(Msg{Type: MsgTypeStoreStart, Data: ctx.store})
 	for i := 0; i < len(peers); i++ {
-		regionID := peers[i].peer.regionId
+		regionID := peers[i].peer.regionID
 		_ = router.send(regionID, Msg{RegionID: regionID, Type: MsgTypeStart})
 	}
 	engines := ctx.engine
@@ -481,9 +485,9 @@ func createRaftBatchSystem(globalCfg *config.Config, raftCfg *Config) (*router, 
 	return router, raftBatchSystem
 }
 
-/// Checks if the message is targeting a stale peer.
-///
-/// Returns true means the message can be dropped silently.
+// Checks if the message is targeting a stale peer.
+//
+// Returns true means the message can be dropped silently.
 func (d *storeMsgHandler) checkMsg(msg *rspb.RaftMessage) (bool, error) {
 	regionID := msg.GetRegionId()
 	fromEpoch := msg.GetRegionEpoch()
@@ -579,10 +583,10 @@ func (d *storeMsgHandler) onRaftMessage(msg *rspb.RaftMessage) error {
 	return nil
 }
 
-/// If target peer doesn't exist, create it.
-///
-/// return false to indicate that target peer is in invalid state or
-/// doesn't exist and can't be created.
+// If target peer doesn't exist, create it.
+//
+// return false to indicate that target peer is in invalid state or
+// doesn't exist and can't be created.
 func (d *storeMsgHandler) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage) (bool, error) {
 	var regionsToDestroy []uint64
 	// we may encounter a message with larger peer id, which means

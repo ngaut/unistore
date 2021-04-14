@@ -65,6 +65,7 @@ func (rs *regionSnapshot) redoLocks(raft *badger.DB, redoIdx uint64) error {
 	return nil
 }
 
+// Engines represents storage engines
 type Engines struct {
 	kv       *mvcc.DBBundle
 	kvPath   string
@@ -72,6 +73,7 @@ type Engines struct {
 	raftPath string
 }
 
+// NewEngines creates a new Engines.
 func NewEngines(kvEngine *mvcc.DBBundle, raftEngine *badger.DB, kvPath, raftPath string) *Engines {
 	return &Engines{
 		kv:       kvEngine,
@@ -81,11 +83,11 @@ func NewEngines(kvEngine *mvcc.DBBundle, raftEngine *badger.DB, kvPath, raftPath
 	}
 }
 
-func (en *Engines) newRegionSnapshot(regionId, redoIdx uint64) (snap *regionSnapshot, err error) {
+func (en *Engines) newRegionSnapshot(regionID, redoIdx uint64) (snap *regionSnapshot, err error) {
 	// We need to get the old region state out of the snapshot transaction to fetch data in lockStore.
 	// The lockStore data must be fetch before we start the snapshot transaction to make sure there is no newer data
 	// in the lockStore. The missing old data can be restored by raft log.
-	oldRegionState, err := getRegionLocalState(en.kv.DB, regionId)
+	oldRegionState, err := getRegionLocalState(en.kv.DB, regionID)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +107,7 @@ func (en *Engines) newRegionSnapshot(regionId, redoIdx uint64) (snap *regionSnap
 
 	// Verify that the region version to make sure the start key and end key has not changed.
 	regionState := new(raft_serverpb.RegionLocalState)
-	val, err := getValueTxn(txn, RegionStateKey(regionId))
+	val, err := getValueTxn(txn, RegionStateKey(regionID))
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +119,7 @@ func (en *Engines) newRegionSnapshot(regionId, redoIdx uint64) (snap *regionSnap
 		return nil, errors.New("region changed during newRegionSnapshot")
 	}
 
-	index, term, err := getAppliedIdxTermForSnapshot(en.raft, txn, regionId)
+	index, term, err := getAppliedIdxTermForSnapshot(en.raft, txn, regionID)
 	if err != nil {
 		return nil, err
 	}
@@ -135,24 +137,29 @@ func (en *Engines) newRegionSnapshot(regionId, redoIdx uint64) (snap *regionSnap
 	return snap, nil
 }
 
+// WriteKV flushes the WriteBatch to the kv.
 func (en *Engines) WriteKV(wb *WriteBatch) error {
 	return wb.WriteToKV(en.kv)
 }
 
+// WriteRaft flushes the WriteBatch to the raft.
 func (en *Engines) WriteRaft(wb *WriteBatch) error {
 	return wb.WriteToRaft(en.raft)
 }
 
+// SyncKVWAL syncs the kv wal.
 func (en *Engines) SyncKVWAL() error {
 	// TODO: implement
 	return nil
 }
 
+// SyncRaftWAL syncs the raft wal.
 func (en *Engines) SyncRaftWAL() error {
 	// TODO: implement
 	return nil
 }
 
+// WriteBatch writes a batch of entries.
 type WriteBatch struct {
 	entries       []*badger.Entry
 	lockEntries   []*badger.Entry
@@ -163,10 +170,12 @@ type WriteBatch struct {
 	safePointUndo int
 }
 
+// Len returns the length of the WriteBatch.
 func (wb *WriteBatch) Len() int {
 	return len(wb.entries) + len(wb.lockEntries)
 }
 
+// Set adds the key-value pair to the entries.
 func (wb *WriteBatch) Set(key y.Key, val []byte) {
 	wb.entries = append(wb.entries, &badger.Entry{
 		Key:   key,
@@ -175,6 +184,7 @@ func (wb *WriteBatch) Set(key y.Key, val []byte) {
 	wb.size += key.Len() + len(val)
 }
 
+// SetLock adds the key-value pair to the lockEntries.
 func (wb *WriteBatch) SetLock(key, val []byte) {
 	wb.lockEntries = append(wb.lockEntries, &badger.Entry{
 		Key:      y.KeyWithTs(key, 0),
@@ -183,6 +193,7 @@ func (wb *WriteBatch) SetLock(key, val []byte) {
 	})
 }
 
+// DeleteLock deletes the key from the lockEntries.
 func (wb *WriteBatch) DeleteLock(key []byte) {
 	wb.lockEntries = append(wb.lockEntries, &badger.Entry{
 		Key:      y.KeyWithTs(key, 0),
@@ -190,6 +201,7 @@ func (wb *WriteBatch) DeleteLock(key []byte) {
 	})
 }
 
+// Rollback rolls back the key.
 func (wb *WriteBatch) Rollback(key y.Key) {
 	rollbackKey := mvcc.EncodeExtraTxnStatusKey(key.UserKey, key.Version)
 	wb.entries = append(wb.entries, &badger.Entry{
@@ -198,6 +210,7 @@ func (wb *WriteBatch) Rollback(key y.Key) {
 	})
 }
 
+// SetWithUserMeta adds the key-value pair with the user meta.
 func (wb *WriteBatch) SetWithUserMeta(key y.Key, val, userMeta []byte) {
 	wb.entries = append(wb.entries, &badger.Entry{
 		Key:      key,
@@ -207,6 +220,7 @@ func (wb *WriteBatch) SetWithUserMeta(key y.Key, val, userMeta []byte) {
 	wb.size += key.Len() + len(val) + len(userMeta)
 }
 
+// SetOpLock adds an op lock entry to the entries.
 func (wb *WriteBatch) SetOpLock(key y.Key, userMeta []byte) {
 	startTS := mvcc.DBUserMeta(userMeta).StartTS()
 	opLockKey := y.KeyWithTs(mvcc.EncodeExtraTxnStatusKey(key.UserKey, startTS), key.Version)
@@ -218,6 +232,7 @@ func (wb *WriteBatch) SetOpLock(key y.Key, userMeta []byte) {
 	wb.size += key.Len() + len(userMeta)
 }
 
+// Delete deletes the key from the entries.
 func (wb *WriteBatch) Delete(key y.Key) {
 	wb.entries = append(wb.entries, &badger.Entry{
 		Key: key,
@@ -225,6 +240,7 @@ func (wb *WriteBatch) Delete(key y.Key) {
 	wb.size += key.Len()
 }
 
+// SetMsg adds the y.Key and proto.Message to the entries..
 func (wb *WriteBatch) SetMsg(key y.Key, msg proto.Message) error {
 	val, err := proto.Marshal(msg)
 	if err != nil {
@@ -234,19 +250,21 @@ func (wb *WriteBatch) SetMsg(key y.Key, msg proto.Message) error {
 	return nil
 }
 
+// SetSafePoint sets a safe point.
 func (wb *WriteBatch) SetSafePoint() {
 	wb.safePoint = len(wb.entries)
 	wb.safePointLock = len(wb.lockEntries)
 	wb.safePointSize = wb.size
 }
 
+// RollbackToSafePoint rolls back to the safe point.
 func (wb *WriteBatch) RollbackToSafePoint() {
 	wb.entries = wb.entries[:wb.safePoint]
 	wb.lockEntries = wb.lockEntries[:wb.safePointLock]
 	wb.size = wb.safePointSize
 }
 
-// WriteToKV flush WriteBatch to DB by two steps:
+// WriteToKV flushes WriteBatch to DB by two steps:
 // 	1. Write entries to badger. After save ApplyState to badger, subsequent regionSnapshot will start at new raft index.
 //	2. Update lockStore, the date in lockStore may be older than the DB, so we need to restore then entries from raft log.
 func (wb *WriteBatch) WriteToKV(bundle *mvcc.DBBundle) error {
@@ -291,6 +309,7 @@ func (wb *WriteBatch) WriteToKV(bundle *mvcc.DBBundle) error {
 	return nil
 }
 
+// WriteToRaft flushes WriteBatch to raft.
 func (wb *WriteBatch) WriteToRaft(db *badger.DB) error {
 	if len(wb.entries) > 0 {
 		start := time.Now()
@@ -314,6 +333,7 @@ func (wb *WriteBatch) WriteToRaft(db *badger.DB) error {
 	return nil
 }
 
+// MustWriteToKV wraps WriteToKV and will panic if error is not nil.
 func (wb *WriteBatch) MustWriteToKV(db *mvcc.DBBundle) {
 	err := wb.WriteToKV(db)
 	if err != nil {
@@ -321,6 +341,7 @@ func (wb *WriteBatch) MustWriteToKV(db *mvcc.DBBundle) {
 	}
 }
 
+// MustWriteToRaft wraps WriteToRaft and will panic if error is not nil.
 func (wb *WriteBatch) MustWriteToRaft(db *badger.DB) {
 	err := wb.WriteToRaft(db)
 	if err != nil {
@@ -328,6 +349,7 @@ func (wb *WriteBatch) MustWriteToRaft(db *badger.DB) {
 	}
 }
 
+// Reset resets the WriteBatch.
 func (wb *WriteBatch) Reset() {
 	for i := range wb.entries {
 		wb.entries[i] = nil
@@ -449,6 +471,7 @@ func (r *raftLogFilter) Guards() []badger.Guard {
 	}
 }
 
+// CreateRaftLogCompactionFilter creates a new badger.CompactionFilter.
 func CreateRaftLogCompactionFilter(targetLevel int, startKey, endKey []byte) badger.CompactionFilter {
 	return &raftLogFilter{}
 }

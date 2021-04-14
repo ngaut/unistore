@@ -33,32 +33,38 @@ import (
 	"github.com/zhangjinpeng1987/raft"
 )
 
+// JobStatus represents a job status.
 type JobStatus = uint32
 
+// JobStatus
 const (
-	JobStatus_Pending JobStatus = 0 + iota
-	JobStatus_Running
-	JobStatus_Cancelling
-	JobStatus_Cancelled
-	JobStatus_Finished
-	JobStatus_Failed
+	JobStatusPending JobStatus = 0 + iota
+	JobStatusRunning
+	JobStatusCancelling
+	JobStatusCancelled
+	JobStatusFinished
+	JobStatusFailed
 )
 
+// SnapStateType represents a snapshot state type.
 type SnapStateType int
 
+// SnapStateType
 const (
-	SnapState_Relax SnapStateType = 0 + iota
-	SnapState_Generating
-	SnapState_Applying
-	SnapState_ApplyAborted
+	SnapStateRelax SnapStateType = 0 + iota
+	SnapStateGenerating
+	SnapStateApplying
+	SnapStateApplyAborted
 )
 
+// SnapState represents a snapshot state.
 type SnapState struct {
 	StateType SnapStateType
 	Status    *JobStatus
 	Receiver  chan *eraftpb.Snapshot
 }
 
+// const
 const (
 	// When we create a region peer, we should initialize its log term/index > 0,
 	// so that we can force the follower peer to sync the snapshot first.
@@ -89,6 +95,7 @@ func CompactRaftLog(tag string, state *applyState, compactIndex, compactTerm uin
 	return nil
 }
 
+// EntryCache represents an entry cache.
 type EntryCache struct {
 	cache []eraftpb.Entry
 }
@@ -167,12 +174,14 @@ func (ec *EntryCache) compactTo(idx uint64) {
 	ec.cache = ec.cache[pos:]
 }
 
+// ApplySnapResult defines a result of applying snapshot.
 type ApplySnapResult struct {
 	// PrevRegion is the region before snapshot applied
 	PrevRegion *metapb.Region
 	Region     *metapb.Region
 }
 
+// InvokeContext represents a invoker context.
 type InvokeContext struct {
 	RegionID   uint64
 	RaftState  raftState
@@ -181,6 +190,7 @@ type InvokeContext struct {
 	SnapRegion *metapb.Region
 }
 
+// NewInvokeContext returns a new InvokeContext.
 func NewInvokeContext(store *PeerStorage) *InvokeContext {
 	ctx := &InvokeContext{
 		RegionID:   store.region.GetId(),
@@ -244,6 +254,7 @@ func recoverFromApplyingState(engines *Engines, raftWB *WriteBatch, regionID uin
 
 var _ raft.Storage = new(PeerStorage)
 
+// PeerStorage implements the raft.Storage interface.
 type PeerStorage struct {
 	Engines *Engines
 
@@ -265,6 +276,7 @@ type PeerStorage struct {
 	Tag string
 }
 
+// NewPeerStorage creates a new PeerStorage.
 func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- task, peerID uint64, tag string) (*PeerStorage, error) {
 	log.S().Debugf("%s creating storage for %s", tag, region.String())
 	raftState, err := initRaftState(engines.raft, region)
@@ -311,28 +323,28 @@ func (e storageError) Error() string {
 	return string(e)
 }
 
-func getRegionLocalState(db *badger.DB, regionId uint64) (*rspb.RegionLocalState, error) {
+func getRegionLocalState(db *badger.DB, regionID uint64) (*rspb.RegionLocalState, error) {
 	regionLocalState := new(rspb.RegionLocalState)
-	if err := getMsg(db, RegionStateKey(regionId), regionLocalState); err != nil {
-		return nil, &ErrRegionNotFound{regionId}
+	if err := getMsg(db, RegionStateKey(regionID), regionLocalState); err != nil {
+		return nil, &ErrRegionNotFound{regionID}
 	}
 	return regionLocalState, nil
 }
 
-func getApplyState(db *badger.DB, regionId uint64) (applyState, error) {
+func getApplyState(db *badger.DB, regionID uint64) (applyState, error) {
 	applyState := applyState{}
-	val, err := getValue(db, ApplyStateKey(regionId))
+	val, err := getValue(db, ApplyStateKey(regionID))
 	if err != nil {
-		return applyState, storageError(fmt.Sprintf("couldn't load raft state of region %d", regionId))
+		return applyState, storageError(fmt.Sprintf("couldn't load raft state of region %d", regionID))
 	}
 	applyState.Unmarshal(val)
 	return applyState, nil
 }
 
-func getRaftEntry(db *badger.DB, regionId, idx uint64) (*eraftpb.Entry, error) {
+func getRaftEntry(db *badger.DB, regionID, idx uint64) (*eraftpb.Entry, error) {
 	entry := new(eraftpb.Entry)
-	if err := getMsg(db, RaftLogKey(regionId, idx), entry); err != nil {
-		return nil, storageError(fmt.Sprintf("entry %d of %d not found", idx, regionId))
+	if err := getMsg(db, RaftLogKey(regionID, idx), entry); err != nil {
+		return nil, storageError(fmt.Sprintf("entry %d of %d not found", idx, regionID))
 	}
 	return entry, nil
 }
@@ -426,6 +438,7 @@ func initLastTerm(raftEngine *badger.DB, region *metapb.Region,
 	return e.Term, nil
 }
 
+// InitialState implements the raft.Storage InitialState method.
 func (ps *PeerStorage) InitialState() (eraftpb.HardState, eraftpb.ConfState, error) {
 	raftState := ps.raftState
 	if raftState.commit == 0 && raftState.term == 0 && raftState.vote == 0 {
@@ -456,14 +469,17 @@ func (ps *PeerStorage) isInitialized() bool {
 	return len(ps.region.Peers) > 0
 }
 
+// Region returns the region of the peer storage.
 func (ps *PeerStorage) Region() *metapb.Region {
 	return ps.region
 }
 
+// IsApplyingSnapshot returns whether the peer storage is applying a snapshot or not.
 func (ps *PeerStorage) IsApplyingSnapshot() bool {
-	return ps.snapState.StateType == SnapState_Applying
+	return ps.snapState.StateType == SnapStateApplying
 }
 
+// Entries implements the raft.Storage Entries method.
 func (ps *PeerStorage) Entries(low, high, maxSize uint64) ([]eraftpb.Entry, error) {
 	err := ps.checkRange(low, high)
 	if err != nil {
@@ -506,6 +522,7 @@ func (ps *PeerStorage) Entries(low, high, maxSize uint64) ([]eraftpb.Entry, erro
 	return ps.cache.fetchEntriesTo(beginIdx, high, maxSize, &fetchedSize, ents), nil
 }
 
+// Term implements the raft.Storage Term method.
 func (ps *PeerStorage) Term(idx uint64) (uint64, error) {
 	if idx == ps.truncatedIndex() {
 		return ps.truncatedTerm(), nil
@@ -544,14 +561,17 @@ func (ps *PeerStorage) truncatedTerm() uint64 {
 	return ps.applyState.truncatedTerm
 }
 
+// LastIndex implements the raft.Storage LastIndex method.
 func (ps *PeerStorage) LastIndex() (uint64, error) {
 	return ps.raftState.lastIndex, nil
 }
 
+// AppliedIndex returns applied index of the peer storage.
 func (ps *PeerStorage) AppliedIndex() uint64 {
 	return ps.applyState.appliedIndex
 }
 
+// FirstIndex implements the raft.Storage FirstIndex method.
 func (ps *PeerStorage) FirstIndex() (uint64, error) {
 	return firstIndex(ps.applyState), nil
 }
@@ -580,16 +600,17 @@ func (ps *PeerStorage) validateSnap(snap *eraftpb.Snapshot) bool {
 	return true
 }
 
+// Snapshot implements the raft.Storage Snapshot method.
 func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 	var snap eraftpb.Snapshot
-	if ps.snapState.StateType == SnapState_Generating {
+	if ps.snapState.StateType == SnapStateGenerating {
 		select {
 		case s := <-ps.snapState.Receiver:
 			snap = *s
 		default:
 			return snap, raft.ErrSnapshotTemporarilyUnavailable
 		}
-		ps.snapState.StateType = SnapState_Relax
+		ps.snapState.StateType = SnapStateRelax
 		if snap.GetMetadata() != nil {
 			ps.snapTriedCnt = 0
 			if ps.validateSnap(&snap) {
@@ -610,7 +631,7 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 	ps.snapTriedCnt++
 	ch := make(chan *eraftpb.Snapshot, 1)
 	ps.snapState = SnapState{
-		StateType: SnapState_Generating,
+		StateType: SnapStateGenerating,
 		Receiver:  ch,
 	}
 	ps.genSnapTask = newGenSnapTask(ps.region.GetId(), ch)
@@ -648,10 +669,12 @@ func (ps *PeerStorage) Append(invokeCtx *InvokeContext, entries []eraftpb.Entry,
 	return nil
 }
 
+// CompactTo compacts the cache with the given index.
 func (ps *PeerStorage) CompactTo(idx uint64) {
 	ps.cache.compactTo(idx)
 }
 
+// MaybeGCCache tries to clear the cache.
 func (ps *PeerStorage) MaybeGCCache(replicatedIdx, appliedIdx uint64) {
 	if replicatedIdx == appliedIdx {
 		// The region is inactive, clear the cache immediately.
@@ -674,21 +697,22 @@ func (ps *PeerStorage) clearMeta(kvWB, raftWB *WriteBatch) error {
 	return ClearMeta(ps.Engines, kvWB, raftWB, ps.region.Id, ps.raftState.lastIndex)
 }
 
+// CacheQueryStats is used to record the status of cache querying.
 type CacheQueryStats struct {
 	hit  uint64
 	miss uint64
 }
 
-// Delete all data that is not covered by `new_region`.
+// clearExtraData deletes all data that is not covered by `new_region`.
 func (ps *PeerStorage) clearExtraData(newRegion *metapb.Region) {
 	oldStartKey, oldEndKey := RawStartKey(ps.region), RawEndKey(ps.region)
 	newStartKey, newEndKey := RawStartKey(newRegion), RawEndKey(newRegion)
-	regionId := newRegion.Id
+	regionID := newRegion.Id
 	if bytes.Compare(oldStartKey, newStartKey) < 0 {
 		ps.regionSched <- task{
 			tp: taskTypeRegionDestroy,
 			data: &regionTask{
-				regionId: regionId,
+				regionID: regionID,
 				startKey: oldStartKey,
 				endKey:   newStartKey,
 			},
@@ -698,7 +722,7 @@ func (ps *PeerStorage) clearExtraData(newRegion *metapb.Region) {
 		ps.regionSched <- task{
 			tp: taskTypeRegionDestroy,
 			data: &regionTask{
-				regionId: regionId,
+				regionID: regionID,
 				startKey: newEndKey,
 				endKey:   oldEndKey,
 			},
@@ -795,6 +819,7 @@ func fetchEntriesTo(engine *badger.DB, regionID, low, high, maxSize uint64, buf 
 	return nil, 0, raft.ErrUnavailable
 }
 
+// ClearMeta deletes meta.
 func ClearMeta(engines *Engines, kvWB, raftWB *WriteBatch, regionID uint64, lastIndex uint64) error {
 	start := time.Now()
 	kvWB.Delete(y.KeyWithTs(RegionStateKey(regionID), KvTS))
@@ -832,6 +857,7 @@ func ClearMeta(engines *Engines, kvWB, raftWB *WriteBatch, regionID uint64, last
 	return nil
 }
 
+// WritePeerState adds the peer state to the WriteBatch.
 func WritePeerState(kvWB *WriteBatch, region *metapb.Region, state rspb.PeerState, mergeState *rspb.MergeState) {
 	regionID := region.Id
 	regionState := new(rspb.RegionLocalState)
@@ -844,7 +870,7 @@ func WritePeerState(kvWB *WriteBatch, region *metapb.Region, state rspb.PeerStat
 	kvWB.Set(y.KeyWithTs(RegionStateKey(regionID), KvTS), data)
 }
 
-// Apply the peer with given snapshot.
+// ApplySnapshot Applies the peer with the given snapshot.
 func (ps *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *eraftpb.Snapshot, kvWB *WriteBatch, raftWB *WriteBatch) error {
 	log.S().Infof("%v begin to apply snapshot", ps.Tag)
 
@@ -883,15 +909,15 @@ func (ps *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *eraftpb.Snapshot,
 	return nil
 }
 
-/// Save memory states to disk.
-///
-/// This function only write data to `ready_ctx`'s `WriteBatch`. It's caller's duty to write
-/// it explicitly to disk. If it's flushed to disk successfully, `post_ready` should be called
-/// to update the memory states properly.
-/// Do not modify ready in this function, this is a requirement to advance the ready object properly later.
+// SaveReadyState saves memory states to disk.
+//
+// This function only write data to `ready_ctx`'s `WriteBatch`. It's caller's duty to write
+// it explicitly to disk. If it's flushed to disk successfully, `post_ready` should be called
+// to update the memory states properly.
+// Do not modify ready in this function, this is a requirement to advance the ready object properly later.
 func (ps *PeerStorage) SaveReadyState(kvWB, raftWB *WriteBatch, ready *raft.Ready) (*InvokeContext, error) {
 	ctx := NewInvokeContext(ps)
-	var snapshotIdx uint64 = 0
+	var snapshotIdx uint64
 	if !raft.IsEmptySnap(&ready.Snapshot) {
 		if err := ps.ApplySnapshot(ctx, &ready.Snapshot, kvWB, raftWB); err != nil {
 			return nil, err
@@ -934,10 +960,12 @@ func (ps *PeerStorage) SaveReadyState(kvWB, raftWB *WriteBatch, ready *raft.Read
 	return ctx, nil
 }
 
+// PeerEqual returns a boolean value indicating whether two peers are equal.
 func PeerEqual(l, r *metapb.Peer) bool {
 	return l.Id == r.Id && l.StoreId == r.StoreId && l.Role == r.Role
 }
 
+// RegionEqual returns a boolean value indicating whether two regions are equal.
 func RegionEqual(l, r *metapb.Region) bool {
 	if l == nil || r == nil {
 		return false
@@ -945,7 +973,7 @@ func RegionEqual(l, r *metapb.Region) bool {
 	return l.Id == r.Id && l.RegionEpoch.Version == r.RegionEpoch.Version && l.RegionEpoch.ConfVer == r.RegionEpoch.ConfVer
 }
 
-// Update the memory state after ready changes are flushed to disk successfully.
+// PostReadyPersistent updates the memory state after ready changes are flushed to disk successfully.
 func (ps *PeerStorage) PostReadyPersistent(ctx *InvokeContext) *ApplySnapResult {
 	ps.raftState = ctx.RaftState
 	ps.applyState = ctx.ApplyState
@@ -971,46 +999,50 @@ func (ps *PeerStorage) PostReadyPersistent(ctx *InvokeContext) *ApplySnapResult 
 	}
 }
 
+// ScheduleApplyingSnapshot schedules a task of applying snapshot.
 func (ps *PeerStorage) ScheduleApplyingSnapshot() {
-	status := JobStatus_Pending
+	status := JobStatusPending
 	ps.snapState = SnapState{
-		StateType: SnapState_Applying,
+		StateType: SnapStateApplying,
 		Status:    &status,
 	}
 	ps.regionSched <- task{
 		tp: taskTypeRegionApply,
 		data: &regionTask{
-			regionId: ps.region.Id,
+			regionID: ps.region.Id,
 			status:   &status,
 		},
 	}
 }
 
+// SetRegion sets the region.
 func (ps *PeerStorage) SetRegion(region *metapb.Region) {
 	ps.region = region
 }
 
+// ClearData clears the data.
 func (ps *PeerStorage) ClearData() error {
 	// Todo: currently it is a place holder
 	return nil
 }
 
-func (p *PeerStorage) CancelApplyingSnap() bool {
+// CancelApplyingSnap cancels a task of applying snapshot.
+func (ps *PeerStorage) CancelApplyingSnap() bool {
 	// Todo: currently it is a place holder
 	return true
 }
 
-// Check if the storage is applying a snapshot.
-func (p *PeerStorage) CheckApplyingSnap() bool {
-	switch p.snapState.StateType {
-	case SnapState_Applying:
-		switch atomic.LoadUint32(p.snapState.Status) {
-		case JobStatus_Finished:
-			p.snapState = SnapState{StateType: SnapState_Relax}
-		case JobStatus_Cancelled:
-			p.snapState = SnapState{StateType: SnapState_ApplyAborted}
-		case JobStatus_Failed:
-			panic(fmt.Sprintf("%v applying snapshot failed", p.Tag))
+// CheckApplyingSnap checks if the storage is applying a snapshot.
+func (ps *PeerStorage) CheckApplyingSnap() bool {
+	switch ps.snapState.StateType {
+	case SnapStateApplying:
+		switch atomic.LoadUint32(ps.snapState.Status) {
+		case JobStatusFinished:
+			ps.snapState = SnapState{StateType: SnapStateRelax}
+		case JobStatusCancelled:
+			ps.snapState = SnapState{StateType: SnapStateApplyAborted}
+		case JobStatusFailed:
+			panic(fmt.Sprintf("%v applying snapshot failed", ps.Tag))
 		default:
 			return true
 		}
@@ -1043,9 +1075,9 @@ func createAndInitSnapshot(snap *regionSnapshot, key SnapKey, mgr *SnapManager) 
 	return snapshot, err
 }
 
-func getAppliedIdxTermForSnapshot(raft *badger.DB, kv *badger.Txn, regionId uint64) (uint64, uint64, error) {
+func getAppliedIdxTermForSnapshot(raft *badger.DB, kv *badger.Txn, regionID uint64) (uint64, uint64, error) {
 	applyState := applyState{}
-	val, err := getValueTxn(kv, ApplyStateKey(regionId))
+	val, err := getValueTxn(kv, ApplyStateKey(regionID))
 	if err != nil {
 		return 0, 0, err
 	}
@@ -1056,29 +1088,28 @@ func getAppliedIdxTermForSnapshot(raft *badger.DB, kv *badger.Txn, regionId uint
 	if idx == applyState.truncatedIndex {
 		term = applyState.truncatedTerm
 	} else {
-		entry, err := getRaftEntry(raft, regionId, idx)
+		entry, err := getRaftEntry(raft, regionID, idx)
 		if err != nil {
 			return 0, 0, err
-		} else {
-			term = entry.GetTerm()
 		}
+		term = entry.GetTerm()
 	}
 	return idx, term, nil
 }
 
-func doSnapshot(engines *Engines, mgr *SnapManager, regionId, redoIdx uint64) (*eraftpb.Snapshot, error) {
-	log.S().Debugf("begin to generate a snapshot. [regionId: %d]", regionId)
+func doSnapshot(engines *Engines, mgr *SnapManager, regionID, redoIdx uint64) (*eraftpb.Snapshot, error) {
+	log.S().Debugf("begin to generate a snapshot. [regionID: %d]", regionID)
 
-	snap, err := engines.newRegionSnapshot(regionId, redoIdx)
+	snap, err := engines.newRegionSnapshot(regionID, redoIdx)
 	if err != nil {
 		return nil, err
 	}
 	defer snap.txn.Discard()
 	if snap.regionState.GetState() != rspb.PeerState_Normal {
-		return nil, storageError(fmt.Sprintf("snap job %d seems stale, skip", regionId))
+		return nil, storageError(fmt.Sprintf("snap job %d seems stale, skip", regionID))
 	}
 
-	key := SnapKey{RegionID: regionId, Index: snap.index, Term: snap.term}
+	key := SnapKey{RegionID: regionID, Index: snap.index, Term: snap.term}
 	mgr.Register(key, SnapEntryGenerating)
 	defer mgr.Deregister(key, SnapEntryGenerating)
 

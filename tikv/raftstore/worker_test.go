@@ -33,20 +33,20 @@ import (
 
 func TestStalePeerInfo(t *testing.T) {
 	timeout := time.Now()
-	regionId := uint64(1)
+	regionID := uint64(1)
 	endKey := []byte{1, 2, 10, 10, 101, 10, 1, 9}
-	peerInfo := newStalePeerInfo(regionId, endKey, timeout)
-	assert.Equal(t, peerInfo.regionId(), regionId)
+	peerInfo := newStalePeerInfo(regionID, endKey, timeout)
+	assert.Equal(t, peerInfo.regionID(), regionID)
 	assert.Equal(t, peerInfo.endKey(), endKey)
 	assert.True(t, peerInfo.timeout().Equal(timeout))
 
-	regionId = 101
+	regionID = 101
 	endKey = []byte{102, 11, 98, 23, 45, 76, 14, 43}
 	timeout = time.Now().Add(time.Millisecond * 101)
-	peerInfo.setRegionId(regionId)
+	peerInfo.setRegionID(regionID)
 	peerInfo.setEndKey(endKey)
 	peerInfo.setTimeout(timeout)
-	assert.Equal(t, peerInfo.regionId(), regionId)
+	assert.Equal(t, peerInfo.regionID(), regionID)
 	assert.Equal(t, peerInfo.endKey(), endKey)
 	assert.True(t, peerInfo.timeout().Equal(timeout))
 }
@@ -79,9 +79,9 @@ func TestPendingDeleteRanges(t *testing.T) {
 	timeout = time.Now().Add(delay)
 	overlapRanges := delRange.drainOverlapRanges([]byte{'g'}, []byte{'q'})
 	assert.Equal(t, overlapRanges, []delRangeHolder{
-		{regionId: id + 1, startKey: []byte{'f'}, endKey: []byte{'i'}},
-		{regionId: id, startKey: []byte{'m'}, endKey: []byte{'n'}},
-		{regionId: id + 1, startKey: []byte{'p'}, endKey: []byte{'t'}},
+		{regionID: id + 1, startKey: []byte{'f'}, endKey: []byte{'i'}},
+		{regionID: id, startKey: []byte{'m'}, endKey: []byte{'n'}},
+		{regionID: id + 1, startKey: []byte{'p'}, endKey: []byte{'t'}},
 	})
 
 	assert.Equal(t, delRange.ranges.Len(), 2)
@@ -93,8 +93,8 @@ func TestPendingDeleteRanges(t *testing.T) {
 	now := time.Now()
 	ranges := delRange.timeoutRanges(now)
 	assert.Equal(t, ranges, []delRangeHolder{
-		{regionId: id, startKey: []byte{'a'}, endKey: []byte{'c'}},
-		{regionId: id, startKey: []byte{'x'}, endKey: []byte{'z'}},
+		{regionID: id, startKey: []byte{'a'}, endKey: []byte{'c'}},
+		{regionID: id, startKey: []byte{'x'}, endKey: []byte{'z'}},
 	})
 
 	for _, r := range ranges {
@@ -108,7 +108,7 @@ func TestPendingDeleteRanges(t *testing.T) {
 	now = time.Now()
 	ranges = delRange.timeoutRanges(now)
 	assert.Equal(t, ranges, []delRangeHolder{
-		{regionId: id + 2, startKey: []byte{'g'}, endKey: []byte{'q'}},
+		{regionID: id + 2, startKey: []byte{'g'}, endKey: []byte{'q'}},
 	})
 	for _, r := range ranges {
 		delRange.remove(r.startKey)
@@ -158,25 +158,25 @@ func TestPendingApplies(t *testing.T) {
 	worker := newWorker("snap-manager", wg)
 	regionRunner := newRegionTaskHandler(&config.DefaultConf, engines, mgr, 0, time.Duration(time.Second*0))
 	worker.start(regionRunner)
-	genAndApplySnap := func(regionId uint64) {
+	genAndApplySnap := func(regionID uint64) {
 		tx := make(chan *eraftpb.Snapshot, 1)
 		tsk := &task{
 			tp: taskTypeRegionGen,
 		}
 		rgTsk := &regionTask{
-			regionId: regionId,
+			regionID: regionID,
 			notifier: tx,
 		}
 		txn := engines.kv.DB.NewTransaction(false)
 		// TODO [fix this] the new regionTask need "redoIdx" as input param
-		index, _, err := getAppliedIdxTermForSnapshot(engines.raft, txn, regionId)
+		index, _, err := getAppliedIdxTermForSnapshot(engines.raft, txn, regionID)
 		rgTsk.redoIdx = index + 1
 		tsk.data = rgTsk
 		require.Nil(t, err)
 		worker.sender <- *tsk
 		s1 := <-tx
 		data := s1.Data
-		key := SnapKeyFromRegionSnap(regionId, s1)
+		key := SnapKeyFromRegionSnap(regionID, s1)
 		mgr := NewSnapManager(snapPath, nil)
 		s2, err := mgr.GetSnapshotForSending(key)
 		require.Nil(t, err)
@@ -186,18 +186,18 @@ func TestPendingApplies(t *testing.T) {
 
 		// set applying state
 		wb := new(WriteBatch)
-		regionLocalState, err := getRegionLocalState(engines.kv.DB, regionId)
+		regionLocalState, err := getRegionLocalState(engines.kv.DB, regionID)
 		require.Nil(t, err)
 		regionLocalState.State = rspb.PeerState_Applying
-		require.Nil(t, wb.SetMsg(y.KeyWithTs(RegionStateKey(regionId), KvTS), regionLocalState))
+		require.Nil(t, wb.SetMsg(y.KeyWithTs(RegionStateKey(regionID), KvTS), regionLocalState))
 		require.Nil(t, wb.WriteToKV(engines.kv))
 
 		// apply snapshot
-		var status = JobStatus_Pending
+		var status = JobStatusPending
 		tsk2 := &task{
 			tp: taskTypeRegionApply,
 			data: &regionTask{
-				regionId: regionId,
+				regionID: regionID,
 				status:   &status,
 			},
 		}
@@ -273,10 +273,10 @@ func TestGcRaftLog(t *testing.T) {
 	runner := raftLogGCTaskHandler{taskResCh: taskResCh}
 
 	//  generate raft logs
-	regionId := uint64(1)
+	regionID := uint64(1)
 	raftWb := new(WriteBatch)
 	for i := uint64(0); i < 100; i++ {
-		k := RaftLogKey(regionId, i)
+		k := RaftLogKey(regionID, i)
 		raftWb.Set(y.KeyWithTs(k, RaftTS), []byte("entry"))
 	}
 	raftWb.WriteToRaft(raftDb)
@@ -293,7 +293,7 @@ func TestGcRaftLog(t *testing.T) {
 			raftLogGcTask: task{
 				data: &raftLogGCTask{
 					raftEngine: raftDb,
-					regionID:   regionId,
+					regionID:   regionID,
 					startIdx:   uint64(0),
 					endIdx:     uint64(10),
 				},
@@ -308,7 +308,7 @@ func TestGcRaftLog(t *testing.T) {
 			raftLogGcTask: task{
 				data: &raftLogGCTask{
 					raftEngine: raftDb,
-					regionID:   regionId,
+					regionID:   regionID,
 					startIdx:   uint64(0),
 					endIdx:     uint64(50),
 				},
@@ -323,7 +323,7 @@ func TestGcRaftLog(t *testing.T) {
 			raftLogGcTask: task{
 				data: &raftLogGCTask{
 					raftEngine: raftDb,
-					regionID:   regionId,
+					regionID:   regionID,
 					startIdx:   uint64(50),
 					endIdx:     uint64(50),
 				},
@@ -338,7 +338,7 @@ func TestGcRaftLog(t *testing.T) {
 			raftLogGcTask: task{
 				data: &raftLogGCTask{
 					raftEngine: raftDb,
-					regionID:   regionId,
+					regionID:   regionID,
 					startIdx:   uint64(50),
 					endIdx:     uint64(60),
 				},
@@ -359,9 +359,9 @@ func TestGcRaftLog(t *testing.T) {
 	}
 }
 
-func raftLogMustNotExist(t *testing.T, db *badger.DB, regionId, startIdx, endIdx uint64) {
+func raftLogMustNotExist(t *testing.T, db *badger.DB, regionID, startIdx, endIdx uint64) {
 	for i := startIdx; i < endIdx; i++ {
-		k := RaftLogKey(regionId, i)
+		k := RaftLogKey(regionID, i)
 		db.View(func(txn *badger.Txn) error {
 			_, err := txn.Get(k)
 			assert.Equal(t, err, badger.ErrKeyNotFound)
@@ -370,9 +370,9 @@ func raftLogMustNotExist(t *testing.T, db *badger.DB, regionId, startIdx, endIdx
 	}
 }
 
-func raftLogMustExist(t *testing.T, db *badger.DB, regionId, startIdx, endIdx uint64) {
+func raftLogMustExist(t *testing.T, db *badger.DB, regionID, startIdx, endIdx uint64) {
 	for i := startIdx; i < endIdx; i++ {
-		k := RaftLogKey(regionId, i)
+		k := RaftLogKey(regionID, i)
 		db.View(func(txn *badger.Txn) error {
 			item, err := txn.Get(k)
 			assert.Nil(t, err)
