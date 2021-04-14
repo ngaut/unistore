@@ -80,11 +80,6 @@ type changePeer struct {
 	region     *metapb.Region
 }
 
-type keyRange struct {
-	startKey []byte
-	endKey   []byte
-}
-
 type apply struct {
 	regionID uint64
 	term     uint64
@@ -149,9 +144,7 @@ type execResultVerifyHash struct {
 	hash  []byte
 }
 
-type execResultDeleteRange struct {
-	ranges []keyRange
-}
+type execResultDeleteRange struct{}
 
 type execResult = interface{}
 
@@ -528,9 +521,6 @@ type applier struct {
 	// The commands waiting to be committed and applied
 	pendingCmds pendingCmdQueue
 
-	// Marks the applier as merged by CommitMerge.
-	merged bool
-
 	// Indicates the peer is in merging, if that compact log won't be performed.
 	isMerging bool
 	// Records the epoch version after the last merge.
@@ -538,8 +528,6 @@ type applier struct {
 	// A temporary state that keeps track of the progress of the source peer state when
 	// CommitMerge is unable to be executed.
 	waitMergeState *waitSourceMergeState
-	// ID of last region that reports ready.
-	readySourceRegion uint64
 
 	// We writes apply_state to KV DB, in one write batch together with kv data.
 	//
@@ -1454,8 +1442,6 @@ func (a *applier) execVerifyHash(aCtx *applyContext, req *raft_cmdpb.AdminReques
 }
 
 type catchUpLogs struct {
-	merge        *raft_cmdpb.CommitMergeRequest
-	readyToMerge *atomic.Uint64
 }
 
 func newApplierFromPeer(peer *peerFsm) *applier {

@@ -74,8 +74,7 @@ func (m *storeMeta) setRegion(region *metapb.Region, peer *Peer) {
 	peer.SetRegion(region)
 }
 
-type mergeLock struct {
-}
+type mergeLock struct{}
 
 // GlobalContext represents a global context.
 type GlobalContext struct {
@@ -144,10 +143,13 @@ func (pc *RaftContext) flushLocalStats() {
 	}
 }
 
+var _ = func() *storeFsm {
+	now := time.Now()
+	return &storeFsm{startTime: &now}
+}
+
 type storeFsm struct {
 	id                   uint64
-	lastCompactCheckKey  []byte
-	stopped              bool
 	startTime            *time.Time
 	consistencyCheckTime map[uint64]time.Time
 	receiver             <-chan Msg
@@ -833,16 +835,6 @@ func (d *storeMsgHandler) findRegionsInRange(startKey, endKey []byte) []*metapb.
 		regions = append(regions, meta.regions[regionID])
 	}
 	return regions
-}
-
-type regionIDDeclinedBytesPair struct {
-	regionID      uint64
-	declinedBytes uint64
-}
-
-func calcRegionDeclinedBytes(event *rocksdb.CompactedEvent,
-	regionRanges *lockstore.MemStore, bytesThreshold uint64) []regionIDDeclinedBytesPair {
-	return nil // TODO: not supported.
 }
 
 func isRangeCovered(meta *storeMeta, start, end []byte) bool {

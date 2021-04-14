@@ -59,7 +59,6 @@ type raftWorker struct {
 
 	msgCnt            uint64
 	movePeerCandidate uint64
-	closeCh           <-chan struct{}
 }
 
 func newRaftWorker(ctx *GlobalContext, ch chan Msg, pm *router) *raftWorker {

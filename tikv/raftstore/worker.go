@@ -60,17 +60,12 @@ const (
 	taskTypePDReadStats        taskType = 107
 	taskTypePDDestroyPeer      taskType = 108
 
-	taskTypeCompact         taskType = 201
-	taskTypeCheckAndCompact taskType = 202
-
 	taskTypeRegionGen   taskType = 401
 	taskTypeRegionApply taskType = 402
 	/// Destroy data between [start_key, end_key).
 	///
 	/// The deletion may and may not succeed.
 	taskTypeRegionDestroy taskType = 403
-
-	taskTypeResolveAddr taskType = 501
 
 	taskTypeSnapSend taskType = 601
 	taskTypeSnapRecv taskType = 602
@@ -164,16 +159,6 @@ type flowStats struct {
 	readKeys  uint64
 }
 
-type compactTask struct {
-	keyRange keyRange
-}
-
-type checkAndCompactTask struct {
-	ranges                    []keyRange
-	tombStoneNumThreshold     uint64 // The minimum RocksDB tombstones a range that need compacting has
-	tombStonePercentThreshold uint64
-}
-
 type sendSnapTask struct {
 	storeID  uint64
 	msg      *raft_serverpb.RaftMessage
@@ -189,7 +174,6 @@ type worker struct {
 	name     string
 	sender   chan<- task
 	receiver <-chan task
-	closeCh  chan struct{}
 	wg       *sync.WaitGroup
 }
 

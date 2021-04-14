@@ -14,7 +14,6 @@
 package raftstore
 
 import (
-	"bytes"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -36,10 +35,6 @@ var (
 	snapTestKey     = []byte("tkey")
 	regionTestBegin = []byte("ta")
 	regionTestEnd   = []byte("tz")
-)
-
-const (
-	testWriteBatchSize = 10 * 1024 * 1024
 )
 
 type dummyDeleter struct{}
@@ -70,31 +65,6 @@ func getTestDBForRegions(t *testing.T, path string, regions []uint64) *mvcc.DBBu
 	return kv
 }
 
-func getKVCount(t *testing.T, db *mvcc.DBBundle) int {
-	count := 0
-	err := db.DB.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		it.SetAllVersions(true)
-		defer it.Close()
-		for it.Seek(regionTestBegin); it.Valid(); it.Next() {
-			if bytes.Compare(it.Item().Key(), regionTestEnd) >= 0 {
-				break
-			}
-			count++
-		}
-		return nil
-	})
-	lockIterator := db.LockStore.NewIterator()
-	for lockIterator.Seek(regionTestBegin); lockIterator.Valid(); lockIterator.Next() {
-		if bytes.Compare(lockIterator.Key(), regionTestEnd) >= 0 {
-			break
-		}
-		count++
-	}
-	assert.Nil(t, err)
-	return count
-}
-
 func genTestRegion(regionID, storeID, peerID uint64) *metapb.Region {
 	return &metapb.Region{
 		Id:       regionID,
@@ -108,30 +78,6 @@ func genTestRegion(regionID, storeID, peerID uint64) *metapb.Region {
 			{StoreId: storeID, Id: peerID},
 		},
 	}
-}
-
-func assertEqDB(t *testing.T, expected, actual *mvcc.DBBundle) {
-	expectedVal := getDBValue(t, expected.DB, snapTestKey, 200)
-	actualVal := getDBValue(t, actual.DB, snapTestKey, 200)
-	assert.Equal(t, expectedVal, actualVal)
-	expectedVal = getDBValue(t, expected.DB, snapTestKey, 100)
-	actualVal = getDBValue(t, actual.DB, snapTestKey, 100)
-	assert.Equal(t, expectedVal, actualVal)
-	expectedLock := expected.LockStore.Get(snapTestKey, nil)
-	actualLock := actual.LockStore.Get(snapTestKey, nil)
-	assert.Equal(t, expectedLock, actualLock)
-}
-
-func getDBValue(t *testing.T, db *badger.DB, key []byte, ts uint64) (val []byte) {
-	require.Nil(t, db.View(func(txn *badger.Txn) error {
-		txn.SetReadTS(ts)
-		item, err := txn.Get(key)
-		require.Nil(t, err, string(key))
-		val, err = item.Value()
-		require.Nil(t, err)
-		return nil
-	}))
-	return
 }
 
 func openDBBundle(t *testing.T, dir string) *mvcc.DBBundle {

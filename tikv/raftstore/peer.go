@@ -1052,7 +1052,7 @@ func (p *Peer) HandleRaftReadyApply(kv *mvcc.DBBundle, applyMsgs *applyMsgs, rea
 	} else {
 		committedEntries := ready.CommittedEntries
 		ready.CommittedEntries = nil
-		// leader needs to update lease and last commited split index.
+		// leader needs to update lease and last committed split index.
 		leaseToBeUpdated, splitToBeUpdated, mergeToBeUpdated := p.IsLeader(), p.IsLeader(), p.IsLeader()
 		if !leaseToBeUpdated {
 			// It's not leader anymore, we are safe to clear proposals. If it becomes leader

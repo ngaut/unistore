@@ -370,8 +370,6 @@ func (wb *WriteBatch) Reset() {
 
 const delRangeBatchSize = 4096
 
-const maxSystemTS = math.MaxUint64
-
 func deleteRange(db *mvcc.DBBundle, startKey, endKey []byte) error {
 	// Delete keys first.
 	keys := make([]y.Key, 0, delRangeBatchSize)
