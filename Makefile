@@ -40,10 +40,5 @@ build: prepare go-build finish
 linux: prepare go-build-linux finish
 
 prepare:
-	cp go.mod1 go.mod
-	cp go.sum1 go.sum
 
 finish:
-	@$(GO) mod tidy
-	cp go.mod go.mod1
-	cp go.sum go.sum1
