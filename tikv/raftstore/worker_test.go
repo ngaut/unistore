@@ -160,7 +160,7 @@ func TestPendingApplies(t *testing.T) {
 	mgr := NewSnapManager(snapPath, nil)
 	wg := new(sync.WaitGroup)
 	worker := newWorker("snap-manager", wg)
-	regionRunner := newRegionTaskHandler(&config.DefaultConf, engines, mgr, 0, time.Duration(time.Second*0))
+	regionRunner := newRegionTaskHandler(&config.DefaultConf, engines, mgr, 0, time.Second*0)
 	worker.start(regionRunner)
 	genAndApplySnap := func(regionID uint64) {
 		tx := make(chan *eraftpb.Snapshot, 1)

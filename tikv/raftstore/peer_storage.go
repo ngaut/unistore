@@ -128,7 +128,7 @@ func (ec *EntryCache) fetchEntriesTo(begin, end, maxSize uint64, fetchSize *uint
 		entry := ec.cache[i]
 		y.AssertTruef(entry.Index == cacheLow+uint64(i), "%d %d %d", entry.Index, cacheLow, i)
 		entrySize := uint64(entry.Size())
-		*fetchSize += uint64(entrySize)
+		*fetchSize += entrySize
 		if *fetchSize != entrySize && *fetchSize > maxSize {
 			break
 		}

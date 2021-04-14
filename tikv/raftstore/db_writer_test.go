@@ -83,7 +83,7 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 			LockHdr: mvcc.LockHdr{
 				StartTS: 100,
 				TTL:     10,
-				Op:      uint8(mvcc.LockTypePut),
+				Op:      mvcc.LockTypePut,
 			},
 			Value: values[i],
 		}

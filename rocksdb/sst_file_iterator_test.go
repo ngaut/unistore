@@ -99,7 +99,7 @@ func testSstReadWrite(t *testing.T, num int, opts *BlockBasedTableOptions) {
 			value := string(it.Value())
 
 			require.Equal(t, nums[i], string(key.UserKey))
-			require.Equal(t, nums[i], string(value))
+			require.Equal(t, nums[i], value)
 			i++
 		}
 		require.Equal(t, num, i)

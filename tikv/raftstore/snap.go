@@ -490,7 +490,7 @@ func (s *Snap) setSnapshotMeta(snapshotMeta *rspb.SnapshotMeta) error {
 				return err
 			}
 		}
-		cfFile.Size = uint64(meta.GetSize_())
+		cfFile.Size = meta.GetSize_()
 		cfFile.Checksum = meta.GetChecksum()
 	}
 	s.MetaFile.Meta = snapshotMeta
