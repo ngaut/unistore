@@ -74,7 +74,7 @@ func (e *ErrServerIsBusy) Error() string {
 type ErrStaleCommand struct{}
 
 func (e *ErrStaleCommand) Error() string {
-	return fmt.Sprintf("stale command")
+	return "stale command"
 }
 
 // ErrStoreNotMatch is returned when the store is not match.

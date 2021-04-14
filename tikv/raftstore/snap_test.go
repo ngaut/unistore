@@ -37,13 +37,6 @@ var (
 	regionTestEnd   = []byte("tz")
 )
 
-type dummyDeleter struct{}
-
-func (d *dummyDeleter) DeleteSnapshot(key SnapKey, snapshot Snapshot, checkEntry bool) bool {
-	snapshot.Delete()
-	return true
-}
-
 func getTestDBForRegions(t *testing.T, path string, regions []uint64) *mvcc.DBBundle {
 	kv := openDBBundle(t, path)
 	fillDBBundleData(t, kv)

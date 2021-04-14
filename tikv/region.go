@@ -15,14 +15,12 @@ package tikv
 
 import (
 	"bytes"
-	"encoding/binary"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
 
 	"github.com/ngaut/unistore/tikv/raftstore"
-	"github.com/pingcap/badger"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -30,7 +28,6 @@ import (
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/store/mockstore/unistore/metrics"
 	"github.com/pingcap/tidb/store/mockstore/unistore/tikv"
-	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
 	"github.com/pingcap/tidb/util/codec"
 	"github.com/zhangjinpeng1987/raft"
 	"go.uber.org/zap"
@@ -45,12 +42,11 @@ var (
 )
 
 type regionCtx struct {
-	meta            *metapb.Region
-	regionEpoch     unsafe.Pointer // *metapb.RegionEpoch
-	rawStartKey     []byte
-	rawEndKey       []byte
-	approximateSize int64
-	diff            int64
+	meta        *metapb.Region
+	regionEpoch unsafe.Pointer // *metapb.RegionEpoch
+	rawStartKey []byte
+	rawEndKey   []byte
+	diff        int64
 
 	latches       *latches
 	leaderChecker raftstore.LeaderChecker
@@ -176,62 +172,6 @@ func (ri *regionCtx) decodeRawEndKey() []byte {
 	return rawKey
 }
 
-func (ri *regionCtx) lessThanStartKey(key []byte) bool {
-	return bytes.Compare(key, ri.rawStartKey) < 0
-}
-
-func (ri *regionCtx) greaterEqualEndKey(key []byte) bool {
-	return len(ri.rawEndKey) > 0 && bytes.Compare(key, ri.rawEndKey) >= 0
-}
-
-func (ri *regionCtx) greaterThanEndKey(key []byte) bool {
-	return len(ri.rawEndKey) > 0 && bytes.Compare(key, ri.rawEndKey) > 0
-}
-
-func newPeerMeta(peerID, storeID uint64) *metapb.Peer {
-	return &metapb.Peer{
-		Id:      peerID,
-		StoreId: storeID,
-	}
-}
-
-func (ri *regionCtx) incConfVer() {
-	ri.meta.RegionEpoch = &metapb.RegionEpoch{
-		ConfVer: ri.meta.GetRegionEpoch().GetConfVer() + 1,
-		Version: ri.meta.GetRegionEpoch().GetVersion(),
-	}
-	ri.updateRegionEpoch(ri.meta.RegionEpoch)
-}
-
-func (ri *regionCtx) addPeer(peerID, storeID uint64) {
-	ri.meta.Peers = append(ri.meta.Peers, newPeerMeta(peerID, storeID))
-	ri.incConfVer()
-}
-
-func (ri *regionCtx) unmarshal(data []byte) error {
-	ri.approximateSize = int64(binary.LittleEndian.Uint64(data))
-	data = data[8:]
-	ri.meta = &metapb.Region{}
-	err := ri.meta.Unmarshal(data)
-	if err != nil {
-		return errors.Trace(err)
-	}
-	ri.rawStartKey = ri.decodeRawStartKey()
-	ri.rawEndKey = ri.decodeRawEndKey()
-	ri.regionEpoch = unsafe.Pointer(ri.meta.RegionEpoch)
-	return nil
-}
-
-func (ri *regionCtx) marshal() []byte {
-	data := make([]byte, 8+ri.meta.Size())
-	binary.LittleEndian.PutUint64(data, uint64(ri.approximateSize))
-	_, err := ri.meta.MarshalTo(data[8:])
-	if err != nil {
-		log.Error("region ctx marshal failed", zap.Error(err))
-	}
-	return data
-}
-
 // AcquireLatches add latches for all input hashVals, the input hashVals should be
 // sorted and have no duplicates
 func (ri *regionCtx) AcquireLatches(hashVals []uint64) {
@@ -253,16 +193,6 @@ type RegionOptions struct {
 	StoreAddr  string
 	PDAddr     string
 	RegionSize int64
-}
-
-// RegionManager defines the region manager interface.
-type RegionManager interface {
-	GetRegionFromCtx(ctx *kvrpcpb.Context) (tikv.RegionCtx, *errorpb.Error)
-	GetStoreInfoFromCtx(ctx *kvrpcpb.Context) (string, uint64, *errorpb.Error)
-	SplitRegion(req *kvrpcpb.SplitRegionRequest) *kvrpcpb.SplitRegionResponse
-	GetStoreIDByAddr(addr string) (uint64, error)
-	GetStoreAddrByStoreID(storeID uint64) (string, error)
-	Close() error
 }
 
 type regionManager struct {
@@ -335,48 +265,6 @@ func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (tikv.RegionCtx,
 
 func (rm *regionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
 	return lhs.GetConfVer() != rhs.GetConfVer() || lhs.GetVersion() != rhs.GetVersion()
-}
-
-func (rm *regionManager) loadFromLocal(bundle *mvcc.DBBundle, f func(*regionCtx)) error {
-	err := bundle.DB.View(func(txn *badger.Txn) error {
-		item, err1 := txn.Get(InternalStoreMetaKey)
-		if err1 != nil {
-			return err1
-		}
-		val, err1 := item.Value()
-		if err1 != nil {
-			return err1
-		}
-		err1 = rm.storeMeta.Unmarshal(val)
-		if err1 != nil {
-			return err1
-		}
-		// load region meta
-		opts := badger.DefaultIteratorOptions
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		prefix := InternalRegionMetaPrefix
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			val, err1 = item.Value()
-			if err1 != nil {
-				return err1
-			}
-			r := new(regionCtx)
-			err := r.unmarshal(val)
-			if err != nil {
-				return errors.Trace(err)
-			}
-			r.latches = rm.latches
-			rm.regions[r.meta.Id] = r
-			f(r)
-		}
-		return nil
-	})
-	if err == badger.ErrKeyNotFound {
-		err = nil
-	}
-	return err
 }
 
 // RaftRegionManager represents a raft region manager.
@@ -524,7 +412,7 @@ func (rm *RaftRegionManager) runEventHandler() {
 			rm.mu.RLock()
 			region := rm.regions[x.regionID]
 			rm.mu.RUnlock()
-			if bytes.Compare(region.rawStartKey, []byte{}) == 0 && len(region.meta.Peers) > 0 {
+			if bytes.Equal(region.rawStartKey, []byte{}) && len(region.meta.Peers) > 0 {
 				newRole := tikv.Follower
 				if x.newState == raft.StateLeader {
 					newRole = tikv.Leader

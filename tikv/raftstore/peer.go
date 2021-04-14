@@ -509,7 +509,7 @@ func (p *Peer) Destroy(engine *Engines, keepData bool) error {
 	}
 	p.applyProposals = nil
 
-	log.S().Infof("%v destroy itself, takes %v", p.Tag, time.Now().Sub(start))
+	log.S().Infof("%v destroy itself, takes %v", p.Tag, time.Since(start))
 	return nil
 }
 
@@ -1134,7 +1134,7 @@ func (p *Peer) ApplyReads(kv *mvcc.DBBundle, ready *raft.Ready) {
 			if read == nil {
 				panic("read should exist")
 			}
-			if bytes.Compare(state.RequestCtx, read.binaryID()) != 0 {
+			if !bytes.Equal(state.RequestCtx, read.binaryID()) {
 				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.binaryID()))
 			}
 			for _, reqCb := range read.cmds {
@@ -1147,7 +1147,7 @@ func (p *Peer) ApplyReads(kv *mvcc.DBBundle, ready *raft.Ready) {
 	} else {
 		for _, state := range ready.ReadStates {
 			read := p.pendingReads.reads[p.pendingReads.readyCnt]
-			if bytes.Compare(state.RequestCtx, read.binaryID()) != 0 {
+			if !bytes.Equal(state.RequestCtx, read.binaryID()) {
 				panic(fmt.Sprintf("request ctx: %v not equal to read id: %v", state.RequestCtx, read.binaryID()))
 			}
 			p.pendingReads.readyCnt++

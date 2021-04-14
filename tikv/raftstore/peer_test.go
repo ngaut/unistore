@@ -139,9 +139,6 @@ func TestRequestInspector(t *testing.T) {
 	req.AdminRequest = admReq
 	tbl = append(tbl, ReqPolicyPair{Req: req, Policy: RequestPolicyProposeTransferLeader})
 
-	req = new(raft_cmdpb.RaftCmdRequest)
-	admReq = new(raft_cmdpb.AdminRequest)
-
 	Ops := []OpPolicyPair{
 		{Tp: raft_cmdpb.CmdType_Get, Policy: RequestPolicyReadLocal},
 		{Tp: raft_cmdpb.CmdType_Snap, Policy: RequestPolicyReadLocal},

@@ -29,10 +29,10 @@ type CompressionType uint8
 
 // CompressionType
 const (
-	CompressionNone   CompressionType = 0x0
-	CompressionSnappy                 = 0x1
-	CompressionLz4                    = 0x4
-	CompressionZstd                   = 0x7
+	CompressionNone   = 0x0
+	CompressionSnappy = 0x1
+	CompressionLz4    = 0x4
+	CompressionZstd   = 0x7
 )
 
 // String provides a string representation of the compression type.
@@ -56,9 +56,9 @@ type ChecksumType uint8
 
 // ChecksumType
 const (
-	ChecksumNone   ChecksumType = 0x0
-	ChecksumCRC32               = 0x1
-	ChecksumXXHash              = 0x2
+	ChecksumNone   = 0x0
+	ChecksumCRC32  = 0x1
+	ChecksumXXHash = 0x2
 )
 
 // BlockBasedTableOptions represents block-based table options.

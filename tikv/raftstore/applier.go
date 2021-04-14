@@ -258,7 +258,6 @@ type applyMsgs struct {
 func (r *applyMsgs) appendMsg(regionID uint64, msg Msg) {
 	msg.RegionID = regionID
 	r.msgs = append(r.msgs, msg)
-	return
 }
 
 type applyContext struct {
@@ -1070,7 +1069,6 @@ func createWriteCmdOps(requests []*raft_cmdpb.Request) (ops []interface{}) {
 func (a *applier) execPrewrite(aCtx *applyContext, op prewriteOp) {
 	key, value := convertPrewriteToLock(op, aCtx.getTxn())
 	aCtx.wb.SetLock(key, value)
-	return
 }
 
 func convertPrewriteToLock(op prewriteOp, txn *badger.Txn) (key, value []byte) {
@@ -1100,7 +1098,6 @@ func (a *applier) execCommit(aCtx *applyContext, op commitOp) {
 	val := a.getLock(aCtx, rawKey)
 	y.Assert(len(val) > 0)
 	a.commitLock(aCtx, rawKey, val, commitTS)
-	return
 }
 
 func (a *applier) commitLock(aCtx *applyContext, rawKey []byte, val []byte, commitTS uint64) {
@@ -1179,7 +1176,6 @@ func (a *applier) execDeleteRange(aCtx *applyContext, req *raft_cmdpb.DeleteRang
 		}
 		aCtx.wb.DeleteLock(safeCopy(lockIt.Key()))
 	}
-	return
 }
 
 func (a *applier) execChangePeer(aCtx *applyContext, req *raft_cmdpb.AdminRequest) (
@@ -1538,10 +1534,6 @@ func (a *applier) handleDestroy(aCtx *applyContext, regionID uint64) {
 			destroyPeerID: a.id,
 		})
 	}
-}
-
-func (a *applier) resumePendingMerge(aCtx *applyContext) bool {
-	return false // TODO: merge
 }
 
 func (a *applier) catchUpLogsForMerge(aCtx *applyContext, logs *catchUpLogs) {

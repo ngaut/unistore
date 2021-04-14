@@ -155,10 +155,6 @@ func (ai *snapApplier) popFullValue(key []byte, startTS uint64, shortVal []byte,
 	return ai.loadFullValueOpt(key, startTS, shortVal, op, true)
 }
 
-func (ai *snapApplier) loadFullValue(key []byte, startTS uint64, shortVal []byte, op byte) ([]byte, error) {
-	return ai.loadFullValueOpt(key, startTS, shortVal, op, false)
-}
-
 func (ai *snapApplier) loadFullValueOpt(key []byte, startTS uint64, shortVal []byte, op byte, pop bool) ([]byte, error) {
 	if shortVal == nil && op == byte(kvrpcpb.Op_Put) {
 		if !ai.defaultCFIterator.Valid() {

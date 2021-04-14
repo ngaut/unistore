@@ -31,7 +31,6 @@ import (
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
-	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
@@ -161,7 +160,7 @@ type flowStats struct {
 
 type sendSnapTask struct {
 	storeID  uint64
-	msg      *raft_serverpb.RaftMessage
+	msg      *rspb.RaftMessage
 	callback func(error)
 }
 
@@ -708,12 +707,12 @@ func (snapCtx *snapContext) handleApply(regionID uint64, status *JobStatus, buil
 /// ingestMaybeStall checks the number of files at level 0 to avoid write stall after ingesting sst.
 /// Returns true if the ingestion causes write stall.
 func (snapCtx *snapContext) ingestMaybeStall() bool {
-	for _, cf := range snapshotCFs {
-		if plainFileUsed(cf) {
-			continue
-		}
-		// todo, related to cf.
-	}
+	//for _, cf := range snapshotCFs {
+	//	if !plainFileUsed(cf) {
+	//		continue
+	//	}
+	//	// todo, related to cf.
+	//}
 	return false
 }
 
@@ -928,10 +927,6 @@ func (r *regionTaskHandler) handle(t task) {
 			r.ctx.cleanUpRange(regionTask.regionID, regionTask.startKey, regionTask.endKey, false)
 		}
 	}
-}
-
-func (r *regionTaskHandler) shutdown() {
-	// todo, currently it is a a place holder.
 }
 
 type raftLogGcTaskRes uint64

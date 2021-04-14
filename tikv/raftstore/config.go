@@ -310,7 +310,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.MergeMaxLogGap >= c.RaftLogGcCountLimit {
-		return fmt.Errorf("Merge log gap %v should be less than log gc limit %v", c.MergeMaxLogGap, c.RaftLogGcCountLimit)
+		return fmt.Errorf("merge log gap %v should be less than log gc limit %v", c.MergeMaxLogGap, c.RaftLogGcCountLimit)
 	}
 
 	if c.MergeCheckTickInterval == 0 {

@@ -531,8 +531,6 @@ func (s *Snap) validate() error {
 			if err != nil {
 				return err
 			}
-		} else {
-			// TODO: prepare and validate for ingestion
 		}
 	}
 	return nil

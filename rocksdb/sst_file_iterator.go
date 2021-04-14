@@ -190,10 +190,7 @@ func (it *SstFileIterator) checkMagicNumber(footer []byte) bool {
 		return false
 	}
 	pos += 4
-	if rocksEndian.Uint32(footer[pos:]) != blockBasedTableMagicNumber>>32 {
-		return false
-	}
-	return true
+	return rocksEndian.Uint32(footer[pos:]) == blockBasedTableMagicNumber>>32
 }
 
 func (it *SstFileIterator) loadIndexBlock() error {

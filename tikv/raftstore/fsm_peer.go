@@ -101,10 +101,6 @@ func replicatePeerFsm(storeID uint64, cfg *Config, sched chan<- task,
 	}, nil
 }
 
-func (pf *peerFsm) drop() {
-	pf.peer.Stop()
-}
-
 func (pf *peerFsm) regionID() uint64 {
 	return pf.peer.regionID
 }
@@ -135,10 +131,6 @@ func (pf *peerFsm) setPendingMergeState(state *rspb.MergeState) {
 
 func (pf *peerFsm) scheduleApplyingSnapshot() {
 	pf.peer.Store().ScheduleApplyingSnapshot()
-}
-
-func (pf *peerFsm) hasPendingMergeApplyResult() bool {
-	return pf.peer.PendingMergeApplyResult != nil
 }
 
 func (pf *peerFsm) tag() string {
@@ -250,10 +242,6 @@ func (d *peerMsgHandler) startTicker() {
 
 func (d *peerMsgHandler) notifyPrepareMerge() {
 	// TODO: merge func
-}
-
-func (d *peerMsgHandler) resumeHandlePendingApplyResult() bool {
-	return false // TODO: merge func
 }
 
 func (d *peerMsgHandler) onGCSnap(snaps []SnapKeyWithSending) {
@@ -916,18 +904,6 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 	d.ctx.peerEventObserver.OnSplitRegion(derived, regions, newPeers)
 }
 
-func (d *peerMsgHandler) validateMergePeer(targetRegion *metapb.Region) (bool, error) {
-	return false, nil // TODO: merge func
-}
-
-func (d *peerMsgHandler) scheduleMerge() error {
-	return nil // TODO: merge func
-}
-
-func (d *peerMsgHandler) rollbackMerge() {
-	// TODO: merge func
-}
-
 func (d *peerMsgHandler) onCheckMerge() {
 	// TODO: merge func
 }
@@ -1237,7 +1213,7 @@ func isSameTable(leftKey, rightKey []byte) bool {
 		bytes.HasPrefix(rightKey, tablecodec.TablePrefix()) &&
 		len(leftKey) >= tablecodec.TableSplitKeyLen &&
 		len(rightKey) >= tablecodec.TableSplitKeyLen &&
-		bytes.Compare(leftKey[:tablecodec.TableSplitKeyLen], rightKey[:tablecodec.TableSplitKeyLen]) == 0
+		bytes.Equal(leftKey[:tablecodec.TableSplitKeyLen], rightKey[:tablecodec.TableSplitKeyLen])
 }
 
 func (d *peerMsgHandler) onPrepareSplitRegion(regionEpoch *metapb.RegionEpoch, splitKeys [][]byte, cb *Callback) {
@@ -1448,11 +1424,8 @@ func maybeDestroySource(meta *storeMeta, targetID, sourceID uint64, epoch *metap
 				targetID, sourceID, epoch, targetEpoch)
 			// The target peer will move on, namely, it will apply a snapshot generated after merge,
 			// so destroy source peer.
-			if epoch.Version > targetEpoch.Version {
-				return true
-			}
 			// Wait till the target peer has caught up logs and source peer will be destroyed at that time.
-			return false
+			return epoch.Version > targetEpoch.Version
 		}
 	}
 	return false
