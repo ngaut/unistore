@@ -834,7 +834,9 @@ func (r *regionTaskHandler) handleApplyResult(result ApplyResult) error {
 			return err
 		}
 	} else {
-		os.Remove(r.builderFile.Name())
+		if err := os.Remove(r.builderFile.Name()); err != nil {
+			return err
+		}
 	}
 
 	state := regionApplyState{localState: result.RegionState}
@@ -868,7 +870,9 @@ func (r *regionTaskHandler) finishApply() error {
 		cnt += state.tableCount
 		rs := state.localState
 		regionID := rs.Region.Id
-		wb.SetMsg(y.KeyWithTs(RegionStateKey(regionID), KvTS), rs)
+		if err := wb.SetMsg(y.KeyWithTs(RegionStateKey(regionID), KvTS), rs); err != nil {
+			return err
+		}
 		wb.Delete(y.KeyWithTs(SnapshotRaftStateKey(regionID), KvTS))
 	}
 
@@ -879,7 +883,9 @@ func (r *regionTaskHandler) finishApply() error {
 	log.S().Infof("apply snapshot ingested %d tables", len(r.tableFiles))
 
 	for _, f := range r.tableFiles {
-		os.Remove(f.Name())
+		if err := os.Remove(f.Name()); err != nil {
+			return err
+		}
 	}
 	r.tableFiles = nil
 	r.applyStates = nil

@@ -151,7 +151,11 @@ func TestPendingApplies(t *testing.T) {
 	defer cleanUpTestEngineData(engines)
 
 	snapPath, err := ioutil.TempDir("", "unistore_snap")
-	defer os.RemoveAll(snapPath)
+	defer func() {
+		if err := os.RemoveAll(snapPath); err != nil {
+			t.Error(err)
+		}
+	}()
 	require.Nil(t, err)
 	mgr := NewSnapManager(snapPath, nil)
 	wg := new(sync.WaitGroup)
@@ -279,7 +283,9 @@ func TestGcRaftLog(t *testing.T) {
 		k := RaftLogKey(regionID, i)
 		raftWb.Set(y.KeyWithTs(k, RaftTS), []byte("entry"))
 	}
-	raftWb.WriteToRaft(raftDb)
+	if err := raftWb.WriteToRaft(raftDb); err != nil {
+		t.Error(err)
+	}
 
 	type tempHolder struct {
 		raftLogGcTask     task
@@ -362,22 +368,26 @@ func TestGcRaftLog(t *testing.T) {
 func raftLogMustNotExist(t *testing.T, db *badger.DB, regionID, startIdx, endIdx uint64) {
 	for i := startIdx; i < endIdx; i++ {
 		k := RaftLogKey(regionID, i)
-		db.View(func(txn *badger.Txn) error {
+		if err := db.View(func(txn *badger.Txn) error {
 			_, err := txn.Get(k)
 			assert.Equal(t, err, badger.ErrKeyNotFound)
 			return nil
-		})
+		}); err != nil {
+			t.Error(err)
+		}
 	}
 }
 
 func raftLogMustExist(t *testing.T, db *badger.DB, regionID, startIdx, endIdx uint64) {
 	for i := startIdx; i < endIdx; i++ {
 		k := RaftLogKey(regionID, i)
-		db.View(func(txn *badger.Txn) error {
+		if err := db.View(func(txn *badger.Txn) error {
 			item, err := txn.Get(k)
 			assert.Nil(t, err)
 			assert.NotNil(t, item)
 			return nil
-		})
+		}); err != nil {
+			t.Error(err)
+		}
 	}
 }

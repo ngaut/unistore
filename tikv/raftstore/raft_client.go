@@ -201,7 +201,9 @@ func (c *RaftClient) getConn(storeID, regionID uint64) *raftConn {
 func (c *RaftClient) Send(msg *raft_serverpb.RaftMessage) {
 	storeID := msg.GetToPeer().GetStoreId()
 	conn := c.getConn(storeID, msg.GetRegionId())
-	conn.Send(msg)
+	if err := conn.Send(msg); err != nil {
+		log.S().Error(err)
+	}
 }
 
 // Flush flushes the RaftClient.

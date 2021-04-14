@@ -71,20 +71,22 @@ func newTestPeerStorageFromEnts(t *testing.T, ents []eraftpb.Entry) *PeerStorage
 	ctx.ApplyState.appliedIndex = ents[len(ents)-1].Index
 	ctx.saveApplyStateTo(kvWB)
 	require.Nil(t, peerStore.Engines.WriteRaft(raftWB))
-	peerStore.Engines.WriteKV(kvWB)
+	if err := peerStore.Engines.WriteKV(kvWB); err != nil {
+		t.Error(err)
+	}
 	peerStore.raftState = ctx.RaftState
 	peerStore.applyState = ctx.ApplyState
 	return peerStore
 }
 
 func cleanUpTestData(peerStore *PeerStorage) {
-	os.RemoveAll(peerStore.Engines.kvPath)
-	os.RemoveAll(peerStore.Engines.raftPath)
+	_ = os.RemoveAll(peerStore.Engines.kvPath)
+	_ = os.RemoveAll(peerStore.Engines.raftPath)
 }
 
 func cleanUpTestEngineData(engines *Engines) {
-	os.RemoveAll(engines.kvPath)
-	os.RemoveAll(engines.raftPath)
+	_ = os.RemoveAll(engines.kvPath)
+	_ = os.RemoveAll(engines.raftPath)
 }
 
 func newTestEntry(index, term uint64) eraftpb.Entry {

@@ -96,7 +96,7 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 		assert.Nil(t, err)
 		applyCtx.wb.Reset()
 		wb.requests = nil
-		engines.kv.DB.View(func(txn *badger.Txn) error {
+		if err := engines.kv.DB.View(func(txn *badger.Txn) error {
 			item, err := txn.Get(primary)
 			assert.Nil(t, err)
 			curVal, err := item.Value()
@@ -107,7 +107,9 @@ func TestRaftWriteBatch_PrewriteAndCommit(t *testing.T) {
 			assert.Equal(t, userMeta.CommitTS(), wb.commitTS)
 			assert.Equal(t, 0, bytes.Compare(curVal, expectLock.Value))
 			return nil
-		})
+		}); err != nil {
+			t.Error(err)
+		}
 	}
 }
 

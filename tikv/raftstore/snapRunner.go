@@ -173,7 +173,9 @@ func (r *snapRunner) recvSnap(stream tikvpb.Tikv_SnapshotServer) (*raft_serverpb
 	}
 	if snap.Exists() {
 		log.Info("snapshot file already exists, skip receiving", zap.Stringer("snap key", snapKey), zap.String("file", snap.Path()))
-		stream.SendAndClose(&raft_serverpb.Done{})
+		if err := stream.SendAndClose(&raft_serverpb.Done{}); err != nil {
+			return nil, err
+		}
 		return head.GetMessage(), nil
 	}
 	r.snapManager.Register(snapKey, SnapEntryReceiving)
@@ -202,6 +204,8 @@ func (r *snapRunner) recvSnap(stream tikvpb.Tikv_SnapshotServer) (*raft_serverpb
 		return nil, err
 	}
 
-	stream.SendAndClose(&raft_serverpb.Done{})
+	if err := stream.SendAndClose(&raft_serverpb.Done{}); err != nil {
+		return nil, err
+	}
 	return head.GetMessage(), nil
 }

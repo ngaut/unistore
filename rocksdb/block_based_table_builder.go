@@ -161,7 +161,9 @@ func (b *BlockBasedTableBuilder) Finish() error {
 		return err
 	}
 	b.offset += uint64(len(footerBuf))
-	b.writer.Flush()
+	if err := b.writer.Flush(); err != nil {
+		return err
+	}
 	return b.writer.Sync()
 }
 

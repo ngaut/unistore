@@ -25,8 +25,12 @@ import (
 func TestBootstrapStore(t *testing.T) {
 	engines := newTestEngines(t)
 	defer func() {
-		os.RemoveAll(engines.kvPath)
-		os.RemoveAll(engines.raftPath)
+		if err := os.RemoveAll(engines.kvPath); err != nil {
+			t.Error(err)
+		}
+		if err := os.RemoveAll(engines.raftPath); err != nil {
+			t.Error(err)
+		}
 	}()
 	require.Nil(t, BootstrapStore(engines, 1, 1))
 	require.NotNil(t, BootstrapStore(engines, 1, 1))

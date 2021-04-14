@@ -90,13 +90,15 @@ func (r *pdTaskHandler) onRegionHeartbeatResponse(resp *pdpb.RegionHeartbeatResp
 			},
 		}, NewCallback())
 	} else if splitRegion := resp.GetSplitRegion(); splitRegion != nil {
-		r.router.send(resp.RegionId, Msg{
+		if err := r.router.send(resp.RegionId, Msg{
 			Type:     MsgTypeHalfSplitRegion,
 			RegionID: resp.RegionId,
 			Data: &MsgHalfSplitRegion{
 				RegionEpoch: resp.RegionEpoch,
 			},
-		})
+		}); err != nil {
+			log.S().Error(err)
+		}
 	} else if merge := resp.GetMerge(); merge != nil {
 		r.sendAdminRequest(resp.RegionId, resp.RegionEpoch, resp.TargetPeer, &raft_cmdpb.AdminRequest{
 			CmdType: raft_cmdpb.AdminCmdType_PrepareMerge,
@@ -223,11 +225,15 @@ func (r *pdTaskHandler) onStoreHeartbeat(t *pdStoreHeartbeatTask) {
 	r.storeStats.lastTotalReadKeys = r.storeStats.totalReadKeys
 	r.storeStats.lastReport = time.Now()
 
-	r.pdClient.StoreHeartbeat(context.TODO(), t.stats)
+	if err := r.pdClient.StoreHeartbeat(context.TODO(), t.stats); err != nil {
+		log.S().Error(err)
+	}
 }
 
 func (r *pdTaskHandler) onReportBatchSplit(t *pdReportBatchSplitTask) {
-	r.pdClient.ReportBatchSplit(context.TODO(), t.regions)
+	if err := r.pdClient.ReportBatchSplit(context.TODO(), t.regions); err != nil {
+		log.S().Error(err)
+	}
 }
 
 func (r *pdTaskHandler) onValidatePeer(t *pdValidatePeerTask) {
@@ -286,22 +292,26 @@ func (r *pdTaskHandler) sendAdminRequest(regionID uint64, epoch *metapb.RegionEp
 		}),
 		Callback: callback,
 	}
-	r.router.sendRaftCommand(cmd)
+	if err := r.router.sendRaftCommand(cmd); err != nil {
+		log.S().Error(err)
+	}
 }
 
 func (r *pdTaskHandler) sendMergeFail(source uint64, target *metapb.Peer) {
-	r.router.send(source, Msg{
+	if err := r.router.send(source, Msg{
 		Type:     MsgTypeMergeResult,
 		RegionID: source,
 		Data: &MsgMergeResult{
 			TargetPeer: target,
 			Stale:      true,
 		},
-	})
+	}); err != nil {
+		log.S().Error(err)
+	}
 }
 
 func (r *pdTaskHandler) sendDestroyPeer(local *metapb.Region, peer *metapb.Peer, pdRegion *metapb.Region) {
-	r.router.send(local.GetId(), Msg{
+	if err := r.router.send(local.GetId(), Msg{
 		Type:     MsgTypeRaftMessage,
 		RegionID: local.GetId(),
 		Data: &raft_serverpb.RaftMessage{
@@ -311,7 +321,9 @@ func (r *pdTaskHandler) sendDestroyPeer(local *metapb.Region, peer *metapb.Peer,
 			RegionEpoch: pdRegion.GetRegionEpoch(),
 			IsTombstone: true,
 		},
-	})
+	}); err != nil {
+		log.S().Error(err)
+	}
 }
 
 type storeStatistics struct {

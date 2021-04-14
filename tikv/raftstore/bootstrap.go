@@ -107,8 +107,12 @@ func writePrepareBootstrap(engines *Engines, region *metapb.Region) error {
 	state := new(rspb.RegionLocalState)
 	state.Region = region
 	kvWB := new(WriteBatch)
-	kvWB.SetMsg(y.KeyWithTs(prepareBootstrapKey, KvTS), state)
-	kvWB.SetMsg(y.KeyWithTs(RegionStateKey(region.Id), KvTS), state)
+	if err := kvWB.SetMsg(y.KeyWithTs(prepareBootstrapKey, KvTS), state); err != nil {
+		return err
+	}
+	if err := kvWB.SetMsg(y.KeyWithTs(RegionStateKey(region.Id), KvTS), state); err != nil {
+		return err
+	}
 	writeInitialApplyState(kvWB, region.Id)
 	err := engines.WriteKV(kvWB)
 	if err != nil {

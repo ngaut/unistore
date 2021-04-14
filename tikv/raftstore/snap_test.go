@@ -207,7 +207,11 @@ func TestSnapGenMeta(t *testing.T) {
 func TestSnapDisplayPath(t *testing.T) {
 	dir, err := ioutil.TempDir("", "snapshot")
 	require.Nil(t, err)
-	defer os.RemoveAll(dir)
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
+	}()
 	key := &SnapKey{1, 1, 2}
 	prefix := fmt.Sprintf("%s_%s", snapGenPrefix, key)
 	displayPath := getDisplayPath(dir, prefix)

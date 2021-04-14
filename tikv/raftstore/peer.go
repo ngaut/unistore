@@ -957,7 +957,9 @@ func (p *Peer) MaybeCampaign(parentIsLeader bool) bool {
 
 	// If last peer is the leader of the region before split, it's intuitional for
 	// it to become the leader of new split region.
-	p.RaftGroup.Campaign()
+	if err := p.RaftGroup.Campaign(); err != nil {
+		log.S().Error(err)
+	}
 	return true
 }
 

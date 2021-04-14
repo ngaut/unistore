@@ -22,6 +22,7 @@ import (
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/store/mockstore/unistore/tikv/mvcc"
 	"github.com/pingcap/tidb/util/codec"
 )
@@ -224,10 +225,14 @@ func (ai *snapApplier) writeCFIteratorNext() error {
 
 func (ai *snapApplier) close() {
 	if ai.writeCFFile != nil {
-		ai.writeCFFile.Close()
+		if err := ai.writeCFFile.Close(); err != nil {
+			log.S().Error(err)
+		}
 	}
 	if ai.defaultCFFile != nil {
-		ai.defaultCFFile.Close()
+		if err := ai.defaultCFFile.Close(); err != nil {
+			log.S().Error(err)
+		}
 	}
 }
 

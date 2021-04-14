@@ -541,7 +541,9 @@ func (s *Snap) validate() error {
 func (s *Snap) saveCFFiles() error {
 	for _, cfFile := range s.CFFiles {
 		if plainFileUsed(cfFile.CF) {
-			cfFile.File.Close()
+			if err := cfFile.File.Close(); err != nil {
+				return err
+			}
 		} else {
 			if cfFile.KVCount > 0 {
 				err := cfFile.SstWriter.Finish()
@@ -549,7 +551,9 @@ func (s *Snap) saveCFFiles() error {
 					return err
 				}
 			}
-			cfFile.SstWriter.Close()
+			if err := cfFile.SstWriter.Close(); err != nil {
+				return err
+			}
 		}
 		size, err := util.GetFileSize(cfFile.TmpPath)
 		if err != nil {
@@ -785,10 +789,12 @@ func (s *Snap) Apply(opts ApplyOptions) (ApplyResult, error) {
 		switch item.applySnapType {
 		case applySnapTypePut:
 			result.HasPut = true
-			opts.Builder.Add(item.key, y.ValueStruct{
+			if err := opts.Builder.Add(item.key, y.ValueStruct{
 				Value:    item.val,
 				UserMeta: item.userMeta,
-			})
+			}); err != nil {
+				return result, err
+			}
 		case applySnapTypeLock:
 			opts.DBBundle.LockStore.Put(item.key.UserKey, item.val)
 		case applySnapTypeRollback:

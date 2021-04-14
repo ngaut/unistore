@@ -63,9 +63,15 @@ func setupRaftServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient 
 	raftPath := filepath.Join(dbPath, "raft")
 	snapPath := filepath.Join(dbPath, "snap")
 
-	os.MkdirAll(kvPath, os.ModePerm)
-	os.MkdirAll(raftPath, os.ModePerm)
-	os.Mkdir(snapPath, os.ModePerm)
+	if err := os.MkdirAll(kvPath, os.ModePerm); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(raftPath, os.ModePerm); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(snapPath, os.ModePerm); err != nil {
+		return nil, err
+	}
 
 	raftConf := raftstore.NewDefaultConfig()
 	raftConf.SnapPath = snapPath
