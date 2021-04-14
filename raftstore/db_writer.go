@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/ngaut/unistore/config"
-	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+	"github.com/ngaut/unistore/raftstore/raftlog"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"

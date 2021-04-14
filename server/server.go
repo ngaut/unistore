@@ -7,8 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/ngaut/unistore/config"
-	unistoretikv "github.com/ngaut/unistore/tikv"
-	"github.com/ngaut/unistore/tikv/raftstore"
+	"github.com/ngaut/unistore/raftstore"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/options"
 	tidbconfig "github.com/pingcap/tidb/store/mockstore/unistore/config"
@@ -101,7 +100,7 @@ func setupRaftServer(bundle *mvcc.DBBundle, safePoint *tikv.SafePoint, pdClient 
 	router := innerServer.GetRaftstoreRouter()
 	storeMeta := innerServer.GetStoreMeta()
 	store := tikv.NewMVCCStore(&conf.Config, bundle, dbPath, safePoint, raftstore.NewDBWriter(conf, router), pdClient)
-	rm := unistoretikv.NewRaftRegionManager(storeMeta, router, store.DeadlockDetectSvr)
+	rm := raftstore.NewRaftRegionManager(storeMeta, router, store.DeadlockDetectSvr)
 	innerServer.SetPeerEventObserver(rm)
 
 	if err := innerServer.Start(pdClient); err != nil {

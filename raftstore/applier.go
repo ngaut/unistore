@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+	"github.com/ngaut/unistore/raftstore/raftlog"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"

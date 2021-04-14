@@ -16,7 +16,7 @@ package raftstore
 import (
 	"testing"
 
-	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+	"github.com/ngaut/unistore/raftstore/raftlog"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/stretchr/testify/assert"
 )

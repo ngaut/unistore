@@ -17,7 +17,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+	"github.com/ngaut/unistore/raftstore/raftlog"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"

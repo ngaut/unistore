@@ -19,7 +19,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
+	"github.com/ngaut/unistore/raftstore/raftlog"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"

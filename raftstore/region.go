@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package tikv
+package raftstore
 
 import (
 	"bytes"
@@ -20,7 +20,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -49,7 +48,7 @@ type regionCtx struct {
 	diff        int64
 
 	latches       *latches
-	leaderChecker raftstore.LeaderChecker
+	leaderChecker LeaderChecker
 }
 
 type latches struct {
@@ -110,7 +109,7 @@ func (l *latches) release(keyHashes []uint64) {
 	}
 }
 
-func newRegionCtx(meta *metapb.Region, latches *latches, checker raftstore.LeaderChecker) *regionCtx {
+func newRegionCtx(meta *metapb.Region, latches *latches, checker LeaderChecker) *regionCtx {
 	regCtx := &regionCtx{
 		meta:          meta,
 		latches:       latches,
@@ -270,13 +269,13 @@ func (rm *regionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
 // RaftRegionManager represents a raft region manager.
 type RaftRegionManager struct {
 	regionManager
-	router   *raftstore.Router
+	router   *Router
 	eventCh  chan interface{}
 	detector *tikv.DetectorServer
 }
 
 // NewRaftRegionManager returns a new raft region manager.
-func NewRaftRegionManager(store *metapb.Store, router *raftstore.Router, detector *tikv.DetectorServer) *RaftRegionManager {
+func NewRaftRegionManager(store *metapb.Store, router *Router, detector *tikv.DetectorServer) *RaftRegionManager {
 	m := &RaftRegionManager{
 		router: router,
 		regionManager: regionManager{
@@ -292,12 +291,12 @@ func NewRaftRegionManager(store *metapb.Store, router *raftstore.Router, detecto
 }
 
 type peerCreateEvent struct {
-	ctx    *raftstore.PeerEventContext
+	ctx    *PeerEventContext
 	region *metapb.Region
 }
 
 // OnPeerCreate will be invoked when there is a new peer created.
-func (rm *RaftRegionManager) OnPeerCreate(ctx *raftstore.PeerEventContext, region *metapb.Region) {
+func (rm *RaftRegionManager) OnPeerCreate(ctx *PeerEventContext, region *metapb.Region) {
 	rm.eventCh <- &peerCreateEvent{
 		ctx:    ctx,
 		region: region,
@@ -305,12 +304,12 @@ func (rm *RaftRegionManager) OnPeerCreate(ctx *raftstore.PeerEventContext, regio
 }
 
 type peerApplySnapEvent struct {
-	ctx    *raftstore.PeerEventContext
+	ctx    *PeerEventContext
 	region *metapb.Region
 }
 
 // OnPeerApplySnap will be invoked when there is a replicate peer's snapshot applied.
-func (rm *RaftRegionManager) OnPeerApplySnap(ctx *raftstore.PeerEventContext, region *metapb.Region) {
+func (rm *RaftRegionManager) OnPeerApplySnap(ctx *PeerEventContext, region *metapb.Region) {
 	rm.eventCh <- &peerApplySnapEvent{
 		ctx:    ctx,
 		region: region,
@@ -322,18 +321,18 @@ type peerDestroyEvent struct {
 }
 
 // OnPeerDestroy will be invoked when a peer is destroyed.
-func (rm *RaftRegionManager) OnPeerDestroy(ctx *raftstore.PeerEventContext) {
+func (rm *RaftRegionManager) OnPeerDestroy(ctx *PeerEventContext) {
 	rm.eventCh <- &peerDestroyEvent{regionID: ctx.RegionID}
 }
 
 type splitRegionEvent struct {
 	derived *metapb.Region
 	regions []*metapb.Region
-	peers   []*raftstore.PeerEventContext
+	peers   []*PeerEventContext
 }
 
 // OnSplitRegion will be invoked when region split into new regions with corresponding peers.
-func (rm *RaftRegionManager) OnSplitRegion(derived *metapb.Region, regions []*metapb.Region, peers []*raftstore.PeerEventContext) {
+func (rm *RaftRegionManager) OnSplitRegion(derived *metapb.Region, regions []*metapb.Region, peers []*PeerEventContext) {
 	rm.eventCh <- &splitRegionEvent{
 		derived: derived,
 		regions: regions,
@@ -342,12 +341,12 @@ func (rm *RaftRegionManager) OnSplitRegion(derived *metapb.Region, regions []*me
 }
 
 type regionConfChangeEvent struct {
-	ctx   *raftstore.PeerEventContext
+	ctx   *PeerEventContext
 	epoch *metapb.RegionEpoch
 }
 
 // OnRegionConfChange will be invoked after conf change updated region's epoch.
-func (rm *RaftRegionManager) OnRegionConfChange(ctx *raftstore.PeerEventContext, epoch *metapb.RegionEpoch) {
+func (rm *RaftRegionManager) OnRegionConfChange(ctx *PeerEventContext, epoch *metapb.RegionEpoch) {
 	rm.eventCh <- &regionConfChangeEvent{
 		ctx:   ctx,
 		epoch: epoch,
