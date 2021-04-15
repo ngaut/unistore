@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/ngaut/unistore/config"
-	"github.com/ngaut/unistore/rocksdb"
 	"github.com/ngaut/unistore/raftstore/raftlog"
+	"github.com/ngaut/unistore/rocksdb"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -445,7 +445,9 @@ func (bs *raftBatchSystem) startWorkers(peers []*peerFsm) {
 	router.sendStore(Msg{Type: MsgTypeStoreStart, Data: ctx.store})
 	for i := 0; i < len(peers); i++ {
 		regionID := peers[i].peer.regionID
-		_ = router.send(regionID, Msg{RegionID: regionID, Type: MsgTypeStart})
+		if err := router.send(regionID, Msg{RegionID: regionID, Type: MsgTypeStart}); err != nil {
+			log.S().Error(err)
+		}
 	}
 	engines := ctx.engine
 	cfg := ctx.cfg
@@ -581,7 +583,9 @@ func (d *storeMsgHandler) onRaftMessage(msg *rspb.RaftMessage) error {
 	if !created {
 		return nil
 	}
-	_ = d.ctx.router.send(regionID, Msg{Type: MsgTypeRaftMessage, Data: msg})
+	if err = d.ctx.router.send(regionID, Msg{Type: MsgTypeRaftMessage, Data: msg}); err != nil {
+		log.S().Error(err)
+	}
 	return nil
 }
 
@@ -647,17 +651,21 @@ func (d *storeMsgHandler) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage
 	// snapshot is applied.
 	meta.regions[regionID] = peer.peer.Region()
 	d.ctx.router.register(peer)
-	_ = d.ctx.router.send(regionID, Msg{Type: MsgTypeStart})
+	if err := d.ctx.router.send(regionID, Msg{Type: MsgTypeStart}); err != nil {
+		log.S().Error(err)
+	}
 	d.ctx.peerEventObserver.OnPeerCreate(peer.peer.getEventContext(), peer.peer.Region())
 	return true, nil
 }
 
 func destroyRegions(router *router, regionsToDestroy []uint64, toPeer *metapb.Peer) {
 	for _, id := range regionsToDestroy {
-		_ = router.send(id, Msg{Type: MsgTypeMergeResult, Data: &MsgMergeResult{
+		if err := router.send(id, Msg{Type: MsgTypeMergeResult, Data: &MsgMergeResult{
 			TargetPeer: toPeer,
 			Stale:      true,
-		}})
+		}}); err != nil {
+			log.S().Error(err)
+		}
 	}
 }
 
@@ -787,7 +795,9 @@ func (d *storeMsgHandler) onComputeHashTick() {
 	cmd := &MsgRaftCmd{
 		Request: raftlog.NewRequest(request),
 	}
-	_ = d.ctx.router.sendRaftCommand(cmd)
+	if err := d.ctx.router.sendRaftCommand(cmd); err != nil {
+		log.S().Error(err)
+	}
 }
 
 func (d *storeMsgHandler) findTargetRegionForComputeHash() *metapb.Region {
@@ -813,7 +823,9 @@ func (d *storeMsgHandler) findTargetRegionForComputeHash() *metapb.Region {
 func (d *storeMsgHandler) clearRegionSizeInRange(startKey, endKey []byte) {
 	regions := d.findRegionsInRange(startKey, endKey)
 	for _, region := range regions {
-		_ = d.ctx.router.send(region.Id, NewPeerMsg(MsgTypeClearRegionSize, region.Id, nil))
+		if err := d.ctx.router.send(region.Id, NewPeerMsg(MsgTypeClearRegionSize, region.Id, nil)); err != nil {
+			log.S().Error(err)
+		}
 	}
 }
 

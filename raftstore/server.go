@@ -53,7 +53,9 @@ func (ris *RaftInnerServer) Raft(stream tikvpb.Tikv_RaftServer) error {
 		if err != nil {
 			return err
 		}
-		_ = ris.router.sendRaftMessage(msg)
+		if err := ris.router.sendRaftMessage(msg); err != nil {
+			log.S().Error(err)
+		}
 	}
 }
 
@@ -65,7 +67,9 @@ func (ris *RaftInnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error 
 			return err
 		}
 		for _, msg := range msgs.GetMsgs() {
-			_ = ris.router.sendRaftMessage(msg)
+			if err := ris.router.sendRaftMessage(msg); err != nil {
+				log.S().Error(err)
+			}
 		}
 	}
 }

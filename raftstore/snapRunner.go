@@ -147,7 +147,9 @@ func (r *snapRunner) recv(t recvSnapTask) {
 	defer atomic.AddInt64(&r.receivingCount, -1)
 	msg, err := r.recvSnap(t.stream)
 	if err == nil {
-		_ = r.router.sendRaftMessage(msg)
+		if err := r.router.sendRaftMessage(msg); err != nil {
+			log.S().Error(err)
+		}
 	}
 	t.callback(err)
 }

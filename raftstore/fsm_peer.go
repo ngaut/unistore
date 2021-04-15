@@ -889,12 +889,16 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 			newPeer.peer.SizeDiffHint = d.ctx.cfg.RegionSplitCheckDiff
 		}
 		d.ctx.router.register(newPeer)
-		_ = d.ctx.router.send(newRegionID, NewPeerMsg(MsgTypeStart, newRegionID, nil))
+		if err := d.ctx.router.send(newRegionID, NewPeerMsg(MsgTypeStart, newRegionID, nil)); err != nil {
+			log.S().Error(err)
+		}
 		if !campaigned {
 			for i, msg := range meta.pendingVotes {
 				if PeerEqual(msg.ToPeer, metaPeer) {
 					meta.pendingVotes = append(meta.pendingVotes[:i], meta.pendingVotes[i+1:]...)
-					_ = d.ctx.router.send(newRegionID, NewPeerMsg(MsgTypeRaftMessage, newRegionID, msg))
+					if err := d.ctx.router.send(newRegionID, NewPeerMsg(MsgTypeRaftMessage, newRegionID, msg)); err != nil {
+						log.S().Error(err)
+					}
 					break
 				}
 			}
@@ -1125,7 +1129,10 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 	// `alive_cache_idx` is the smallest `replicated_index` of healthy up nodes.
 	// `alive_cache_idx` is only used to gc cache.
 	truncatedIdx := d.peer.Store().truncatedIndex()
-	lastIdx, _ := d.peer.Store().LastIndex()
+	lastIdx, err := d.peer.Store().LastIndex()
+	if err != nil {
+		log.S().Error(err)
+	}
 	replicatedIdx, aliveCacheIdx := lastIdx, lastIdx
 	prs := d.peer.RaftGroup.Status().Progress
 	for peerID, progress := range prs {
@@ -1145,7 +1152,10 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 		y.Assert(lastIdx >= replicatedIdx)
 	}
 	d.peer.Store().MaybeGCCache(replicatedIdx, appliedIdx)
-	firstIdx, _ := d.peer.Store().FirstIndex()
+	firstIdx, err := d.peer.Store().FirstIndex()
+	if err != nil {
+		log.S().Error(err)
+	}
 	var compactIdx uint64
 	if appliedIdx > firstIdx &&
 		appliedIdx-firstIdx >= d.ctx.cfg.RaftLogGcCountLimit {

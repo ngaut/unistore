@@ -144,6 +144,7 @@ func (c *raftConn) newStream() error {
 	ctx, cancelFunc := context.WithCancel(c.ctx)
 	c.stream, err = tikvpb.NewTikvClient(cc).BatchRaft(ctx)
 	if err != nil {
+		cancelFunc()
 		return err
 	}
 	c.streamCancel = cancelFunc

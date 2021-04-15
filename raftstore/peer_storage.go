@@ -856,7 +856,10 @@ func WritePeerState(kvWB *WriteBatch, region *metapb.Region, state rspb.PeerStat
 	if mergeState != nil {
 		regionState.MergeState = mergeState
 	}
-	data, _ := regionState.Marshal()
+	data, err := regionState.Marshal()
+	if err != nil {
+		log.S().Error(err)
+	}
 	kvWB.Set(y.KeyWithTs(RegionStateKey(regionID), KvTS), data)
 }
 

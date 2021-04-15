@@ -1417,8 +1417,10 @@ func (p *Peer) readyToTransferLeader(cfg *Config, peer *metapb.Peer) bool {
 		return false
 	}
 
-	lastIndex, _ := p.Store().LastIndex()
-
+	lastIndex, err := p.Store().LastIndex()
+	if err != nil {
+		log.S().Error(err)
+	}
 	return lastIndex <= status.Progress[peerID].Match+cfg.LeaderTransferMaxLogLag
 }
 
