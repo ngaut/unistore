@@ -31,7 +31,7 @@ test: go-test
 go-test:
 	@echo "Running tests in native mode."
 	@export TZ='Asia/Shanghai'; \
-	$(GOTEST) -race -cover -race $(PACKAGES)
+	$(GOTEST) -race -cover $(PACKAGES)
 
 go-build:
 	$(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/unistore-server cmd/unistore-server/main.go
