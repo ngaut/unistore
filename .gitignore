@@ -2,3 +2,6 @@
 node/node
 unikv/unikv
 bin/*
+tools/bin/
+.DS_Store
+.vscode
