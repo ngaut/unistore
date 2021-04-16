@@ -94,7 +94,7 @@ func decodeVarint32Slow(buf []byte) (uint32, int) {
 	var i int
 	for shift <= 28 && i < len(buf) {
 		b := buf[i]
-		i += 1
+		i++
 		if b&128 != 0 {
 			result |= uint32(b&127) << shift
 		} else {

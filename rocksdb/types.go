@@ -24,18 +24,22 @@ package rocksdb
 
 import "encoding/binary"
 
+// ValueType describes a type of a value.
 type ValueType uint8
 
+// ValueType
 const (
 	TypeDeletion ValueType = iota
 	TypeValue
 	TypeMerge
 )
 
+// IsValue returns whether the ValueType is value type or not.
 func (vt ValueType) IsValue() bool {
 	return vt <= TypeMerge
 }
 
+// Comparator represents a compare function.
 type Comparator func(key1 []byte, key2 []byte) int
 
 // CompareInternalKey compares two keys order by:
@@ -58,6 +62,7 @@ func (c Comparator) CompareInternalKey(key1, key2 []byte) int {
 	return cmp
 }
 
+// TableProperties represents table properties.
 type TableProperties struct {
 	DataSize            uint64
 	IndexSize           uint64
@@ -105,12 +110,14 @@ func (h *blockHandle) Decode(buf []byte) int {
 	return n1 + n2
 }
 
+// InternalKey is a key used for the sst.
 type InternalKey struct {
 	UserKey        []byte
 	SequenceNumber uint64
 	ValueType      ValueType
 }
 
+// Encode encodes the InternalKey.
 func (ikey *InternalKey) Encode() []byte {
 	buf := make([]byte, len(ikey.UserKey)+8)
 	copy(buf, ikey.UserKey)
@@ -118,6 +125,7 @@ func (ikey *InternalKey) Encode() []byte {
 	return buf
 }
 
+// Decode decodes the InternalKey.
 func (ikey *InternalKey) Decode(encoded []byte) {
 	ikey.UserKey = ikey.UserKey[:0]
 	userKeyLen := len(encoded) - 8
@@ -134,6 +142,7 @@ func (ikey *InternalKey) unpackSeqAndType(pack uint64) {
 	ikey.SequenceNumber = pack >> 8
 }
 
+// CompactedEvent represents a compacted event.
 type CompactedEvent struct {
 	OutputLevel      int
 	TotalInputBytes  int

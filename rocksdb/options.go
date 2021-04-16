@@ -24,15 +24,18 @@ package rocksdb
 
 import "golang.org/x/time/rate"
 
+// CompressionType specifies how a block should be compressed.
 type CompressionType uint8
 
+// CompressionType
 const (
 	CompressionNone   CompressionType = 0x0
-	CompressionSnappy                 = 0x1
-	CompressionLz4                    = 0x4
-	CompressionZstd                   = 0x7
+	CompressionSnappy CompressionType = 0x1
+	CompressionLz4    CompressionType = 0x4
+	CompressionZstd   CompressionType = 0x7
 )
 
+// String provides a string representation of the compression type.
 func (tp CompressionType) String() string {
 	switch tp {
 	case CompressionNone:
@@ -48,14 +51,17 @@ func (tp CompressionType) String() string {
 	}
 }
 
+// ChecksumType defines the type of check sum.
 type ChecksumType uint8
 
+// ChecksumType
 const (
 	ChecksumNone   ChecksumType = 0x0
-	ChecksumCRC32               = 0x1
-	ChecksumXXHash              = 0x2
+	ChecksumCRC32  ChecksumType = 0x1
+	ChecksumXXHash ChecksumType = 0x2
 )
 
+// BlockBasedTableOptions represents block-based table options.
 type BlockBasedTableOptions struct {
 	BlockSize                 int
 	BlockSizeDeviation        int
@@ -83,6 +89,7 @@ type BlockBasedTableOptions struct {
 	RateLimiter  *rate.Limiter
 }
 
+// NewDefaultBlockBasedTableOptions creates a default BlockBasedTableOptions object.
 func NewDefaultBlockBasedTableOptions(cmp Comparator) *BlockBasedTableOptions {
 	return &BlockBasedTableOptions{
 		BlockSize:                 4 * 1024,

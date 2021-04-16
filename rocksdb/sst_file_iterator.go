@@ -19,12 +19,14 @@ import (
 	"github.com/pingcap/errors"
 )
 
+// Error
 var (
 	ErrChecksumMismatch    = errors.New("Checksum mismatch")
 	ErrMagicNumberMismatch = errors.New("Magic number mismatch")
 	errEnd                 = errors.New("reach end of block")
 )
 
+// SstFileIterator is an iterator for an SST file.
 type SstFileIterator struct {
 	f              *os.File
 	indexBlockIter *blockIterator
@@ -36,6 +38,7 @@ type SstFileIterator struct {
 	checksumType   ChecksumType
 }
 
+// NewSstFileIterator returns a new SstFileIterator.
 func NewSstFileIterator(f *os.File) (*SstFileIterator, error) {
 	it := &SstFileIterator{
 		f:             f,
@@ -49,6 +52,7 @@ func NewSstFileIterator(f *os.File) (*SstFileIterator, error) {
 	return it, nil
 }
 
+// SeekToFirst moves the iterator to the first key.
 func (it *SstFileIterator) SeekToFirst() {
 	it.indexBlockIter.Rewind()
 	it.invalid = false
@@ -59,6 +63,7 @@ func (it *SstFileIterator) SeekToFirst() {
 	it.Next()
 }
 
+// Next moves the SstFileIterator to the next key.
 func (it *SstFileIterator) Next() {
 	if it.dataBlockIter.end() {
 		if err := it.loadNextDataBlk(); err != nil {
@@ -70,20 +75,24 @@ func (it *SstFileIterator) Next() {
 	it.dataBlockIter.Next()
 }
 
+// Key returns the key associated with the current SstFileIterator
 func (it *SstFileIterator) Key() InternalKey {
 	var ikey InternalKey
 	ikey.Decode(it.dataBlockIter.Key())
 	return ikey
 }
 
+// Value returns the value associated with the current SstFileIterator
 func (it *SstFileIterator) Value() []byte {
 	return it.dataBlockIter.Value()
 }
 
+// Valid returns whether the SstFileIterator is exhausted.
 func (it *SstFileIterator) Valid() bool {
 	return !it.invalid
 }
 
+// Err returns the SstFileIterator err
 func (it *SstFileIterator) Err() error {
 	return it.err
 }
@@ -181,10 +190,7 @@ func (it *SstFileIterator) checkMagicNumber(footer []byte) bool {
 		return false
 	}
 	pos += 4
-	if rocksEndian.Uint32(footer[pos:]) != blockBasedTableMagicNumber>>32 {
-		return false
-	}
-	return true
+	return rocksEndian.Uint32(footer[pos:]) == blockBasedTableMagicNumber>>32
 }
 
 func (it *SstFileIterator) loadIndexBlock() error {

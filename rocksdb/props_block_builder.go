@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	propColumnFamilyId      = "rocksdb.column.family.id"
+	propColumnFamilyID      = "rocksdb.column.family.id"
 	propCompression         = "rocksdb.compression"
 	propCreationTime        = "rocksdb.creation.time"
 	propDataSize            = "rocksdb.data.size"
@@ -48,8 +48,10 @@ const (
 	propRawValueSize        = "rocksdb.raw.value.size"
 )
 
+// PropsInjector is a function of properties injector.
 type PropsInjector func(*PropsBlockBuilder)
 
+// PropsBlockBuilder represents a properties block builder.
 type PropsBlockBuilder struct {
 	blockBuilder blockBuilder
 	props        []propKV
@@ -66,19 +68,23 @@ func newPropsBlockBuilder() *PropsBlockBuilder {
 	return b
 }
 
+// Add adds an []byte value with the given name.
 func (b *PropsBlockBuilder) Add(name string, value []byte) {
 	b.props = append(b.props, propKV{key: []byte(name), value: value})
 }
 
+// AddUint64 adds an uint64 value with the given name.
 func (b *PropsBlockBuilder) AddUint64(name string, value uint64) {
 	var buf [binary.MaxVarintLen64]byte
 	b.Add(name, encodeVarint64(buf[:], value))
 }
 
+// AddString adds an string value with the given name.
 func (b *PropsBlockBuilder) AddString(name, value string) {
 	b.Add(name, []byte(value))
 }
 
+// Finish finishes the PropsBlockBuilder.
 func (b *PropsBlockBuilder) Finish() []byte {
 	sort.Slice(b.props, func(i, j int) bool {
 		return bytes.Compare(b.props[i].key, b.props[j].key) < 0

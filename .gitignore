@@ -2,5 +2,6 @@
 node/node
 unikv/unikv
 bin/*
-go.mod
-go.sum
+tools/bin/
+.DS_Store
+.vscode

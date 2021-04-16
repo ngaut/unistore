@@ -29,6 +29,7 @@ import (
 	"github.com/pingcap/errors"
 )
 
+// ErrDecompress is returned when there is error during decompress.
 var ErrDecompress = errors.New("Error during decompress")
 
 func lz4Compress(input, dst []byte) []byte {
@@ -60,6 +61,9 @@ func isGoodCompressionRatio(compressed, input []byte) bool {
 	return cl < rl-(rl/8)
 }
 
+// CompressBlock compresses input into dst. If you have a buffer to use, you can pass it to
+// prevent allocation.  If it is too small, or if nil is passed, a new buffer
+// will be allocated and returned.
 func CompressBlock(tp CompressionType, input, dst []byte) ([]byte, bool) {
 	var compressed []byte
 	switch tp {
@@ -94,6 +98,9 @@ func lz4Decompress(input, dst []byte) ([]byte, error) {
 	return dst, err
 }
 
+// DecompressBlock decompresses input into dst.  If you have a buffer to use, you can pass it to
+// prevent allocation.  If it is too small, or if nil is passed, a new buffer
+// will be allocated and returned.
 func DecompressBlock(tp CompressionType, input, dst []byte) ([]byte, error) {
 	switch tp {
 	case CompressionLz4:

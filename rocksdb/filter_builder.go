@@ -60,7 +60,7 @@ func (b *fullFilterBlockBuilder) Add(key []byte) {
 			// key and prefix addition being interleaved and thus cannot rely on the
 			// bits builder to properly detect the duplicates by comparing with the
 			// last item.
-			if !b.lastWholeKeyRecorded || bytes.Compare(b.lastWholeKey, key) != 0 {
+			if !b.lastWholeKeyRecorded || !bytes.Equal(b.lastWholeKey, key) {
 				b.addKey(key)
 				b.lastWholeKeyRecorded = true
 				b.lastWholeKey = y.SafeCopy(b.lastWholeKey, key)
@@ -85,7 +85,7 @@ func (b *fullFilterBlockBuilder) addPrefix(key []byte) {
 	prefix := b.prefixExtractor.Transform(key)
 
 	if b.wholeKeyFiltering {
-		if !b.lastWholeKeyRecorded || bytes.Compare(b.lastPrefix, prefix) != 0 {
+		if !b.lastWholeKeyRecorded || !bytes.Equal(b.lastPrefix, prefix) {
 			b.addKey(prefix)
 			b.lastPrefixRecorded = true
 			b.lastPrefix = y.SafeCopy(b.lastPrefix, prefix)

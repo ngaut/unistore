@@ -41,6 +41,7 @@ import (
 	"github.com/pingcap/errors"
 )
 
+// Error
 var (
 	ErrKeyOrder       = errors.New("Keys must be added in order")
 	ErrNotSupportType = errors.New("Value type is not supported")
@@ -51,6 +52,7 @@ const (
 	propGlobalSeqNo            = "rocksdb.external_sst_file.global_seqno"
 )
 
+// SstFileWriter is used to create sst files that can be added to database later.
 type SstFileWriter struct {
 	file       *os.File
 	builder    *BlockBasedTableBuilder
@@ -58,6 +60,7 @@ type SstFileWriter struct {
 	comparator Comparator
 }
 
+// NewSstFileWriter creates an SstFileWriter object.
 func NewSstFileWriter(f *os.File, opts *BlockBasedTableOptions) *SstFileWriter {
 	w := new(SstFileWriter)
 	opts.PropsInjectors = append(opts.PropsInjectors, func(builder *PropsBlockBuilder) {
@@ -70,18 +73,22 @@ func NewSstFileWriter(f *os.File, opts *BlockBasedTableOptions) *SstFileWriter {
 	return w
 }
 
+// Put puts a key-value pair to SstFileWriter.
 func (w *SstFileWriter) Put(key, value []byte) error {
 	return w.add(key, value, TypeValue)
 }
 
+// Merge merges a key-value pair.
 func (w *SstFileWriter) Merge(key, value []byte) error {
 	return w.add(key, value, TypeMerge)
 }
 
+// Delete deletes a key-value pair from SstFileWriter.
 func (w *SstFileWriter) Delete(key []byte) error {
 	return w.add(key, nil, TypeDeletion)
 }
 
+// Finish finishes the SstFileWriter.
 func (w *SstFileWriter) Finish() error {
 	return w.builder.Finish()
 }
@@ -110,6 +117,7 @@ func (w *SstFileWriter) add(key, value []byte, tp ValueType) error {
 	return nil
 }
 
+// Close closes the SstFileWriter.
 func (w *SstFileWriter) Close() error {
 	return w.file.Close()
 }
