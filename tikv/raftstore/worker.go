@@ -259,8 +259,9 @@ func (r *splitCheckHandler) handle(t task) {
 	}
 	log.S().Debugf("executing split check task: [regionId: %d, startKey: %s, endKey: %s]", regionId,
 		hex.EncodeToString(startKey), hex.EncodeToString(endKey))
-	keys := r.engine.GetSplitSuggestion(regionId, int64(r.config.regionSplitSize))
+	keys := r.engine.GetSplitSuggestion(regionId, int64(r.config.RegionMaxSize))
 	if len(keys) != 0 {
+		log.S().Infof("split %d:%d by checker size:%d", region.Id, region.RegionEpoch.Version, r.config.RegionMaxSize)
 		_, err = splitEngineAndRegion(r.router, r.engine, spCheckTask.peer, region, keys)
 		if err != nil {
 			log.Warn("failed to send check result", zap.Uint64("region id", regionId), zap.Error(err))

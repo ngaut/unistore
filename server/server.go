@@ -82,11 +82,11 @@ func setupRaftServer(pdClient pd.Client, conf *config.Config) (*tikv.Server, err
 	}
 	raftDB, err := createDB(subPathRaft, nil, &conf.Engine)
 	if err != nil {
-		return nil, err
+		return nil, errors.AddStack(err)
 	}
 	recoverHandler, err := raftstore.NewRecoverHandler(raftDB)
 	if err != nil {
-		return nil, err
+		return nil, errors.AddStack(err)
 	}
 	safePoint := &tikv.SafePoint{}
 	db, err := createShardingDB(subPathKV, safePoint, listener, allocator, recoverHandler, &conf.Engine)
@@ -103,7 +103,7 @@ func setupRaftServer(pdClient pd.Client, conf *config.Config) (*tikv.Server, err
 	innerServer.SetPeerEventObserver(rm)
 
 	if err := innerServer.Start(pdClient); err != nil {
-		return nil, err
+		return nil, errors.AddStack(err)
 	}
 
 	store.StartDeadlockDetection(true)
@@ -151,6 +151,7 @@ func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	// coprocessor block
 	raftConf.SplitCheck.RegionMaxKeys = uint64(conf.Coprocessor.RegionMaxKeys)
 	raftConf.SplitCheck.RegionSplitKeys = uint64(conf.Coprocessor.RegionSplitKeys)
+	raftConf.SplitCheck.RegionMaxSize = uint64(conf.Server.RegionSize)
 }
 
 func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*badger.DB, error) {
@@ -195,8 +196,9 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*
 func createShardingDB(subPath string, safePoint *tikv.SafePoint, listener *raftstore.MetaChangeListener,
 	allocator badger.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*badger.ShardingDB, error) {
 	opts := badger.ShardingDBDefaultOpt
+	opts.MaxMemTableSize = conf.MaxMemTableSize
 	opts.NumCompactors = conf.NumCompactors
-	opts.CFs = []badger.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}, {Managed: false}}
+	opts.CFs = []badger.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}}
 	opts.S3Options.InstanceID = conf.S3.InstanceID
 	opts.S3Options.EndPoint = conf.S3.Endpoint
 	opts.S3Options.SecretKey = conf.S3.SecretKey

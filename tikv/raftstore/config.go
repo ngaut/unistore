@@ -156,11 +156,10 @@ type splitCheckConfig struct {
 	// batchSplitLimit limits the number of produced split-key for one batch.
 	batchSplitLimit uint64
 
-	// When region [a,e) size meets regionMaxSize, it will be split into
+	// When region [a,e) size meets RegionMaxSize, it will be split into
 	// several regions [a,b), [b,c), [c,d), [d,e). And the size of [a,b),
 	// [b,c), [c,d) will be regionSplitSize (maybe a little larger).
-	regionMaxSize   uint64
-	regionSplitSize uint64
+	RegionMaxSize uint64
 
 	// When the number of keys in region [a,e) meets the region_max_keys,
 	// it will be split into two several regions [a,b), [b,c), [c,d), [d,e).
@@ -256,8 +255,7 @@ func newDefaultSplitCheckConfig() *splitCheckConfig {
 	return &splitCheckConfig{
 		splitRegionOnTable: true,
 		batchSplitLimit:    batchSplitLimit,
-		regionSplitSize:    splitSize,
-		regionMaxSize:      splitSize / 2 * 3,
+		RegionMaxSize:      splitSize / 2 * 3,
 		RegionSplitKeys:    splitKeys,
 		RegionMaxKeys:      splitKeys / 2 * 3,
 		rowsPerSample:      1024,
