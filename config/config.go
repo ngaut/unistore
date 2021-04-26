@@ -23,7 +23,6 @@ type Config struct {
 	Server         Server         `toml:"server"`          // Unistore server options
 	Engine         Engine         `toml:"engine"`          // Engine options.
 	RaftStore      RaftStore      `toml:"raftstore"`       // RaftStore configs
-	Coprocessor    Coprocessor    `toml:"coprocessor"`     // Coprocessor options
 	PessimisticTxn PessimisticTxn `toml:"pessimistic-txn"` // Pessimistic txn related
 }
 
@@ -34,7 +33,6 @@ type Server struct {
 	LogLevel    string `toml:"log-level"`
 	RegionSize  int64  `toml:"region-size"` // Average region size.
 	MaxProcs    int    `toml:"max-procs"`   // Max CPU cores to use, set 0 to use all CPU cores in the machine.
-	Raft        bool   `toml:"raft"`        // Enable raft.
 	LogfilePath string `toml:"log-file"`    // Log file path for unistore server
 }
 
@@ -44,12 +42,6 @@ type RaftStore struct {
 	RaftBaseTickInterval     string `toml:"raft-base-tick-interval"`     // raft-base-tick-interval in milliseconds
 	RaftHeartbeatTicks       int    `toml:"raft-heartbeat-ticks"`        // raft-heartbeat-ticks times
 	RaftElectionTimeoutTicks int    `toml:"raft-election-timeout-ticks"` // raft-election-timeout-ticks times
-	CustomRaftLog            bool   `toml:"custom-raft-log"`
-}
-
-type Coprocessor struct {
-	RegionMaxKeys   int64 `toml:"region-max-keys"`
-	RegionSplitKeys int64 `toml:"region-split-keys"`
 }
 
 type Engine struct {
@@ -105,7 +97,6 @@ var DefaultConf = Config{
 		RegionSize:  64 * MB,
 		LogLevel:    "info",
 		MaxProcs:    0,
-		Raft:        true,
 		LogfilePath: "",
 	},
 	RaftStore: RaftStore{
@@ -114,7 +105,6 @@ var DefaultConf = Config{
 		RaftBaseTickInterval:     "1s",
 		RaftHeartbeatTicks:       2,
 		RaftElectionTimeoutTicks: 10,
-		CustomRaftLog:            true,
 	},
 	Engine: Engine{
 		DBPath:             "/tmp/badger",
@@ -131,10 +121,6 @@ var DefaultConf = Config{
 		BlockCacheSize:     0, // 0 means disable block cache, use mmap to access sst.
 		IndexCacheSize:     0,
 		CompactL0WhenClose: true,
-	},
-	Coprocessor: Coprocessor{
-		RegionMaxKeys:   1440000,
-		RegionSplitKeys: 960000,
 	},
 	PessimisticTxn: PessimisticTxn{
 		WaitForLockTimeout:  1000, // 1000ms same with tikv default value

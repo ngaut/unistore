@@ -22,7 +22,7 @@ import (
 	"sync"
 )
 
-type RaftInnerServer struct {
+type InnerServer struct {
 	engines       *Engines
 	raftConfig    *Config
 	globalConfig  *config.Config
@@ -37,7 +37,7 @@ type RaftInnerServer struct {
 	raftCli     *RaftClient
 }
 
-func (ris *RaftInnerServer) Raft(stream tikvpb.Tikv_RaftServer) error {
+func (ris *InnerServer) Raft(stream tikvpb.Tikv_RaftServer) error {
 	for {
 		msg, err := stream.Recv()
 		if err != nil {
@@ -47,7 +47,7 @@ func (ris *RaftInnerServer) Raft(stream tikvpb.Tikv_RaftServer) error {
 	}
 }
 
-func (ris *RaftInnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
+func (ris *InnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
 	for {
 		msgs, err := stream.Recv()
 		if err != nil {
@@ -59,7 +59,7 @@ func (ris *RaftInnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error 
 	}
 }
 
-func (ris *RaftInnerServer) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
+func (ris *InnerServer) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
 	var err error
 	done := make(chan struct{})
 	ris.snapWorker.sender <- task{
@@ -76,15 +76,15 @@ func (ris *RaftInnerServer) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
 	return err
 }
 
-func NewRaftInnerServer(globalConfig *config.Config, engines *Engines, raftConfig *Config) *RaftInnerServer {
-	return &RaftInnerServer{
+func NewRaftInnerServer(globalConfig *config.Config, engines *Engines, raftConfig *Config) *InnerServer {
+	return &InnerServer{
 		engines:      engines,
 		raftConfig:   raftConfig,
 		globalConfig: globalConfig,
 	}
 }
 
-func (ris *RaftInnerServer) Setup(pdClient pd.Client) {
+func (ris *InnerServer) Setup(pdClient pd.Client) {
 	var wg sync.WaitGroup
 	ris.pdWorker = newWorker("pd-worker", &wg)
 	ris.snapWorker = newWorker("snap-worker", &wg)
@@ -102,19 +102,19 @@ func (ris *RaftInnerServer) Setup(pdClient pd.Client) {
 	ris.batchSystem = batchSystem
 }
 
-func (ris *RaftInnerServer) GetRaftstoreRouter() *RaftstoreRouter {
+func (ris *InnerServer) GetRaftstoreRouter() *RaftstoreRouter {
 	return &RaftstoreRouter{router: ris.router}
 }
 
-func (ris *RaftInnerServer) GetStoreMeta() *metapb.Store {
+func (ris *InnerServer) GetStoreMeta() *metapb.Store {
 	return &ris.storeMeta
 }
 
-func (ris *RaftInnerServer) SetPeerEventObserver(ob PeerEventObserver) {
+func (ris *InnerServer) SetPeerEventObserver(ob PeerEventObserver) {
 	ris.eventObserver = ob
 }
 
-func (ris *RaftInnerServer) Start(pdClient pd.Client) error {
+func (ris *InnerServer) Start(pdClient pd.Client) error {
 	ris.node = NewNode(ris.batchSystem, &ris.storeMeta, ris.raftConfig, pdClient, ris.eventObserver)
 
 	raftClient := newRaftClient(ris.raftConfig, pdClient)
@@ -129,7 +129,7 @@ func (ris *RaftInnerServer) Start(pdClient pd.Client) error {
 	return nil
 }
 
-func (ris *RaftInnerServer) Stop() error {
+func (ris *InnerServer) Stop() error {
 	ris.snapWorker.stop()
 	ris.node.stop()
 	ris.raftCli.Stop()

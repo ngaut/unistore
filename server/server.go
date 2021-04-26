@@ -18,51 +18,7 @@ const (
 	subPathKV   = "kv"
 )
 
-func NewMock(conf *config.Config, clusterID uint64) (*tikv.Server, *tikv.MockRegionManager, *tikv.MockPD, error) {
-	safePoint := &tikv.SafePoint{}
-	db, err := createShardingDB(subPathKV, safePoint, nil, nil, nil, &conf.Engine)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	rm, err := tikv.NewMockRegionManager(db, clusterID, tikv.RegionOptions{
-		StoreAddr:  conf.Server.StoreAddr,
-		PDAddr:     conf.Server.PDAddr,
-		RegionSize: conf.Server.RegionSize,
-	})
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	pdClient := tikv.NewMockPD(rm)
-	svr, err := setupStandAlongInnerServer(db, safePoint, rm, pdClient, conf)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return svr, rm, pdClient, nil
-}
-
 func New(conf *config.Config, pdClient pd.Client) (*tikv.Server, error) {
-	if conf.Server.Raft {
-		return setupRaftServer(pdClient, conf)
-	}
-	safePoint := &tikv.SafePoint{}
-	db, err := createShardingDB(subPathKV, safePoint, nil, nil, nil, &conf.Engine)
-	if err != nil {
-		return nil, err
-	}
-	rm := tikv.NewStandAloneRegionManager(db, getRegionOptions(conf), pdClient)
-	return setupStandAlongInnerServer(db, safePoint, rm, pdClient, conf)
-}
-
-func getRegionOptions(conf *config.Config) tikv.RegionOptions {
-	return tikv.RegionOptions{
-		StoreAddr:  conf.Server.StoreAddr,
-		PDAddr:     conf.Server.PDAddr,
-		RegionSize: conf.Server.RegionSize,
-	}
-}
-
-func setupRaftServer(pdClient pd.Client, conf *config.Config) (*tikv.Server, error) {
 	dbPath := conf.Engine.DBPath
 	kvPath := filepath.Join(dbPath, "kv")
 	raftPath := filepath.Join(dbPath, "raft")
@@ -107,7 +63,6 @@ func setupRaftServer(pdClient pd.Client, conf *config.Config) (*tikv.Server, err
 	}
 
 	store.StartDeadlockDetection(true)
-
 	return tikv.NewServer(rm, store, innerServer), nil
 }
 
@@ -123,21 +78,6 @@ func (a *idAllocator) AllocID() uint64 {
 	return uint64(physical)<<18 + uint64(logical)
 }
 
-func setupStandAlongInnerServer(db *badger.ShardingDB, safePoint *tikv.SafePoint, rm tikv.RegionManager, pdClient pd.Client, conf *config.Config) (*tikv.Server, error) {
-	innerServer := tikv.NewStandAlongInnerServer(db)
-	innerServer.Setup(pdClient)
-	store := tikv.NewMVCCStore(conf, db, conf.Engine.DBPath, safePoint, tikv.NewDBWriter(db), pdClient)
-	store.DeadlockDetectSvr.ChangeRole(tikv.Leader)
-
-	if err := innerServer.Start(pdClient); err != nil {
-		return nil, err
-	}
-
-	store.StartDeadlockDetection(false)
-
-	return tikv.NewServer(rm, store, innerServer), nil
-}
-
 func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	raftConf.Addr = conf.Server.StoreAddr
 
@@ -148,9 +88,6 @@ func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	raftConf.RaftHeartbeatTicks = conf.RaftStore.RaftHeartbeatTicks
 	raftConf.RaftElectionTimeoutTicks = conf.RaftStore.RaftElectionTimeoutTicks
 
-	// coprocessor block
-	raftConf.SplitCheck.RegionMaxKeys = uint64(conf.Coprocessor.RegionMaxKeys)
-	raftConf.SplitCheck.RegionSplitKeys = uint64(conf.Coprocessor.RegionSplitKeys)
 	raftConf.SplitCheck.RegionMaxSize = uint64(conf.Server.RegionSize)
 }
 

@@ -2,5 +2,3 @@
 node/node
 unikv/unikv
 bin/*
-go.mod
-go.sum

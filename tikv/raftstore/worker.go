@@ -55,9 +55,6 @@ const (
 	taskTypePDReadStats        taskType = 107
 	taskTypePDDestroyPeer      taskType = 108
 
-	taskTypeCompact         taskType = 201
-	taskTypeCheckAndCompact taskType = 202
-
 	taskTypeRegionGen   taskType = 401
 	taskTypeRegionApply taskType = 402
 	/// Destroy data between [start_key, end_key).

@@ -40,13 +40,13 @@ var _ tikvpb.TikvServer = new(Server)
 type Server struct {
 	mvccStore     *MVCCStore
 	regionManager RegionManager
-	innerServer   InnerServer
+	innerServer   *raftstore.InnerServer
 	wg            sync.WaitGroup
 	refCount      int32
 	stopped       int32
 }
 
-func NewServer(rm RegionManager, store *MVCCStore, innerServer InnerServer) *Server {
+func NewServer(rm RegionManager, store *MVCCStore, innerServer *raftstore.InnerServer) *Server {
 	return &Server{
 		mvccStore:     store,
 		regionManager: rm,

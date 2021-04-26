@@ -26,7 +26,6 @@ import (
 
 	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
-	"github.com/ngaut/unistore/rocksdb"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -167,8 +166,6 @@ func newStoreFsmDelegate(store *storeFsm, ctx *StoreContext) *storeMsgHandler {
 
 func (d *storeMsgHandler) onTick(tick StoreTick) {
 	switch tick {
-	case StoreTickCompactCheck:
-		d.onCompactCheckTick()
 	case StoreTickPdStoreHeartbeat:
 		d.onPDStoreHearbeatTick()
 	case StoreTickConsistencyCheck:
@@ -187,8 +184,6 @@ func (d *storeMsgHandler) handleMsg(msg Msg) {
 	case MsgTypeStoreClearRegionSizeInRange:
 		data := msg.Data.(*MsgStoreClearRegionSizeInRange)
 		d.clearRegionSizeInRange(data.StartKey, data.EndKey)
-	case MsgTypeStoreCompactedEvent:
-		d.onCompactionFinished(msg.Data.(*rocksdb.CompactedEvent))
 	case MsgTypeStoreTick:
 		d.onTick(msg.Data.(StoreTick))
 	case MsgTypeStoreStart:
@@ -205,7 +200,6 @@ func (d *storeMsgHandler) start(store *metapb.Store) {
 	d.id = store.Id
 	now := time.Now()
 	d.startTime = &now
-	d.ticker.scheduleStore(StoreTickCompactCheck)
 	d.ticker.scheduleStore(StoreTickPdStoreHeartbeat)
 	d.ticker.scheduleStore(StoreTickConsistencyCheck)
 }
@@ -650,14 +644,6 @@ func destroyRegions(router *router, regionsToDestroy []uint64, toPeer *metapb.Pe
 	}
 }
 
-func (d *storeMsgHandler) onCompactionFinished(event *rocksdb.CompactedEvent) {
-	// TODO: not supported.
-}
-
-func (d *storeMsgHandler) onCompactCheckTick() {
-	// TODO: not supported.
-}
-
 func (d *storeMsgHandler) storeHeartbeatPD() {
 	stats := new(pdpb.StoreStats)
 	// TODO: cache used size
@@ -759,16 +745,6 @@ func (d *storeMsgHandler) findRegionsInRange(startKey, endKey []byte) []*metapb.
 		regions = append(regions, meta.regions[regionID])
 	}
 	return regions
-}
-
-type regionIDDeclinedBytesPair struct {
-	regionID      uint64
-	declinedBytes uint64
-}
-
-func calcRegionDeclinedBytes(event *rocksdb.CompactedEvent,
-	regionRanges *lockstore.MemStore, bytesThreshold uint64) []regionIDDeclinedBytesPair {
-	return nil // TODO: not supported.
 }
 
 func isRangeCovered(meta *storeMeta, start, end []byte) bool {
