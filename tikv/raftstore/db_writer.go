@@ -104,8 +104,7 @@ func NewDBWriter(conf *config.Config, router *RaftstoreRouter) mvcc.DBWriter {
 // TestRaftWriter is used to mock raft write related prewrite and commit operations without
 // sending real raft commands
 type TestRaftWriter struct {
-	dbBundle *mvcc.DBBundle
-	engine   *Engines
+	engine *Engines
 }
 
 func (w *TestRaftWriter) Open() {

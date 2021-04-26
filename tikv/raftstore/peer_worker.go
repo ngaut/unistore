@@ -127,12 +127,14 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 		batch := newApplyBatch()
 		for _, msg := range msgs {
 			peerState := rw.getPeerState(peerStateMap, msg.RegionID)
-			newRaftMsgHandler(peerState.peer, rw.raftCtx).HandleMsgs(msg)
+			h := newRaftMsgHandler(peerState.peer, rw.raftCtx)
+			h.HandleMsgs(msg)
 		}
 		var movePeer uint64
 		for id, peerState := range peerStateMap {
 			movePeer = id
-			batch.proposals = newRaftMsgHandler(peerState.peer, rw.raftCtx).HandleRaftReadyAppend(batch.proposals)
+			h := newRaftMsgHandler(peerState.peer, rw.raftCtx)
+			batch.proposals = h.HandleRaftReadyAppend(batch.proposals)
 		}
 		// Pick one peer as the candidate to be moved to other workers.
 		atomic.StoreUint64(&rw.movePeerCandidate, movePeer)
@@ -181,8 +183,8 @@ func (rw *raftWorker) handleRaftReady(peers map[uint64]*peerState, batch *applyB
 	rw.raftCtx.ReadyRes = nil
 	if len(readyRes) > 0 {
 		for _, pair := range readyRes {
-			regionID := pair.IC.Region.Id
-			newRaftMsgHandler(peers[regionID].peer, rw.raftCtx).PostRaftReadyPersistent(&pair.Ready, pair.IC)
+			h := newRaftMsgHandler(peers[pair.IC.Region.Id].peer, rw.raftCtx)
+			h.HandleRaftReady(&pair.Ready, pair.IC)
 		}
 	}
 	dur := time.Since(rw.raftStartTime)

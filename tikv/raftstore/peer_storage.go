@@ -167,7 +167,7 @@ func (ec *EntryCache) compactTo(idx uint64) {
 	ec.cache = ec.cache[pos:]
 }
 
-type ApplySnapResult struct {
+type ReadyApplySnapshot struct {
 	// PrevRegion is the region before snapshot applied
 	PrevRegion *metapb.Region
 	Region     *metapb.Region
@@ -625,32 +625,6 @@ type CacheQueryStats struct {
 	miss uint64
 }
 
-// Delete all data that is not covered by `new_region`.
-func (ps *PeerStorage) clearExtraData(newRegion *metapb.Region) {
-	oldStartKey, oldEndKey := RawStartKey(ps.region), RawEndKey(ps.region)
-	newStartKey, newEndKey := RawStartKey(newRegion), RawEndKey(newRegion)
-	if bytes.Compare(oldStartKey, newStartKey) < 0 {
-		ps.regionSched <- task{
-			tp: taskTypeRegionDestroy,
-			data: &regionTask{
-				region:   newRegion,
-				startKey: oldStartKey,
-				endKey:   newStartKey,
-			},
-		}
-	}
-	if bytes.Compare(newEndKey, oldEndKey) < 0 {
-		ps.regionSched <- task{
-			tp: taskTypeRegionDestroy,
-			data: &regionTask{
-				region:   newRegion,
-				startKey: newEndKey,
-				endKey:   oldEndKey,
-			},
-		}
-	}
-}
-
 func getSyncLogFromEntry(entry eraftpb.Entry) bool {
 	if entry.SyncLog {
 		return true
@@ -878,30 +852,26 @@ func RegionEqual(l, r *metapb.Region) bool {
 	return l.Id == r.Id && l.RegionEpoch.Version == r.RegionEpoch.Version && l.RegionEpoch.ConfVer == r.RegionEpoch.ConfVer
 }
 
-// Update the memory state after ready changes are flushed to disk successfully.
-func (ps *PeerStorage) PostReadyPersistent(ctx *InvokeContext) *ApplySnapResult {
-	ps.raftState = ctx.RaftState
-	ps.applyState = ctx.ApplyState
-	ps.lastTerm = ctx.lastTerm
-
+func (ps *PeerStorage) maybeScheduleApplySnapshot(ctx *InvokeContext) *ReadyApplySnapshot {
 	// If we apply snapshot ok, we should update some infos like applied index too.
 	if ctx.SnapData == nil {
 		return nil
 	}
-	// cleanup data before scheduling apply task
-	if ps.isInitialized() {
-		ps.clearExtraData(ps.region)
-	}
-
 	ps.ScheduleApplyingSnapshot(ctx.SnapData)
 	prevRegion := ps.region
 	ps.region = ctx.SnapData.region
 	ctx.SnapData = nil
-
-	return &ApplySnapResult{
+	return &ReadyApplySnapshot{
 		PrevRegion: prevRegion,
 		Region:     ps.region,
 	}
+}
+
+// updateStates update the memory state after ready changes are flushed to disk successfully.
+func (ps *PeerStorage) updateStates(ctx *InvokeContext) {
+	ps.raftState = ctx.RaftState
+	ps.applyState = ctx.ApplyState
+	ps.lastTerm = ctx.lastTerm
 }
 
 func (ps *PeerStorage) ScheduleApplyingSnapshot(snapData *snapData) {

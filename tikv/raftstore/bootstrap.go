@@ -55,7 +55,7 @@ func isRaftRangeEmpty(engine *badger.DB, startKey, endKey []byte) (bool, error) 
 
 func BootstrapStore(engines *Engines, clussterID, storeID uint64) error {
 	ident := new(rspb.StoreIdent)
-	if engines.kv.Size() != 0 {
+	if engines.kv.Size() > 1 {
 		return errors.New("kv store is not empty and ahs alread had data.")
 	}
 	empty, err := isRaftRangeEmpty(engines.raft, MinKey, MaxDataKey)
@@ -82,19 +82,7 @@ var (
 )
 
 func PrepareBootstrap(engines *Engines, storeID, regionID, peerID uint64) (*metapb.Region, error) {
-	region := &metapb.Region{
-		Id: regionID,
-		RegionEpoch: &metapb.RegionEpoch{
-			Version: InitEpochVer,
-			ConfVer: InitEpochConfVer,
-		},
-		Peers: []*metapb.Peer{
-			{
-				Id:      peerID,
-				StoreId: storeID,
-			},
-		},
-	}
+	region := newBootstrapRegion(regionID, peerID, storeID)
 	err := writePrepareBootstrap(engines, region)
 	if err != nil {
 		return nil, err
@@ -114,22 +102,41 @@ func writePrepareBootstrap(engines *Engines, region *metapb.Region) error {
 	if err != nil {
 		return err
 	}
-	ingestTree := &badger.IngestTree{
+	return engines.kv.Ingest(initialIngestTree(region.Id, region.RegionEpoch.Version))
+}
+
+func initialIngestTree(regionID, version uint64) *badger.IngestTree {
+	return &badger.IngestTree{
 		ChangeSet: &protos.ShardChangeSet{
-			ShardID:  region.Id,
-			ShardVer: region.RegionEpoch.Version,
+			ShardID:  regionID,
+			ShardVer: version,
 			Snapshot: &protos.ShardSnapshot{
 				Start: nil,
 				End:   []byte{255, 255, 255, 255, 255, 255, 255, 255},
 				Properties: &protos.ShardProperties{
-					ShardID: region.Id,
+					ShardID: regionID,
 					Keys:    []string{applyStateKey},
 					Values:  [][]byte{newInitialApplyState().Marshal()},
 				},
 			},
 		},
 	}
-	return engines.kv.Ingest(ingestTree)
+}
+
+func newBootstrapRegion(regionID, peerID, storeID uint64) *metapb.Region {
+	return &metapb.Region{
+		Id: regionID,
+		RegionEpoch: &metapb.RegionEpoch{
+			Version: InitEpochVer,
+			ConfVer: InitEpochConfVer,
+		},
+		Peers: []*metapb.Peer{
+			{
+				Id:      peerID,
+				StoreId: storeID,
+			},
+		},
+	}
 }
 
 func writeInitialRaftState(raftWB *RaftWriteBatch, region *metapb.Region) {

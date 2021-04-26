@@ -24,6 +24,7 @@ import (
 
 func TestBootstrapStore(t *testing.T) {
 	engines := newTestEngines(t)
+	engines.kv.RemoveShard(1, true)
 	defer func() {
 		os.RemoveAll(engines.kvPath)
 		os.RemoveAll(engines.raftPath)
@@ -37,8 +38,7 @@ func TestBootstrapStore(t *testing.T) {
 	regionLocalState := new(rspb.RegionLocalState)
 	require.Nil(t, getMsg(engines.raft, RegionStateKey(region), regionLocalState))
 	raftApplyState := applyState{}
-	vals, snap := engines.kv.GetPropertiesWithSnap(engines.kv.GetShard(region.Id), []string{applyStateKey})
-	snap.Discard()
+	vals := engines.kv.GetProperties(engines.kv.GetShard(region.Id), []string{applyStateKey})
 	val := vals[0]
 	raftApplyState.Unmarshal(val)
 	raftLocalState := raftState{}

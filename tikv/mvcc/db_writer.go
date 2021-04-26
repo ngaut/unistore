@@ -14,10 +14,6 @@
 package mvcc
 
 import (
-	"sync"
-
-	"github.com/ngaut/unistore/lockstore"
-	"github.com/pingcap/badger"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 )
 
@@ -41,23 +37,4 @@ type WriteBatch interface {
 	Rollback(key []byte, deleleLock bool)
 	PessimisticLock(key []byte, lock *MvccLock)
 	PessimisticRollback(key []byte)
-}
-
-type DBBundle struct {
-	DB         *badger.DB
-	LockStore  *lockstore.MemStore
-	MemStoreMu sync.Mutex
-	StateTS    uint64
-}
-
-type DBSnapshot struct {
-	Txn       *badger.Txn
-	LockStore *lockstore.MemStore
-}
-
-func NewDBSnapshot(db *DBBundle) *DBSnapshot {
-	return &DBSnapshot{
-		Txn:       db.DB.NewTransaction(false),
-		LockStore: db.LockStore,
-	}
 }

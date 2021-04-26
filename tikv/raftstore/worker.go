@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/ngaut/unistore/config"
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -46,7 +45,6 @@ const (
 	taskTypeComputeHash    taskType = 3
 	taskTypeHalfSplitCheck taskType = 4
 
-	taskTypePDAskSplit         taskType = 101
 	taskTypePDAskBatchSplit    taskType = 102
 	taskTypePDHeartbeat        taskType = 103
 	taskTypePDStoreHeartbeat   taskType = 104
@@ -63,8 +61,6 @@ const (
 	taskTypeRegionDestroy        taskType = 403
 	taskTypeRegionApplyChangeSet taskType = 404
 	taskTypeRecoverSplit         taskType = 405
-
-	taskTypeResolveAddr taskType = 501
 
 	taskTypeSnapSend taskType = 601
 	taskTypeSnapRecv taskType = 602
@@ -104,16 +100,7 @@ type splitCheckTask struct {
 type computeHashTask struct {
 	index  uint64
 	region *metapb.Region
-	snap   *mvcc.DBSnapshot
-}
-
-type pdAskSplitTask struct {
-	region   *metapb.Region
-	splitKey []byte
-	peer     *metapb.Peer
-	// If true, right Region derives origin region_id.
-	rightDerive bool
-	callback    *Callback
+	snap   *badger.Snapshot
 }
 
 type pdAskBatchSplitTask struct {

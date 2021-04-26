@@ -116,18 +116,6 @@ func (l *MvccLock) ToLockInfo(key []byte) *kvrpcpb.LockInfo {
 	}
 }
 
-// UserMeta value for lock.
-const (
-	LockUserMetaNoneByte   = 0
-	LockUserMetaDeleteByte = 2
-)
-
-// UserMeta byte slices for lock.
-var (
-	LockUserMetaNone   = []byte{LockUserMetaNoneByte}
-	LockUserMetaDelete = []byte{LockUserMetaDeleteByte}
-)
-
 // DecodeKeyTS decodes the TS in a key.
 func DecodeKeyTS(buf []byte) uint64 {
 	tsBin := buf[len(buf)-8:]
@@ -162,15 +150,6 @@ func EncodeExtraTxnStatusKey(key []byte, startTS uint64) []byte {
 	b := append([]byte{}, key...)
 	ret := codec.EncodeUintDesc(b, startTS)
 	return ret
-}
-
-// DecodeExtraTxnStatusKey decodes a extra transaction status key.
-func DecodeExtraTxnStatusKey(extraKey []byte) (key []byte) {
-	if len(extraKey) <= 9 {
-		return nil
-	}
-	key = append([]byte{}, extraKey[:len(extraKey)-8]...)
-	return
 }
 
 const (

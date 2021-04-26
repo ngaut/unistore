@@ -14,6 +14,7 @@
 package raftstore
 
 import (
+	"github.com/pingcap/log"
 	"io/ioutil"
 	"os"
 	"testing"
@@ -28,7 +29,7 @@ func newTestEngines(t *testing.T) *Engines {
 	var err error
 	engines.kvPath, err = ioutil.TempDir("", "unistore_kv")
 	require.Nil(t, err)
-	engines.kv = openDBBundle(t, engines.kvPath)
+	engines.kv = openKVDB(t, engines.kvPath)
 	engines.raftPath, err = ioutil.TempDir("", "unistore_raft")
 	require.Nil(t, err)
 	raftOpts := badger.DefaultOptions
@@ -37,7 +38,6 @@ func newTestEngines(t *testing.T) *Engines {
 	raftOpts.ValueThreshold = 256
 	engines.raft, err = badger.Open(raftOpts)
 	require.Nil(t, err)
-	engines.metaManager, err = NewEngineMetaManager(engines.kv, engines.raft, engines.kvPath, new(MetaChangeListener))
 	require.Nil(t, err)
 	return engines
 }
@@ -55,7 +55,7 @@ func newTestPeerStorage(t *testing.T) *PeerStorage {
 
 func newTestPeerStorageFromEnts(t *testing.T, ents []eraftpb.Entry) *PeerStorage {
 	peerStore := newTestPeerStorage(t)
-	kvWB := new(RaftWriteBatch)
+	kvWB := NewKVWriteBatch(peerStore.Engines.kv)
 	ctx := NewInvokeContext(peerStore)
 	raftWB := new(RaftWriteBatch)
 	require.Nil(t, peerStore.Append(ctx, ents[1:], raftWB))
@@ -86,4 +86,18 @@ func newTestEntry(index, term uint64) eraftpb.Entry {
 		Term:  term,
 		Data:  []byte{0},
 	}
+}
+
+func openKVDB(t *testing.T, path string) *badger.ShardingDB {
+	opts := badger.ShardingDBDefaultOpt
+	opts.Dir = path
+	opts.ValueDir = path
+	opts.CFs = []badger.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}}
+	log.S().Info("kvdb path ", path)
+	kvdb, err := badger.OpenShardingDB(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvdb.Ingest(initialIngestTree(1, 1))
+	return kvdb
 }

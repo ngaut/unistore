@@ -49,8 +49,6 @@ func newPDTaskHandler(storeID uint64, pdClient pd.Client, router *router) *pdTas
 
 func (r *pdTaskHandler) handle(t task) {
 	switch t.tp {
-	case taskTypePDAskSplit:
-		r.onAskSplit(t.data.(*pdAskSplitTask))
 	case taskTypePDAskBatchSplit:
 		r.onAskBatchSplit(t.data.(*pdAskBatchSplitTask))
 	case taskTypePDHeartbeat:
@@ -106,24 +104,6 @@ func (r *pdTaskHandler) onRegionHeartbeatResponse(resp *pdpb.RegionHeartbeatResp
 			},
 		}, NewCallback())
 	}
-}
-
-func (r *pdTaskHandler) onAskSplit(t *pdAskSplitTask) {
-	resp, err := r.pdClient.AskSplit(context.TODO(), t.region)
-	if err != nil {
-		log.S().Error(err)
-		return
-	}
-	aq := &raft_cmdpb.AdminRequest{
-		CmdType: raft_cmdpb.AdminCmdType_Split,
-		Split: &raft_cmdpb.SplitRequest{
-			SplitKey:    t.splitKey,
-			NewRegionId: resp.NewRegionId,
-			NewPeerIds:  resp.NewPeerIds,
-			RightDerive: t.rightDerive,
-		},
-	}
-	r.sendAdminRequest(t.region.GetId(), t.region.GetRegionEpoch(), t.peer, aq, t.callback)
 }
 
 func (r *pdTaskHandler) onAskBatchSplit(t *pdAskBatchSplitTask) {

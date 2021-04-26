@@ -26,22 +26,21 @@ import (
 type MsgType int64
 
 const (
-	MsgTypeNull                   MsgType = 0
-	MsgTypeRaftMessage            MsgType = 1
-	MsgTypeRaftCmd                MsgType = 2
-	MsgTypeSplitRegion            MsgType = 3
-	MsgTypeComputeResult          MsgType = 4
-	MsgTypeRegionApproximateSize  MsgType = 5
-	MsgTypeRegionApproximateKeys  MsgType = 6
-	MsgTypeCompactionDeclineBytes MsgType = 7
-	MsgTypeHalfSplitRegion        MsgType = 8
-	MsgTypeMergeResult            MsgType = 9
-	MsgTypeClearRegionSize        MsgType = 11
-	MsgTypeTick                   MsgType = 12
-	MsgTypeSignificantMsg         MsgType = 13
-	MsgTypeStart                  MsgType = 14
-	MsgTypeApplyRes               MsgType = 15
-	MsgTypeNoop                   MsgType = 16
+	MsgTypeNull                  MsgType = 0
+	MsgTypeRaftMessage           MsgType = 1
+	MsgTypeRaftCmd               MsgType = 2
+	MsgTypeSplitRegion           MsgType = 3
+	MsgTypeComputeResult         MsgType = 4
+	MsgTypeRegionApproximateSize MsgType = 5
+	MsgTypeRegionApproximateKeys MsgType = 6
+	MsgTypeHalfSplitRegion       MsgType = 8
+	MsgTypeMergeResult           MsgType = 9
+	MsgTypeClearRegionSize       MsgType = 11
+	MsgTypeTick                  MsgType = 12
+	MsgTypeSignificantMsg        MsgType = 13
+	MsgTypeStart                 MsgType = 14
+	MsgTypeApplyRes              MsgType = 15
+	MsgTypeNoop                  MsgType = 16
 
 	MsgTypeStoreRaftMessage   MsgType = 101
 	MsgTypeStoreSnapshotStats MsgType = 102

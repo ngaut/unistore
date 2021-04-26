@@ -22,8 +22,6 @@ import (
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
-	"github.com/ngaut/unistore/tikv/mvcc"
-
 	"github.com/golang/protobuf/proto"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -485,9 +483,4 @@ func CloneMsg(origin, cloned proto.Message) error {
 		return err
 	}
 	return proto.Unmarshal(data, cloned)
-}
-
-func deleteAllFilesInRange(db *mvcc.DBBundle, startKey, endKey []byte) error {
-	// todo, needs badger to export api to support delete files.
-	return nil
 }

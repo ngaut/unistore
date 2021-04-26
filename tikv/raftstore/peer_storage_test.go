@@ -75,7 +75,7 @@ func getMetaKeyCount(t *testing.T, peerStore *PeerStorage) int {
 	count := 0
 	metaStart := RegionMetaPrefixKey(regionID)
 	metaEnd := RegionMetaPrefixKey(regionID + 1)
-	snap := peerStore.Engines.kv.NewSnapshot(nil, nil)
+	snap := peerStore.Engines.kv.NewSnapshot(nil)
 	defer snap.Discard()
 	it := snap.NewIterator(mvcc.RaftCF, false, false)
 	defer it.Close()
@@ -107,10 +107,8 @@ func TestPeerStorageClearMeta(t *testing.T) {
 		newTestEntry(6, 6),
 	})
 	assert.Equal(t, 6, getMetaKeyCount(t, peerStore))
-	kvWB := new(RaftWriteBatch)
 	raftWB := new(RaftWriteBatch)
-	require.Nil(t, peerStore.clearMeta(kvWB, raftWB))
-	require.Nil(t, peerStore.Engines.WriteKV(kvWB))
+	require.Nil(t, peerStore.clearMeta(raftWB))
 	require.Nil(t, peerStore.Engines.WriteRaft(raftWB))
 	assert.Equal(t, 0, getMetaKeyCount(t, peerStore))
 }
@@ -170,37 +168,6 @@ func TestPeerStorageEntries(t *testing.T) {
 			assert.Equal(t, tt.err, err)
 		} else {
 			assert.Equal(t, tt.entries, entries, "%d", i)
-		}
-	}
-}
-
-func TestPeerStorageCompact(t *testing.T) {
-	ents := []eraftpb.Entry{
-		newTestEntry(3, 3), newTestEntry(4, 4), newTestEntry(5, 5)}
-	tests := []struct {
-		idx uint64
-		err error
-	}{
-		{2, raft.ErrCompacted},
-		{3, raft.ErrCompacted},
-		{4, nil},
-		{5, nil},
-	}
-	peerStore := newTestPeerStorageFromEnts(t, ents)
-	defer cleanUpTestData(peerStore)
-	for _, tt := range tests {
-		ctx := NewInvokeContext(peerStore)
-		term, err := peerStore.Term(tt.idx)
-		if err == nil {
-			err = CompactRaftLog(peerStore.Tag, &ctx.ApplyState, tt.idx, term)
-		}
-		if tt.err == nil {
-			assert.Nil(t, err)
-			kvWB := new(RaftWriteBatch)
-			ctx.saveApplyStateTo(kvWB)
-			require.Nil(t, peerStore.Engines.WriteKV(kvWB))
-		} else {
-			assert.NotNil(t, err)
 		}
 	}
 }

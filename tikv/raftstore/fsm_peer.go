@@ -16,12 +16,12 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/protos"
 	"time"
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
-	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -192,8 +192,6 @@ func (d *peerMsgHandler) HandleMsgs(msgs ...Msg) {
 			d.onApproximateRegionSize(msg.Data.(uint64))
 		case MsgTypeRegionApproximateKeys:
 			d.onApproximateRegionKeys(msg.Data.(uint64))
-		case MsgTypeCompactionDeclineBytes:
-			d.onCompactionDeclinedBytes(msg.Data.(uint64))
 		case MsgTypeHalfSplitRegion:
 			half := msg.Data.(*MsgHalfSplitRegion)
 			d.onScheduleHalfSplitRegion(half.RegionEpoch)
@@ -294,7 +292,7 @@ func (d *peerMsgHandler) HandleRaftReadyAppend(proposals []*regionProposal) []*r
 	if p := d.peer.TakeApplyProposals(); p != nil {
 		proposals = append(proposals, p)
 	}
-	readyRes := d.peer.HandleRaftReadyAppend(d.ctx.trans, d.ctx.applyMsgs, d.ctx.raftWB, d.ctx.peerEventObserver)
+	readyRes := d.peer.HandleRaftReadyAppend(d.ctx.trans, d.ctx.raftWB, d.ctx.peerEventObserver)
 	if readyRes != nil {
 		d.ctx.ReadyRes = append(d.ctx.ReadyRes, readyRes)
 		ss := readyRes.Ready.SoftState
@@ -305,13 +303,30 @@ func (d *peerMsgHandler) HandleRaftReadyAppend(proposals []*regionProposal) []*r
 	return proposals
 }
 
-func (d *peerMsgHandler) PostRaftReadyPersistent(ready *raft.Ready, invokeCtx *InvokeContext) {
+func (d *peerMsgHandler) HandleRaftReady(ready *raft.Ready, ic *InvokeContext) {
 	isMerging := d.peer.PendingMergeState != nil
-	res := d.peer.PostRaftReadyPersistent(d.ctx.trans, d.ctx.applyMsgs, ready, invokeCtx)
-	d.peer.HandleRaftReadyApply(d.ctx.engine.kv, d.ctx.applyMsgs, ready)
+	if ic.hasSnapshot() {
+		// When apply snapshot, there is no log applied and not compacted yet.
+		d.peer.RaftLogSizeHint = 0
+	}
+	d.peer.Store().updateStates(ic)
+	readyApplySnapshot := d.peer.Store().maybeScheduleApplySnapshot(ic)
+	if readyApplySnapshot != nil && d.peer.Meta.GetRole() == metapb.PeerRole_Learner {
+		// The peer may change from learner to voter after snapshot applied.
+		d.peer.maybeUpdatePeerMeta()
+	}
+
+	if !d.peer.IsLeader() {
+		d.peer.followerSendReadyMessages(d.ctx.trans, ready)
+	}
+
+	if readyApplySnapshot != nil {
+		d.peer.Activate(d.ctx.applyMsgs)
+	}
+	d.peer.HandleRaftReadyApplyMessages(d.ctx.engine.kv, d.ctx.applyMsgs, ready)
 	hasSnapshot := false
-	if res != nil {
-		d.onReadyApplySnapshot(res)
+	if readyApplySnapshot != nil {
+		d.onReadyApplySnapshot(readyApplySnapshot)
 		hasSnapshot = true
 	}
 	if isMerging && hasSnapshot {
@@ -895,7 +910,7 @@ func (d *peerMsgHandler) onStaleMerge() {
 	// TODO: merge func
 }
 
-func (d *peerMsgHandler) onReadyApplySnapshot(applyResult *ApplySnapResult) {
+func (d *peerMsgHandler) onReadyApplySnapshot(applyResult *ReadyApplySnapshot) {
 	prevRegion := applyResult.PrevRegion
 	region := applyResult.Region
 
@@ -1175,7 +1190,6 @@ func (d *peerMsgHandler) onSplitRegionCheckTick() {
 		},
 	}
 	d.peer.SizeDiffHint = 0
-	d.peer.CompactionDeclinedBytes = 0
 }
 
 func isTableKey(key []byte) bool {
@@ -1255,10 +1269,6 @@ func (d *peerMsgHandler) onApproximateRegionKeys(keys uint64) {
 	d.peer.ApproximateKeys = &keys
 }
 
-func (d *peerMsgHandler) onCompactionDeclinedBytes(declinedBytes uint64) {
-	d.peer.CompactionDeclinedBytes += declinedBytes
-}
-
 func (d *peerMsgHandler) onScheduleHalfSplitRegion(regionEpoch *metapb.RegionEpoch) {
 	if !d.peer.IsLeader() {
 		log.S().Warnf("%s not leader, skip", d.tag())
@@ -1333,7 +1343,7 @@ func (d *peerMsgHandler) onCheckPeerStaleStateTick() {
 	}
 }
 
-func (d *peerMsgHandler) onReadyComputeHash(region *metapb.Region, index uint64, snap *mvcc.DBSnapshot) {
+func (d *peerMsgHandler) onReadyComputeHash(region *metapb.Region, index uint64, snap *badger.Snapshot) {
 	d.peer.ConsistencyState.LastCheckTime = time.Now()
 	log.S().Infof("%s schedule compute hash task", d.tag())
 	d.ctx.computeHashTaskSender <- task{

@@ -265,8 +265,7 @@ type Peer struct {
 	/// approximate size of the region.
 	ApproximateSize *uint64
 	/// approximate keys of the region.
-	ApproximateKeys         *uint64
-	CompactionDeclinedBytes uint64
+	ApproximateKeys *uint64
 
 	ConsistencyState *ConsistencyState
 
@@ -802,7 +801,7 @@ func (p *Peer) TakeApplyProposals() *regionProposal {
 	return newRegionProposal(p.PeerId(), p.regionId, props)
 }
 
-func (p *Peer) HandleRaftReadyAppend(trans Transport, applyMsgs *applyMsgs, raftWB *RaftWriteBatch, observer PeerEventObserver) *ReadyICPair {
+func (p *Peer) HandleRaftReadyAppend(trans Transport, raftWB *RaftWriteBatch, observer PeerEventObserver) *ReadyICPair {
 	if p.PendingRemove {
 		return nil
 	}
@@ -885,40 +884,20 @@ func (p *Peer) scheduleApplyShardChangeSet(entry *eraftpb.Entry) {
 	}
 }
 
-func (p *Peer) PostRaftReadyPersistent(trans Transport, applyMsgs *applyMsgs, ready *raft.Ready, invokeCtx *InvokeContext) *ApplySnapResult {
+func (p *Peer) PostRaftReadyPersistent(trans Transport, applyMsgs *applyMsgs, ready *raft.Ready, invokeCtx *InvokeContext) *ReadyApplySnapshot {
 	if invokeCtx.hasSnapshot() {
 		// When apply snapshot, there is no log applied and not compacted yet.
 		p.RaftLogSizeHint = 0
 	}
 
-	applySnapResult := p.Store().PostReadyPersistent(invokeCtx)
+	applySnapResult := p.Store().maybeScheduleApplySnapshot(invokeCtx)
 	if applySnapResult != nil && p.Meta.GetRole() == metapb.PeerRole_Learner {
 		// The peer may change from learner to voter after snapshot applied.
-		var pr *metapb.Peer
-		for _, peer := range p.Region().GetPeers() {
-			if peer.GetId() == p.Meta.GetId() {
-				pr = &metapb.Peer{
-					Id:      peer.Id,
-					StoreId: peer.StoreId,
-					Role:    peer.Role,
-				}
-			}
-		}
-		if !PeerEqual(pr, p.Meta) {
-			log.S().Infof("%v meta changed in applying snapshot, before %v, after %v", p.Tag, p.Meta, pr)
-			p.Meta = pr
-		}
+		p.maybeUpdatePeerMeta()
 	}
 
 	if !p.IsLeader() {
-		if p.IsApplyingSnapshot() {
-			p.pendingMessages = ready.Messages
-			ready.Messages = nil
-		} else {
-			if err := p.Send(trans, ready.Messages); err != nil {
-				log.S().Warnf("%v follower send messages err: %v", p.Tag, err)
-			}
-		}
+		p.followerSendReadyMessages(trans, ready)
 	}
 
 	if applySnapResult != nil {
@@ -926,6 +905,33 @@ func (p *Peer) PostRaftReadyPersistent(trans Transport, applyMsgs *applyMsgs, re
 	}
 
 	return applySnapResult
+}
+
+func (p *Peer) maybeUpdatePeerMeta() {
+	for _, peer := range p.Region().GetPeers() {
+		if peer.GetId() == p.Meta.GetId() {
+			if !PeerEqual(peer, p.Meta) {
+				p.Meta = &metapb.Peer{
+					Id:      peer.Id,
+					StoreId: peer.StoreId,
+					Role:    peer.Role,
+				}
+				log.S().Infof("%v meta changed in applying snapshot, before %v, after %v", p.Tag, p.Meta, peer)
+			}
+			break
+		}
+	}
+}
+
+func (p *Peer) followerSendReadyMessages(trans Transport, ready *raft.Ready) {
+	if p.IsApplyingSnapshot() {
+		p.pendingMessages = ready.Messages
+		ready.Messages = nil
+	} else {
+		if err := p.Send(trans, ready.Messages); err != nil {
+			log.S().Warnf("%v follower send messages err: %v", p.Tag, err)
+		}
+	}
 }
 
 // Try to renew leader lease.
@@ -1030,7 +1036,7 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	return trans.Send(sendMsg)
 }
 
-func (p *Peer) HandleRaftReadyApply(kv *badger.ShardingDB, applyMsgs *applyMsgs, ready *raft.Ready) {
+func (p *Peer) HandleRaftReadyApplyMessages(kv *badger.ShardingDB, applyMsgs *applyMsgs, ready *raft.Ready) {
 	// Call `HandleRaftCommittedEntries` directly here may lead to inconsistency.
 	// In some cases, there will be some pending committed entries when applying a
 	// snapshot. If we call `HandleRaftCommittedEntries` directly, these updates

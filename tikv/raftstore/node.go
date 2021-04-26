@@ -119,7 +119,7 @@ func (n *Node) checkStore(engines *Engines) (uint64, error) {
 	}
 
 	if ident.StoreId == InvalidID {
-		return 0, errors.Errorf("invalid store ident %s", &ident)
+		return 0, errors.Errorf("invalid store ident %s", ident)
 	}
 	return ident.StoreId, nil
 }
