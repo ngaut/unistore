@@ -413,8 +413,8 @@ github.com/pierrec/lz4 v2.5.2+incompatible h1:WCjObylUIOlKy/+7Abdn34TLIkXiA4UWUM
 github.com/pierrec/lz4 v2.5.2+incompatible/go.mod h1:pdkljMzZIN41W+lC3N2tnIh5sFi+IEE17M5jbnwPHcY=
 github.com/pingcap-incubator/tidb-dashboard v0.0.0-20200908071351-a715a95c7de2/go.mod h1:X3r7/4Wr9fSC5KlsfezBh/5noeWGEJNQuSvjgS2rvdI=
 github.com/pingcap/badger v1.5.1-0.20200908111422-2e78ee155d19/go.mod h1:LyrqUOHZrUDf9oGi1yoz1+qw9ckSIhQb5eMa1acOLNQ=
-github.com/pingcap/badger v1.5.1-0.20210422133445-0c977223824e h1:kfUlHRw/fuCjWjIlGJ3vPYn42zQwtY/sp17bj61/MP0=
-github.com/pingcap/badger v1.5.1-0.20210422133445-0c977223824e/go.mod h1:UO0TFSNZrzwrnpYPds5AHxfd9UGd7Sky/uPjZhC2FiY=
+github.com/pingcap/badger v1.5.1-0.20210425125828-c1671ea8d1ab h1:LM/Kn2KlrL3XkMBvKecO4Bo260iCwwYBEXc+f2BqcTo=
+github.com/pingcap/badger v1.5.1-0.20210425125828-c1671ea8d1ab/go.mod h1:UO0TFSNZrzwrnpYPds5AHxfd9UGd7Sky/uPjZhC2FiY=
 github.com/pingcap/br v4.0.0-beta.2.0.20201014031603-5676c8fdad1a+incompatible h1:RMx7D+dQtUTUZjelJyV0WwYr3GFxrjsSarFXhV2SWzI=
 github.com/pingcap/br v4.0.0-beta.2.0.20201014031603-5676c8fdad1a+incompatible/go.mod h1:ymVmo50lQydxib0tmK5hHk4oteB7hZ0IMCArunwy3UQ=
 github.com/pingcap/check v0.0.0-20190102082844-67f458068fc8/go.mod h1:B1+S9LNcuMyLH/4HMTViQOJevkGiik3wW2AN9zb2fNQ=

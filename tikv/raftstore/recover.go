@@ -35,7 +35,7 @@ func NewRecoverHandler(raftDB *badger.DB) (*RecoverHandler, error) {
 	}, nil
 }
 
-func (h *RecoverHandler) Recover(db *badger.ShardingDB, shard *badger.Shard, toState *protos.ShardProperties) error {
+func (h *RecoverHandler) Recover(db *badger.ShardingDB, shard *badger.Shard, meta *badger.ShardMeta, toState *protos.ShardProperties) error {
 	log.S().Infof("recover region:%d ver:%d", shard.ID, shard.Ver)
 	if h.ctx == nil {
 		h.ctx = &applyContext{wb: NewKVWriteBatch(db), engines: &Engines{kv: db, raft: h.raftDB}}
@@ -46,7 +46,7 @@ func (h *RecoverHandler) Recover(db *badger.ShardingDB, shard *badger.Shard, toS
 	}
 	regionMeta, committedIdx, err1 := h.loadRegionMeta(shard.ID, shard.Ver)
 	if err1 != nil {
-		return err1
+		return errors.AddStack(err1)
 	}
 	var fromApplyState applyState
 	fromApplyState.Unmarshal(val)
@@ -61,7 +61,7 @@ func (h *RecoverHandler) Recover(db *badger.ShardingDB, shard *badger.Shard, toS
 		toApplyState.Unmarshal(val)
 		highIdx = toApplyState.appliedIndex
 	}
-	entries, _, err1 := fetchEntriesTo(h.raftDB, shard.ID, lowIdx, highIdx, math.MaxUint64, nil)
+	entries, _, err1 := fetchEntriesTo(h.raftDB, shard.ID, lowIdx, highIdx+1, math.MaxUint64, nil)
 	if err1 != nil {
 		return errors.AddStack(err1)
 	}
@@ -93,6 +93,9 @@ func (h *RecoverHandler) Recover(db *badger.ShardingDB, shard *badger.Shard, toS
 			if err != nil {
 				return err
 			}
+			if h.isDuplicatedChange(shard, meta, cs) {
+				continue
+			}
 			err = db.ApplyChangeSet(cs)
 			if err != nil {
 				return err
@@ -101,16 +104,42 @@ func (h *RecoverHandler) Recover(db *badger.ShardingDB, shard *badger.Shard, toS
 			// PreSplit is handled by engine.
 		} else {
 			applier.execCustomLog(h.ctx, cl)
+			wb := h.ctx.wb.getEngineWriteBatch(shard.ID)
+			err := db.RecoverWrite(wb)
+			if err != nil {
+				return err
+			}
+			wb.Reset()
 		}
 	}
-	if wb := h.ctx.wb.batches[shard.ID]; wb != nil {
-		err := db.RecoverWrite(wb)
-		if err != nil {
-			return err
-		}
-		wb.Reset()
-	}
+	newState := fromApplyState
+	newState.appliedIndex = highIdx
+	shard.RecoverSetProperty(applyStateKey, newState.Marshal())
 	return nil
+}
+
+func (h *RecoverHandler) isDuplicatedChange(shard *badger.Shard, meta *badger.ShardMeta, change *protos.ShardChangeSet) bool {
+	if flush := change.Flush; flush != nil {
+		if len(flush.L0Creates) == 0 {
+			return shard.GetSplitState() == change.State
+		}
+		_, ok := meta.FileLevel(flush.L0Creates[0].ID)
+		return ok
+	}
+	if comp := change.Compaction; comp != nil {
+		for _, tbl := range comp.TableCreates {
+			level, ok := meta.FileLevel(tbl.ID)
+			if ok && level == int(change.Compaction.Level)+1 {
+				return true
+			}
+		}
+	}
+	if splitFiles := change.SplitFiles; splitFiles != nil {
+		_, ok := meta.FileLevel(splitFiles.TableCreates[0].ID)
+		// If it is a duplicate split file, the deleted file must not exists.
+		return ok
+	}
+	return false
 }
 
 func (h *RecoverHandler) loadRegionMeta(id, ver uint64) (region *metapb.Region, committedIdx uint64, err error) {
