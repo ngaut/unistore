@@ -791,6 +791,8 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 		y.Assert(notExist)
 		if newRegionID == regionID {
 			newPeers = append(newPeers, d.peer.getEventContext())
+			// The raft state key changed when region version change, we need to set it here.
+			d.ctx.raftWB.Set(y.KeyWithTs(RaftStateKey(newRegion), RaftTS), d.peer.Store().raftState.Marshal())
 			continue
 		}
 
