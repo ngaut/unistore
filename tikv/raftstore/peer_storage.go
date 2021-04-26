@@ -16,6 +16,7 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"github.com/pingcap/badger/protos"
 	"math"
 	"sync/atomic"
 	"time"
@@ -255,6 +256,15 @@ func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- 
 	if err != nil {
 		return nil, err
 	}
+	flushState := flushStateInitial
+	if shard := engines.kv.GetShard(region.Id); shard != nil {
+		if shard.IsInitialFlushed() {
+			flushState = flushStateFlushDone
+		}
+		if shard.GetSplitState() >= protos.SplitState_PRE_SPLIT_FLUSH_DONE {
+			flushState = flushStatePreSplitFlushDone
+		}
+	}
 	return &PeerStorage{
 		Engines:     engines,
 		peerID:      peerID,
@@ -266,6 +276,7 @@ func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- 
 		regionSched: regionSched,
 		cache:       &EntryCache{},
 		stats:       &CacheQueryStats{},
+		flushState:  flushState,
 	}, nil
 }
 
@@ -310,6 +321,7 @@ func initRaftState(raftEngine *badger.DB, region *metapb.Region) (raftState, err
 			if err != nil {
 				return raftState, err
 			}
+			log.S().Infof("region %d:%d init raft state", region.Id, region.RegionEpoch.Version)
 		}
 	} else {
 		raftState.Unmarshal(val)
@@ -760,8 +772,9 @@ func ClearMeta(engines *Engines, raftWB *RaftWriteBatch, region *metapb.Region, 
 	}
 	raftWB.Delete(y.KeyWithTs(RaftStateKey(region), RaftTS))
 	log.S().Infof(
-		"[region %d] clear peer 1 meta key 1 apply key 1 raft key and %d raft logs, takes %v",
+		"region %d:%d clear peer meta 1 raft key and %d raft logs, takes %v",
 		regionID,
+		region.RegionEpoch.Version,
 		lastIndex+1-firstIndex,
 		time.Since(start),
 	)
