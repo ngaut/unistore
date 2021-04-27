@@ -120,7 +120,16 @@ func (r *RaftstoreRouter) SendCommand(req *raft_cmdpb.RaftCmdRequest, cb *Callba
 
 func (r *RaftstoreRouter) SplitRegion(ctx *kvrpcpb.Context, engine *badger.ShardingDB, region *metapb.Region, keys [][]byte) ([]*metapb.Region, error) {
 	log.S().Infof("split region %d:%d by RPC keys %v", region.Id, region.RegionEpoch.Version, keys)
-	return splitEngineAndRegion(r.router, engine, ctx.Peer, region, keys)
+	cb, err := splitEngineAndRegion(r.router, engine, ctx.Peer, region, keys)
+	if err != nil {
+		return nil, err
+	}
+	cb.wg.Wait()
+	resp := cb.resp
+	if resp.GetHeader().GetError() != nil {
+		return nil, &RaftError{RequestErr: resp.Header.Error}
+	}
+	return resp.AdminResponse.Splits.Regions, nil
 }
 
 var errPeerNotFound = errors.New("peer not found")

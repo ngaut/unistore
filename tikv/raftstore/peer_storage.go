@@ -15,6 +15,7 @@ package raftstore
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"github.com/pingcap/badger/protos"
 	"math"
@@ -225,18 +226,13 @@ type PeerStorage struct {
 
 	// stableApplyState is the applyState that is persisted to L0 file.
 	stableApplyState applyState
-	flushState       int32
+
+	applyingChanges []*protos.ShardChangeSet
+	splitState      protos.SplitState
+	initialFlushed  bool
 
 	Tag string
 }
-
-const (
-	flushStateInitial           int32 = 0
-	flushStateFlushing          int32 = 1
-	flushStateFlushDone         int32 = 2
-	flushStatePreSplitFlushing  int32 = 3
-	flushStatePreSplitFlushDone int32 = 4
-)
 
 func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- task, peerID uint64, tag string) (*PeerStorage, error) {
 	log.S().Debugf("%s creating storage for %s", tag, region.String())
@@ -256,27 +252,25 @@ func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- 
 	if err != nil {
 		return nil, err
 	}
-	flushState := flushStateInitial
+	var initialFlushed bool
+	splitState := protos.SplitState_INITIAL
 	if shard := engines.kv.GetShard(region.Id); shard != nil {
-		if shard.IsInitialFlushed() {
-			flushState = flushStateFlushDone
-		}
-		if shard.GetSplitState() >= protos.SplitState_PRE_SPLIT_FLUSH_DONE {
-			flushState = flushStatePreSplitFlushDone
-		}
+		initialFlushed = shard.IsInitialFlushed()
+		splitState = shard.GetSplitState()
 	}
 	return &PeerStorage{
-		Engines:     engines,
-		peerID:      peerID,
-		region:      region,
-		Tag:         tag,
-		raftState:   raftState,
-		applyState:  applyState,
-		lastTerm:    lastTerm,
-		regionSched: regionSched,
-		cache:       &EntryCache{},
-		stats:       &CacheQueryStats{},
-		flushState:  flushState,
+		Engines:        engines,
+		peerID:         peerID,
+		region:         region,
+		Tag:            tag,
+		raftState:      raftState,
+		applyState:     applyState,
+		lastTerm:       lastTerm,
+		regionSched:    regionSched,
+		cache:          &EntryCache{},
+		stats:          &CacheQueryStats{},
+		splitState:     splitState,
+		initialFlushed: initialFlushed,
 	}, nil
 }
 
@@ -519,7 +513,7 @@ func (ps *PeerStorage) validateSnap(snap *eraftpb.Snapshot) bool {
 
 func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 	var snap eraftpb.Snapshot
-	if atomic.LoadInt32(&ps.flushState) < flushStateFlushDone {
+	if !ps.initialFlushed {
 		log.S().Infof("shard %d:%d has not flushed for generating snapshot", ps.region.Id, ps.region.RegionEpoch.Version)
 		return snap, raft.ErrSnapshotTemporarilyUnavailable
 	}
@@ -623,16 +617,6 @@ func (ps *PeerStorage) clearMeta(raftWB *RaftWriteBatch) error {
 type CacheQueryStats struct {
 	hit  uint64
 	miss uint64
-}
-
-func getSyncLogFromEntry(entry eraftpb.Entry) bool {
-	if entry.SyncLog {
-		return true
-	}
-	if len(entry.Context) > 0 {
-		return entryCtx(entry.Context[0]).IsSyncLog()
-	}
-	return false
 }
 
 func fetchEntriesTo(engine *badger.DB, regionID, low, high, maxSize uint64, buf []eraftpb.Entry) ([]eraftpb.Entry, uint64, error) {
@@ -904,6 +888,26 @@ func (p *PeerStorage) CancelApplyingSnap() bool {
 	return true
 }
 
+func (ps *PeerStorage) hasOnGoingFlush() bool {
+	for _, change := range ps.applyingChanges {
+		if change.Flush != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (ps *PeerStorage) hasOnGoingPreSplitFlush() bool {
+	for _, change := range ps.applyingChanges {
+		if change.Flush != nil {
+			if change.State == protos.SplitState_PRE_SPLIT_FLUSH_DONE {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Check if the storage is applying a snapshot.
 func (p *PeerStorage) CheckApplyingSnap() bool {
 	switch p.snapState.StateType {
@@ -920,4 +924,55 @@ func (p *PeerStorage) CheckApplyingSnap() bool {
 		}
 	}
 	return false
+}
+
+type snapData struct {
+	region    *metapb.Region
+	changeSet *protos.ShardChangeSet
+	maxReadTS uint64
+}
+
+func (sd *snapData) Marshal() []byte {
+	regionData, _ := sd.region.Marshal()
+	changeData, _ := sd.changeSet.Marshal()
+	buf := make([]byte, 0, 4+len(regionData)+4+len(changeData))
+	buf = appendSlice(buf, regionData)
+	buf = appendSlice(buf, changeData)
+	buf = appendU64(buf, sd.maxReadTS)
+	return buf
+}
+
+func (sd *snapData) Unmarshal(data []byte) error {
+	sd.region = new(metapb.Region)
+	element, data := cutSlices(data)
+	err := sd.region.Unmarshal(element)
+	if err != nil {
+		return err
+	}
+	sd.changeSet = new(protos.ShardChangeSet)
+	element, data = cutSlices(data)
+	err = sd.changeSet.Unmarshal(element)
+	if err != nil {
+		return err
+	}
+	sd.maxReadTS = binary.LittleEndian.Uint64(data)
+	return nil
+}
+
+func appendSlice(buf []byte, element []byte) []byte {
+	buf = append(buf, make([]byte, 4)...)
+	binary.LittleEndian.PutUint32(buf[len(buf)-4:], uint32(len(element)))
+	return append(buf, element...)
+}
+
+func appendU64(buf []byte, v uint64) []byte {
+	tmp := make([]byte, 8)
+	binary.LittleEndian.PutUint64(tmp, v)
+	return append(buf, tmp...)
+}
+
+func cutSlices(data []byte) (element []byte, remain []byte) {
+	length := binary.LittleEndian.Uint32(data)
+	data = data[4:]
+	return data[:length], data[length:]
 }

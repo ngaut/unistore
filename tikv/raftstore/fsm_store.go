@@ -273,14 +273,8 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 				return err
 			}
 			shard := ctx.engine.kv.GetShard(regionID)
-			flushState := flushStateInitial
-			if shard.IsInitialFlushed() {
-				flushState = flushStateFlushDone
-			}
-			if shard.GetSplitState() >= protos.SplitState_PRE_SPLIT_FLUSH_DONE {
-				flushState = flushStatePreSplitFlushDone
-			}
-			peer.peer.Store().flushState = flushState
+			peer.peer.Store().initialFlushed = shard.IsInitialFlushed()
+			peer.peer.Store().splitState = shard.GetSplitState()
 			ctx.peerEventObserver.OnPeerCreate(peer.peer.getEventContext(), region)
 			if localState.State == rspb.PeerState_Merging {
 				log.S().Infof("region %d is merging", regionID)

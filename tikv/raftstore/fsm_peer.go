@@ -205,6 +205,10 @@ func (d *peerMsgHandler) HandleMsgs(msgs ...Msg) {
 		case MsgTypeNoop:
 		case MsgTypeGenerateEngineChangeSet:
 			d.onGenerateMetaChangeEvent(msg.Data.(*protos.ShardChangeSet))
+		case MsgTypeWaitFollowerSplitFiles:
+			d.peer.waitFollowerSplitFiles = msg.Data.(*MsgWaitFollowerSplitFiles)
+		case MsgTypeApplyChangeSetResult:
+			d.onApplyChangeSetResult(msg.Data.(*MsgApplyChangeSetResult))
 		}
 	}
 }
@@ -333,6 +337,28 @@ func (d *peerMsgHandler) HandleRaftReady(ready *raft.Ready, ic *InvokeContext) {
 		// After applying a snapshot, merge is rollbacked implicitly.
 		d.onReadyRollbackMerge(0, nil)
 	}
+	if d.peer.waitFollowerSplitFiles != nil {
+		if d.peer.Store().splitState == protos.SplitState_SPLIT_FILE_DONE {
+			epochVer := d.region().RegionEpoch.Version
+			matchCnt := 0
+			for _, followerVer := range d.peer.followersSplitFilesDone {
+				if followerVer == epochVer {
+					matchCnt++
+				}
+			}
+			if matchCnt == len(d.region().Peers)-1 {
+				log.S().Infof("%d:%d leader schedule finish split", d.region().Id, epochVer)
+				d.ctx.regionTaskSender <- task{
+					tp: taskTypeFinishSplit,
+					data: &regionTask{
+						region:  d.region(),
+						waitMsg: d.peer.waitFollowerSplitFiles,
+					},
+				}
+				d.peer.waitFollowerSplitFiles = nil
+			}
+		}
+	}
 }
 
 func (d *peerMsgHandler) onRaftBaseTick() {
@@ -418,6 +444,7 @@ func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
 	if d.peer.AnyNewPeerCatchUp(msg.FromPeer.Id) {
 		d.peer.HeartbeatPd(d.ctx.pdTaskSender)
 	}
+	d.updateFollowerSplitFilesDone(msg)
 	d.hasReady = true
 	return nil
 }
@@ -806,8 +833,12 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 		y.Assert(notExist)
 		if newRegionID == regionID {
 			newPeers = append(newPeers, d.peer.getEventContext())
+			store := d.peer.Store()
 			// The raft state key changed when region version change, we need to set it here.
-			d.ctx.raftWB.Set(y.KeyWithTs(RaftStateKey(newRegion), RaftTS), d.peer.Store().raftState.Marshal())
+			d.ctx.raftWB.Set(y.KeyWithTs(RaftStateKey(newRegion), RaftTS), store.raftState.Marshal())
+			// Reset the flush state for derived region.
+			store.initialFlushed = false
+			store.splitState = protos.SplitState_INITIAL
 			continue
 		}
 
@@ -1521,4 +1552,41 @@ func (d *peerMsgHandler) onGenerateMetaChangeEvent(e *protos.ShardChangeSet) {
 	b.SetType(raftlog.TypeChangeSet)
 	b.AppendChangeSet(e)
 	d.proposeRaftCommand(b.Build(), nil)
+}
+
+func (d *peerMsgHandler) updateFollowerSplitFilesDone(msg *rspb.RaftMessage) {
+	if msg.ExtraMsg == nil || msg.ExtraMsg.Type != ExtraMessageTypeSplitFilesDone {
+		return
+	}
+	fromPeer := msg.FromPeer.Id
+	if fromPeer == d.peerID() {
+		return
+	}
+	log.S().Infof("%d:%d follower %d split file done", d.regionID(), d.region().RegionEpoch.Version, fromPeer)
+	d.peer.followersSplitFilesDone[fromPeer] = msg.RegionEpoch.Version
+}
+
+func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult) {
+	if result.err != nil {
+		log.S().Errorf("%d:%d failed to apply change set %s, err %v",
+			result.change.ShardID, result.change.ShardVer, result.change, result.err)
+		return
+	}
+	store := d.peer.Store()
+	change := result.change
+	if change.Flush != nil {
+		store.initialFlushed = true
+	}
+	if change.State != store.splitState {
+		log.S().Infof("%d:%d peer store split state is changed from %s to %s",
+			change.ShardID, change.ShardVer, store.splitState, change.State)
+		store.splitState = change.State
+		d.hasReady = true
+	}
+	for i, applying := range store.applyingChanges {
+		if applying == change {
+			store.applyingChanges = append(store.applyingChanges[:i], store.applyingChanges[i+1:]...)
+			break
+		}
+	}
 }

@@ -294,6 +294,9 @@ type Peer struct {
 	pendingMessages         []eraftpb.Message
 	PendingMergeApplyResult *WaitApplyResultState
 	PeerStat                PeerStat
+
+	waitFollowerSplitFiles  *MsgWaitFollowerSplitFiles
+	followersSplitFilesDone map[uint64]uint64
 }
 
 func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Region, regionSched chan<- task,
@@ -342,11 +345,12 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 			LastCheckTime: now,
 			Index:         RaftInvalidIndex,
 		},
-		leaderMissingTime:     &now,
-		Tag:                   tag,
-		LastApplyingIdx:       appliedIndex,
-		lastUrgentProposalIdx: math.MaxInt64,
-		leaderLease:           NewLease(cfg.RaftStoreMaxLeaderLease),
+		leaderMissingTime:       &now,
+		Tag:                     tag,
+		LastApplyingIdx:         appliedIndex,
+		lastUrgentProposalIdx:   math.MaxInt64,
+		leaderLease:             NewLease(cfg.RaftStoreMaxLeaderLease),
+		followersSplitFilesDone: make(map[uint64]uint64),
 	}
 
 	p.leaderChecker.peerID = p.PeerId()
@@ -735,14 +739,13 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 				p.leaderChecker.term.Store(p.Term())
 			}
 			store := p.Store()
-			flushState := atomic.LoadInt32(&store.flushState)
-			if flushState == flushStateInitial {
+			if !store.initialFlushed && !store.hasOnGoingFlush() {
 				// The initial flush command for a newly split region is not replicated, need to re-trigger.
 				p.Store().Engines.kv.TriggerFlush(shard)
 			}
 			if shard.GetSplitState() != protos.SplitState_INITIAL {
 				// Unfinished split need to be recovered by the new leader.
-				if shard.GetSplitState() == protos.SplitState_PRE_SPLIT && flushState < flushStateFlushing {
+				if shard.GetSplitState() == protos.SplitState_PRE_SPLIT && !store.hasOnGoingPreSplitFlush() {
 					// The pre-split flush command is not replicated, need to re-trigger.
 					p.Store().Engines.kv.TriggerFlush(shard)
 				}
@@ -756,6 +759,11 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 			}
 			observer.OnRoleChange(p.getEventContext().RegionId, ss.RaftState)
 		} else if ss.RaftState == raft.StateFollower {
+			waitSplitFiles := p.waitFollowerSplitFiles
+			p.waitFollowerSplitFiles = nil
+			if waitSplitFiles != nil {
+				waitSplitFiles.Callback.Done(ErrResp(&ErrNotLeader{RegionId: p.regionId}))
+			}
 			p.leaderLease.Expire()
 			observer.OnRoleChange(p.getEventContext().RegionId, ss.RaftState)
 		}
@@ -868,18 +876,12 @@ func (p *Peer) scheduleApplyShardChangeSet(entry *eraftpb.Entry) {
 	change, err := clog.GetShardChangeSet()
 	y.Assert(err == nil)
 	store := p.Store()
-	if change.Flush != nil {
-		atomic.CompareAndSwapInt32(&store.flushState, flushStateInitial, flushStateFlushing)
-		if change.State == protos.SplitState_PRE_SPLIT_FLUSH_DONE {
-			atomic.CompareAndSwapInt32(&store.flushState, flushStateFlushDone, flushStatePreSplitFlushing)
-		}
-	}
+	store.applyingChanges = append(store.applyingChanges, change)
 	p.Store().regionSched <- task{
 		tp: taskTypeRegionApplyChangeSet,
 		data: &regionTask{
-			region:     p.Region(),
-			change:     change,
-			flushState: &store.flushState,
+			region: p.Region(),
+			change: change,
 		},
 	}
 }
@@ -1001,6 +1003,8 @@ func (p *Peer) HeartbeatPd(pdScheduler chan<- task) {
 	}
 }
 
+const ExtraMessageTypeSplitFilesDone rspb.ExtraMessageType = 8
+
 func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	sendMsg := new(rspb.RaftMessage)
 	sendMsg.RegionId = p.regionId
@@ -1008,6 +1012,10 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	sendMsg.RegionEpoch = &metapb.RegionEpoch{
 		ConfVer: p.Region().RegionEpoch.ConfVer,
 		Version: p.Region().RegionEpoch.Version,
+	}
+	if !p.IsLeader() && p.Store().splitState == protos.SplitState_SPLIT_FILE_DONE {
+		sendMsg.ExtraMsg = &rspb.ExtraMessage{Type: ExtraMessageTypeSplitFilesDone}
+		log.S().Infof("follower %d:%d add extra message split file done", p.regionId, sendMsg.RegionEpoch.Version)
 	}
 
 	fromPeer := *p.Meta

@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/badger/protos"
+	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,6 +62,7 @@ const (
 	taskTypeRegionDestroy        taskType = 403
 	taskTypeRegionApplyChangeSet taskType = 404
 	taskTypeRecoverSplit         taskType = 405
+	taskTypeFinishSplit          taskType = 406
 
 	taskTypeSnapSend taskType = 601
 	taskTypeSnapRecv taskType = 602
@@ -80,9 +82,10 @@ type regionTask struct {
 	endKey   []byte
 	redoIdx  uint64
 
-	change     *protos.ShardChangeSet
-	flushState *int32
-	peer       *metapb.Peer
+	change *protos.ShardChangeSet
+	peer   *metapb.Peer
+
+	waitMsg *MsgWaitFollowerSplitFiles
 }
 
 type raftLogGCTask struct {
@@ -259,19 +262,26 @@ func (r *splitCheckHandler) handle(t task) {
 // 1. execute PreSplit on raft command.
 // 2. Split the engine files.
 // 3. Split the region.
-func splitEngineAndRegion(router *router, engine *badger.ShardingDB, peer *metapb.Peer, region *metapb.Region, rawKeys [][]byte) ([]*metapb.Region, error) {
+func splitEngineAndRegion(router *router, engine *badger.ShardingDB, peer *metapb.Peer, region *metapb.Region, keys [][]byte) (*Callback, error) {
 	// Make sure the region doesn't has parent before split.
-	err := preSplitRegion(router, engine, peer, region, rawKeys)
+	err := preSplitRegion(router, engine, peer, region, keys)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "failed to pre-split region")
 	}
 	err = splitShardFiles(router, engine, peer, region)
 	if err != nil {
+		return nil, errors.Wrap(err, "failed to split files")
+	}
+	cb := NewCallback()
+	msg := &MsgWaitFollowerSplitFiles{
+		SplitKeys: keys,
+		Callback:  cb,
+	}
+	err = router.send(region.Id, NewPeerMsg(MsgTypeWaitFollowerSplitFiles, region.Id, msg))
+	if err != nil {
 		return nil, err
 	}
-	// Wait for the followers to reach split file done state.
-	time.Sleep(time.Second * 2)
-	return finishSplit(router, region, rawKeys)
+	return cb, nil
 }
 
 func preSplitRegion(router *router, engine *badger.ShardingDB, peer *metapb.Peer, region *metapb.Region, rawKeys [][]byte) error {
@@ -506,21 +516,29 @@ func (r *regionTaskHandler) handle(t task) {
 		err := kv.ApplyChangeSet(changeSet)
 		if err != nil {
 			log.Error("failed to apply passive change set", zap.Error(err), zap.String("changeSet", changeSet.String()))
-		} else {
-			// Apply succeed.
-			if changeSet.Flush != nil {
-				if changeSet.State == protos.SplitState_INITIAL {
-					atomic.CompareAndSwapInt32(regionTask.flushState, flushStateFlushing, flushStateFlushDone)
-				} else if changeSet.State == protos.SplitState_PRE_SPLIT {
-					atomic.CompareAndSwapInt32(regionTask.flushState, flushStatePreSplitFlushing, flushStatePreSplitFlushDone)
-				}
-			}
 		}
+		_ = r.router.send(changeSet.ShardID, NewPeerMsg(MsgTypeApplyChangeSetResult, changeSet.ShardID, &MsgApplyChangeSetResult{
+			change: changeSet,
+			err:    err,
+		}))
 	case taskTypeRecoverSplit:
 		regionTask := t.data.(*regionTask)
 		err := r.handleRecoverSplit(regionTask.region, regionTask.peer)
 		if err != nil {
 			log.S().Errorf("region %d:%d failed to recover split err %s", regionTask.region.Id, regionTask.region.RegionEpoch.Version, err.Error())
+		}
+	case taskTypeFinishSplit:
+		regionTask := t.data.(*regionTask)
+		waitMsg := regionTask.waitMsg
+		regions, err := finishSplit(r.router, regionTask.region, waitMsg.SplitKeys)
+		if err != nil {
+			waitMsg.Callback.Done(ErrResp(err))
+		} else {
+			waitMsg.Callback.Done(&raft_cmdpb.RaftCmdResponse{
+				AdminResponse: &raft_cmdpb.AdminResponse{
+					Splits: &raft_cmdpb.BatchSplitResponse{Regions: regions},
+				},
+			})
 		}
 	}
 }
@@ -538,8 +556,12 @@ func (r *regionTaskHandler) handleRecoverSplit(region *metapb.Region, peer *meta
 			return err
 		}
 	}
-	_, err := finishSplit(r.router, region, shard.GetPreSplitKeys())
-	return err
+	cb := NewCallback()
+	msg := &MsgWaitFollowerSplitFiles{
+		SplitKeys: shard.GetPreSplitKeys(),
+		Callback:  cb,
+	}
+	return r.router.send(region.Id, NewPeerMsg(MsgTypeWaitFollowerSplitFiles, region.Id, msg))
 }
 
 type raftLogGcTaskRes uint64

@@ -96,10 +96,12 @@ func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, pdW
 	if newCluster {
 		n.system.ctx.storeMeta.regionRanges.Put(RawEndKey(firstRegion), regionIDToBytes(firstRegion.Id))
 		log.S().Info("pre-split regions")
-		_, err = splitEngineAndRegion(router, engines.kv, firstRegion.Peers[0], firstRegion, [][]byte{{'m'}, {'n'}, {'t'}, {'u'}})
+		var cb *Callback
+		cb, err = splitEngineAndRegion(router, engines.kv, firstRegion.Peers[0], firstRegion, [][]byte{{'m'}, {'n'}, {'t'}, {'u'}})
 		if err != nil {
 			return err
 		}
+		cb.wg.Wait()
 	}
 
 	return nil

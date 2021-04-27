@@ -14,7 +14,9 @@
 package raftstore
 
 import (
+	"github.com/pingcap/badger/protos"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/golang/protobuf/proto"
@@ -262,4 +264,40 @@ func (r *raftLogFilter) Guards() []badger.Guard {
 
 func CreateRaftLogCompactionFilter(targetLevel int, startKey, endKey []byte) badger.CompactionFilter {
 	return &raftLogFilter{}
+}
+
+// MetaChangeListener implements the badger.MetaChangeListener interface.
+type MetaChangeListener struct {
+	mu    sync.Mutex
+	msgCh chan<- Msg
+	queue []Msg
+}
+
+func NewMetaChangeListener() *MetaChangeListener {
+	return &MetaChangeListener{}
+}
+
+// OnChange implements the badger.MetaChangeListener interface.
+func (l *MetaChangeListener) OnChange(e *protos.ShardChangeSet) {
+	y.Assert(e.ShardID != 0)
+	msg := NewPeerMsg(MsgTypeGenerateEngineChangeSet, e.ShardID, e)
+	l.mu.Lock()
+	ch := l.msgCh
+	if ch == nil {
+		l.queue = append(l.queue, msg)
+	}
+	l.mu.Unlock()
+	if ch != nil {
+		ch <- msg
+	}
+}
+
+func (l *MetaChangeListener) initMsgCh(msgCh chan<- Msg) {
+	l.mu.Lock()
+	l.msgCh = msgCh
+	queue := l.queue
+	l.mu.Unlock()
+	for _, msg := range queue {
+		msgCh <- msg
+	}
 }
