@@ -1107,95 +1107,24 @@ func (d *peerMsgHandler) findSiblingRegion() *metapb.Region {
 
 func (d *peerMsgHandler) onRaftGCLogTick() {
 	d.ticker.schedule(PeerTickRaftLogGC)
-
-	stableIdx := d.peer.Store().stableApplyState.appliedIndex
-	if !d.peer.IsLeader() {
-		if stableIdx == 0 {
-			// No flushed L0 files yet, we delay the raft log GC.
-			return
-		}
-		d.peer.Store().CompactTo(stableIdx + 1)
-		return
-	}
-	// As leader, we would not keep caches for the peers that didn't response heartbeat in the
-	// last few seconds. That happens probably because another TiKV is down. In this case if we
-	// do not clean up the cache, it may keep growing.
-	dropCacheDuration := time.Duration(d.ctx.cfg.RaftHeartbeatTicks)*d.ctx.cfg.RaftBaseTickInterval +
-		d.ctx.cfg.RaftEntryCacheLifeTime
-	cacheAliveLimit := time.Now().Add(-dropCacheDuration)
-
-	// Leader will replicate the compact log command to followers,
-	// If we use current replicated_index (like 10) as the compact index,
-	// when we replicate this log, the newest replicated_index will be 11,
-	// but we only compact the log to 10, not 11, at that time,
-	// the first index is 10, and replicated_index is 11, with an extra log,
-	// and we will do compact again with compact index 11, in cycles...
-	// So we introduce a threshold, if replicated index - first index > threshold,
-	// we will try to compact log.
-	// raft log entries[..............................................]
-	//                  ^                                       ^
-	//                  |-----------------threshold------------ |
-	//              first_index                         replicated_index
-	// `alive_cache_idx` is the smallest `replicated_index` of healthy up nodes.
-	// `alive_cache_idx` is only used to gc cache.
-	truncatedIdx := d.peer.Store().truncatedIndex()
-	lastIdx, _ := d.peer.Store().LastIndex()
-	replicatedIdx, aliveCacheIdx := lastIdx, lastIdx
-	prs := d.peer.RaftGroup.Status().Progress
-	for peerID, progress := range prs {
-		if replicatedIdx > progress.Match {
-			replicatedIdx = progress.Match
-		}
-		if lastHeartbeat, ok := d.peer.PeerHeartbeats[peerID]; ok {
-			if aliveCacheIdx > progress.Match &&
-				progress.Match >= truncatedIdx &&
-				lastHeartbeat.After(cacheAliveLimit) {
-				aliveCacheIdx = progress.Match
-			}
-		}
-	}
-	// When an election happened or a new peer is added, replicated_idx can be 0.
-	if replicatedIdx > 0 {
-		y.Assert(lastIdx >= replicatedIdx)
-	}
-	d.peer.Store().MaybeGCCache(replicatedIdx, d.peer.Store().AppliedIndex())
-
-	totalGCLogs := uint64(0)
+	store := d.peer.Store()
+	stableIdx := store.stableApplyState.appliedIndex
 	if stableIdx == 0 {
 		// No flushed L0 files yet, we delay the raft log GC.
 		return
 	}
-	firstIdx, _ := d.peer.Store().FirstIndex()
-	var compactIdx uint64
-	if stableIdx > firstIdx &&
-		stableIdx-firstIdx >= d.ctx.cfg.RaftLogGcCountLimit {
-		compactIdx = stableIdx
-	} else if d.peer.RaftLogSizeHint >= d.ctx.cfg.RaftLogGcSizeLimit {
-		compactIdx = stableIdx
-	} else if replicatedIdx < firstIdx || replicatedIdx-firstIdx <= d.ctx.cfg.RaftLogGcThreshold {
-		return
-	} else {
-		compactIdx = replicatedIdx
-	}
-
-	// Have no idea why subtract 1 here, but original code did this by magic.
-	y.Assert(compactIdx > 0)
-	compactIdx -= 1
-	if compactIdx < firstIdx {
-		// In case compact_idx == first_idx before subtraction.
+	if !d.peer.IsLeader() {
+		d.peer.Store().CompactTo(stableIdx)
 		return
 	}
-
-	totalGCLogs += compactIdx - firstIdx
-
-	term, err := d.peer.RaftGroup.Raft.RaftLog.Term(compactIdx)
+	term, err := d.peer.RaftGroup.Raft.RaftLog.Term(stableIdx)
 	if err != nil {
 		panic(err)
 	}
 
 	// Create a compact log request and notify directly.
 	regionID := d.regionID()
-	request := newCompactLogRequest(regionID, d.peer.Meta, compactIdx, term)
+	request := newCompactLogRequest(regionID, d.peer.Meta, stableIdx, term)
 	d.proposeRaftCommand(raftlog.NewRequest(request), nil)
 }
 
@@ -1576,6 +1505,14 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 	change := result.change
 	if change.Flush != nil {
 		store.initialFlushed = true
+		l0 := change.Flush.L0Create
+		if l0 != nil && l0.Properties != nil {
+			val, ok := badger.GetShardProperty(applyStateKey, l0.Properties)
+			y.Assert(ok)
+			var applyState applyState
+			applyState.Unmarshal(val)
+			store.stableApplyState = applyState
+		}
 	}
 	if change.State != store.splitState {
 		log.S().Infof("%d:%d peer store split state is changed from %s to %s",

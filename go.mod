@@ -7,7 +7,7 @@ require (
 	github.com/gogo/protobuf v1.3.1
 	github.com/golang/protobuf v1.3.4
 	github.com/google/btree v1.0.0
-	github.com/pingcap/badger v1.5.1-0.20210425125828-c1671ea8d1ab
+	github.com/pingcap/badger v1.5.1-0.20210428090122-b417fd1f04e4
 	github.com/pingcap/check v0.0.0-20200212061837-5e12011dc712
 	github.com/pingcap/errors v0.11.5-0.20201021055732-210aacd3fd99
 	github.com/pingcap/kvproto v0.0.0-20201023092649-e6d6090277c9

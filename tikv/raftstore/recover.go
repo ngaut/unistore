@@ -93,9 +93,6 @@ func (h *RecoverHandler) Recover(db *badger.ShardingDB, shard *badger.Shard, met
 			if err != nil {
 				return err
 			}
-			if h.isDuplicatedChange(shard, meta, cs) {
-				continue
-			}
 			err = db.ApplyChangeSet(cs)
 			if err != nil {
 				return err
@@ -116,30 +113,6 @@ func (h *RecoverHandler) Recover(db *badger.ShardingDB, shard *badger.Shard, met
 	newState.appliedIndex = highIdx
 	shard.RecoverSetProperty(applyStateKey, newState.Marshal())
 	return nil
-}
-
-func (h *RecoverHandler) isDuplicatedChange(shard *badger.Shard, meta *badger.ShardMeta, change *protos.ShardChangeSet) bool {
-	if flush := change.Flush; flush != nil {
-		if len(flush.L0Creates) == 0 {
-			return shard.GetSplitState() == change.State
-		}
-		_, ok := meta.FileLevel(flush.L0Creates[0].ID)
-		return ok
-	}
-	if comp := change.Compaction; comp != nil {
-		for _, tbl := range comp.TableCreates {
-			level, ok := meta.FileLevel(tbl.ID)
-			if ok && level == int(change.Compaction.Level)+1 {
-				return true
-			}
-		}
-	}
-	if splitFiles := change.SplitFiles; splitFiles != nil {
-		_, ok := meta.FileLevel(splitFiles.TableCreates[0].ID)
-		// If it is a duplicate split file, the deleted file must not exists.
-		return ok
-	}
-	return false
 }
 
 func (h *RecoverHandler) loadRegionMeta(id, ver uint64) (region *metapb.Region, committedIdx uint64, err error) {
