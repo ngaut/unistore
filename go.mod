@@ -29,4 +29,6 @@ replace go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.0.0-2019022608525
 
 replace github.com/pingcap/tidb => github.com/coocood/tidb v0.0.0-20201117045115-1cfbea7d9a12
 
+replace github.com/zhangjinpeng1987/raft => github.com/hslam/raft-1 v0.0.0-20210430053542-5b276eb6ffcd
+
 go 1.13
