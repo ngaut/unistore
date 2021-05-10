@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/arl/statsviz"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/server"
@@ -154,6 +155,7 @@ func main() {
 		http.HandleFunc("/status", func(writer http.ResponseWriter, request *http.Request) {
 			writer.WriteHeader(http.StatusOK)
 		})
+		statsviz.Register(http.DefaultServeMux)
 		err := http.ListenAndServe(conf.Server.StatusAddr, nil)
 		if err != nil {
 			log.S().Fatal(err)
