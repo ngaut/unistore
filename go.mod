@@ -2,12 +2,13 @@ module github.com/ngaut/unistore
 
 require (
 	github.com/BurntSushi/toml v0.3.1
+	github.com/arl/statsviz v0.4.0
 	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2
 	github.com/gogo/protobuf v1.3.1
 	github.com/golang/protobuf v1.3.4
 	github.com/google/btree v1.0.0
-	github.com/pingcap/badger v1.5.1-0.20210428090122-b417fd1f04e4
+	github.com/pingcap/badger v1.5.1-0.20210510123611-7c48b93f2c22
 	github.com/pingcap/check v0.0.0-20200212061837-5e12011dc712
 	github.com/pingcap/errors v0.11.5-0.20201021055732-210aacd3fd99
 	github.com/pingcap/kvproto v0.0.0-20201023092649-e6d6090277c9

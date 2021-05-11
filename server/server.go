@@ -2,15 +2,16 @@ package server
 
 import (
 	"context"
-	"github.com/ngaut/unistore/tikv/raftstore"
-	"github.com/pingcap/errors"
+	"net/http"
 	"os"
 	"path/filepath"
 
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/tikv"
+	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/pingcap/badger"
+	"github.com/pingcap/errors"
 )
 
 const (
@@ -49,6 +50,7 @@ func New(conf *config.Config, pdClient pd.Client) (*tikv.Server, error) {
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
+	http.DefaultServeMux.HandleFunc("/debug/db", db.DebugHandler())
 	engines := raftstore.NewEngines(db, raftDB, kvPath, raftPath, listener)
 	innerServer := raftstore.NewRaftInnerServer(conf, engines, raftConf)
 	innerServer.Setup(pdClient)
