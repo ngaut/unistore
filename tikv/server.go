@@ -545,8 +545,8 @@ func (svr *Server) EstablishMPPConnection(*mpp.EstablishMPPConnectionRequest, ti
 func (svr *Server) Raft(stream tikvpb.Tikv_RaftServer) error {
 	return svr.innerServer.Raft(stream)
 }
-func (svr *Server) Snapshot(stream tikvpb.Tikv_SnapshotServer) error {
-	return svr.innerServer.Snapshot(stream)
+func (svr *Server) Snapshot(_ tikvpb.Tikv_SnapshotServer) error {
+	return nil
 }
 
 func (svr *Server) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {

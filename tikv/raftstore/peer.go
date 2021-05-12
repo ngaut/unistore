@@ -543,7 +543,7 @@ func (p *Peer) HasPendingSnapshot() bool {
 	return p.RaftGroup.GetSnap() != nil
 }
 
-func (p *Peer) Send(trans Transport, msgs []eraftpb.Message) error {
+func (p *Peer) Send(trans *RaftClient, msgs []eraftpb.Message) error {
 	for _, msg := range msgs {
 		msgType := msg.MsgType
 		err := p.sendRaftMessage(msg, trans)
@@ -809,7 +809,7 @@ func (p *Peer) TakeApplyProposals() *regionProposal {
 	return newRegionProposal(p.PeerId(), p.regionId, props)
 }
 
-func (p *Peer) HandleRaftReadyAppend(trans Transport, raftWB *RaftWriteBatch, observer PeerEventObserver) *ReadyICPair {
+func (p *Peer) HandleRaftReadyAppend(trans *RaftClient, raftWB *RaftWriteBatch, observer PeerEventObserver) *ReadyICPair {
 	if p.PendingRemove {
 		return nil
 	}
@@ -886,7 +886,7 @@ func (p *Peer) scheduleApplyShardChangeSet(entry *eraftpb.Entry) {
 	}
 }
 
-func (p *Peer) PostRaftReadyPersistent(trans Transport, applyMsgs *applyMsgs, ready *raft.Ready, invokeCtx *InvokeContext) *ReadyApplySnapshot {
+func (p *Peer) PostRaftReadyPersistent(trans *RaftClient, applyMsgs *applyMsgs, ready *raft.Ready, invokeCtx *InvokeContext) *ReadyApplySnapshot {
 	if invokeCtx.hasSnapshot() {
 		// When apply snapshot, there is no log applied and not compacted yet.
 		p.RaftLogSizeHint = 0
@@ -925,7 +925,7 @@ func (p *Peer) maybeUpdatePeerMeta() {
 	}
 }
 
-func (p *Peer) followerSendReadyMessages(trans Transport, ready *raft.Ready) {
+func (p *Peer) followerSendReadyMessages(trans *RaftClient, ready *raft.Ready) {
 	if p.IsApplyingSnapshot() {
 		p.pendingMessages = ready.Messages
 		ready.Messages = nil
@@ -1005,7 +1005,7 @@ func (p *Peer) HeartbeatPd(pdScheduler chan<- task) {
 
 const ExtraMessageTypeSplitFilesDone rspb.ExtraMessageType = 8
 
-func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
+func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans *RaftClient) error {
 	sendMsg := new(rspb.RaftMessage)
 	sendMsg.RegionId = p.regionId
 	// set current epoch
@@ -1041,7 +1041,8 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 		sendMsg.EndKey = append([]byte{}, p.Region().EndKey...)
 	}
 	sendMsg.Message = &msg
-	return trans.Send(sendMsg)
+	trans.Send(sendMsg)
+	return nil
 }
 
 func (p *Peer) HandleRaftReadyApplyMessages(kv *badger.ShardingDB, applyMsgs *applyMsgs, ready *raft.Ready) {

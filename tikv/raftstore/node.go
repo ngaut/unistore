@@ -59,7 +59,7 @@ func NewNode(system *raftBatchSystem, store *metapb.Store, cfg *Config, pdClient
 	}
 }
 
-func (n *Node) Start(ctx context.Context, engines *Engines, trans Transport, pdWorker *worker, router *router) error {
+func (n *Node) Start(ctx context.Context, engines *Engines, trans *RaftClient, pdWorker *worker, router *router) error {
 	storeID, err := n.checkStore(engines)
 	if err != nil {
 		return err
@@ -239,7 +239,7 @@ func (n *Node) BootstrapCluster(ctx context.Context, engines *Engines, firstRegi
 	return false, errors.New("bootstrap cluster failed")
 }
 
-func (n *Node) startNode(engines *Engines, trans Transport, pdWorker *worker) error {
+func (n *Node) startNode(engines *Engines, trans *RaftClient, pdWorker *worker) error {
 	log.S().Infof("start raft store node, storeID: %d", n.store.GetId())
 	return n.system.start(n.store, n.cfg, engines, trans, n.pdClient, pdWorker, n.observer)
 }

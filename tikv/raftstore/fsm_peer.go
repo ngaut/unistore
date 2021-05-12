@@ -539,9 +539,7 @@ func handleStaleMsg(trans Transport, msg *rspb.RaftMessage, curEpoch *metapb.Reg
 	} else {
 		gcMsg.IsTombstone = true
 	}
-	if err := trans.Send(gcMsg); err != nil {
-		log.S().Errorf("[region %d] send message failed %v", regionID, err)
-	}
+	trans.Send(gcMsg)
 }
 
 func (d *peerMsgHandler) needGCMerge(msg *rspb.RaftMessage) (bool, error) {
