@@ -82,7 +82,7 @@ type GlobalContext struct {
 	storeMeta             *storeMeta
 	storeMetaLock         *sync.RWMutex
 	router                *router
-	trans                 Transport
+	trans                 *RaftClient
 	pdTaskSender          chan<- task
 	regionTaskSender      chan<- task
 	computeHashTaskSender chan<- task
@@ -117,7 +117,7 @@ type storeStats struct {
 }
 
 type Transport interface {
-	Send(msg *rspb.RaftMessage) error
+	Send(msg *rspb.RaftMessage)
 }
 
 func (pc *RaftContext) flushLocalStats() {
@@ -356,7 +356,7 @@ func (bs *raftBatchSystem) start(
 	meta *metapb.Store,
 	cfg *Config,
 	engines *Engines,
-	trans Transport,
+	trans *RaftClient,
 	pdClient pd.Client,
 	pdWorker *worker,
 	observer PeerEventObserver) error {
