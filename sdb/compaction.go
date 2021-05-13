@@ -1061,6 +1061,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 		if err != nil {
 			return err
 		}
+		newHandler.totalSize += tbl.Size()
 		newHandler.tables = append(newHandler.tables, tbl)
 	}
 	for cf := 0; cf < sdb.numCFs; cf++ {
@@ -1074,6 +1075,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 				if containsUint64(splitFiles.TableDeletes, oldTbl.ID()) {
 					del.add(oldTbl.ID(), oldTbl)
 				} else {
+					newHandler.totalSize += oldTbl.Size()
 					newHandler.tables = append(newHandler.tables, oldTbl)
 				}
 			}

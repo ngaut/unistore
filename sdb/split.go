@@ -388,6 +388,7 @@ func (sdb *DB) insertTableToNewShard(t table.Table, cf, level int, shards []*Sha
 	y.Assert(shard.OverlapKey(t.Biggest().UserKey))
 	sCF := shard.cfs[cf]
 	handler := sCF.getLevelHandler(level)
+	handler.totalSize += t.Size()
 	handler.tables = append(handler.tables, t)
 }
 
