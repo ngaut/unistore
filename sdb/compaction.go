@@ -344,7 +344,8 @@ func (sdb *DB) getCFSafeTS(cf int) uint64 {
 	return atomic.LoadUint64(&sdb.safeTsTracker.safeTs)
 }
 
-type l0BuildHelper struct {
+type compactL0Helper struct {
+	cf         int
 	db         *DB
 	builder    *sstable.Builder
 	shard      *Shard
@@ -357,8 +358,8 @@ type l0BuildHelper struct {
 	oldHandler *levelHandler
 }
 
-func newBuildHelper(db *DB, shard *Shard, l0Tbls *l0Tables, cf int) *l0BuildHelper {
-	helper := &l0BuildHelper{db: db, shard: shard}
+func newCompactL0Helper(db *DB, shard *Shard, l0Tbls *l0Tables, cf int) *compactL0Helper {
+	helper := &compactL0Helper{db: db, shard: shard, cf: cf}
 	if db.opt.CompactionFilterFactory != nil {
 		helper.filter = db.opt.CompactionFilterFactory(1, nil, globalShardEndKey)
 	}
@@ -381,7 +382,7 @@ func newBuildHelper(db *DB, shard *Shard, l0Tbls *l0Tables, cf int) *l0BuildHelp
 	return helper
 }
 
-func (h *l0BuildHelper) setFD(fd *os.File) {
+func (h *compactL0Helper) setFD(fd *os.File) {
 	if h.builder == nil {
 		h.builder = sstable.NewTableBuilder(fd, nil, 1, h.db.opt.TableBuilderOptions)
 	} else {
@@ -389,7 +390,7 @@ func (h *l0BuildHelper) setFD(fd *os.File) {
 	}
 }
 
-func (h *l0BuildHelper) buildOne() (*sstable.BuildResult, error) {
+func (h *compactL0Helper) buildOne() (*sstable.BuildResult, error) {
 	filename := sstable.NewFilename(h.db.idAlloc.AllocID(), h.db.opt.Dir)
 	fd, err := y.OpenSyncedFile(filename, false)
 	if err != nil {
@@ -399,6 +400,7 @@ func (h *l0BuildHelper) buildOne() (*sstable.BuildResult, error) {
 	h.lastKey.Reset()
 	h.skipKey.Reset()
 	it := h.iter
+	rc := h.db.opt.CFs[h.cf].ReadCommitted
 	for ; it.Valid(); y.NextAllVersion(it) {
 		vs := it.Value()
 		key := it.Key()
@@ -420,11 +422,11 @@ func (h *l0BuildHelper) buildOne() (*sstable.BuildResult, error) {
 
 		// Only consider the versions which are below the safeTS, otherwise, we might end up discarding the
 		// only valid version for a running transaction.
-		if key.Version <= h.safeTS {
+		if rc || key.Version <= h.safeTS {
 			// key is the latest readable version of this key, so we simply discard all the rest of the versions.
 			h.skipKey.Copy(key)
 			if !isDeleted(vs.Meta) && h.filter != nil {
-				switch h.filter.Filter(0, key.UserKey, vs.Value, vs.UserMeta) {
+				switch h.filter.Filter(h.cf, key.UserKey, vs.Value, vs.UserMeta) {
 				case DecisionMarkTombstone:
 					// There may have ole versions for this key, so convert to delete tombstone.
 					h.builder.Add(key, y.ValueStruct{Meta: bitDelete})
@@ -457,7 +459,7 @@ func (sdb *DB) compactL0(shard *Shard, guard *epoch.Guard) error {
 	var toBeDelete []epoch.Resource
 	var shardSizeChange int64
 	for cf := 0; cf < sdb.numCFs; cf++ {
-		helper := newBuildHelper(sdb, shard, l0Tbls, cf)
+		helper := newCompactL0Helper(sdb, shard, l0Tbls, cf)
 		defer helper.iter.Close()
 		var results []*sstable.BuildResult
 		for {

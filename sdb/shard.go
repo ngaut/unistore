@@ -490,6 +490,9 @@ func (s *levelHandler) get(key y.Key, keyHash uint64) y.ValueStruct {
 }
 
 func (s *levelHandler) getInTable(key y.Key, keyHash uint64, table table.Table) y.ValueStruct {
+	if table == nil {
+		return y.ValueStruct{}
+	}
 	s.metrics.NumLSMGets.Inc()
 	// TODO: error handling here
 	result, err := table.Get(key, keyHash)

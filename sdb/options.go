@@ -82,6 +82,10 @@ type Options struct {
 
 type CFConfig struct {
 	Managed bool
+
+	// ReadCommitted specify the CF always read the latest value, so we only need to keep the latest version,
+	// All old version can be discarded during compaction or flush.
+	ReadCommitted bool
 }
 
 // CompactionFilter is an interface that user can implement to remove certain keys.
