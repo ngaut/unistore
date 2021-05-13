@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/ngaut/unistore/sdb"
 	"github.com/pingcap/badger/y"
 	"math"
 	"sort"
@@ -45,7 +46,7 @@ import (
 // MVCCStore is a wrapper of badger.DB to provide MVCC functions.
 type MVCCStore struct {
 	dir       string
-	db        *badger.ShardingDB
+	db        *sdb.ShardingDB
 	dbWriter  mvcc.DBWriter
 	safePoint *SafePoint
 	pdClient  pd.Client
@@ -67,7 +68,7 @@ const (
 )
 
 // NewMVCCStore creates a new MVCCStore
-func NewMVCCStore(conf *config.Config, db *badger.ShardingDB, dataDir string, safePoint *SafePoint,
+func NewMVCCStore(conf *config.Config, db *sdb.ShardingDB, dataDir string, safePoint *SafePoint,
 	writer mvcc.DBWriter, pdClient pd.Client) *MVCCStore {
 	store := &MVCCStore{
 		db:                db,
@@ -111,7 +112,7 @@ func (store *MVCCStore) Close() error {
 	return nil
 }
 
-func (store *MVCCStore) getDBItems(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation) (items []*badger.Item, err error) {
+func (store *MVCCStore) getDBItems(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation) (items []*sdb.Item, err error) {
 	snap := reqCtx.getDBReader().GetSnapshot()
 	keys := make([][]byte, len(mutations))
 	for i, m := range mutations {
@@ -492,7 +493,7 @@ func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isF
 	return nil, err
 }
 
-func (store *MVCCStore) buildPessimisticLock(m *kvrpcpb.Mutation, item *badger.Item,
+func (store *MVCCStore) buildPessimisticLock(m *kvrpcpb.Mutation, item *sdb.Item,
 	req *kvrpcpb.PessimisticLockRequest) (*mvcc.MvccLock, error) {
 	if item != nil {
 		userMeta := mvcc.DBUserMeta(item.UserMeta())
@@ -658,7 +659,7 @@ func (store *MVCCStore) prewritePessimistic(reqCtx *requestCtx, mutations []*kvr
 }
 
 func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation,
-	req *kvrpcpb.PrewriteRequest, items []*badger.Item) error {
+	req *kvrpcpb.PrewriteRequest, items []*sdb.Item) error {
 	var minCommitTS uint64
 	if req.UseAsyncCommit || req.TryOnePc {
 		// Get minCommitTS for async commit protocol. After all keys are locked in memory lock.
@@ -704,7 +705,7 @@ func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpc
 }
 
 func (store *MVCCStore) tryOnePC(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation,
-	req *kvrpcpb.PrewriteRequest, items []*badger.Item, minCommitTS uint64, maxCommitTS uint64) (bool, error) {
+	req *kvrpcpb.PrewriteRequest, items []*sdb.Item, minCommitTS uint64, maxCommitTS uint64) (bool, error) {
 	if maxCommitTS != 0 && minCommitTS > maxCommitTS {
 		log.Debug("1pc transaction fallbacks due to minCommitTS exceeds maxCommitTS",
 			zap.Uint64("startTS", req.StartVersion),
@@ -764,7 +765,7 @@ func encodeFromOldRow(oldRow, buf []byte) ([]byte, error) {
 	return encoder.Encode(&stmtctx.StatementContext{}, colIDs, datums, buf)
 }
 
-func (store *MVCCStore) buildPrewriteLock(reqCtx *requestCtx, m *kvrpcpb.Mutation, item *badger.Item,
+func (store *MVCCStore) buildPrewriteLock(reqCtx *requestCtx, m *kvrpcpb.Mutation, item *sdb.Item,
 	req *kvrpcpb.PrewriteRequest) (*mvcc.MvccLock, error) {
 	lock := &mvcc.MvccLock{
 		MvccLockHdr: mvcc.MvccLockHdr{
@@ -1058,7 +1059,6 @@ func (store *MVCCStore) CheckKeysLock(reqCtx *requestCtx, startTS uint64, resolv
 
 func (store *MVCCStore) CheckRangeLock(reqCtx *requestCtx, startTS uint64, startKey, endKey []byte, resolved []uint64) error {
 	it := reqCtx.getDBReader().GetLockIter()
-	it.SetBound(endKey)
 	for it.Seek(startKey); it.Valid(); it.Next() {
 		item := it.Item()
 		if exceedEndKey(item.Key(), endKey) {
@@ -1101,7 +1101,7 @@ func (store *MVCCStore) Cleanup(reqCtx *requestCtx, key []byte, startTS, current
 	return err
 }
 
-func (store *MVCCStore) appendScannedLock(locks []*kvrpcpb.LockInfo, it *badger.Iterator, maxTS uint64) []*kvrpcpb.LockInfo {
+func (store *MVCCStore) appendScannedLock(locks []*kvrpcpb.LockInfo, it *sdb.Iterator, maxTS uint64) []*kvrpcpb.LockInfo {
 	val, _ := it.Item().Value()
 	lock := mvcc.DecodeLock(val)
 	if lock.StartTS < maxTS {
@@ -1494,7 +1494,7 @@ func (sp *SafePoint) UpdateTS(ts uint64) {
 }
 
 // CreateCompactionFilter implements badger.CompactionFilterFactory function.
-func (sp *SafePoint) CreateCompactionFilter(targetLevel int, startKey, endKey []byte) badger.CompactionFilter {
+func (sp *SafePoint) CreateCompactionFilter(targetLevel int, startKey, endKey []byte) sdb.CompactionFilter {
 	return &GCCompactionFilter{
 		targetLevel: targetLevel,
 		safePoint:   atomic.LoadUint64(&sp.timestamp),
@@ -1519,24 +1519,24 @@ const (
 // Filter implements the badger.CompactionFilter interface.
 // Since we use txn ts as badger version, we only need to filter Delete, Rollback and Op_Lock.
 // It is called for the first valid version before safe point, older versions are discarded automatically.
-func (f *GCCompactionFilter) Filter(key, value, userMeta []byte) badger.Decision {
+func (f *GCCompactionFilter) Filter(cf int, key, value, userMeta []byte) sdb.Decision {
 	if len(userMeta) != 16 {
-		return badger.DecisionKeep
+		return sdb.DecisionKeep
 	}
 	switch key[0] {
 	case metaPrefix, tablePrefix:
 		// For latest version, we need to remove `delete` key, which has value len 0.
 		if mvcc.DBUserMeta(userMeta).CommitTS() < f.safePoint && len(value) == 0 {
-			return badger.DecisionMarkTombstone
+			return sdb.DecisionMarkTombstone
 		}
 	case metaExtraPrefix, tableExtraPrefix:
 		// For latest version, we can only remove `delete` key, which has value len 0.
 		if mvcc.DBUserMeta(userMeta).StartTS() < f.safePoint {
-			return badger.DecisionDrop
+			return sdb.DecisionDrop
 		}
 	}
 	// Older version are discarded automatically, we need to keep the first valid version.
-	return badger.DecisionKeep
+	return sdb.DecisionKeep
 }
 
 var (

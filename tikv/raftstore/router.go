@@ -14,7 +14,7 @@
 package raftstore
 
 import (
-	"github.com/pingcap/badger"
+	"github.com/ngaut/unistore/sdb"
 	"github.com/pingcap/log"
 	"sync"
 	"sync/atomic"
@@ -118,7 +118,7 @@ func (r *RaftstoreRouter) SendCommand(req *raft_cmdpb.RaftCmdRequest, cb *Callba
 	return r.router.sendRaftCommand(msg)
 }
 
-func (r *RaftstoreRouter) SplitRegion(ctx *kvrpcpb.Context, engine *badger.ShardingDB, region *metapb.Region, keys [][]byte) ([]*metapb.Region, error) {
+func (r *RaftstoreRouter) SplitRegion(ctx *kvrpcpb.Context, engine *sdb.ShardingDB, region *metapb.Region, keys [][]byte) ([]*metapb.Region, error) {
 	log.S().Infof("split region %d:%d by RPC keys %v", region.Id, region.RegionEpoch.Version, keys)
 	cb, err := splitEngineAndRegion(r.router, engine, ctx.Peer, region, keys)
 	if err != nil {

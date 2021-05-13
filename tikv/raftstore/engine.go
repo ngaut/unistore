@@ -14,6 +14,7 @@
 package raftstore
 
 import (
+	"github.com/ngaut/unistore/sdb"
 	"github.com/pingcap/badger/protos"
 	"math"
 	"sync"
@@ -29,14 +30,14 @@ import (
 )
 
 type Engines struct {
-	kv       *badger.ShardingDB
+	kv       *sdb.ShardingDB
 	kvPath   string
 	raft     *badger.DB
 	raftPath string
 	listener *MetaChangeListener
 }
 
-func NewEngines(kvEngine *badger.ShardingDB, raftEngine *badger.DB, kvPath, raftPath string, listener *MetaChangeListener) *Engines {
+func NewEngines(kvEngine *sdb.ShardingDB, raftEngine *badger.DB, kvPath, raftPath string, listener *MetaChangeListener) *Engines {
 	return &Engines{
 		kv:       kvEngine,
 		kvPath:   kvPath,
@@ -65,18 +66,18 @@ func (en *Engines) SyncRaftWAL() error {
 }
 
 type KVWriteBatch struct {
-	kv      *badger.ShardingDB
-	batches map[uint64]*badger.WriteBatch
+	kv      *sdb.ShardingDB
+	batches map[uint64]*sdb.WriteBatch
 }
 
-func NewKVWriteBatch(kv *badger.ShardingDB) *KVWriteBatch {
+func NewKVWriteBatch(kv *sdb.ShardingDB) *KVWriteBatch {
 	return &KVWriteBatch{
 		kv:      kv,
-		batches: map[uint64]*badger.WriteBatch{},
+		batches: map[uint64]*sdb.WriteBatch{},
 	}
 }
 
-func (kvWB *KVWriteBatch) getEngineWriteBatch(regionID uint64) *badger.WriteBatch {
+func (kvWB *KVWriteBatch) getEngineWriteBatch(regionID uint64) *sdb.WriteBatch {
 	wb, ok := kvWB.batches[regionID]
 	if !ok {
 		wb = kvWB.kv.NewWriteBatch(kvWB.kv.GetShard(regionID))
@@ -126,7 +127,7 @@ func (kvWB *KVWriteBatch) SetApplyState(regionID uint64, state applyState) {
 }
 
 func (kvWB *KVWriteBatch) WriteToEngine() error {
-	batches := make([]*badger.WriteBatch, 0, len(kvWB.batches))
+	batches := make([]*sdb.WriteBatch, 0, len(kvWB.batches))
 	for _, wb := range kvWB.batches {
 		batches = append(batches, wb)
 	}
@@ -134,7 +135,7 @@ func (kvWB *KVWriteBatch) WriteToEngine() error {
 }
 
 func (kvWB *KVWriteBatch) Reset() {
-	kvWB.batches = make(map[uint64]*badger.WriteBatch, len(kvWB.batches))
+	kvWB.batches = make(map[uint64]*sdb.WriteBatch, len(kvWB.batches))
 }
 
 type RaftWriteBatch struct {

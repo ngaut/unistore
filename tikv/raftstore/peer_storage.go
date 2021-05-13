@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"github.com/ngaut/unistore/sdb"
 	"github.com/pingcap/badger/protos"
 	"math"
 	"sync/atomic"
@@ -323,7 +324,7 @@ func initRaftState(raftEngine *badger.DB, region *metapb.Region) (raftState, err
 	return raftState, nil
 }
 
-func initApplyState(kvEngine *badger.ShardingDB, region *metapb.Region) (applyState, error) {
+func initApplyState(kvEngine *sdb.ShardingDB, region *metapb.Region) (applyState, error) {
 	shard := kvEngine.GetShard(region.Id)
 	applyState := applyState{}
 	if shard != nil {
