@@ -1,7 +1,7 @@
 package sdb
 
 import (
-	"github.com/pingcap/badger/protos"
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/s3util"
 	"github.com/pingcap/badger/table/sstable"
 	"github.com/pingcap/badger/y"
@@ -13,13 +13,13 @@ import (
 )
 
 type IngestTree struct {
-	ChangeSet *protos.ShardChangeSet
+	ChangeSet *sdbpb.ChangeSet
 	MaxTS     uint64
 	LocalPath string
 	Passive   bool
 }
 
-func (sdb *ShardingDB) Ingest(ingestTree *IngestTree) error {
+func (sdb *DB) Ingest(ingestTree *IngestTree) error {
 	if shd := sdb.GetShard(ingestTree.ChangeSet.ShardID); shd != nil {
 		return errors.New("shard already exists")
 	}
@@ -46,7 +46,7 @@ func (sdb *ShardingDB) Ingest(ingestTree *IngestTree) error {
 		shard.addEstimatedSize(l0.size)
 	}
 	shard.SetPassive(ingestTree.Passive)
-	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&shardingMemTables{}))
+	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{}))
 	atomic.StorePointer(shard.l0s, unsafe.Pointer(l0s))
 	shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
 		shard.addEstimatedSize(level.totalSize)
@@ -62,8 +62,8 @@ func (sdb *ShardingDB) Ingest(ingestTree *IngestTree) error {
 	return nil
 }
 
-func (sdb *ShardingDB) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*shardL0Tables, [][]*levelHandler, error) {
-	l0s := &shardL0Tables{}
+func (sdb *DB) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*l0Tables, [][]*levelHandler, error) {
+	l0s := &l0Tables{}
 	newHandlers := make([][]*levelHandler, sdb.numCFs)
 	for cf := 0; cf < sdb.numCFs; cf++ {
 		for l := 1; l <= ShardMaxLevel; l++ {
@@ -73,7 +73,7 @@ func (sdb *ShardingDB) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*s
 	}
 	snap := ingestTree.ChangeSet.Snapshot
 	for _, l0Create := range snap.L0Creates {
-		l0Tbl, err := openShardL0Table(sstable.NewFilename(l0Create.ID, sdb.opt.Dir), l0Create.ID)
+		l0Tbl, err := openL0Table(sstable.NewFilename(l0Create.ID, sdb.opt.Dir), l0Create.ID)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -82,7 +82,7 @@ func (sdb *ShardingDB) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*s
 	for _, tblCreate := range snap.TableCreates {
 		handler := newHandlers[tblCreate.CF][tblCreate.Level-1]
 		filename := sstable.NewFilename(tblCreate.ID, sdb.opt.Dir)
-		reader, err := newTableFileWithShardingDB(filename, sdb)
+		reader, err := newTableFile(filename, sdb)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -106,7 +106,7 @@ func (sdb *ShardingDB) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*s
 	return l0s, newHandlers, nil
 }
 
-func (sdb *ShardingDB) loadFiles(ingestTree *IngestTree) error {
+func (sdb *DB) loadFiles(ingestTree *IngestTree) error {
 	snap := ingestTree.ChangeSet.Snapshot
 	bt := s3util.NewBatchTasks()
 	for i := range snap.L0Creates {
@@ -138,7 +138,7 @@ func (sdb *ShardingDB) loadFiles(ingestTree *IngestTree) error {
 	return nil
 }
 
-func (sdb *ShardingDB) loadFileFromS3(id uint64, isL0 bool) error {
+func (sdb *DB) loadFileFromS3(id uint64, isL0 bool) error {
 	localFileName := sstable.NewFilename(id, sdb.opt.Dir)
 	_, err := os.Stat(localFileName)
 	if err == nil {
@@ -161,7 +161,7 @@ func (sdb *ShardingDB) loadFileFromS3(id uint64, isL0 bool) error {
 	return os.Rename(tmpBlockFileName, localFileName)
 }
 
-func (sdb *ShardingDB) loadFileFromLocalPath(localPath string, id uint64, isL0 bool) error {
+func (sdb *DB) loadFileFromLocalPath(localPath string, id uint64, isL0 bool) error {
 	localFileName := sstable.NewFilename(id, localPath)
 	dstFileName := sstable.NewFilename(id, sdb.opt.Dir)
 	err := os.Link(localFileName, dstFileName)

@@ -3,9 +3,9 @@ package sdb
 import (
 	"bytes"
 	"fmt"
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/epoch"
 	"github.com/pingcap/badger/options"
-	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/badger/s3util"
 	"github.com/pingcap/badger/table"
 	"github.com/pingcap/badger/table/sstable"
@@ -281,8 +281,8 @@ func (c *localCompactor) compact(cd *CompactDef, stats *y.CompactionStats, disca
 	return CompactTables(cd, stats, discardStats, c.s3c)
 }
 
-func newTableCreate(tbl table.Table, cf int, level int) *protos.TableCreate {
-	return &protos.TableCreate{
+func newTableCreate(tbl table.Table, cf int, level int) *sdbpb.TableCreate {
+	return &sdbpb.TableCreate{
 		ID:       tbl.ID(),
 		Level:    uint32(level),
 		CF:       int32(cf),
@@ -291,10 +291,10 @@ func newTableCreate(tbl table.Table, cf int, level int) *protos.TableCreate {
 	}
 }
 
-func newTableCreateByResult(result *sstable.BuildResult, cf int, level int) *protos.TableCreate {
+func newTableCreateByResult(result *sstable.BuildResult, cf int, level int) *sdbpb.TableCreate {
 	id, ok := sstable.ParseFileID(result.FileName)
 	y.Assert(ok)
-	return &protos.TableCreate{
+	return &sdbpb.TableCreate{
 		ID:       id,
 		Level:    uint32(level),
 		CF:       int32(cf),
@@ -303,10 +303,10 @@ func newTableCreateByResult(result *sstable.BuildResult, cf int, level int) *pro
 	}
 }
 
-func newL0CreateByResult(result *sstable.BuildResult, props *protos.ShardProperties) *protos.L0Create {
+func newL0CreateByResult(result *sstable.BuildResult, props *sdbpb.Properties) *sdbpb.L0Create {
 	id, ok := sstable.ParseFileID(result.FileName)
 	y.Assert(ok)
-	change := &protos.L0Create{
+	change := &sdbpb.L0Create{
 		ID:         id,
 		Start:      result.Smallest.UserKey,
 		End:        result.Biggest.UserKey,
@@ -325,7 +325,7 @@ func debugTableCount(tbl table.Table) int {
 	return rowCnt
 }
 
-func (sdb *ShardingDB) UpdateMangedSafeTs(ts uint64) {
+func (sdb *DB) UpdateMangedSafeTs(ts uint64) {
 	for {
 		old := atomic.LoadUint64(&sdb.mangedSafeTS)
 		if old < ts {
@@ -337,18 +337,18 @@ func (sdb *ShardingDB) UpdateMangedSafeTs(ts uint64) {
 	}
 }
 
-func (sdb *ShardingDB) getCFSafeTS(cf int) uint64 {
+func (sdb *DB) getCFSafeTS(cf int) uint64 {
 	if sdb.opt.CFs[cf].Managed {
 		return atomic.LoadUint64(&sdb.mangedSafeTS)
 	}
 	return atomic.LoadUint64(&sdb.safeTsTracker.safeTs)
 }
 
-type shardL0BuildHelper struct {
-	db         *ShardingDB
+type l0BuildHelper struct {
+	db         *DB
 	builder    *sstable.Builder
 	shard      *Shard
-	l0Tbls     *shardL0Tables
+	l0Tbls     *l0Tables
 	lastKey    y.Key
 	skipKey    y.Key
 	safeTS     uint64
@@ -357,8 +357,8 @@ type shardL0BuildHelper struct {
 	oldHandler *levelHandler
 }
 
-func newBuildHelper(db *ShardingDB, shard *Shard, l0Tbls *shardL0Tables, cf int) *shardL0BuildHelper {
-	helper := &shardL0BuildHelper{db: db, shard: shard}
+func newBuildHelper(db *DB, shard *Shard, l0Tbls *l0Tables, cf int) *l0BuildHelper {
+	helper := &l0BuildHelper{db: db, shard: shard}
 	if db.opt.CompactionFilterFactory != nil {
 		helper.filter = db.opt.CompactionFilterFactory(1, nil, globalShardEndKey)
 	}
@@ -381,7 +381,7 @@ func newBuildHelper(db *ShardingDB, shard *Shard, l0Tbls *shardL0Tables, cf int)
 	return helper
 }
 
-func (h *shardL0BuildHelper) setFD(fd *os.File) {
+func (h *l0BuildHelper) setFD(fd *os.File) {
 	if h.builder == nil {
 		h.builder = sstable.NewTableBuilder(fd, nil, 1, h.db.opt.TableBuilderOptions)
 	} else {
@@ -389,7 +389,7 @@ func (h *shardL0BuildHelper) setFD(fd *os.File) {
 	}
 }
 
-func (h *shardL0BuildHelper) buildOne() (*sstable.BuildResult, error) {
+func (h *l0BuildHelper) buildOne() (*sstable.BuildResult, error) {
 	filename := sstable.NewFilename(h.db.idAlloc.AllocID(), h.db.opt.Dir)
 	fd, err := y.OpenSyncedFile(filename, false)
 	if err != nil {
@@ -451,9 +451,9 @@ func (h *shardL0BuildHelper) buildOne() (*sstable.BuildResult, error) {
 	return result, nil
 }
 
-func (sdb *ShardingDB) compactShardMultiCFL0(shard *Shard, guard *epoch.Guard) error {
+func (sdb *DB) compactL0(shard *Shard, guard *epoch.Guard) error {
 	l0Tbls := shard.loadL0Tables()
-	comp := &protos.ShardCompaction{}
+	comp := &sdbpb.Compaction{}
 	var toBeDelete []epoch.Resource
 	var shardSizeChange int64
 	for cf := 0; cf < sdb.numCFs; cf++ {
@@ -492,7 +492,7 @@ func (sdb *ShardingDB) compactShardMultiCFL0(shard *Shard, guard *epoch.Guard) e
 			shardSizeChange -= tbl.size
 		}
 	}
-	change := newShardChangeSet(shard)
+	change := newChangeSet(shard)
 	change.Compaction = comp
 	log.S().Infof("shard %d:%d compact L0 top deletes %v", shard.ID, shard.Ver, comp.TopDeletes)
 	if sdb.metaChangeListener != nil {
@@ -502,7 +502,7 @@ func (sdb *ShardingDB) compactShardMultiCFL0(shard *Shard, guard *epoch.Guard) e
 	return sdb.applyCompaction(shard, change, guard)
 }
 
-func (sdb *ShardingDB) runShardInternalCompactionLoop(c *y.Closer) {
+func (sdb *DB) runCompactionLoop(c *y.Closer) {
 	defer c.Done()
 	var priorities []CompactionPriority
 	for {
@@ -513,7 +513,7 @@ func (sdb *ShardingDB) runShardInternalCompactionLoop(c *y.Closer) {
 			pri.Shard.markCompacting(true)
 			wg.Add(1)
 			go func() {
-				err := sdb.CompactShard(pri)
+				err := sdb.Compact(pri)
 				if err != nil {
 					log.Error("compact shard failed", zap.Uint64("shard", pri.Shard.ID), zap.Error(err))
 				}
@@ -540,7 +540,7 @@ type CompactionPriority struct {
 	Shard *Shard
 }
 
-func (sdb *ShardingDB) getCompactionPriority(shard *Shard) CompactionPriority {
+func (sdb *DB) getCompactionPriority(shard *Shard) CompactionPriority {
 	maxPri := CompactionPriority{Shard: shard}
 	l0 := shard.loadL0Tables()
 	if l0 != nil && len(l0.tables) > sdb.opt.NumLevelZeroTables {
@@ -553,7 +553,7 @@ func (sdb *ShardingDB) getCompactionPriority(shard *Shard) CompactionPriority {
 	for i, scf := range shard.cfs {
 		for level := 1; level <= ShardMaxLevel; level++ {
 			h := scf.getLevelHandler(level)
-			score := float64(h.getTotalSize()) / (float64(sdb.opt.LevelOneSize) * math.Pow(10, float64(level-1)))
+			score := float64(h.totalSize) / (float64(sdb.opt.LevelOneSize) * math.Pow(10, float64(level-1)))
 			if score > maxPri.Score {
 				maxPri.Score = score
 				maxPri.CF = i
@@ -564,7 +564,7 @@ func (sdb *ShardingDB) getCompactionPriority(shard *Shard) CompactionPriority {
 	return maxPri
 }
 
-func (sdb *ShardingDB) GetCompactionPriorities(buf []CompactionPriority) []CompactionPriority {
+func (sdb *DB) GetCompactionPriorities(buf []CompactionPriority) []CompactionPriority {
 	results := buf[:0]
 	sdb.shardMap.Range(func(key, value interface{}) bool {
 		shard := value.(*Shard)
@@ -582,7 +582,7 @@ func (sdb *ShardingDB) GetCompactionPriorities(buf []CompactionPriority) []Compa
 	return results
 }
 
-func (sdb *ShardingDB) CompactShard(pri CompactionPriority) error {
+func (sdb *DB) Compact(pri CompactionPriority) error {
 	guard := sdb.resourceMgr.Acquire()
 	defer guard.Done()
 	shard := pri.Shard
@@ -603,7 +603,7 @@ func (sdb *ShardingDB) CompactShard(pri CompactionPriority) error {
 	}
 	if pri.CF == -1 {
 		log.Info("compact shard multi cf", zap.Uint64("shard", shard.ID), zap.Float64("score", pri.Score))
-		err := sdb.compactShardMultiCFL0(shard, guard)
+		err := sdb.compactL0(shard, guard)
 		log.Info("compact shard multi cf done", zap.Uint64("shard", shard.ID), zap.Error(err))
 		return err
 	}
@@ -633,9 +633,9 @@ func (sdb *ShardingDB) CompactShard(pri CompactionPriority) error {
 	return nil
 }
 
-func (sdb *ShardingDB) runCompactionDef(shard *Shard, cf int, cd *CompactDef, guard *epoch.Guard) error {
+func (sdb *DB) runCompactionDef(shard *Shard, cf int, cd *CompactDef, guard *epoch.Guard) error {
 	var newTables []table.Table
-	comp := &protos.ShardCompaction{Cf: int32(cf), Level: uint32(cd.Level)}
+	comp := &sdbpb.Compaction{Cf: int32(cf), Level: uint32(cd.Level)}
 	if cd.moveDown() {
 		// skip level 0, since it may has many table overlap with each other
 		newTables = cd.Top
@@ -656,7 +656,7 @@ func (sdb *ShardingDB) runCompactionDef(shard *Shard, cf int, cd *CompactDef, gu
 			comp.BottomDeletes = append(comp.BottomDeletes, t.ID())
 		}
 	}
-	change := newShardChangeSet(shard)
+	change := newChangeSet(shard)
 	change.Compaction = comp
 	if sdb.metaChangeListener != nil {
 		sdb.metaChangeListener.OnChange(change)
@@ -708,7 +708,7 @@ func assertTablesOrder(level int, tables []table.Table, cd *CompactDef) {
 	}
 }
 
-func (sdb *ShardingDB) replaceTables(old *levelHandler, newTables []table.Table, cd *CompactDef, guard *epoch.Guard) *levelHandler {
+func (sdb *DB) replaceTables(old *levelHandler, newTables []table.Table, cd *CompactDef, guard *epoch.Guard) *levelHandler {
 	newHandler := newLevelHandler(sdb.opt.NumLevelZeroTablesStall, old.level, sdb.metrics)
 	newHandler.totalSize = old.totalSize
 	// Increase totalSize first.
@@ -746,7 +746,7 @@ func containsTable(tables []table.Table, tbl table.Table) bool {
 	return false
 }
 
-func (sdb *ShardingDB) deleteTables(old *levelHandler, toDel []table.Table) *levelHandler {
+func (sdb *DB) deleteTables(old *levelHandler, toDel []table.Table) *levelHandler {
 	newHandler := newLevelHandler(sdb.opt.NumLevelZeroTablesStall, old.level, sdb.metrics)
 	newHandler.totalSize = old.totalSize
 	toDelMap := make(map[uint64]struct{})
@@ -770,7 +770,7 @@ func (sdb *ShardingDB) deleteTables(old *levelHandler, toDel []table.Table) *lev
 	return newHandler
 }
 
-func (sdb *ShardingDB) compactBuildTables(cf int, cd *CompactDef) (newTables []*protos.TableCreate, err error) {
+func (sdb *DB) compactBuildTables(cf int, cd *CompactDef) (newTables []*sdbpb.TableCreate, err error) {
 	err = sdb.prepareCompactionDef(cf, cd)
 	if err != nil {
 		return nil, err
@@ -782,14 +782,14 @@ func (sdb *ShardingDB) compactBuildTables(cf int, cd *CompactDef) (newTables []*
 	if err != nil {
 		return nil, err
 	}
-	newTables = make([]*protos.TableCreate, len(buildResults))
+	newTables = make([]*sdbpb.TableCreate, len(buildResults))
 	for i, buildResult := range buildResults {
 		newTables[i] = newTableCreateByResult(buildResult, cf, cd.Level+1)
 	}
 	return newTables, nil
 }
 
-func (sdb *ShardingDB) prepareCompactionDef(cf int, cd *CompactDef) error {
+func (sdb *DB) prepareCompactionDef(cf int, cd *CompactDef) error {
 	// Pick up the currently pending transactions' min readTs, so we can discard versions below this
 	// readTs. We should never discard any versions starting from above this timestamp, because that
 	// would affect the snapshot view guarantee provided by transactions.
@@ -820,11 +820,11 @@ func (sdb *ShardingDB) prepareCompactionDef(cf int, cd *CompactDef) error {
 	return nil
 }
 
-func (sdb *ShardingDB) openTables(buildResults []*sstable.BuildResult) (newTables []table.Table, err error) {
+func (sdb *DB) openTables(buildResults []*sstable.BuildResult) (newTables []table.Table, err error) {
 	for _, result := range buildResults {
 		var tbl table.Table
 		filename := result.FileName
-		reader, err := newTableFileWithShardingDB(filename, sdb)
+		reader, err := newTableFile(filename, sdb)
 		if err != nil {
 			return nil, err
 		}
@@ -851,7 +851,7 @@ func (sdb *ShardingDB) openTables(buildResults []*sstable.BuildResult) (newTable
 //   - mem-table flush.
 //   - compaction.
 //   - split-files.
-func (sdb *ShardingDB) ApplyChangeSet(changeSet *protos.ShardChangeSet) error {
+func (sdb *DB) ApplyChangeSet(changeSet *sdbpb.ChangeSet) error {
 	guard := sdb.resourceMgr.Acquire()
 	defer guard.Done()
 	shard := sdb.GetShard(changeSet.ShardID)
@@ -870,7 +870,7 @@ func (sdb *ShardingDB) ApplyChangeSet(changeSet *protos.ShardChangeSet) error {
 	return nil
 }
 
-func (sdb *ShardingDB) applyFlush(shard *Shard, changeSet *protos.ShardChangeSet) error {
+func (sdb *DB) applyFlush(shard *Shard, changeSet *sdbpb.ChangeSet) error {
 	flush := changeSet.Flush
 	bt := s3util.NewBatchTasks()
 	newL0 := flush.L0Create
@@ -890,7 +890,7 @@ func (sdb *ShardingDB) applyFlush(shard *Shard, changeSet *protos.ShardChangeSet
 	}
 	if newL0 != nil {
 		filename := sstable.NewFilename(newL0.ID, sdb.opt.Dir)
-		tbl, err := openShardL0Table(filename, newL0.ID)
+		tbl, err := openL0Table(filename, newL0.ID)
 		if err != nil {
 			return err
 		}
@@ -903,7 +903,7 @@ func (sdb *ShardingDB) applyFlush(shard *Shard, changeSet *protos.ShardChangeSet
 	return nil
 }
 
-func (sdb *ShardingDB) applyCompaction(shard *Shard, changeSet *protos.ShardChangeSet, guard *epoch.Guard) error {
+func (sdb *DB) applyCompaction(shard *Shard, changeSet *sdbpb.ChangeSet, guard *epoch.Guard) error {
 	defer shard.markCompacting(false)
 	comp := changeSet.Compaction
 	if sdb.s3c != nil {
@@ -951,8 +951,8 @@ func (sdb *ShardingDB) applyCompaction(shard *Shard, changeSet *protos.ShardChan
 	return nil
 }
 
-func (sdb *ShardingDB) compactionUpdateLevelHandler(shard *Shard, cf, level int,
-	creates []*protos.TableCreate, delIDs []uint64, del *deletions) error {
+func (sdb *DB) compactionUpdateLevelHandler(shard *Shard, cf, level int,
+	creates []*sdbpb.TableCreate, delIDs []uint64, del *deletions) error {
 	oldLevel := shard.cfs[cf].getLevelHandler(level)
 	newLevel := newLevelHandler(sdb.opt.NumLevelZeroTablesStall, level, sdb.metrics)
 	for _, tbl := range creates {
@@ -960,7 +960,7 @@ func (sdb *ShardingDB) compactionUpdateLevelHandler(shard *Shard, cf, level int,
 			continue
 		}
 		filename := sstable.NewFilename(tbl.ID, sdb.opt.Dir)
-		reader, err := newTableFileWithShardingDB(filename, sdb)
+		reader, err := newTableFile(filename, sdb)
 		if err != nil {
 			return err
 		}
@@ -986,8 +986,8 @@ func (sdb *ShardingDB) compactionUpdateLevelHandler(shard *Shard, cf, level int,
 	return nil
 }
 
-func (sdb *ShardingDB) applySplitFiles(shard *Shard, changeSet *protos.ShardChangeSet, guard *epoch.Guard) error {
-	if shard.GetSplitState() != protos.SplitState_PRE_SPLIT_FLUSH_DONE {
+func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *epoch.Guard) error {
+	if shard.GetSplitState() != sdbpb.SplitState_PRE_SPLIT_FLUSH_DONE {
 		log.S().Errorf("wrong split state %s", shard.GetSplitState())
 		return errShardWrongSplittingState
 	}
@@ -1019,11 +1019,11 @@ func (sdb *ShardingDB) applySplitFiles(shard *Shard, changeSet *protos.ShardChan
 		return err
 	}
 	oldL0s := shard.loadL0Tables()
-	newL0Tbls := &shardL0Tables{make([]*shardL0Table, 0, len(oldL0s.tables)*2)}
+	newL0Tbls := &l0Tables{make([]*l0Table, 0, len(oldL0s.tables)*2)}
 	del := &deletions{resources: map[uint64]epoch.Resource{}}
 	for _, l0 := range splitFiles.L0Creates {
 		filename := sstable.NewFilename(l0.ID, sdb.opt.Dir)
-		tbl, err := openShardL0Table(filename, l0.ID)
+		tbl, err := openL0Table(filename, l0.ID)
 		if err != nil {
 			return err
 		}
@@ -1051,7 +1051,7 @@ func (sdb *ShardingDB) applySplitFiles(shard *Shard, changeSet *protos.ShardChan
 			newHandlers[tbl.CF][tbl.Level-1] = newHandler
 		}
 		filename := sstable.NewFilename(tbl.ID, sdb.opt.Dir)
-		reader, err := newTableFileWithShardingDB(filename, sdb)
+		reader, err := newTableFile(filename, sdb)
 		if err != nil {
 			return err
 		}

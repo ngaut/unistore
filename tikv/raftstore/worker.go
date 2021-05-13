@@ -17,8 +17,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"github.com/ngaut/unistore/sdb"
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
-	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"sync"
 	"sync/atomic"
@@ -83,7 +83,7 @@ type regionTask struct {
 	endKey   []byte
 	redoIdx  uint64
 
-	change *protos.ShardChangeSet
+	change *sdbpb.ChangeSet
 	peer   *metapb.Peer
 
 	waitMsg *MsgWaitFollowerSplitFiles
@@ -129,7 +129,7 @@ type pdRegionHeartbeatTask struct {
 
 type pdStoreHeartbeatTask struct {
 	stats    *pdpb.StoreStats
-	engine   *sdb.ShardingDB
+	engine   *sdb.DB
 	path     string
 	capacity uint64
 }
@@ -216,12 +216,12 @@ func newWorker(name string, wg *sync.WaitGroup) *worker {
 }
 
 type splitCheckHandler struct {
-	engine *sdb.ShardingDB
+	engine *sdb.DB
 	router *router
 	config *splitCheckConfig
 }
 
-func newSplitCheckRunner(engine *sdb.ShardingDB, router *router, config *splitCheckConfig) *splitCheckHandler {
+func newSplitCheckRunner(engine *sdb.DB, router *router, config *splitCheckConfig) *splitCheckHandler {
 	runner := &splitCheckHandler{
 		engine: engine,
 		router: router,
@@ -263,7 +263,7 @@ func (r *splitCheckHandler) handle(t task) {
 // 1. execute PreSplit on raft command.
 // 2. Split the engine files.
 // 3. Split the region.
-func splitEngineAndRegion(router *router, engine *sdb.ShardingDB, peer *metapb.Peer, region *metapb.Region, keys [][]byte) (*Callback, error) {
+func splitEngineAndRegion(router *router, engine *sdb.DB, peer *metapb.Peer, region *metapb.Region, keys [][]byte) (*Callback, error) {
 	// Make sure the region doesn't has parent before split.
 	err := preSplitRegion(router, engine, peer, region, keys)
 	if err != nil {
@@ -285,7 +285,7 @@ func splitEngineAndRegion(router *router, engine *sdb.ShardingDB, peer *metapb.P
 	return cb, nil
 }
 
-func preSplitRegion(router *router, engine *sdb.ShardingDB, peer *metapb.Peer, region *metapb.Region, rawKeys [][]byte) error {
+func preSplitRegion(router *router, engine *sdb.DB, peer *metapb.Peer, region *metapb.Region, rawKeys [][]byte) error {
 	shard := engine.GetShard(region.Id)
 	for {
 		if shard.IsInitialFlushed() {
@@ -294,7 +294,7 @@ func preSplitRegion(router *router, engine *sdb.ShardingDB, peer *metapb.Peer, r
 		time.Sleep(time.Second)
 		log.S().Infof("shard %d:%d wait for initial flush", shard.ID, shard.Ver)
 	}
-	if shard.GetSplitState() != protos.SplitState_INITIAL {
+	if shard.GetSplitState() != sdbpb.SplitState_INITIAL {
 		return errors.New("wrong split state " + shard.GetSplitState().String())
 	}
 	header := raftlog.CustomHeader{
@@ -325,7 +325,7 @@ func preSplitRegion(router *router, engine *sdb.ShardingDB, peer *metapb.Peer, r
 	return nil
 }
 
-func splitShardFiles(router *router, engine *sdb.ShardingDB, peer *metapb.Peer, region *metapb.Region) error {
+func splitShardFiles(router *router, engine *sdb.DB, peer *metapb.Peer, region *metapb.Region) error {
 	change, err := engine.SplitShardFiles(region.Id, region.RegionEpoch.Version)
 	if err != nil {
 		return err
@@ -412,7 +412,7 @@ func (s stalePeerInfo) setEndKey(endKey []byte) {
 }
 
 type regionTaskHandler struct {
-	kv     *sdb.ShardingDB
+	kv     *sdb.DB
 	conf   *config.Config
 	router *router
 }
@@ -444,7 +444,7 @@ func (r *regionTaskHandler) handleGen(task *regionTask) {
 		log.S().Errorf("failed to generate snapshot, version not match, expect %d, got %d", shard.Ver, changeSet.ShardVer)
 		task.notifier <- new(eraftpb.Snapshot)
 	}
-	val, ok := badger.GetShardProperty(applyStateKey, changeSet.Snapshot.Properties)
+	val, ok := sdb.GetShardProperty(applyStateKey, changeSet.Snapshot.Properties)
 	y.Assert(ok)
 	var applyState applyState
 	applyState.Unmarshal(val)
@@ -551,7 +551,7 @@ func (r *regionTaskHandler) shutdown() {
 func (r *regionTaskHandler) handleRecoverSplit(region *metapb.Region, peer *metapb.Peer) error {
 	shard := r.kv.GetShard(region.Id)
 	switch shard.GetSplitState() {
-	case protos.SplitState_PRE_SPLIT, protos.SplitState_PRE_SPLIT_FLUSH_DONE:
+	case sdbpb.SplitState_PRE_SPLIT, sdbpb.SplitState_PRE_SPLIT_FLUSH_DONE:
 		err := splitShardFiles(r.router, r.kv, peer, region)
 		if err != nil {
 			return err
@@ -645,7 +645,7 @@ func (r *raftLogGCTaskHandler) handle(t task) {
 }
 
 type compactTaskHandler struct {
-	engine *sdb.ShardingDB
+	engine *sdb.DB
 }
 
 func (r *compactTaskHandler) handle(t task) {

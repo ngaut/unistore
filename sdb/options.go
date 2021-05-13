@@ -17,8 +17,8 @@
 package sdb
 
 import (
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/options"
-	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/badger/s3util"
 )
 
@@ -110,7 +110,7 @@ type IDAllocator interface {
 
 // MetaChangeListener is used to notify the engine user that engine meta has changed.
 type MetaChangeListener interface {
-	OnChange(e *protos.ShardChangeSet)
+	OnChange(e *sdbpb.ChangeSet)
 }
 
 var DefaultOpt = Options{

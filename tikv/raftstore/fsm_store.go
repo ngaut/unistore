@@ -16,7 +16,7 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
-	"github.com/pingcap/badger/protos"
+	"github.com/ngaut/unistore/sdbpb"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -769,7 +769,7 @@ func (d *storeMsgHandler) onGenerateEngineMetaChange(msg Msg) {
 	// GenerateEngineMetaChange message is first sent to store handler to find a region id for this change,
 	// Once we got the region ID, we send it to the router to create a raft log then propose this log, replicate to
 	// followers.
-	e := msg.Data.(*protos.ShardChangeSet)
+	e := msg.Data.(*sdbpb.ChangeSet)
 	err := d.ctx.router.send(e.ShardID, msg)
 	if err != nil {
 		log.S().Errorf("failed to send change event for %d:%d err %v", e.ShardID, e.ShardVer, err)

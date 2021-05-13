@@ -46,7 +46,7 @@ import (
 // MVCCStore is a wrapper of badger.DB to provide MVCC functions.
 type MVCCStore struct {
 	dir       string
-	db        *sdb.ShardingDB
+	db        *sdb.DB
 	dbWriter  mvcc.DBWriter
 	safePoint *SafePoint
 	pdClient  pd.Client
@@ -68,7 +68,7 @@ const (
 )
 
 // NewMVCCStore creates a new MVCCStore
-func NewMVCCStore(conf *config.Config, db *sdb.ShardingDB, dataDir string, safePoint *SafePoint,
+func NewMVCCStore(conf *config.Config, db *sdb.DB, dataDir string, safePoint *SafePoint,
 	writer mvcc.DBWriter, pdClient pd.Client) *MVCCStore {
 	store := &MVCCStore{
 		db:                db,

@@ -14,7 +14,7 @@
 package raftstore
 
 import (
-	"github.com/pingcap/badger/protos"
+	"github.com/ngaut/unistore/sdbpb"
 	"sync"
 	"time"
 
@@ -176,7 +176,7 @@ type MsgWaitFollowerSplitFiles struct {
 }
 
 type MsgApplyChangeSetResult struct {
-	change *protos.ShardChangeSet
+	change *sdbpb.ChangeSet
 	err    error
 }
 

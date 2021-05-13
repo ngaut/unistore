@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/dgryski/go-farm"
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/epoch"
-	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/badger/table"
 	"github.com/pingcap/badger/table/memtable"
 	"github.com/pingcap/badger/y"
@@ -30,7 +30,7 @@ type Shard struct {
 
 	memTbls *unsafe.Pointer
 	l0s     *unsafe.Pointer
-	flushCh chan *shardFlushTask
+	flushCh chan *flushTask
 
 	// split state transition: initial(0) -> pre-split (1) -> pre-split-flush-done (2) -> split-file-done (3)
 	splitState       int32
@@ -42,24 +42,24 @@ type Shard struct {
 	// If the shard is passive, flush mem table and do compaction will ignore this shard.
 	passive int32
 
-	properties     *shardProperties
+	properties     *properties
 	compacting     int32
 	initialFlushed int32
 }
 
-func newShard(props *protos.ShardProperties, ver uint64, start, end []byte, opt Options, metrics *y.MetricsSet) *Shard {
+func newShard(props *sdbpb.Properties, ver uint64, start, end []byte, opt Options, metrics *y.MetricsSet) *Shard {
 	shard := &Shard{
 		ID:         props.ShardID,
 		Ver:        ver,
 		Start:      start,
 		End:        end,
 		cfs:        make([]*shardCF, len(opt.CFs)),
-		properties: newShardProperties().applyPB(props),
+		properties: newProperties().applyPB(props),
 	}
 	shard.memTbls = new(unsafe.Pointer)
-	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&shardingMemTables{}))
+	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{}))
 	shard.l0s = new(unsafe.Pointer)
-	atomic.StorePointer(shard.l0s, unsafe.Pointer(&shardL0Tables{}))
+	atomic.StorePointer(shard.l0s, unsafe.Pointer(&l0Tables{}))
 	for i := 0; i < len(opt.CFs); i++ {
 		sCF := &shardCF{
 			levels: make([]unsafe.Pointer, ShardMaxLevel),
@@ -90,7 +90,7 @@ func newShardForLoading(shardInfo *ShardMeta, opt Options, metrics *y.MetricsSet
 	return shard
 }
 
-func newShardForIngest(changeSet *protos.ShardChangeSet, opt Options, metrics *y.MetricsSet) *Shard {
+func newShardForIngest(changeSet *sdbpb.ChangeSet, opt Options, metrics *y.MetricsSet) *Shard {
 	shardSnap := changeSet.Snapshot
 	shard := newShard(shardSnap.Properties, changeSet.ShardVer, shardSnap.Start, shardSnap.End, opt, metrics)
 	if changeSet.PreSplit != nil {
@@ -130,7 +130,7 @@ func (s *Shard) SetPassive(passive bool) {
 }
 
 func (s *Shard) isSplitting() bool {
-	return atomic.LoadInt32(&s.splitState) >= int32(protos.SplitState_PRE_SPLIT)
+	return atomic.LoadInt32(&s.splitState) >= int32(sdbpb.SplitState_PRE_SPLIT)
 }
 
 func (s *Shard) GetEstimatedSize() int64 {
@@ -142,13 +142,13 @@ func (s *Shard) addEstimatedSize(size int64) int64 {
 }
 
 func (s *Shard) setSplitKeys(keys [][]byte) bool {
-	if s.GetSplitState() == protos.SplitState_INITIAL {
+	if s.GetSplitState() == sdbpb.SplitState_INITIAL {
 		s.splitKeys = keys
 		s.splittingMemTbls = make([]unsafe.Pointer, len(keys)+1)
 		for i := range s.splittingMemTbls {
 			atomic.StorePointer(&s.splittingMemTbls[i], unsafe.Pointer(memtable.NewCFTable(0, len(s.cfs))))
 		}
-		s.setSplitState(protos.SplitState_PRE_SPLIT)
+		s.setSplitState(sdbpb.SplitState_PRE_SPLIT)
 		log.S().Debugf("shard %d:%d pre-split", s.ID, s.Ver)
 		return true
 	}
@@ -219,8 +219,8 @@ func (s *Shard) loadSplittingMemTable(i int) *memtable.CFTable {
 	return (*memtable.CFTable)(atomic.LoadPointer(&s.splittingMemTbls[i]))
 }
 
-func (s *Shard) loadMemTables() *shardingMemTables {
-	return (*shardingMemTables)(atomic.LoadPointer(s.memTbls))
+func (s *Shard) loadMemTables() *memTables {
+	return (*memTables)(atomic.LoadPointer(s.memTbls))
 }
 
 func (s *Shard) loadWritableMemTable() *memtable.CFTable {
@@ -231,8 +231,8 @@ func (s *Shard) loadWritableMemTable() *memtable.CFTable {
 	return nil
 }
 
-func (s *Shard) loadL0Tables() *shardL0Tables {
-	return (*shardL0Tables)(atomic.LoadPointer(s.l0s))
+func (s *Shard) loadL0Tables() *l0Tables {
+	return (*l0Tables)(atomic.LoadPointer(s.l0s))
 }
 
 func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
@@ -263,7 +263,7 @@ func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
 }
 
 func (s *Shard) GetPreSplitKeys() [][]byte {
-	if s.GetSplitState() == protos.SplitState_INITIAL {
+	if s.GetSplitState() == sdbpb.SplitState_INITIAL {
 		return nil
 	}
 	return s.splitKeys
@@ -304,11 +304,11 @@ func (s *Shard) OverlapKey(key []byte) bool {
 	return bytes.Compare(s.Start, key) <= 0 && bytes.Compare(key, s.End) < 0
 }
 
-func (s *Shard) GetSplitState() protos.SplitState {
-	return protos.SplitState(atomic.LoadInt32(&s.splitState))
+func (s *Shard) GetSplitState() sdbpb.SplitState {
+	return sdbpb.SplitState(atomic.LoadInt32(&s.splitState))
 }
 
-func (s *Shard) setSplitState(state protos.SplitState) {
+func (s *Shard) setSplitState(state sdbpb.SplitState) {
 	oldState := s.GetSplitState()
 	if int32(oldState) == int32(state) {
 		return
@@ -396,26 +396,26 @@ func (d *deletions) collect() []epoch.Resource {
 	return resources
 }
 
-type shardProperties struct {
+type properties struct {
 	m map[string][]byte
 }
 
-func newShardProperties() *shardProperties {
-	return &shardProperties{m: map[string][]byte{}}
+func newProperties() *properties {
+	return &properties{m: map[string][]byte{}}
 }
 
-func (sp *shardProperties) set(key string, val []byte) {
+func (sp *properties) set(key string, val []byte) {
 	y.Assert(len(key) < math.MaxUint16 && len(val) < math.MaxUint16)
 	sp.m[key] = val
 }
 
-func (sp *shardProperties) get(key string) ([]byte, bool) {
+func (sp *properties) get(key string) ([]byte, bool) {
 	v, ok := sp.m[key]
 	return v, ok
 }
 
-func (sp *shardProperties) toPB(shardID uint64) *protos.ShardProperties {
-	pbProps := &protos.ShardProperties{
+func (sp *properties) toPB(shardID uint64) *sdbpb.Properties {
+	pbProps := &sdbpb.Properties{
 		ShardID: shardID,
 		Keys:    make([]string, 0, len(sp.m)),
 		Values:  make([][]byte, 0, len(sp.m)),
@@ -427,7 +427,7 @@ func (sp *shardProperties) toPB(shardID uint64) *protos.ShardProperties {
 	return pbProps
 }
 
-func (sp *shardProperties) applyPB(pbProps *protos.ShardProperties) *shardProperties {
+func (sp *properties) applyPB(pbProps *sdbpb.Properties) *properties {
 	if pbProps != nil {
 		for i, key := range pbProps.Keys {
 			sp.m[key] = pbProps.Values[i]
@@ -436,7 +436,7 @@ func (sp *shardProperties) applyPB(pbProps *protos.ShardProperties) *shardProper
 	return sp
 }
 
-func GetShardProperty(key string, props *protos.ShardProperties) ([]byte, bool) {
+func GetShardProperty(key string, props *sdbpb.Properties) ([]byte, bool) {
 	for i, k := range props.Keys {
 		if key == k {
 			return props.Values[i], true
@@ -446,9 +446,6 @@ func GetShardProperty(key string, props *protos.ShardProperties) ([]byte, bool) 
 }
 
 type levelHandler struct {
-	// Guards tables, totalSize.
-	sync.RWMutex
-
 	// For level >= 1, tables are sorted by key ranges, which do not overlap.
 	// For level 0, tables are sorted by time.
 	// For level 0, newest table are at the back. Compact the oldest one first, which is at the front.
@@ -456,18 +453,15 @@ type levelHandler struct {
 	totalSize int64
 
 	// The following are initialized once and const.
-	level        int
-	strLevel     string
-	maxTotalSize int64
-	numL0Stall   int
-	metrics      *y.LevelMetricsSet
+	level      int
+	numL0Stall int
+	metrics    *y.LevelMetricsSet
 }
 
 func newLevelHandler(numL0Stall, level int, metrics *y.MetricsSet) *levelHandler {
 	label := fmt.Sprintf("L%d", level)
 	return &levelHandler{
 		level:      level,
-		strLevel:   label,
 		numL0Stall: numL0Stall,
 		metrics:    metrics.NewLevelMetricsSet(label),
 	}
@@ -492,29 +486,7 @@ func getTablesInRange(tbls []table.Table, start, end y.Key) (int, int) {
 
 // get returns value for a given key or the key after that. If not found, return nil.
 func (s *levelHandler) get(key y.Key, keyHash uint64) y.ValueStruct {
-	tables := s.getTablesForKey(key)
-	return s.getInTables(key, keyHash, tables)
-}
-
-// getTablesForKey acquires a read-lock to access s.tables. It returns a list of tables.
-func (s *levelHandler) getTablesForKey(key y.Key) []table.Table {
-	s.RLock()
-	defer s.RUnlock()
-	tbl := s.getLevelNTable(key)
-	if tbl == nil {
-		return nil
-	}
-	return []table.Table{tbl}
-}
-
-func (s *levelHandler) getInTables(key y.Key, keyHash uint64, tables []table.Table) y.ValueStruct {
-	for _, table := range tables {
-		result := s.getInTable(key, keyHash, table)
-		if result.Valid() {
-			return result
-		}
-	}
-	return y.ValueStruct{}
+	return s.getInTable(key, keyHash, s.getTable(key))
 }
 
 func (s *levelHandler) getInTable(key y.Key, keyHash uint64, table table.Table) y.ValueStruct {
@@ -530,7 +502,7 @@ func (s *levelHandler) getInTable(key y.Key, keyHash uint64, table table.Table) 
 	return result
 }
 
-func (s *levelHandler) getLevelNTable(key y.Key) table.Table {
+func (s *levelHandler) getTable(key y.Key) table.Table {
 	// For level >= 1, we can do a binary search as key range does not overlap.
 	idx := sort.Search(len(s.tables), func(i int) bool {
 		return s.tables[i].Biggest().Compare(key) >= 0
@@ -541,10 +513,4 @@ func (s *levelHandler) getLevelNTable(key y.Key) table.Table {
 	}
 	tbl := s.tables[idx]
 	return tbl
-}
-
-func (s *levelHandler) getTotalSize() int64 {
-	s.RLock()
-	defer s.RUnlock()
-	return s.totalSize
 }

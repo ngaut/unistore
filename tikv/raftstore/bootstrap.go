@@ -16,8 +16,8 @@ package raftstore
 import (
 	"bytes"
 	"github.com/ngaut/unistore/sdb"
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger"
-	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -108,13 +108,13 @@ func writePrepareBootstrap(engines *Engines, region *metapb.Region) error {
 
 func initialIngestTree(regionID, version uint64) *sdb.IngestTree {
 	return &sdb.IngestTree{
-		ChangeSet: &protos.ShardChangeSet{
+		ChangeSet: &sdbpb.ChangeSet{
 			ShardID:  regionID,
 			ShardVer: version,
-			Snapshot: &protos.ShardSnapshot{
+			Snapshot: &sdbpb.Snapshot{
 				Start: nil,
 				End:   []byte{255, 255, 255, 255, 255, 255, 255, 255},
-				Properties: &protos.ShardProperties{
+				Properties: &sdbpb.Properties{
 					ShardID: regionID,
 					Keys:    []string{applyStateKey},
 					Values:  [][]byte{newInitialApplyState().Marshal()},

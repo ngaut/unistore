@@ -16,8 +16,9 @@ package tikv
 import (
 	"bytes"
 	"fmt"
+	"github.com/ngaut/unistore/sdb"
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/ngaut/unistore/tikv/mvcc"
-	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/badger/y"
 	"io/ioutil"
 	"math"
@@ -88,23 +89,22 @@ func CreateTestRaftDB(dbPath, LogPath string) (*badger.DB, error) {
 	return badger.Open(opts)
 }
 
-func CreateTestShardingDB(dbPath string) (*badger.ShardingDB, error) {
-	opts := badger.ShardingDBDefaultOpt
+func CreateTestShardingDB(dbPath string) (*sdb.DB, error) {
+	opts := sdb.DefaultOpt
 	opts.Dir = dbPath
-	opts.ValueDir = dbPath
-	opts.CFs = []badger.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}, {Managed: false}}
-	db, err := badger.OpenShardingDB(opts)
+	opts.CFs = []sdb.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}, {Managed: false}}
+	db, err := sdb.OpenDB(opts)
 	if err != nil {
 		return nil, err
 	}
-	ingestTree := &badger.IngestTree{
-		ChangeSet: &protos.ShardChangeSet{
+	ingestTree := &sdb.IngestTree{
+		ChangeSet: &sdbpb.ChangeSet{
 			ShardID:  1,
 			ShardVer: 1,
-			Snapshot: &protos.ShardSnapshot{
+			Snapshot: &sdbpb.Snapshot{
 				Start:      nil,
 				End:        []byte{255, 255, 255, 255, 255, 255, 255, 255},
-				Properties: &protos.ShardProperties{ShardID: 1},
+				Properties: &sdbpb.Properties{ShardID: 1},
 			},
 		},
 	}

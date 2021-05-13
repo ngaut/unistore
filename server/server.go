@@ -131,7 +131,7 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*
 }
 
 func createShardingDB(subPath string, safePoint *tikv.SafePoint, listener *raftstore.MetaChangeListener,
-	allocator badger.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*sdb.ShardingDB, error) {
+	allocator badger.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*sdb.DB, error) {
 	opts := sdb.DefaultOpt
 	opts.MaxMemTableSize = conf.MaxMemTableSize
 	opts.NumCompactors = conf.NumCompactors
@@ -151,5 +151,5 @@ func createShardingDB(subPath string, safePoint *tikv.SafePoint, listener *rafts
 	}
 	opts.MetaChangeListener = listener
 	opts.RecoverHandler = recoverHandler
-	return sdb.OpenShardingDB(opts)
+	return sdb.OpenDB(opts)
 }

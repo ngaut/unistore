@@ -1,7 +1,7 @@
 package sdb
 
 import (
-	"github.com/pingcap/badger/protos"
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/table/memtable"
 	"github.com/pingcap/badger/table/sstable"
 	"github.com/pingcap/badger/y"
@@ -12,7 +12,7 @@ const (
 	bitDelete byte = 1 << 0 // Set if the key has been deleted.
 )
 
-type shardingMemTables struct {
+type memTables struct {
 	tables []*memtable.CFTable // tables from new to old, the first one is mutable.
 }
 
@@ -32,7 +32,7 @@ type preSplitTask struct {
 
 type finishSplitTask struct {
 	shard     *Shard
-	newProps  []*protos.ShardProperties
+	newProps  []*sdbpb.Properties
 	newShards []*Shard
 }
 
@@ -46,7 +46,7 @@ type triggerFlushTask struct {
 	shard *Shard
 }
 
-func (sdb *ShardingDB) runWriteLoop(closer *y.Closer) {
+func (sdb *DB) runWriteLoop(closer *y.Closer) {
 	defer closer.Done()
 	for {
 		tasks := sdb.collectTasks(closer)
@@ -73,7 +73,7 @@ func (sdb *ShardingDB) runWriteLoop(closer *y.Closer) {
 	}
 }
 
-func (sdb *ShardingDB) collectTasks(c *y.Closer) []engineTask {
+func (sdb *DB) collectTasks(c *y.Closer) []engineTask {
 	var engineTasks []engineTask
 	select {
 	case x := <-sdb.writeCh:
@@ -88,7 +88,7 @@ func (sdb *ShardingDB) collectTasks(c *y.Closer) []engineTask {
 	return engineTasks
 }
 
-func (sdb *ShardingDB) switchMemTable(shard *Shard, minSize int64, commitTS uint64) *memtable.CFTable {
+func (sdb *DB) switchMemTable(shard *Shard, minSize int64, commitTS uint64) *memtable.CFTable {
 	newTableSize := sdb.opt.MaxMemTableSize
 	if newTableSize < minSize {
 		newTableSize = minSize
@@ -108,7 +108,7 @@ func (sdb *ShardingDB) switchMemTable(shard *Shard, minSize int64, commitTS uint
 	return writableMemTbl
 }
 
-func (sdb *ShardingDB) executeWriteTask(eTask engineTask) {
+func (sdb *DB) executeWriteTask(eTask engineTask) {
 	task := eTask.writeTask
 	commitTS := sdb.orc.allocTs()
 	defer func() {
@@ -152,7 +152,7 @@ func (sdb *ShardingDB) executeWriteTask(eTask engineTask) {
 	}
 }
 
-func (sdb *ShardingDB) writeSplitting(batch *WriteBatch, commitTS uint64) uint64 {
+func (sdb *DB) writeSplitting(batch *WriteBatch, commitTS uint64) uint64 {
 	for cf, entries := range batch.entries {
 		if !sdb.opt.CFs[cf].Managed {
 			for _, entry := range entries {
@@ -171,12 +171,12 @@ func (sdb *ShardingDB) writeSplitting(batch *WriteBatch, commitTS uint64) uint64
 	return commitTS
 }
 
-func (sdb *ShardingDB) createL0File(fid uint64) (fd *os.File, err error) {
+func (sdb *DB) createL0File(fid uint64) (fd *os.File, err error) {
 	filename := sstable.NewFilename(fid, sdb.opt.Dir)
 	return y.OpenSyncedFile(filename, false)
 }
 
-func (sdb *ShardingDB) executeGetPropertiesTask(eTask engineTask) {
+func (sdb *DB) executeGetPropertiesTask(eTask engineTask) {
 	task := eTask.getProperties
 	for _, key := range task.keys {
 		val, _ := task.shard.properties.get(key)
@@ -185,19 +185,19 @@ func (sdb *ShardingDB) executeGetPropertiesTask(eTask engineTask) {
 	eTask.notify <- nil
 }
 
-func (sdb *ShardingDB) executeTriggerFlushTask(eTask engineTask) {
+func (sdb *DB) executeTriggerFlushTask(eTask engineTask) {
 	task := eTask.triggerFlush
 	shard := task.shard
 	commitTS := sdb.orc.allocTs()
 	memTbl := sdb.switchMemTable(shard, 0, commitTS)
-	sdb.scheduleFlushTask(shard, memTbl, commitTS, shard.GetSplitState() == protos.SplitState_PRE_SPLIT)
+	sdb.scheduleFlushTask(shard, memTbl, commitTS, shard.GetSplitState() == sdbpb.SplitState_PRE_SPLIT)
 	sdb.orc.doneCommit(commitTS)
 	eTask.notify <- nil
 }
 
-func (sdb *ShardingDB) scheduleFlushTask(shard *Shard, memTbl *memtable.CFTable, commitTS uint64, preSplitFlush bool) {
+func (sdb *DB) scheduleFlushTask(shard *Shard, memTbl *memtable.CFTable, commitTS uint64, preSplitFlush bool) {
 	if !shard.IsPassive() {
-		sdb.flushCh <- &shardFlushTask{
+		sdb.flushCh <- &flushTask{
 			shard:         shard,
 			tbl:           memTbl,
 			preSplitFlush: preSplitFlush,

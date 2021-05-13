@@ -16,6 +16,7 @@ package tikv
 import (
 	"bytes"
 	"encoding/binary"
+	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/zhangjinpeng1987/raft"
 	"strconv"
@@ -275,7 +276,7 @@ func (rm *regionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
 	return lhs.GetConfVer() != rhs.GetConfVer() || lhs.GetVersion() != rhs.GetVersion()
 }
 
-func (rm *regionManager) loadFromLocal(db *badger.ShardingDB, f func(*regionCtx)) error {
+func (rm *regionManager) loadFromLocal(db *sdb.DB, f func(*regionCtx)) error {
 	snap := db.NewSnapshot(db.GetShard(1))
 	defer snap.Discard()
 	item, err := snap.Get(mvcc.RaftCF, y.KeyWithTs(InternalStoreMetaKey, 0))

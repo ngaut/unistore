@@ -2,9 +2,9 @@ package sdb
 
 import (
 	"fmt"
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/cache"
 	"github.com/pingcap/badger/epoch"
-	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/badger/s3util"
 	"github.com/pingcap/badger/table/memtable"
 	"github.com/pingcap/badger/table/sstable"
@@ -20,12 +20,6 @@ import (
 	"time"
 )
 
-var (
-	errShardNotFound            = errors.New("shard not found")
-	errShardNotMatch            = errors.New("shard not match")
-	errShardWrongSplittingState = errors.New("shard wrong splitting state")
-)
-
 type closers struct {
 	updateSize      *y.Closer
 	compactors      *y.Closer
@@ -35,7 +29,7 @@ type closers struct {
 	writes          *y.Closer
 }
 
-type ShardingDB struct {
+type DB struct {
 	opt           Options
 	numCFs        int
 	orc           *oracle
@@ -47,9 +41,9 @@ type ShardingDB struct {
 	safeTsTracker safeTsTracker
 	closers       closers
 	writeCh       chan engineTask
-	flushCh       chan *shardFlushTask
+	flushCh       chan *flushTask
 	metrics       *y.MetricsSet
-	manifest      *ShardingManifest
+	manifest      *Manifest
 	mangedSafeTS  uint64
 	idAlloc       IDAllocator
 	s3c           *s3util.S3Client
@@ -63,8 +57,8 @@ const (
 	lockFile          = "LOCK"
 )
 
-func OpenShardingDB(opt Options) (db *ShardingDB, err error) {
-	log.Info("Open sharding DB")
+func OpenDB(opt Options) (db *DB, err error) {
+	log.Info("Open DB")
 	err = checkOptions(&opt)
 	if err != nil {
 		return nil, err
@@ -79,7 +73,7 @@ func OpenShardingDB(opt Options) (db *ShardingDB, err error) {
 			_ = dirLockGuard.release()
 		}
 	}()
-	manifest, err := OpenShardingManifest(opt.Dir)
+	manifest, err := OpenManifest(opt.Dir)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +89,7 @@ func OpenShardingDB(opt Options) (db *ShardingDB, err error) {
 		return nil, errors.Wrap(err, "failed to create block cache")
 	}
 	metrics := y.NewMetricSet(opt.Dir)
-	db = &ShardingDB{
+	db = &DB{
 		opt:                opt,
 		numCFs:             len(opt.CFs),
 		orc:                orc,
@@ -103,7 +97,7 @@ func OpenShardingDB(opt Options) (db *ShardingDB, err error) {
 		metrics:            metrics,
 		blkCache:           blkCache,
 		idxCache:           idxCache,
-		flushCh:            make(chan *shardFlushTask, opt.NumMemtables),
+		flushCh:            make(chan *flushTask, opt.NumMemtables),
 		writeCh:            make(chan engineTask, kvWriteChCapacity),
 		manifest:           manifest,
 		metaChangeListener: opt.MetaChangeListener,
@@ -127,7 +121,7 @@ func OpenShardingDB(opt Options) (db *ShardingDB, err error) {
 	go db.runWriteLoop(db.closers.writes)
 	if !db.opt.DoNotCompact {
 		db.closers.compactors = y.NewCloser(1)
-		go db.runShardInternalCompactionLoop(db.closers.compactors)
+		go db.runCompactionLoop(db.closers.compactors)
 	}
 	return db, nil
 }
@@ -185,7 +179,7 @@ func createCache(opt Options) (blkCache, idxCache *cache.Cache, err error) {
 	return
 }
 
-func (sdb *ShardingDB) DebugHandler() http.HandlerFunc {
+func (sdb *DB) DebugHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Time %s\n", time.Now().Format(time.RFC3339Nano))
 		fmt.Fprintf(w, "Manifest.shards %s\n", formatInt(len(sdb.manifest.shards)))
@@ -232,7 +226,7 @@ func (sdb *ShardingDB) DebugHandler() http.HandlerFunc {
 				shard := value.(*Shard)
 				memTables := shard.loadMemTables()
 				l0Tables := shard.loadL0Tables()
-				fmt.Fprintf(w, "\tShard ID %d, Version %d, SplitState %s\n", key, shard.Ver, protos.SplitState_name[shard.splitState])
+				fmt.Fprintf(w, "\tShard ID %d, Version %d, SplitState %s\n", key, shard.Ver, sdbpb.SplitState_name[shard.splitState])
 				fmt.Fprintf(w, "\t\tMemTables %d\n", len(memTables.tables))
 				for i, t := range memTables.tables {
 					fmt.Fprintf(w, "\t\t\tMemTable %d, Size %s, Empty %t \n", i, formatInt(int(t.Size())), t.Empty())
@@ -270,7 +264,7 @@ func formatInt(n int) string {
 	return string(buf)
 }
 
-func (sdb *ShardingDB) loadShards() error {
+func (sdb *DB) loadShards() error {
 	log.Info("before load shards")
 	sdb.PrintStructure()
 	for _, mShard := range sdb.manifest.shards {
@@ -313,7 +307,7 @@ func (sdb *ShardingDB) loadShards() error {
 	return nil
 }
 
-func (sdb *ShardingDB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
+func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 	shard := newShardForLoading(shardInfo, sdb.opt, sdb.metrics)
 	for fid := range shardInfo.files {
 		cfLevel, ok := sdb.manifest.globalFiles[fid]
@@ -321,7 +315,7 @@ func (sdb *ShardingDB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 		cf := cfLevel.cf
 		if cf == -1 {
 			filename := sstable.NewFilename(fid, sdb.opt.Dir)
-			sl0Tbl, err := openShardL0Table(filename, fid)
+			sl0Tbl, err := openL0Table(filename, fid)
 			if err != nil {
 				return nil, err
 			}
@@ -334,7 +328,7 @@ func (sdb *ShardingDB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 		scf := shard.cfs[cf]
 		handler := scf.getLevelHandler(int(level))
 		filename := sstable.NewFilename(fid, sdb.opt.Dir)
-		reader, err := newTableFileWithShardingDB(filename, sdb)
+		reader, err := newTableFile(filename, sdb)
 		if err != nil {
 			return nil, err
 		}
@@ -362,7 +356,7 @@ func (sdb *ShardingDB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 	return shard, nil
 }
 
-func newTableFileWithShardingDB(filename string, sdb *ShardingDB) (sstable.TableFile, error) {
+func newTableFile(filename string, sdb *DB) (sstable.TableFile, error) {
 	var reader sstable.TableFile
 	var err error
 	if sdb.blkCache != nil {
@@ -381,7 +375,7 @@ type RecoverHandler interface {
 	// Recover recovers from the shard's state to the state that is stored in the toState property.
 	// So the DB has a chance to execute pre-split command.
 	// If toState is nil, the implementation should recovers to the latest state.
-	Recover(db *ShardingDB, shard *Shard, info *ShardMeta, toState *protos.ShardProperties) error
+	Recover(db *DB, shard *Shard, info *ShardMeta, toState *sdbpb.Properties) error
 }
 
 type localIDAllocator struct {
@@ -392,9 +386,9 @@ func (l *localIDAllocator) AllocID() uint64 {
 	return atomic.AddUint64(&l.latest, 1)
 }
 
-func (sdb *ShardingDB) Close() error {
+func (sdb *DB) Close() error {
 	atomic.StoreUint32(&sdb.closed, 1)
-	log.S().Info("closing ShardingDB")
+	log.S().Info("closing DB")
 	sdb.closers.writes.SignalAndWait()
 	close(sdb.flushCh)
 	sdb.closers.memtable.SignalAndWait()
@@ -405,11 +399,11 @@ func (sdb *ShardingDB) Close() error {
 	return sdb.dirLock.release()
 }
 
-func (sdb *ShardingDB) GetSafeTS() (uint64, uint64, uint64) {
+func (sdb *DB) GetSafeTS() (uint64, uint64, uint64) {
 	return sdb.orc.readTs(), sdb.orc.commitTs(), atomic.LoadUint64(&sdb.safeTsTracker.safeTs)
 }
 
-func (sdb *ShardingDB) PrintStructure() {
+func (sdb *DB) PrintStructure() {
 	var allShards []*Shard
 	sdb.shardMap.Range(func(key, value interface{}) bool {
 		allShards = append(allShards, value.(*Shard))
@@ -491,7 +485,7 @@ type WriteBatch struct {
 	properties    map[string][]byte
 }
 
-func (sdb *ShardingDB) NewWriteBatch(shard *Shard) *WriteBatch {
+func (sdb *DB) NewWriteBatch(shard *Shard) *WriteBatch {
 	return &WriteBatch{
 		shard:      shard,
 		cfConfs:    sdb.opt.CFs,
@@ -570,7 +564,7 @@ func (wb *WriteBatch) Iterate(cf int, fn func(e *memtable.Entry) (more bool)) {
 	}
 }
 
-func (sdb *ShardingDB) Write(wbs ...*WriteBatch) error {
+func (sdb *DB) Write(wbs ...*WriteBatch) error {
 	notifies := make([]chan error, len(wbs))
 	for i, wb := range wbs {
 		notify := make(chan error, 1)
@@ -586,7 +580,7 @@ func (sdb *ShardingDB) Write(wbs ...*WriteBatch) error {
 	return nil
 }
 
-func (sdb *ShardingDB) RecoverWrite(wb *WriteBatch) error {
+func (sdb *DB) RecoverWrite(wb *WriteBatch) error {
 	eTask := engineTask{writeTask: wb, notify: make(chan error, 1)}
 	sdb.executeWriteTask(eTask)
 	return <-eTask.notify
@@ -625,7 +619,7 @@ func (s *Snapshot) Get(cf int, key y.Key) (*Item, error) {
 	item.key.Version = vs.Version
 	item.meta = vs.Meta
 	item.userMeta = vs.UserMeta
-	item.vptr = vs.Value
+	item.val = vs.Value
 	return item, nil
 }
 
@@ -667,7 +661,7 @@ func (s *Snapshot) SetBuffer(buf *memtable.CFTable) {
 	s.buffer = buf
 }
 
-func (sdb *ShardingDB) NewSnapshot(shard *Shard) *Snapshot {
+func (sdb *DB) NewSnapshot(shard *Shard) *Snapshot {
 	readTS := sdb.orc.readTs()
 	guard := sdb.resourceMgr.AcquireWithPayload(readTS)
 	return &Snapshot{
@@ -678,17 +672,17 @@ func (sdb *ShardingDB) NewSnapshot(shard *Shard) *Snapshot {
 	}
 }
 
-func (sdb *ShardingDB) GetReadTS() uint64 {
+func (sdb *DB) GetReadTS() uint64 {
 	return sdb.orc.readTs()
 }
 
-func (sdb *ShardingDB) RemoveShard(shardID uint64, removeFile bool) error {
+func (sdb *DB) RemoveShard(shardID uint64, removeFile bool) error {
 	shardVal, ok := sdb.shardMap.Load(shardID)
 	if !ok {
 		return errors.New("shard not found")
 	}
 	shard := shardVal.(*Shard)
-	change := newShardChangeSet(shard)
+	change := newChangeSet(shard)
 	change.ShardDelete = true
 	err := sdb.manifest.writeChangeSet(change)
 	if err != nil {
@@ -702,7 +696,7 @@ func (sdb *ShardingDB) RemoveShard(shardID uint64, removeFile bool) error {
 	return nil
 }
 
-func (sdb *ShardingDB) GetShard(shardID uint64) *Shard {
+func (sdb *DB) GetShard(shardID uint64) *Shard {
 	shardVal, ok := sdb.shardMap.Load(shardID)
 	if !ok {
 		return nil
@@ -710,7 +704,7 @@ func (sdb *ShardingDB) GetShard(shardID uint64) *Shard {
 	return shardVal.(*Shard)
 }
 
-func (sdb *ShardingDB) GetSplitSuggestion(shardID uint64, splitSize int64) [][]byte {
+func (sdb *DB) GetSplitSuggestion(shardID uint64, splitSize int64) [][]byte {
 	shard := sdb.GetShard(shardID)
 	var keys [][]byte
 	if atomic.LoadInt64(&shard.estimatedSize) > splitSize {
@@ -720,7 +714,7 @@ func (sdb *ShardingDB) GetSplitSuggestion(shardID uint64, splitSize int64) [][]b
 	return keys
 }
 
-func (sdb *ShardingDB) Size() int64 {
+func (sdb *DB) Size() int64 {
 	var size int64
 	var shardCnt int64
 	sdb.shardMap.Range(func(key, value interface{}) bool {
@@ -732,21 +726,21 @@ func (sdb *ShardingDB) Size() int64 {
 	return size + shardCnt
 }
 
-func (sdb *ShardingDB) NumCFs() int {
+func (sdb *DB) NumCFs() int {
 	return sdb.numCFs
 }
 
-func (sdb *ShardingDB) GetOpt() Options {
+func (sdb *DB) GetOpt() Options {
 	return sdb.opt
 }
 
-func (sdb *ShardingDB) GetShardChangeSet(shardID uint64) (*protos.ShardChangeSet, error) {
+func (sdb *DB) GetShardChangeSet(shardID uint64) (*sdbpb.ChangeSet, error) {
 	sdb.manifest.appendLock.Lock()
 	defer sdb.manifest.appendLock.Unlock()
 	return sdb.manifest.toChangeSet(shardID)
 }
 
-func (sdb *ShardingDB) GetProperties(shard *Shard, keys []string) (values [][]byte) {
+func (sdb *DB) GetProperties(shard *Shard, keys []string) (values [][]byte) {
 	notify := make(chan error, 1)
 	task := &getPropertyTask{shard: shard, keys: keys}
 	sdb.writeCh <- engineTask{getProperties: task, notify: notify}
@@ -754,114 +748,9 @@ func (sdb *ShardingDB) GetProperties(shard *Shard, keys []string) (values [][]by
 	return task.values
 }
 
-func (sdb *ShardingDB) TriggerFlush(shard *Shard) {
+func (sdb *DB) TriggerFlush(shard *Shard) {
 	notify := make(chan error, 1)
 	task := &triggerFlushTask{shard: shard}
 	sdb.writeCh <- engineTask{triggerFlush: task, notify: notify}
 	y.Assert(<-notify == nil)
-}
-
-// Item is returned during iteration. Both the Key() and Value() output is only valid until
-// iterator.Next() is called.
-type Item struct {
-	err      error
-	key      y.Key
-	vptr     []byte
-	meta     byte // We need to store meta to know about bitValuePointer.
-	userMeta []byte
-	next     *Item
-}
-
-// String returns a string representation of Item
-func (item *Item) String() string {
-	return fmt.Sprintf("key=%q, version=%d, meta=%x", item.Key(), item.Version(), item.meta)
-}
-
-// Key returns the key.
-//
-// Key is only valid as long as item is valid, or transaction is valid.  If you need to use it
-// outside its validity, please use KeyCopy
-func (item *Item) Key() []byte {
-	return item.key.UserKey
-}
-
-// KeyCopy returns a copy of the key of the item, writing it to dst slice.
-// If nil is passed, or capacity of dst isn't sufficient, a new slice would be allocated and
-// returned.
-func (item *Item) KeyCopy(dst []byte) []byte {
-	return y.SafeCopy(dst, item.key.UserKey)
-}
-
-// Version returns the commit timestamp of the item.
-func (item *Item) Version() uint64 {
-	return item.key.Version
-}
-
-// IsEmpty checks if the value is empty.
-func (item *Item) IsEmpty() bool {
-	return len(item.vptr) == 0
-}
-
-// Value retrieves the value of the item from the value log.
-//
-// This method must be called within a transaction. Calling it outside a
-// transaction is considered undefined behavior. If an iterator is being used,
-// then Item.Value() is defined in the current iteration only, because items are
-// reused.
-//
-// If you need to use a value outside a transaction, please use Item.ValueCopy
-// instead, or copy it yourself. Value might change once discard or commit is called.
-// Use ValueCopy if you want to do a Set after Get.
-func (item *Item) Value() ([]byte, error) {
-	return item.vptr, nil
-}
-
-// ValueSize returns the size of the value without the cost of retrieving the value.
-func (item *Item) ValueSize() int {
-	return len(item.vptr)
-}
-
-// ValueCopy returns a copy of the value of the item from the value log, writing it to dst slice.
-// If nil is passed, or capacity of dst isn't sufficient, a new slice would be allocated and
-// returned. Tip: It might make sense to reuse the returned slice as dst argument for the next call.
-//
-// This function is useful in long running iterate/update transactions to avoid a write deadlock.
-// See Github issue: https://github.com/pingcap/badger/issues/315
-func (item *Item) ValueCopy(dst []byte) ([]byte, error) {
-	buf, err := item.Value()
-	if err != nil {
-		return nil, err
-	}
-	return y.SafeCopy(dst, buf), nil
-}
-
-func (item *Item) hasValue() bool {
-	if item.meta == 0 && item.vptr == nil {
-		// key not found
-		return false
-	}
-	return true
-}
-
-// IsDeleted returns true if item contains deleted or expired value.
-func (item *Item) IsDeleted() bool {
-	return isDeleted(item.meta)
-}
-
-// EstimatedSize returns approximate size of the key-value pair.
-//
-// This can be called while iterating through a store to quickly estimate the
-// size of a range of key-value pairs (without fetching the corresponding
-// values).
-func (item *Item) EstimatedSize() int64 {
-	if !item.hasValue() {
-		return 0
-	}
-	return int64(item.key.Len() + len(item.vptr))
-}
-
-// UserMeta returns the userMeta set by the user. Typically, this byte, optionally set by the user
-// is used to interpret the value.
-func (item *Item) UserMeta() []byte {
-	return item.userMeta
 }

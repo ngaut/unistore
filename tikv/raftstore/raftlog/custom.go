@@ -16,7 +16,7 @@ package raftlog
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/pingcap/badger/protos"
+	"github.com/ngaut/unistore/sdbpb"
 	"unsafe"
 
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
@@ -178,8 +178,8 @@ func (rl *CustomRaftLog) IterateKeysOnly(itFunc func(key []byte)) {
 	}
 }
 
-func (rl *CustomRaftLog) GetShardChangeSet() (*protos.ShardChangeSet, error) {
-	changeSet := new(protos.ShardChangeSet)
+func (rl *CustomRaftLog) GetShardChangeSet() (*sdbpb.ChangeSet, error) {
+	changeSet := new(sdbpb.ChangeSet)
 	err := changeSet.Unmarshal(rl.Data[4+headerSize:])
 	if err != nil {
 		return nil, err
@@ -234,7 +234,7 @@ func (b *CustomBuilder) AppendKeyOnly(key []byte) {
 	b.cnt++
 }
 
-func (b *CustomBuilder) AppendChangeSet(changeSet *protos.ShardChangeSet) {
+func (b *CustomBuilder) AppendChangeSet(changeSet *sdbpb.ChangeSet) {
 	changeSetData, _ := changeSet.Marshal()
 	b.data = append(b.data, changeSetData...)
 }

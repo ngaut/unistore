@@ -18,7 +18,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/ngaut/unistore/sdb"
-	"github.com/pingcap/badger/protos"
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/y"
 	"math"
 	"sync/atomic"
@@ -743,9 +743,9 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 				// The initial flush command for a newly split region is not replicated, need to re-trigger.
 				p.Store().Engines.kv.TriggerFlush(shard)
 			}
-			if shard.GetSplitState() != protos.SplitState_INITIAL {
+			if shard.GetSplitState() != sdbpb.SplitState_INITIAL {
 				// Unfinished split need to be recovered by the new leader.
-				if shard.GetSplitState() == protos.SplitState_PRE_SPLIT && !store.hasOnGoingPreSplitFlush() {
+				if shard.GetSplitState() == sdbpb.SplitState_PRE_SPLIT && !store.hasOnGoingPreSplitFlush() {
 					// The pre-split flush command is not replicated, need to re-trigger.
 					p.Store().Engines.kv.TriggerFlush(shard)
 				}
@@ -1013,7 +1013,7 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans *RaftClient) error {
 		ConfVer: p.Region().RegionEpoch.ConfVer,
 		Version: p.Region().RegionEpoch.Version,
 	}
-	if !p.IsLeader() && p.Store().splitState == protos.SplitState_SPLIT_FILE_DONE {
+	if !p.IsLeader() && p.Store().splitState == sdbpb.SplitState_SPLIT_FILE_DONE {
 		sendMsg.ExtraMsg = &rspb.ExtraMessage{Type: ExtraMessageTypeSplitFilesDone}
 		log.S().Infof("follower %d:%d add extra message split file done", p.regionId, sendMsg.RegionEpoch.Version)
 	}
@@ -1045,7 +1045,7 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans *RaftClient) error {
 	return nil
 }
 
-func (p *Peer) HandleRaftReadyApplyMessages(kv *sdb.ShardingDB, applyMsgs *applyMsgs, ready *raft.Ready) {
+func (p *Peer) HandleRaftReadyApplyMessages(kv *sdb.DB, applyMsgs *applyMsgs, ready *raft.Ready) {
 	// Call `HandleRaftCommittedEntries` directly here may lead to inconsistency.
 	// In some cases, there will be some pending committed entries when applying a
 	// snapshot. If we call `HandleRaftCommittedEntries` directly, these updates
@@ -1132,7 +1132,7 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *sdb.ShardingDB, applyMsgs *apply
 	}
 }
 
-func (p *Peer) ApplyReads(kv *sdb.ShardingDB, ready *raft.Ready) {
+func (p *Peer) ApplyReads(kv *sdb.DB, ready *raft.Ready) {
 	var proposeTime *time.Time
 	if p.readyToHandleRead() {
 		for _, state := range ready.ReadStates {
@@ -1178,7 +1178,7 @@ func (p *Peer) ApplyReads(kv *sdb.ShardingDB, ready *raft.Ready) {
 	}
 }
 
-func (p *Peer) PostApply(kv *sdb.ShardingDB, applyState applyState, merged bool, applyMetrics applyMetrics) bool {
+func (p *Peer) PostApply(kv *sdb.DB, applyState applyState, merged bool, applyMetrics applyMetrics) bool {
 	hasReady := false
 	if p.IsApplyingSnapshot() {
 		panic("should not applying snapshot")
@@ -1238,7 +1238,7 @@ func (p *Peer) PostSplit() {
 // Propose a request.
 //
 // Return true means the request has been proposed successfully.
-func (p *Peer) Propose(kv *sdb.ShardingDB, cfg *Config, cb *Callback, rlog raftlog.RaftLog, errResp *raft_cmdpb.RaftCmdResponse) bool {
+func (p *Peer) Propose(kv *sdb.DB, cfg *Config, cb *Callback, rlog raftlog.RaftLog, errResp *raft_cmdpb.RaftCmdResponse) bool {
 	if p.PendingRemove {
 		return false
 	}
@@ -1426,7 +1426,7 @@ func (p *Peer) readyToTransferLeader(cfg *Config, peer *metapb.Peer) bool {
 	return lastIndex <= status.Progress[peerId].Match+cfg.LeaderTransferMaxLogLag
 }
 
-func (p *Peer) readLocal(kv *sdb.ShardingDB, req *raft_cmdpb.RaftCmdRequest, cb *Callback) {
+func (p *Peer) readLocal(kv *sdb.DB, req *raft_cmdpb.RaftCmdRequest, cb *Callback) {
 	resp := p.handleRead(kv, req, false)
 	cb.Done(resp)
 }
@@ -1699,7 +1699,7 @@ func (p *Peer) ProposeConfChange(cfg *Config, req *raft_cmdpb.RaftCmdRequest) (u
 	return proposeIndex, nil
 }
 
-func (p *Peer) handleRead(kv *sdb.ShardingDB, req *raft_cmdpb.RaftCmdRequest, checkEpoch bool) *raft_cmdpb.RaftCmdResponse {
+func (p *Peer) handleRead(kv *sdb.DB, req *raft_cmdpb.RaftCmdRequest, checkEpoch bool) *raft_cmdpb.RaftCmdResponse {
 	readExecutor := NewReadExecutor(checkEpoch)
 	resp := readExecutor.Execute(req, p.Region())
 	BindRespTerm(resp, p.Term())

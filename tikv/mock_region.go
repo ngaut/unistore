@@ -2,6 +2,7 @@ package tikv
 
 import (
 	"bytes"
+	"github.com/ngaut/unistore/sdb"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -25,8 +26,8 @@ import (
 type MockRegionManager struct {
 	regionManager
 
-	db            *badger.ShardingDB
-	regionShard   *badger.Shard
+	db            *sdb.DB
+	regionShard   *sdb.Shard
 	sortedRegions *btree.BTree
 	stores        map[uint64]*metapb.Store
 	id            uint64
@@ -35,7 +36,7 @@ type MockRegionManager struct {
 	closed        uint32
 }
 
-func NewMockRegionManager(db *badger.ShardingDB, clusterID uint64, opts RegionOptions) (*MockRegionManager, error) {
+func NewMockRegionManager(db *sdb.DB, clusterID uint64, opts RegionOptions) (*MockRegionManager, error) {
 	rm := &MockRegionManager{
 		db:            db,
 		clusterID:     clusterID,

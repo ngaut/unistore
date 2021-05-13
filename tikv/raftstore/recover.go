@@ -2,9 +2,9 @@ package raftstore
 
 import (
 	"github.com/ngaut/unistore/sdb"
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/badger"
-	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -36,7 +36,7 @@ func NewRecoverHandler(raftDB *badger.DB) (*RecoverHandler, error) {
 	}, nil
 }
 
-func (h *RecoverHandler) Recover(db *sdb.ShardingDB, shard *sdb.Shard, meta *sdb.ShardMeta, toState *protos.ShardProperties) error {
+func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMeta, toState *sdbpb.Properties) error {
 	log.S().Infof("recover region:%d ver:%d", shard.ID, shard.Ver)
 	if h.ctx == nil {
 		h.ctx = &applyContext{wb: NewKVWriteBatch(db), engines: &Engines{kv: db, raft: h.raftDB}}
@@ -54,7 +54,7 @@ func (h *RecoverHandler) Recover(db *sdb.ShardingDB, shard *sdb.Shard, meta *sdb
 	lowIdx := fromApplyState.appliedIndex + 1
 	highIdx := committedIdx
 	if toState != nil {
-		val, ok = badger.GetShardProperty(applyStateKey, toState)
+		val, ok = sdb.GetShardProperty(applyStateKey, toState)
 		if !ok {
 			return errors.New("no applyState")
 		}

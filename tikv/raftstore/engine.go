@@ -15,7 +15,7 @@ package raftstore
 
 import (
 	"github.com/ngaut/unistore/sdb"
-	"github.com/pingcap/badger/protos"
+	"github.com/ngaut/unistore/sdbpb"
 	"math"
 	"sync"
 	"time"
@@ -30,14 +30,14 @@ import (
 )
 
 type Engines struct {
-	kv       *sdb.ShardingDB
+	kv       *sdb.DB
 	kvPath   string
 	raft     *badger.DB
 	raftPath string
 	listener *MetaChangeListener
 }
 
-func NewEngines(kvEngine *sdb.ShardingDB, raftEngine *badger.DB, kvPath, raftPath string, listener *MetaChangeListener) *Engines {
+func NewEngines(kvEngine *sdb.DB, raftEngine *badger.DB, kvPath, raftPath string, listener *MetaChangeListener) *Engines {
 	return &Engines{
 		kv:       kvEngine,
 		kvPath:   kvPath,
@@ -66,11 +66,11 @@ func (en *Engines) SyncRaftWAL() error {
 }
 
 type KVWriteBatch struct {
-	kv      *sdb.ShardingDB
+	kv      *sdb.DB
 	batches map[uint64]*sdb.WriteBatch
 }
 
-func NewKVWriteBatch(kv *sdb.ShardingDB) *KVWriteBatch {
+func NewKVWriteBatch(kv *sdb.DB) *KVWriteBatch {
 	return &KVWriteBatch{
 		kv:      kv,
 		batches: map[uint64]*sdb.WriteBatch{},
@@ -279,7 +279,7 @@ func NewMetaChangeListener() *MetaChangeListener {
 }
 
 // OnChange implements the badger.MetaChangeListener interface.
-func (l *MetaChangeListener) OnChange(e *protos.ShardChangeSet) {
+func (l *MetaChangeListener) OnChange(e *sdbpb.ChangeSet) {
 	y.Assert(e.ShardID != 0)
 	msg := NewPeerMsg(MsgTypeGenerateEngineChangeSet, e.ShardID, e)
 	l.mu.Lock()

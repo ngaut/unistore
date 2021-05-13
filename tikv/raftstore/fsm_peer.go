@@ -16,8 +16,9 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"github.com/ngaut/unistore/sdb"
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger"
-	"github.com/pingcap/badger/protos"
 	"time"
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
@@ -204,7 +205,7 @@ func (d *peerMsgHandler) HandleMsgs(msgs ...Msg) {
 			d.startTicker()
 		case MsgTypeNoop:
 		case MsgTypeGenerateEngineChangeSet:
-			d.onGenerateMetaChangeEvent(msg.Data.(*protos.ShardChangeSet))
+			d.onGenerateMetaChangeEvent(msg.Data.(*sdbpb.ChangeSet))
 		case MsgTypeWaitFollowerSplitFiles:
 			d.peer.waitFollowerSplitFiles = msg.Data.(*MsgWaitFollowerSplitFiles)
 		case MsgTypeApplyChangeSetResult:
@@ -338,7 +339,7 @@ func (d *peerMsgHandler) HandleRaftReady(ready *raft.Ready, ic *InvokeContext) {
 		d.onReadyRollbackMerge(0, nil)
 	}
 	if d.peer.waitFollowerSplitFiles != nil {
-		if d.peer.Store().splitState == protos.SplitState_SPLIT_FILE_DONE {
+		if d.peer.Store().splitState == sdbpb.SplitState_SPLIT_FILE_DONE {
 			epochVer := d.region().RegionEpoch.Version
 			matchCnt := 0
 			for _, followerVer := range d.peer.followersSplitFilesDone {
@@ -836,7 +837,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 			d.ctx.raftWB.Set(y.KeyWithTs(RaftStateKey(newRegion), RaftTS), store.raftState.Marshal())
 			// Reset the flush state for derived region.
 			store.initialFlushed = false
-			store.splitState = protos.SplitState_INITIAL
+			store.splitState = sdbpb.SplitState_INITIAL
 			continue
 		}
 
@@ -1466,7 +1467,7 @@ func (d *peerMsgHandler) executeRegionDetail(request *raft_cmdpb.RaftCmdRequest)
 	return resp, nil
 }
 
-func (d *peerMsgHandler) onGenerateMetaChangeEvent(e *protos.ShardChangeSet) {
+func (d *peerMsgHandler) onGenerateMetaChangeEvent(e *sdbpb.ChangeSet) {
 	log.S().Infof("region %d:%d generate meta change event", e.ShardID, e.ShardVer)
 	region := d.region()
 	header := raftlog.CustomHeader{
@@ -1505,7 +1506,7 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 		store.initialFlushed = true
 		l0 := change.Flush.L0Create
 		if l0 != nil && l0.Properties != nil {
-			val, ok := badger.GetShardProperty(applyStateKey, l0.Properties)
+			val, ok := sdb.GetShardProperty(applyStateKey, l0.Properties)
 			y.Assert(ok)
 			var applyState applyState
 			applyState.Unmarshal(val)

@@ -1,8 +1,8 @@
 package sdb
 
 import (
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/fileutil"
-	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/badger/table/memtable"
 	"github.com/pingcap/badger/table/sstable"
 	"github.com/pingcap/badger/y"
@@ -11,19 +11,19 @@ import (
 	"unsafe"
 )
 
-type shardFlushTask struct {
+type flushTask struct {
 	shard         *Shard
 	tbl           *memtable.CFTable
 	preSplitFlush bool
-	properties    *protos.ShardProperties
+	properties    *sdbpb.Properties
 	commitTS      uint64
 
 	finishSplitShards  []*Shard
-	finishSplitMemTbls []*shardingMemTables
-	finishSplitProps   []*protos.ShardProperties
+	finishSplitMemTbls []*memTables
+	finishSplitProps   []*sdbpb.Properties
 }
 
-func (sdb *ShardingDB) runFlushMemTable(c *y.Closer) {
+func (sdb *DB) runFlushMemTable(c *y.Closer) {
 	defer c.Done()
 	for task := range sdb.flushCh {
 		if len(task.finishSplitShards) > 0 {
@@ -33,9 +33,9 @@ func (sdb *ShardingDB) runFlushMemTable(c *y.Closer) {
 			}
 			continue
 		}
-		change := newShardChangeSet(task.shard)
+		change := newChangeSet(task.shard)
 		change.DataVer = task.commitTS
-		change.Flush = &protos.ShardFlush{CommitTS: task.commitTS}
+		change.Flush = &sdbpb.Flush{CommitTS: task.commitTS}
 		if task.tbl != nil {
 			l0Table, err := sdb.flushMemTable(task.shard, task.tbl, task.properties)
 			if err != nil {
@@ -45,7 +45,7 @@ func (sdb *ShardingDB) runFlushMemTable(c *y.Closer) {
 			change.Flush.L0Create = l0Table
 		}
 		if task.preSplitFlush {
-			change.State = protos.SplitState_PRE_SPLIT_FLUSH_DONE
+			change.State = sdbpb.SplitState_PRE_SPLIT_FLUSH_DONE
 		}
 		if sdb.metaChangeListener != nil {
 			sdb.metaChangeListener.OnChange(change)
@@ -58,14 +58,14 @@ func (sdb *ShardingDB) runFlushMemTable(c *y.Closer) {
 	}
 }
 
-func (sdb *ShardingDB) flushFinishSplit(task *shardFlushTask) error {
+func (sdb *DB) flushFinishSplit(task *flushTask) error {
 	log.S().Info("flush finish split")
 	if atomic.LoadUint32(&sdb.closed) == 1 {
 		return nil
 	}
 	for idx, memTbls := range task.finishSplitMemTbls {
-		flushChangeSet := newShardChangeSet(task.finishSplitShards[idx])
-		flushChangeSet.Flush = &protos.ShardFlush{CommitTS: task.commitTS}
+		flushChangeSet := newChangeSet(task.finishSplitShards[idx])
+		flushChangeSet.Flush = &sdbpb.Flush{CommitTS: task.commitTS}
 		y.Assert(len(memTbls.tables) <= 1)
 		if len(memTbls.tables) == 1 {
 			memTbl := memTbls.tables[0]
@@ -89,7 +89,7 @@ func (sdb *ShardingDB) flushFinishSplit(task *shardFlushTask) error {
 	return nil
 }
 
-func (sdb *ShardingDB) flushMemTable(shard *Shard, m *memtable.CFTable, props *protos.ShardProperties) (*protos.L0Create, error) {
+func (sdb *DB) flushMemTable(shard *Shard, m *memtable.CFTable, props *sdbpb.Properties) (*sdbpb.L0Create, error) {
 	y.Assert(sdb.idAlloc != nil)
 	id := sdb.idAlloc.AllocID()
 	log.S().Infof("flush memtable id:%d, size:%d", id, m.Size())
@@ -98,7 +98,7 @@ func (sdb *ShardingDB) flushMemTable(shard *Shard, m *memtable.CFTable, props *p
 		return nil, err
 	}
 	writer := fileutil.NewBufferedWriter(fd, sdb.opt.TableBuilderOptions.WriteBufferSize, nil)
-	builder := newShardL0Builder(sdb.numCFs, sdb.opt.TableBuilderOptions, m.GetVersion())
+	builder := newL0Builder(sdb.numCFs, sdb.opt.TableBuilderOptions, m.GetVersion())
 	for cf := 0; cf < sdb.numCFs; cf++ {
 		it := m.NewIterator(cf, false)
 		if it == nil {
@@ -137,8 +137,8 @@ func (sdb *ShardingDB) flushMemTable(shard *Shard, m *memtable.CFTable, props *p
 
 func atomicAddMemTable(pointer *unsafe.Pointer, memTbl *memtable.CFTable) {
 	for {
-		oldMemTbls := (*shardingMemTables)(atomic.LoadPointer(pointer))
-		newMemTbls := &shardingMemTables{make([]*memtable.CFTable, 0, len(oldMemTbls.tables)+1)}
+		oldMemTbls := (*memTables)(atomic.LoadPointer(pointer))
+		newMemTbls := &memTables{make([]*memtable.CFTable, 0, len(oldMemTbls.tables)+1)}
 		newMemTbls.tables = append(newMemTbls.tables, memTbl)
 		newMemTbls.tables = append(newMemTbls.tables, oldMemTbls.tables...)
 		if atomic.CompareAndSwapPointer(pointer, unsafe.Pointer(oldMemTbls), unsafe.Pointer(newMemTbls)) {
@@ -152,13 +152,13 @@ func atomicRemoveMemTable(pointer *unsafe.Pointer, cnt int) {
 		return
 	}
 	for {
-		oldMemTbls := (*shardingMemTables)(atomic.LoadPointer(pointer))
+		oldMemTbls := (*memTables)(atomic.LoadPointer(pointer))
 		// When we recover flush, the mem-table is empty, newLen maybe negative.
 		newLen := len(oldMemTbls.tables) - cnt
 		if newLen < 0 {
 			newLen = 0
 		}
-		newMemTbls := &shardingMemTables{make([]*memtable.CFTable, newLen)}
+		newMemTbls := &memTables{make([]*memtable.CFTable, newLen)}
 		copy(newMemTbls.tables, oldMemTbls.tables)
 		if atomic.CompareAndSwapPointer(pointer, unsafe.Pointer(oldMemTbls), unsafe.Pointer(newMemTbls)) {
 			break
@@ -166,14 +166,14 @@ func atomicRemoveMemTable(pointer *unsafe.Pointer, cnt int) {
 	}
 }
 
-func atomicAddL0(shard *Shard, l0Tbls ...*shardL0Table) {
+func atomicAddL0(shard *Shard, l0Tbls ...*l0Table) {
 	if len(l0Tbls) == 0 {
 		return
 	}
 	pointer := shard.l0s
 	for {
-		oldL0Tbls := (*shardL0Tables)(atomic.LoadPointer(pointer))
-		newL0Tbls := &shardL0Tables{make([]*shardL0Table, 0, len(oldL0Tbls.tables)+1)}
+		oldL0Tbls := (*l0Tables)(atomic.LoadPointer(pointer))
+		newL0Tbls := &l0Tables{make([]*l0Table, 0, len(oldL0Tbls.tables)+1)}
 		newL0Tbls.tables = append(newL0Tbls.tables, l0Tbls...)
 		newL0Tbls.tables = append(newL0Tbls.tables, oldL0Tbls.tables...)
 		if atomic.CompareAndSwapPointer(pointer, unsafe.Pointer(oldL0Tbls), unsafe.Pointer(newL0Tbls)) {
@@ -187,11 +187,11 @@ func atomicRemoveL0(shard *Shard, cnt int) int64 {
 	pointer := shard.l0s
 	for {
 		var size int64
-		oldL0Tbls := (*shardL0Tables)(atomic.LoadPointer(pointer))
+		oldL0Tbls := (*l0Tables)(atomic.LoadPointer(pointer))
 		for i := len(oldL0Tbls.tables) - cnt; i < len(oldL0Tbls.tables); i++ {
 			size += oldL0Tbls.tables[i].size
 		}
-		newL0Tbls := &shardL0Tables{make([]*shardL0Table, len(oldL0Tbls.tables)-cnt)}
+		newL0Tbls := &l0Tables{make([]*l0Table, len(oldL0Tbls.tables)-cnt)}
 		copy(newL0Tbls.tables, oldL0Tbls.tables)
 		if atomic.CompareAndSwapPointer(pointer, unsafe.Pointer(oldL0Tbls), unsafe.Pointer(newL0Tbls)) {
 			log.S().Infof("shard %d:%d atomic removed %d l0s", shard.ID, shard.Ver, cnt)

@@ -18,7 +18,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/ngaut/unistore/sdb"
-	"github.com/pingcap/badger/protos"
+	"github.com/ngaut/unistore/sdbpb"
 	"math"
 	"sync/atomic"
 	"time"
@@ -228,8 +228,8 @@ type PeerStorage struct {
 	// stableApplyState is the applyState that is persisted to L0 file.
 	stableApplyState applyState
 
-	applyingChanges []*protos.ShardChangeSet
-	splitState      protos.SplitState
+	applyingChanges []*sdbpb.ChangeSet
+	splitState      sdbpb.SplitState
 	initialFlushed  bool
 
 	Tag string
@@ -254,7 +254,7 @@ func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- 
 		return nil, err
 	}
 	var initialFlushed bool
-	splitState := protos.SplitState_INITIAL
+	splitState := sdbpb.SplitState_INITIAL
 	if shard := engines.kv.GetShard(region.Id); shard != nil {
 		initialFlushed = shard.IsInitialFlushed()
 		splitState = shard.GetSplitState()
@@ -324,7 +324,7 @@ func initRaftState(raftEngine *badger.DB, region *metapb.Region) (raftState, err
 	return raftState, nil
 }
 
-func initApplyState(kvEngine *sdb.ShardingDB, region *metapb.Region) (applyState, error) {
+func initApplyState(kvEngine *sdb.DB, region *metapb.Region) (applyState, error) {
 	shard := kvEngine.GetShard(region.Id)
 	applyState := applyState{}
 	if shard != nil {
@@ -901,7 +901,7 @@ func (ps *PeerStorage) hasOnGoingFlush() bool {
 func (ps *PeerStorage) hasOnGoingPreSplitFlush() bool {
 	for _, change := range ps.applyingChanges {
 		if change.Flush != nil {
-			if change.State == protos.SplitState_PRE_SPLIT_FLUSH_DONE {
+			if change.State == sdbpb.SplitState_PRE_SPLIT_FLUSH_DONE {
 				return true
 			}
 		}
@@ -929,7 +929,7 @@ func (p *PeerStorage) CheckApplyingSnap() bool {
 
 type snapData struct {
 	region    *metapb.Region
-	changeSet *protos.ShardChangeSet
+	changeSet *sdbpb.ChangeSet
 	maxReadTS uint64
 }
 
@@ -950,7 +950,7 @@ func (sd *snapData) Unmarshal(data []byte) error {
 	if err != nil {
 		return err
 	}
-	sd.changeSet = new(protos.ShardChangeSet)
+	sd.changeSet = new(sdbpb.ChangeSet)
 	element, data = cutSlices(data)
 	err = sd.changeSet.Unmarshal(element)
 	if err != nil {

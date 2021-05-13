@@ -12,7 +12,7 @@ import (
 	"os"
 )
 
-type shardL0Table struct {
+type l0Table struct {
 	cfs      []*sstable.Table
 	fid      uint64
 	filename string
@@ -20,11 +20,11 @@ type shardL0Table struct {
 	commitTS uint64
 }
 
-func (st *shardL0Table) Delete() error {
+func (st *l0Table) Delete() error {
 	return os.Remove(st.filename)
 }
 
-func (st *shardL0Table) getSplitIndex(splitKeys [][]byte) int {
+func (st *l0Table) getSplitIndex(splitKeys [][]byte) int {
 	for _, cf := range st.cfs {
 		if cf != nil {
 			return getSplitShardIndex(splitKeys, cf.Smallest().UserKey)
@@ -33,12 +33,12 @@ func (st *shardL0Table) getSplitIndex(splitKeys [][]byte) int {
 	return 0
 }
 
-func openShardL0Table(filename string, fid uint64) (*shardL0Table, error) {
+func openL0Table(filename string, fid uint64) (*l0Table, error) {
 	shardData, err := ioutil.ReadFile(filename)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	l0 := &shardL0Table{
+	l0 := &l0Table{
 		fid:      fid,
 		filename: filename,
 		size:     int64(len(shardData)),
@@ -71,7 +71,7 @@ func openShardL0Table(filename string, fid uint64) (*shardL0Table, error) {
 	return l0, nil
 }
 
-func (sl0 *shardL0Table) Get(cf int, key y.Key, keyHash uint64) y.ValueStruct {
+func (sl0 *l0Table) Get(cf int, key y.Key, keyHash uint64) y.ValueStruct {
 	tbl := sl0.cfs[cf]
 	if tbl == nil {
 		return y.ValueStruct{}
@@ -84,7 +84,7 @@ func (sl0 *shardL0Table) Get(cf int, key y.Key, keyHash uint64) y.ValueStruct {
 	return v
 }
 
-func (sl0 *shardL0Table) newIterator(cf int, reverse bool) y.Iterator {
+func (sl0 *l0Table) newIterator(cf int, reverse bool) y.Iterator {
 	tbl := sl0.cfs[cf]
 	if tbl == nil {
 		return nil
@@ -92,11 +92,11 @@ func (sl0 *shardL0Table) newIterator(cf int, reverse bool) y.Iterator {
 	return tbl.NewIterator(reverse)
 }
 
-type shardL0Tables struct {
-	tables []*shardL0Table
+type l0Tables struct {
+	tables []*l0Table
 }
 
-func (sl0s *shardL0Tables) totalSize() int64 {
+func (sl0s *l0Tables) totalSize() int64 {
 	var size int64
 	for _, tbl := range sl0s.tables {
 		size += tbl.size
@@ -104,13 +104,13 @@ func (sl0s *shardL0Tables) totalSize() int64 {
 	return size
 }
 
-type shardL0Builder struct {
+type l0Builder struct {
 	builders []*sstable.Builder
 	commitTS uint64
 }
 
-func newShardL0Builder(numCFs int, opt options.TableBuilderOptions, commitTS uint64) *shardL0Builder {
-	sdb := &shardL0Builder{
+func newL0Builder(numCFs int, opt options.TableBuilderOptions, commitTS uint64) *l0Builder {
+	sdb := &l0Builder{
 		builders: make([]*sstable.Builder, numCFs),
 		commitTS: commitTS,
 	}
@@ -120,15 +120,15 @@ func newShardL0Builder(numCFs int, opt options.TableBuilderOptions, commitTS uin
 	return sdb
 }
 
-func (e *shardL0Builder) Add(cf int, key y.Key, value y.ValueStruct) {
+func (e *l0Builder) Add(cf int, key y.Key, value y.ValueStruct) {
 	e.builders[cf].Add(key, value)
 }
 
 /*
-shard Data format:
+ L0 Data format:
  | CF0 Data | CF0 index | CF1 Data | CF1 index | cfs index | numCF |
 */
-func (e *shardL0Builder) Finish() []byte {
+func (e *l0Builder) Finish() []byte {
 	cfDatas := make([][]byte, 0, len(e.builders)*2)
 	cfsIndex := make([]byte, len(e.builders)*8)
 	var fileSize int

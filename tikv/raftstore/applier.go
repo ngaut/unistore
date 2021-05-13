@@ -16,8 +16,8 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger"
-	"github.com/pingcap/badger/protos"
 	"go.uber.org/zap"
 	"time"
 
@@ -1042,9 +1042,9 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 		return
 	}
 	a.applyState.appliedIndex = aCtx.execCtx.index
-	newShardProps := make([]*protos.ShardProperties, len(regions))
+	newShardProps := make([]*sdbpb.Properties, len(regions))
 	for i := 0; i < len(regions); i++ {
-		props := new(protos.ShardProperties)
+		props := new(sdbpb.Properties)
 		props.ShardID = regions[i].Id
 		props.Keys = append(props.Keys, applyStateKey)
 		if regions[i].Id == a.region.Id {
