@@ -3,6 +3,7 @@ module github.com/ngaut/unistore
 require (
 	github.com/BurntSushi/toml v0.3.1
 	github.com/arl/statsviz v0.4.0
+	github.com/aws/aws-sdk-go v1.34.22 // indirect
 	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2
 	github.com/gogo/protobuf v1.3.1

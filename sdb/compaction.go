@@ -3,10 +3,10 @@ package sdb
 import (
 	"bytes"
 	"fmt"
+	"github.com/ngaut/unistore/s3util"
 	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/epoch"
 	"github.com/pingcap/badger/options"
-	"github.com/pingcap/badger/s3util"
 	"github.com/pingcap/badger/table"
 	"github.com/pingcap/badger/table/sstable"
 	"github.com/pingcap/badger/y"

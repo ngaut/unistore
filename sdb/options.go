@@ -17,9 +17,9 @@
 package sdb
 
 import (
+	"github.com/ngaut/unistore/s3util"
 	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/options"
-	"github.com/pingcap/badger/s3util"
 )
 
 // NOTE: Keep the comments in the following to 75 chars width, so they
