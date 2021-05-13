@@ -38,7 +38,7 @@ func New(conf *config.Config, pdClient pd.Client) (*tikv.Server, error) {
 	allocator := &idAllocator{
 		pdCli: pdClient,
 	}
-	raftDB, err := createDB(subPathRaft, nil, &conf.Engine)
+	raftDB, err := createRaftDB(subPathRaft, &conf.Engine)
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
@@ -47,7 +47,7 @@ func New(conf *config.Config, pdClient pd.Client) (*tikv.Server, error) {
 		return nil, errors.AddStack(err)
 	}
 	safePoint := &tikv.SafePoint{}
-	db, err := createShardingDB(subPathKV, safePoint, listener, allocator, recoverHandler, &conf.Engine)
+	db, err := createKVDB(subPathKV, safePoint, listener, allocator, recoverHandler, &conf.Engine)
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
@@ -94,7 +94,7 @@ func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	raftConf.SplitCheck.RegionMaxSize = uint64(conf.Server.RegionSize)
 }
 
-func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*badger.DB, error) {
+func createRaftDB(subPath string, conf *config.Engine) (*badger.DB, error) {
 	opts := badger.DefaultOptions
 	opts.NumCompactors = conf.NumCompactors
 	opts.ValueThreshold = conf.ValueThreshold
@@ -130,12 +130,12 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*
 	return badger.Open(opts)
 }
 
-func createShardingDB(subPath string, safePoint *tikv.SafePoint, listener *raftstore.MetaChangeListener,
+func createKVDB(subPath string, safePoint *tikv.SafePoint, listener *raftstore.MetaChangeListener,
 	allocator badger.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*sdb.DB, error) {
 	opts := sdb.DefaultOpt
 	opts.MaxMemTableSize = conf.MaxMemTableSize
 	opts.NumCompactors = conf.NumCompactors
-	opts.CFs = []sdb.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}}
+	opts.CFs = []sdb.CFConfig{{Managed: true}, {Managed: false, ReadCommitted: true}, {Managed: true}}
 	opts.S3Options.InstanceID = conf.S3.InstanceID
 	opts.S3Options.EndPoint = conf.S3.Endpoint
 	opts.S3Options.SecretKey = conf.S3.SecretKey

@@ -1520,17 +1520,14 @@ const (
 // Since we use txn ts as badger version, we only need to filter Delete, Rollback and Op_Lock.
 // It is called for the first valid version before safe point, older versions are discarded automatically.
 func (f *GCCompactionFilter) Filter(cf int, key, value, userMeta []byte) sdb.Decision {
-	if len(userMeta) != 16 {
-		return sdb.DecisionKeep
-	}
-	switch key[0] {
-	case metaPrefix, tablePrefix:
-		// For latest version, we need to remove `delete` key, which has value len 0.
+	switch cf {
+	case writeCF:
 		if mvcc.DBUserMeta(userMeta).CommitTS() < f.safePoint && len(value) == 0 {
 			return sdb.DecisionMarkTombstone
 		}
-	case metaExtraPrefix, tableExtraPrefix:
-		// For latest version, we can only remove `delete` key, which has value len 0.
+	case lockCF:
+		return sdb.DecisionKeep
+	case extraCF:
 		if mvcc.DBUserMeta(userMeta).StartTS() < f.safePoint {
 			return sdb.DecisionDrop
 		}

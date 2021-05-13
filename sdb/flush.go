@@ -92,7 +92,6 @@ func (sdb *DB) flushFinishSplit(task *flushTask) error {
 func (sdb *DB) flushMemTable(shard *Shard, m *memtable.CFTable, props *sdbpb.Properties) (*sdbpb.L0Create, error) {
 	y.Assert(sdb.idAlloc != nil)
 	id := sdb.idAlloc.AllocID()
-	log.S().Infof("flush memtable id:%d, size:%d", id, m.Size())
 	fd, err := sdb.createL0File(id)
 	if err != nil {
 		return nil, err
@@ -104,12 +103,22 @@ func (sdb *DB) flushMemTable(shard *Shard, m *memtable.CFTable, props *sdbpb.Pro
 		if it == nil {
 			continue
 		}
+		rc := sdb.opt.CFs[cf].ReadCommitted
+		var prevKey y.Key
 		for it.Rewind(); it.Valid(); y.NextAllVersion(it) {
+			if rc && prevKey.SameUserKey(it.Key()) {
+				// For read committed CF, we can discard all the old versions.
+				continue
+			}
 			builder.Add(cf, it.Key(), it.Value())
+			if rc {
+				prevKey.Copy(it.Key())
+			}
 		}
 		it.Close()
 	}
 	shardL0Data := builder.Finish()
+	log.S().Infof("flush memtable id:%d, size:%d, l0 size: %d", id, m.Size(), len(shardL0Data))
 	_, err = writer.Write(shardL0Data)
 	if err != nil {
 		return nil, err
