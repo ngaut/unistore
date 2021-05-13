@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/protos"
@@ -35,7 +36,7 @@ func NewRecoverHandler(raftDB *badger.DB) (*RecoverHandler, error) {
 	}, nil
 }
 
-func (h *RecoverHandler) Recover(db *badger.ShardingDB, shard *badger.Shard, meta *badger.ShardMeta, toState *protos.ShardProperties) error {
+func (h *RecoverHandler) Recover(db *sdb.ShardingDB, shard *sdb.Shard, meta *sdb.ShardMeta, toState *protos.ShardProperties) error {
 	log.S().Infof("recover region:%d ver:%d", shard.ID, shard.Ver)
 	if h.ctx == nil {
 		h.ctx = &applyContext{wb: NewKVWriteBatch(db), engines: &Engines{kv: db, raft: h.raftDB}}

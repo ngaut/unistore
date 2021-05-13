@@ -28,8 +28,8 @@ package dbreader
 
 import (
 	"bytes"
+	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/tikv/mvcc"
-	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -37,7 +37,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func NewDBReader(startKey, endKey []byte, snap *badger.Snapshot) *DBReader {
+func NewDBReader(startKey, endKey []byte, snap *sdb.Snapshot) *DBReader {
 	return &DBReader{
 		StartKey: startKey,
 		EndKey:   endKey,
@@ -55,11 +55,11 @@ const (
 type DBReader struct {
 	StartKey  []byte
 	EndKey    []byte
-	snap      *badger.Snapshot
-	iter      *badger.Iterator
-	lockIter  *badger.Iterator
-	extraIter *badger.Iterator
-	revIter   *badger.Iterator
+	snap      *sdb.Snapshot
+	iter      *sdb.Iterator
+	lockIter  *sdb.Iterator
+	extraIter *sdb.Iterator
+	revIter   *sdb.Iterator
 }
 
 // GetMvccInfoByKey fills MvccInfo reading committed keys from db
@@ -95,7 +95,7 @@ func (r *DBReader) GetMvccInfoByKey(key []byte, isRowKey bool, mvccInfo *kvrpcpb
 
 func (r *DBReader) Get(key []byte, startTS uint64) ([]byte, error) {
 	item, err := r.snap.Get(writeCF, y.KeyWithTs(key, startTS))
-	if err != nil && err != badger.ErrKeyNotFound {
+	if err != nil && err != sdb.ErrKeyNotFound {
 		return nil, errors.Trace(err)
 	}
 	if item == nil {
@@ -104,7 +104,7 @@ func (r *DBReader) Get(key []byte, startTS uint64) ([]byte, error) {
 	return item.Value()
 }
 
-func (r *DBReader) GetIter() *badger.Iterator {
+func (r *DBReader) GetIter() *sdb.Iterator {
 	if r.iter == nil {
 		r.iter = r.snap.NewIterator(writeCF, false, false)
 	}
@@ -113,7 +113,7 @@ func (r *DBReader) GetIter() *badger.Iterator {
 
 func (r *DBReader) GetLock(key []byte, buf []byte) []byte {
 	item, err := r.snap.Get(lockCF, y.KeyWithTs(key, 0))
-	if err != nil && err != badger.ErrKeyNotFound {
+	if err != nil && err != sdb.ErrKeyNotFound {
 		log.Error("get lock failed", zap.Error(err))
 		return nil
 	}
@@ -124,21 +124,21 @@ func (r *DBReader) GetLock(key []byte, buf []byte) []byte {
 	return append(buf[:0], val...)
 }
 
-func (r *DBReader) GetLockIter() *badger.Iterator {
+func (r *DBReader) GetLockIter() *sdb.Iterator {
 	if r.lockIter == nil {
 		r.lockIter = r.snap.NewIterator(lockCF, false, false)
 	}
 	return r.lockIter
 }
 
-func (r *DBReader) GetExtraIter() *badger.Iterator {
+func (r *DBReader) GetExtraIter() *sdb.Iterator {
 	if r.extraIter == nil {
 		r.extraIter = r.snap.NewIterator(extraCF, false, false)
 	}
 	return r.extraIter
 }
 
-func (r *DBReader) getReverseIter() *badger.Iterator {
+func (r *DBReader) getReverseIter() *sdb.Iterator {
 	if r.revIter == nil {
 		r.revIter = r.snap.NewIterator(writeCF, true, false)
 	}
@@ -154,7 +154,7 @@ func (r *DBReader) BatchGet(keys [][]byte, startTS uint64, f BatchGetFunc) {
 			val, _ := item.Value()
 			f(key, val, nil)
 		} else {
-			f(key, nil, badger.ErrKeyNotFound)
+			f(key, nil, sdb.ErrKeyNotFound)
 		}
 	}
 	return
@@ -278,7 +278,7 @@ func (r *DBReader) ReverseScan(startKey, endKey []byte, limit int, startTS uint6
 	return nil
 }
 
-func (r *DBReader) GetSnapshot() *badger.Snapshot {
+func (r *DBReader) GetSnapshot() *sdb.Snapshot {
 	return r.snap
 }
 

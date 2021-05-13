@@ -16,6 +16,7 @@ package raftstore
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
@@ -128,7 +129,7 @@ type pdRegionHeartbeatTask struct {
 
 type pdStoreHeartbeatTask struct {
 	stats    *pdpb.StoreStats
-	engine   *badger.ShardingDB
+	engine   *sdb.ShardingDB
 	path     string
 	capacity uint64
 }
@@ -215,12 +216,12 @@ func newWorker(name string, wg *sync.WaitGroup) *worker {
 }
 
 type splitCheckHandler struct {
-	engine *badger.ShardingDB
+	engine *sdb.ShardingDB
 	router *router
 	config *splitCheckConfig
 }
 
-func newSplitCheckRunner(engine *badger.ShardingDB, router *router, config *splitCheckConfig) *splitCheckHandler {
+func newSplitCheckRunner(engine *sdb.ShardingDB, router *router, config *splitCheckConfig) *splitCheckHandler {
 	runner := &splitCheckHandler{
 		engine: engine,
 		router: router,
@@ -262,7 +263,7 @@ func (r *splitCheckHandler) handle(t task) {
 // 1. execute PreSplit on raft command.
 // 2. Split the engine files.
 // 3. Split the region.
-func splitEngineAndRegion(router *router, engine *badger.ShardingDB, peer *metapb.Peer, region *metapb.Region, keys [][]byte) (*Callback, error) {
+func splitEngineAndRegion(router *router, engine *sdb.ShardingDB, peer *metapb.Peer, region *metapb.Region, keys [][]byte) (*Callback, error) {
 	// Make sure the region doesn't has parent before split.
 	err := preSplitRegion(router, engine, peer, region, keys)
 	if err != nil {
@@ -284,7 +285,7 @@ func splitEngineAndRegion(router *router, engine *badger.ShardingDB, peer *metap
 	return cb, nil
 }
 
-func preSplitRegion(router *router, engine *badger.ShardingDB, peer *metapb.Peer, region *metapb.Region, rawKeys [][]byte) error {
+func preSplitRegion(router *router, engine *sdb.ShardingDB, peer *metapb.Peer, region *metapb.Region, rawKeys [][]byte) error {
 	shard := engine.GetShard(region.Id)
 	for {
 		if shard.IsInitialFlushed() {
@@ -324,7 +325,7 @@ func preSplitRegion(router *router, engine *badger.ShardingDB, peer *metapb.Peer
 	return nil
 }
 
-func splitShardFiles(router *router, engine *badger.ShardingDB, peer *metapb.Peer, region *metapb.Region) error {
+func splitShardFiles(router *router, engine *sdb.ShardingDB, peer *metapb.Peer, region *metapb.Region) error {
 	change, err := engine.SplitShardFiles(region.Id, region.RegionEpoch.Version)
 	if err != nil {
 		return err
@@ -411,7 +412,7 @@ func (s stalePeerInfo) setEndKey(endKey []byte) {
 }
 
 type regionTaskHandler struct {
-	kv     *badger.ShardingDB
+	kv     *sdb.ShardingDB
 	conf   *config.Config
 	router *router
 }
@@ -467,7 +468,7 @@ func (r *regionTaskHandler) handleGen(task *regionTask) {
 func (r *regionTaskHandler) handleApply(task *regionTask) {
 	atomic.StoreUint32(task.status, JobStatus_Running)
 	snapData := task.snapData
-	inTree := &badger.IngestTree{
+	inTree := &sdb.IngestTree{
 		ChangeSet: snapData.changeSet,
 		MaxTS:     snapData.maxReadTS,
 		Passive:   true,
@@ -644,7 +645,7 @@ func (r *raftLogGCTaskHandler) handle(t task) {
 }
 
 type compactTaskHandler struct {
-	engine *badger.ShardingDB
+	engine *sdb.ShardingDB
 }
 
 func (r *compactTaskHandler) handle(t task) {

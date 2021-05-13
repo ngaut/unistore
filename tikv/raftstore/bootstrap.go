@@ -15,6 +15,7 @@ package raftstore
 
 import (
 	"bytes"
+	"github.com/ngaut/unistore/sdb"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/protos"
 	"github.com/pingcap/badger/y"
@@ -105,8 +106,8 @@ func writePrepareBootstrap(engines *Engines, region *metapb.Region) error {
 	return engines.kv.Ingest(initialIngestTree(region.Id, region.RegionEpoch.Version))
 }
 
-func initialIngestTree(regionID, version uint64) *badger.IngestTree {
-	return &badger.IngestTree{
+func initialIngestTree(regionID, version uint64) *sdb.IngestTree {
+	return &sdb.IngestTree{
 		ChangeSet: &protos.ShardChangeSet{
 			ShardID:  regionID,
 			ShardVer: version,

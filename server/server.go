@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"github.com/ngaut/unistore/sdb"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -124,20 +125,17 @@ func createDB(subPath string, safePoint *tikv.SafePoint, conf *config.Engine) (*
 	opts.MaxBlockCacheSize = conf.BlockCacheSize
 	opts.MaxIndexCacheSize = conf.IndexCacheSize
 	opts.TableBuilderOptions.SuRFStartLevel = conf.SurfStartLevel
-	if safePoint != nil {
-		opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
-	}
 	opts.CompactL0WhenClose = conf.CompactL0WhenClose
 	opts.VolatileMode = conf.VolatileMode
 	return badger.Open(opts)
 }
 
 func createShardingDB(subPath string, safePoint *tikv.SafePoint, listener *raftstore.MetaChangeListener,
-	allocator badger.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*badger.ShardingDB, error) {
-	opts := badger.ShardingDBDefaultOpt
+	allocator badger.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*sdb.ShardingDB, error) {
+	opts := sdb.DefaultOpt
 	opts.MaxMemTableSize = conf.MaxMemTableSize
 	opts.NumCompactors = conf.NumCompactors
-	opts.CFs = []badger.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}}
+	opts.CFs = []sdb.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}}
 	opts.S3Options.InstanceID = conf.S3.InstanceID
 	opts.S3Options.EndPoint = conf.S3.Endpoint
 	opts.S3Options.SecretKey = conf.S3.SecretKey
@@ -145,7 +143,6 @@ func createShardingDB(subPath string, safePoint *tikv.SafePoint, listener *rafts
 	opts.S3Options.Bucket = conf.S3.Bucket
 	opts.S3Options.Region = conf.S3.Region
 	opts.Dir = filepath.Join(conf.DBPath, subPath)
-	opts.ValueDir = opts.Dir
 	if safePoint != nil {
 		opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
 	}
@@ -154,5 +151,5 @@ func createShardingDB(subPath string, safePoint *tikv.SafePoint, listener *rafts
 	}
 	opts.MetaChangeListener = listener
 	opts.RecoverHandler = recoverHandler
-	return badger.OpenShardingDB(opts)
+	return sdb.OpenShardingDB(opts)
 }
