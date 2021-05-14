@@ -3,7 +3,6 @@ package sdb
 import (
 	"encoding/binary"
 	"github.com/ngaut/unistore/sdb/table/sstable"
-	"github.com/pingcap/badger/options"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
@@ -109,7 +108,7 @@ type l0Builder struct {
 	commitTS uint64
 }
 
-func newL0Builder(numCFs int, opt options.TableBuilderOptions, commitTS uint64) *l0Builder {
+func newL0Builder(numCFs int, opt sstable.TableBuilderOptions, commitTS uint64) *l0Builder {
 	sdb := &l0Builder{
 		builders: make([]*sstable.Builder, numCFs),
 		commitTS: commitTS,

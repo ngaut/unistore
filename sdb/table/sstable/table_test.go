@@ -33,7 +33,6 @@ import (
 	"github.com/ngaut/unistore/sdb/cache"
 	"github.com/ngaut/unistore/sdb/cache/z"
 	"github.com/ngaut/unistore/sdb/table"
-	"github.com/pingcap/badger/options"
 	"github.com/pingcap/badger/y"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
@@ -43,12 +42,7 @@ func key(prefix string, i int) string {
 	return prefix + fmt.Sprintf("%04d", i)
 }
 
-var defaultBuilderOpt = options.TableBuilderOptions{
-	SuRFStartLevel: 0,
-	SuRFOptions: options.SuRFOptions{
-		BitsPerKeyHint: 40,
-		RealSuffixLen:  10,
-	},
+var defaultBuilderOpt = TableBuilderOptions{
 	BlockSize:           4 * 1024,
 	HashUtilRatio:       0.75,
 	WriteBufferSize:     1024 * 1024,
@@ -112,9 +106,6 @@ func newTableBuilderForTest(surf bool) (*Builder, *os.File) {
 	f, err := y.OpenSyncedFile(filename, true)
 	y.Check(err)
 	opt := defaultBuilderOpt
-	if !surf {
-		opt.SuRFStartLevel = 8
-	}
 	y.Assert(filename == f.Name())
 	return NewTableBuilder(f, rate.NewLimiter(rate.Inf, math.MaxInt32), 0, opt), f
 }
@@ -1179,7 +1170,7 @@ func BenchmarkReadAndBuild(b *testing.B) {
 	y.Check(err)
 	for i := 0; i < b.N; i++ {
 		func() {
-			newBuilder := NewTableBuilder(f, nil, 0, options.TableBuilderOptions{})
+			newBuilder := NewTableBuilder(f, nil, 0, TableBuilderOptions{})
 			it := tbl.newIterator(false)
 			defer it.Close()
 			for it.seekToFirst(); it.Valid(); it.next() {

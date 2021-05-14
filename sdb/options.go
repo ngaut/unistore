@@ -18,8 +18,8 @@ package sdb
 
 import (
 	"github.com/ngaut/unistore/s3util"
+	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
-	"github.com/pingcap/badger/options"
 )
 
 // NOTE: Keep the comments in the following to 75 chars width, so they
@@ -63,7 +63,7 @@ type Options struct {
 	// ------------------------------
 	DoNotCompact bool // Stops LSM tree from compactions.
 
-	TableBuilderOptions options.TableBuilderOptions
+	TableBuilderOptions sstable.TableBuilderOptions
 
 	CompactionFilterFactory func(targetLevel int, smallest, biggest []byte) CompactionFilter
 
@@ -125,21 +125,15 @@ var DefaultOpt = Options{
 	NumLevelZeroTables:      5,
 	NumLevelZeroTablesStall: 10,
 	NumMemtables:            16,
-	TableBuilderOptions: options.TableBuilderOptions{
+	TableBuilderOptions: sstable.TableBuilderOptions{
 		LevelSizeMultiplier: 10,
 		MaxTableSize:        8 << 20,
-		SuRFStartLevel:      8,
 		HashUtilRatio:       0.75,
 		WriteBufferSize:     2 * 1024 * 1024,
 		BytesPerSecond:      -1,
 		BlockSize:           64 * 1024,
 		LogicalBloomFPR:     0.01,
 		MaxLevels:           5,
-		SuRFOptions: options.SuRFOptions{
-			HashSuffixLen:  8,
-			RealSuffixLen:  8,
-			BitsPerKeyHint: 40,
-		},
 	},
 	CFs: []CFConfig{{Managed: true}, {Managed: false}, {Managed: true}},
 }

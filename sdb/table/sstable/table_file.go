@@ -6,9 +6,9 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/ngaut/unistore/s3util"
+	"github.com/ngaut/unistore/sdb/buffer"
 	"github.com/ngaut/unistore/sdb/cache"
-	"github.com/pingcap/badger/buffer"
-	"github.com/pingcap/badger/s3util"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 )

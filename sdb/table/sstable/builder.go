@@ -27,11 +27,20 @@ import (
 	"github.com/coocood/bbloom"
 	"github.com/dgryski/go-farm"
 	"github.com/pingcap/badger/fileutil"
-	"github.com/pingcap/badger/options"
-	"github.com/pingcap/badger/surf"
 	"github.com/pingcap/badger/y"
 	"golang.org/x/time/rate"
 )
+
+type TableBuilderOptions struct {
+	HashUtilRatio       float32
+	WriteBufferSize     int
+	BytesPerSecond      int
+	MaxLevels           int
+	LevelSizeMultiplier int
+	LogicalBloomFPR     float64
+	BlockSize           int
+	MaxTableSize        int64
+}
 
 type entrySlice struct {
 	data    []byte
@@ -100,8 +109,7 @@ type Builder struct {
 	hashEntries []hashEntry
 	bloomFpr    float64
 	useGlobalTS bool
-	opt         options.TableBuilderOptions
-	useSuRF     bool
+	opt         TableBuilderOptions
 
 	surfKeys [][]byte
 	surfVals [][]byte
@@ -140,7 +148,7 @@ func (w *inMemWriter) Finish() error {
 // NewTableBuilder makes a new TableBuilder.
 // If the f is nil, the builder builds in-memory result.
 // If the limiter is nil, the write speed during table build will not be limited.
-func NewTableBuilder(f *os.File, limiter *rate.Limiter, level int, opt options.TableBuilderOptions) *Builder {
+func NewTableBuilder(f *os.File, limiter *rate.Limiter, level int, opt TableBuilderOptions) *Builder {
 	t := float64(opt.LevelSizeMultiplier)
 	fprBase := math.Pow(t, 1/(t-1)) * opt.LogicalBloomFPR * (t - 1)
 	levelFactor := math.Pow(t, float64(opt.MaxLevels-level))
@@ -150,7 +158,6 @@ func NewTableBuilder(f *os.File, limiter *rate.Limiter, level int, opt options.T
 		hashEntries: make([]hashEntry, 0, 4*1024),
 		bloomFpr:    fprBase / levelFactor,
 		opt:         opt,
-		useSuRF:     level >= opt.SuRFStartLevel,
 		// add one byte so the offset would never be 0, so oldOffset is 0 means no old version.
 		oldBlock: []byte{0},
 	}
@@ -162,7 +169,7 @@ func NewTableBuilder(f *os.File, limiter *rate.Limiter, level int, opt options.T
 	return b
 }
 
-func NewExternalTableBuilder(f *os.File, limiter *rate.Limiter, opt options.TableBuilderOptions) *Builder {
+func NewExternalTableBuilder(f *os.File, limiter *rate.Limiter, opt TableBuilderOptions) *Builder {
 	return &Builder{
 		file:        f,
 		w:           fileutil.NewBufferedWriter(f, opt.WriteBufferSize, limiter),
@@ -233,12 +240,7 @@ func (b *Builder) addIndex(key y.Key) {
 	y.Assert(b.baseKeys.length() < maxBlockCnt)
 
 	pos := entryPosition{uint16(b.baseKeys.length()), uint8(b.counter)}
-	if b.useSuRF {
-		b.surfKeys = append(b.surfKeys, y.SafeCopy(nil, key.UserKey))
-		b.surfVals = append(b.surfVals, pos.encode())
-	} else {
-		b.hashEntries = append(b.hashEntries, hashEntry{pos, keyHash})
-	}
+	b.hashEntries = append(b.hashEntries, hashEntry{pos, keyHash})
 }
 
 func (b *Builder) addHelper(key y.Key, v y.ValueStruct) {
@@ -374,9 +376,7 @@ func (b *Builder) ReachedCapacity(capacity int64) bool {
 // EstimateSize returns the size of the SST to build.
 func (b *Builder) EstimateSize() int {
 	size := b.rawWrittenLen + len(b.buf) + 4*len(b.blockEndOffsets) + b.baseKeys.size() + len(b.oldBlock)
-	if !b.useSuRF {
-		size += 3 * int(float32(len(b.hashEntries))/b.opt.HashUtilRatio)
-	}
+	size += 3 * int(float32(len(b.hashEntries))/b.opt.HashUtilRatio)
 	return size
 }
 
@@ -448,30 +448,15 @@ func (b *Builder) Finish() (*BuildResult, error) {
 	}
 
 	var bloomFilter []byte
-	if !b.useSuRF {
-		bf := bbloom.New(float64(len(b.hashEntries)), b.bloomFpr)
-		for _, he := range b.hashEntries {
-			bf.Add(he.hash)
-		}
-		bloomFilter = bf.BinaryMarshal()
+	bf := bbloom.New(float64(len(b.hashEntries)), b.bloomFpr)
+	for _, he := range b.hashEntries {
+		bf.Add(he.hash)
 	}
+	bloomFilter = bf.BinaryMarshal()
 	encoder.append(bloomFilter, idBloomFilter)
 
-	var hashIndex []byte
-	if !b.useSuRF {
-		hashIndex = buildHashIndex(b.hashEntries, b.opt.HashUtilRatio)
-	}
+	hashIndex := buildHashIndex(b.hashEntries, b.opt.HashUtilRatio)
 	encoder.append(hashIndex, idHashIndex)
-
-	var surfIndex []byte
-	if b.useSuRF && len(b.surfKeys) > 0 {
-		hl := uint32(b.opt.SuRFOptions.HashSuffixLen)
-		rl := uint32(b.opt.SuRFOptions.RealSuffixLen)
-		sb := surf.NewBuilder(3, hl, rl)
-		sf := sb.Build(b.surfKeys, b.surfVals, b.opt.SuRFOptions.BitsPerKeyHint)
-		surfIndex = sf.Marshal()
-	}
-	encoder.append(surfIndex, idSuRFIndex)
 
 	if err = encoder.finish(b.w); err != nil {
 		return nil, err

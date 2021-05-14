@@ -1,7 +1,7 @@
 package table
 
 import (
-	"github.com/pingcap/badger/epoch"
+	"github.com/ngaut/unistore/sdb/epoch"
 	"github.com/pingcap/badger/y"
 )
 

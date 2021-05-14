@@ -23,7 +23,6 @@ import (
 	"math"
 	"sort"
 
-	"github.com/pingcap/badger/surf"
 	"github.com/pingcap/badger/y"
 )
 
@@ -191,7 +190,6 @@ func (itr *blockIterator) close() {
 type Iterator struct {
 	t    *Table
 	tIdx *TableIndex
-	surf *surf.Iterator
 	bpos int
 	bi   blockIterator
 	err  error
@@ -214,9 +212,6 @@ func (t *Table) newIteratorWithIdx(reversed bool, index *TableIndex) *Iterator {
 	it := &Iterator{t: t, reversed: reversed, tIdx: index}
 	it.bi.globalTs = t.globalTs
 	binary.BigEndian.PutUint64(it.bi.globalTsBytes[:], math.MaxUint64-t.globalTs)
-	if index.surf != nil {
-		it.surf = index.surf.NewIterator()
-	}
 	return it
 }
 
@@ -347,21 +342,7 @@ func (itr *Iterator) seekFrom(key []byte) {
 func (itr *Iterator) seek(key []byte) {
 	itr.err = nil
 	itr.reset()
-	if itr.surf == nil {
-		itr.seekFrom(key)
-		return
-	}
-
-	sit := itr.surf
-	sit.Seek(key)
-	if !sit.Valid() {
-		itr.err = io.EOF
-		return
-	}
-
-	var pos entryPosition
-	pos.decode(sit.Value())
-	itr.seekFromOffset(int(pos.blockIdx), int(pos.offset), key)
+	itr.seekFrom(key)
 }
 
 // seekForPrev will reset iterator and seek to <= key.

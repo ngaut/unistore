@@ -4,11 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/ngaut/unistore/s3util"
+	"github.com/ngaut/unistore/sdb/epoch"
 	"github.com/ngaut/unistore/sdb/table"
 	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
-	"github.com/pingcap/badger/epoch"
-	"github.com/pingcap/badger/options"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
@@ -36,7 +35,7 @@ type CompactDef struct {
 	SafeTS      uint64
 	Filter      CompactionFilter
 	HasOverlap  bool
-	Opt         options.TableBuilderOptions
+	Opt         sstable.TableBuilderOptions
 	Dir         string
 	AllocIDFunc func() uint64
 	Limiter     *rate.Limiter

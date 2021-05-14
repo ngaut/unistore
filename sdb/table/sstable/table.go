@@ -30,9 +30,8 @@ import (
 	"unsafe"
 
 	"github.com/coocood/bbloom"
-	"github.com/pingcap/badger/buffer"
+	"github.com/ngaut/unistore/sdb/buffer"
 	"github.com/pingcap/badger/fileutil"
-	"github.com/pingcap/badger/surf"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 )
@@ -56,7 +55,6 @@ type TableIndex struct {
 	baseKeys        entrySlice
 	bf              *bbloom.Bloom
 	hIdx            *hashIndex
-	surf            *surf.SuRF
 }
 
 func NewTableIndex(indexData []byte) *TableIndex {
@@ -179,15 +177,6 @@ func (t *Table) pointGet(key y.Key, keyHash uint64) (y.Key, y.ValueStruct, bool,
 	blkIdx, offset := uint32(resultFallback), uint8(0)
 	if idx.hIdx != nil {
 		blkIdx, offset = idx.hIdx.lookup(keyHash)
-	} else if idx.surf != nil {
-		v, ok := idx.surf.Get(key.UserKey)
-		if !ok {
-			blkIdx = resultNoEntry
-		} else {
-			var pos entryPosition
-			pos.decode(v)
-			blkIdx, offset = uint32(pos.blockIdx), pos.offset
-		}
 	}
 	if blkIdx == resultFallback {
 		return y.Key{}, y.ValueStruct{}, false, nil
@@ -258,11 +247,6 @@ func (d *metaDecoder) decodeTableIndex() *TableIndex {
 			if d := d.decode(); len(d) != 0 {
 				idx.hIdx = new(hashIndex)
 				idx.hIdx.readIndex(d)
-			}
-		case idSuRFIndex:
-			if d := d.decode(); len(d) != 0 {
-				idx.surf = new(surf.SuRF)
-				idx.surf.Unmarshal(d)
 			}
 		}
 	}
@@ -405,10 +389,6 @@ func (t *Table) HasOverlap(start, end y.Key, includeEnd bool) bool {
 	idx, err := t.file.ReadIndex()
 	if err != nil {
 		return true
-	}
-
-	if idx.surf != nil {
-		return idx.surf.HasOverlap(start.UserKey, end.UserKey, includeEnd)
 	}
 
 	// If there are errors occurred during seeking,

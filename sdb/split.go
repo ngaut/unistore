@@ -13,7 +13,6 @@ import (
 	"github.com/ngaut/unistore/sdb/table"
 	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/pingcap/badger/fileutil"
-	"github.com/pingcap/badger/options"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
@@ -257,7 +256,7 @@ func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, split
 	return nil
 }
 
-func (sdb *DB) buildTableBeforeKey(itr y.Iterator, key []byte, level int, opt options.TableBuilderOptions) (*sstable.BuildResult, error) {
+func (sdb *DB) buildTableBeforeKey(itr y.Iterator, key []byte, level int, opt sstable.TableBuilderOptions) (*sstable.BuildResult, error) {
 	filename := sstable.NewFilename(sdb.idAlloc.AllocID(), sdb.opt.Dir)
 	fd, err := y.OpenSyncedFile(filename, false)
 	if err != nil {
