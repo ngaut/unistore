@@ -2,8 +2,8 @@ package sdb
 
 import (
 	"encoding/binary"
+	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/pingcap/badger/options"
-	"github.com/pingcap/badger/table/sstable"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"

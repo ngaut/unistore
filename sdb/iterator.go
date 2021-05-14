@@ -3,7 +3,7 @@ package sdb
 import (
 	"bytes"
 	"fmt"
-	"github.com/pingcap/badger/table"
+	"github.com/ngaut/unistore/sdb/table"
 	"github.com/pingcap/badger/y"
 	"math"
 )

@@ -1,9 +1,9 @@
 package sdb
 
 import (
+	"github.com/ngaut/unistore/sdb/table/memtable"
+	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
-	"github.com/pingcap/badger/table/memtable"
-	"github.com/pingcap/badger/table/sstable"
 	"github.com/pingcap/badger/y"
 	"os"
 )
