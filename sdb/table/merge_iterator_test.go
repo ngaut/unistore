@@ -22,7 +22,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/pingcap/badger/cache/z"
+	"github.com/ngaut/unistore/sdb/cache/z"
 	"github.com/pingcap/badger/y"
 	"github.com/stretchr/testify/require"
 )

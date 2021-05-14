@@ -30,9 +30,9 @@ import (
 	"time"
 
 	"github.com/dgryski/go-farm"
+	"github.com/ngaut/unistore/sdb/cache"
+	"github.com/ngaut/unistore/sdb/cache/z"
 	"github.com/ngaut/unistore/sdb/table"
-	"github.com/pingcap/badger/cache"
-	"github.com/pingcap/badger/cache/z"
 	"github.com/pingcap/badger/options"
 	"github.com/pingcap/badger/y"
 	"github.com/stretchr/testify/require"
