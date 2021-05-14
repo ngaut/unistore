@@ -10,9 +10,9 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ngaut/unistore/sdb/fileutil"
 	"github.com/ngaut/unistore/sdb/table"
 	"github.com/ngaut/unistore/sdb/table/sstable"
-	"github.com/pingcap/badger/fileutil"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"

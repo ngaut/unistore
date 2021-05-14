@@ -26,7 +26,7 @@ import (
 
 	"github.com/coocood/bbloom"
 	"github.com/dgryski/go-farm"
-	"github.com/pingcap/badger/fileutil"
+	"github.com/ngaut/unistore/sdb/fileutil"
 	"github.com/pingcap/badger/y"
 	"golang.org/x/time/rate"
 )

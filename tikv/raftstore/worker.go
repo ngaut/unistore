@@ -104,7 +104,7 @@ type splitCheckTask struct {
 type computeHashTask struct {
 	index  uint64
 	region *metapb.Region
-	snap   *badger.Snapshot
+	snap   *sdb.Snapshot
 }
 
 type pdAskBatchSplitTask struct {

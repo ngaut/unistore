@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/sdbpb"
-	"github.com/pingcap/badger"
 	"time"
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
@@ -1302,7 +1301,7 @@ func (d *peerMsgHandler) onCheckPeerStaleStateTick() {
 	}
 }
 
-func (d *peerMsgHandler) onReadyComputeHash(region *metapb.Region, index uint64, snap *badger.Snapshot) {
+func (d *peerMsgHandler) onReadyComputeHash(region *metapb.Region, index uint64, snap *sdb.Snapshot) {
 	d.peer.ConsistencyState.LastCheckTime = time.Now()
 	log.S().Infof("%s schedule compute hash task", d.tag())
 	d.ctx.computeHashTaskSender <- task{

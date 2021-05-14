@@ -85,8 +85,6 @@ func (c *S3Client) Get(key string, offset, length int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	y.NumBytesReadS3.Add(float64(len(result)))
-	y.NumGetsS3.Inc()
 	return result, nil
 }
 
@@ -104,13 +102,8 @@ func (c *S3Client) GetToFile(key string, filePath string) error {
 		return err
 	}
 	defer out.Body.Close()
-	written, err := io.Copy(fd, out.Body)
-	if err != nil {
-		return err
-	}
-	y.NumBytesReadS3.Add(float64(written))
-	y.NumGetsS3.Inc()
-	return nil
+	_, err = io.Copy(fd, out.Body)
+	return err
 }
 
 func (c *S3Client) Put(key string, data []byte) error {

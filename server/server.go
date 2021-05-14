@@ -98,18 +98,9 @@ func createRaftDB(subPath string, conf *config.Engine) (*badger.DB, error) {
 	opts := badger.DefaultOptions
 	opts.NumCompactors = conf.NumCompactors
 	opts.ValueThreshold = conf.ValueThreshold
-	if subPath == subPathRaft {
-		// Do not need to write blob for raft engine because it will be deleted soon.
-		opts.ValueThreshold = 0
-		opts.CompactionFilterFactory = raftstore.CreateRaftLogCompactionFilter
-	} else {
-		opts.ManagedTxns = true
-		opts.S3Options.InstanceID = conf.S3.InstanceID
-		opts.S3Options.EndPoint = conf.S3.Endpoint
-		opts.S3Options.SecretKey = conf.S3.SecretKey
-		opts.S3Options.KeyID = conf.S3.KeyID
-		opts.S3Options.Bucket = conf.S3.Bucket
-	}
+	// Do not need to write blob for raft engine because it will be deleted soon.
+	opts.ValueThreshold = 0
+	opts.CompactionFilterFactory = raftstore.CreateRaftLogCompactionFilter
 	opts.ValueLogWriteOptions.WriteBufferSize = 4 * 1024 * 1024
 	opts.Dir = filepath.Join(conf.DBPath, subPath)
 	opts.ValueDir = opts.Dir
@@ -131,7 +122,7 @@ func createRaftDB(subPath string, conf *config.Engine) (*badger.DB, error) {
 }
 
 func createKVDB(subPath string, safePoint *tikv.SafePoint, listener *raftstore.MetaChangeListener,
-	allocator badger.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*sdb.DB, error) {
+	allocator sdb.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*sdb.DB, error) {
 	opts := sdb.DefaultOpt
 	opts.MaxMemTableSize = conf.MaxMemTableSize
 	opts.NumCompactors = conf.NumCompactors

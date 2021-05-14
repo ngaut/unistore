@@ -16,8 +16,8 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/sdbpb"
-	"github.com/pingcap/badger"
 	"go.uber.org/zap"
 	"time"
 
@@ -141,7 +141,7 @@ type execResultRollbackMerge struct {
 type execResultComputeHash struct {
 	region *metapb.Region
 	index  uint64
-	snap   *badger.Snapshot
+	snap   *sdb.Snapshot
 }
 
 type execResultVerifyHash struct {

@@ -1,10 +1,10 @@
 package sdb
 
 import (
+	"github.com/ngaut/unistore/sdb/fileutil"
 	"github.com/ngaut/unistore/sdb/table/memtable"
 	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
-	"github.com/pingcap/badger/fileutil"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/log"
 	"sync/atomic"

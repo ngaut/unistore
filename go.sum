@@ -76,6 +76,7 @@ github.com/codahale/hdrhistogram v0.9.0 h1:9GjrtRI+mLEFPtTfR/AZhcxp+Ii8NZYWq5104
 github.com/codahale/hdrhistogram v0.9.0/go.mod h1:sE/e/2PUdi/liOCUjSTXgM1o87ZssimdTWN964YiIeI=
 github.com/coocood/bbloom v0.0.0-20190830030839-58deb6228d64 h1:W1SHiII3e0jVwvaQFglwu3kS9NLxOeTpvik7MbKCyuQ=
 github.com/coocood/bbloom v0.0.0-20190830030839-58deb6228d64/go.mod h1:F86k/6c7aDUdwSUevnLpHS/3Q9hzYCE99jGk2xsHnt0=
+github.com/coocood/rtutil v0.0.0-20190304133409-c84515f646f2 h1:NnLfQ77q0G4k2Of2c1ceQ0ec6MkLQyDp+IGdVM0D8XM=
 github.com/coocood/rtutil v0.0.0-20190304133409-c84515f646f2/go.mod h1:7qG7YFnOALvsx6tKTNmQot8d7cGFXM9TidzvRFLWYwM=
 github.com/coocood/tidb v0.0.0-20201117045115-1cfbea7d9a12 h1:xA8YCpfH6aUTNiO+0PE8mHN59holKgb0ASuXDnBEweM=
 github.com/coocood/tidb v0.0.0-20201117045115-1cfbea7d9a12/go.mod h1:7V9semCc5Ef51sBiNVYf4PnCuZqZrboqhBL4+x74HvU=
@@ -315,6 +316,7 @@ github.com/julienschmidt/httprouter v1.2.0/go.mod h1:SYymIcj16QtmaHHD7aYtjjsJG7V
 github.com/kisielk/errcheck v1.1.0/go.mod h1:EZBBE59ingxPouuu3KfxchcWSUPOHkagtvWXihfKN4Q=
 github.com/kisielk/errcheck v1.2.0/go.mod h1:/BMXB+zMLi60iA8Vv6Ksmxu/1UDYcXs4uQLJ+jE2L00=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
+github.com/klauspost/compress v1.9.5 h1:U+CaK85mrNNb4k8BNOfgJtJ/gr6kswUCFj6miSzVC6M=
 github.com/klauspost/compress v1.9.5/go.mod h1:RyIbtBH6LamlWaDj8nUwkbUhJ87Yi3uG0guNDohfE1A=
 github.com/klauspost/cpuid v1.2.1 h1:vJi+O/nMdFt0vqm8NZBI6wzALWdA2X+egi0ogNyrC/w=
 github.com/klauspost/cpuid v1.2.1/go.mod h1:Pj4uuM528wm8OyEC2QMXAi2YiTZ96dNQPGgoMS4s3ek=
@@ -415,8 +417,8 @@ github.com/phf/go-queue v0.0.0-20170504031614-9abe38d0371d/go.mod h1:lXfE4PvvTW5
 github.com/pierrec/lz4 v2.5.2+incompatible/go.mod h1:pdkljMzZIN41W+lC3N2tnIh5sFi+IEE17M5jbnwPHcY=
 github.com/pingcap-incubator/tidb-dashboard v0.0.0-20200908071351-a715a95c7de2/go.mod h1:X3r7/4Wr9fSC5KlsfezBh/5noeWGEJNQuSvjgS2rvdI=
 github.com/pingcap/badger v1.5.1-0.20200908111422-2e78ee155d19/go.mod h1:LyrqUOHZrUDf9oGi1yoz1+qw9ckSIhQb5eMa1acOLNQ=
-github.com/pingcap/badger v1.5.1-0.20210512094254-b2acaa6c62a6 h1:qChwE0PfWOa0aO+pxaEi5CL03TSuKRES5QlkxPbSByY=
-github.com/pingcap/badger v1.5.1-0.20210512094254-b2acaa6c62a6/go.mod h1:UO0TFSNZrzwrnpYPds5AHxfd9UGd7Sky/uPjZhC2FiY=
+github.com/pingcap/badger v1.5.1-0.20210331054718-0885bbfa8520 h1:2Pu1m4YunqsZ07hLoVKt3CHFI2Fpy2NMYRU8sHSu86s=
+github.com/pingcap/badger v1.5.1-0.20210331054718-0885bbfa8520/go.mod h1:LyrqUOHZrUDf9oGi1yoz1+qw9ckSIhQb5eMa1acOLNQ=
 github.com/pingcap/br v4.0.0-beta.2.0.20201014031603-5676c8fdad1a+incompatible h1:RMx7D+dQtUTUZjelJyV0WwYr3GFxrjsSarFXhV2SWzI=
 github.com/pingcap/br v4.0.0-beta.2.0.20201014031603-5676c8fdad1a+incompatible/go.mod h1:ymVmo50lQydxib0tmK5hHk4oteB7hZ0IMCArunwy3UQ=
 github.com/pingcap/check v0.0.0-20190102082844-67f458068fc8/go.mod h1:B1+S9LNcuMyLH/4HMTViQOJevkGiik3wW2AN9zb2fNQ=

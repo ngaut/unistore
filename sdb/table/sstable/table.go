@@ -31,7 +31,7 @@ import (
 
 	"github.com/coocood/bbloom"
 	"github.com/ngaut/unistore/sdb/buffer"
-	"github.com/pingcap/badger/fileutil"
+	"github.com/ngaut/unistore/sdb/fileutil"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 )
