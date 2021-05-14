@@ -90,6 +90,7 @@ func (sdb *DB) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*l0Tables,
 		if err != nil {
 			return nil, nil, err
 		}
+		handler.totalSize += tbl.Size()
 		handler.tables = append(handler.tables, tbl)
 	}
 	sort.Slice(l0s.tables, func(i, j int) bool {

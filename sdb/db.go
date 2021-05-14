@@ -184,63 +184,134 @@ func (sdb *DB) DebugHandler() http.HandlerFunc {
 		fmt.Fprintf(w, "Time %s\n", time.Now().Format(time.RFC3339Nano))
 		fmt.Fprintf(w, "Manifest.shards %s\n", formatInt(len(sdb.manifest.shards)))
 		fmt.Fprintf(w, "Manifest.globalFiles %s\n", formatInt(len(sdb.manifest.globalFiles)))
-		keys := []int{}
+		fmt.Fprintf(w, "WriteCh %s\n", formatInt(len(sdb.writeCh)))
+		fmt.Fprintf(w, "FlushCh %s\n", formatInt(len(sdb.flushCh)))
 		MemTables := 0
 		MemTablesSize := 0
 		L0Tables := 0
 		L0TablesSize := 0
 		CFs := 0
-		Levels := 0
+		LevelHandlers := 0
 		CFsSize := 0
+		LNTables := 0
+		LNTablesSize := 0
+		type shardStat struct {
+			key           uint64
+			ShardSize     int
+			MemTablesSize int
+			L0TablesSize  int
+			CFsSize       int
+			CFSize        [3]int
+		}
+		list := []shardStat{}
 		sdb.shardMap.Range(func(key, value interface{}) bool {
-			keys = append(keys, int(key.(uint64)))
+			k := key.(uint64)
 			shard := value.(*Shard)
 			memTables := shard.loadMemTables()
 			l0Tables := shard.loadL0Tables()
 			MemTables += len(memTables.tables)
+			ShardMemTablesSize := 0
 			for _, t := range memTables.tables {
-				MemTablesSize += int(t.Size())
+				ShardMemTablesSize += int(t.Size())
 			}
+			MemTablesSize += ShardMemTablesSize
 			L0Tables += len(l0Tables.tables)
+			ShardL0TablesSize := 0
 			for _, t := range l0Tables.tables {
-				L0TablesSize += int(t.size)
+				ShardL0TablesSize += int(t.size)
 			}
+			L0TablesSize += ShardL0TablesSize
 			CFs += len(shard.cfs)
-			for _, cf := range shard.cfs {
-				Levels += len(cf.levels)
+			ShardCFsSize := 0
+			CFSize := [3]int{}
+			for i, cf := range shard.cfs {
+				LevelHandlers += len(cf.levels)
 				for l := range cf.levels {
 					level := cf.getLevelHandler(l + 1)
-					CFsSize += int(level.totalSize)
+					CFSize[i] += int(level.totalSize)
+					LNTables += len(level.tables)
+					for _, t := range level.tables {
+						LNTablesSize += int(t.Size())
+					}
 				}
+				ShardCFsSize += CFSize[i]
 			}
+			CFsSize += ShardCFsSize
+			stat := shardStat{
+				key:           k,
+				ShardSize:     ShardMemTablesSize + ShardL0TablesSize + ShardCFsSize,
+				MemTablesSize: ShardMemTablesSize,
+				L0TablesSize:  ShardL0TablesSize,
+				CFsSize:       ShardCFsSize,
+				CFSize:        CFSize,
+			}
+			list = append(list, stat)
 			return true
 		})
-		fmt.Fprintf(w, "MemTables %d, MemTablesSize %s\n", MemTables, formatInt(MemTablesSize))
-		fmt.Fprintf(w, "L0Tables %d, L0TablesSize %s\n", L0Tables, formatInt(L0TablesSize))
-		fmt.Fprintf(w, "CFs %d, Levels %d, CFsSize %s\n", CFs, Levels, formatInt(CFsSize))
-		fmt.Fprintf(w, "ShardMap %d\n", len(keys))
-		sort.Ints(keys)
-		for _, k := range keys {
-			key := uint64(k)
+		fmt.Fprintf(w, "MemTables %s, MemTablesSize %s\n", formatInt(MemTables), formatInt(MemTablesSize))
+		fmt.Fprintf(w, "L0Tables %s, L0TablesSize %s\n", formatInt(L0Tables), formatInt(L0TablesSize))
+		fmt.Fprintf(w, "CFs %s, LevelHandlers %s, LNTables %s, CFsSize %s, LNTablesSize %s\n",
+			formatInt(CFs),
+			formatInt(LevelHandlers),
+			formatInt(LNTables),
+			formatInt(CFsSize),
+			formatInt(LNTablesSize),
+		)
+		fmt.Fprintf(w, "Size %s\n", formatInt(MemTablesSize+L0TablesSize+CFsSize))
+		fmt.Fprintf(w, "ShardMap %s\n", formatInt(len(list)))
+		sort.Slice(list, func(i, j int) bool {
+			return list[i].ShardSize > list[j].ShardSize
+		})
+		for _, shardStat := range list {
+			key := shardStat.key
 			if value, ok := sdb.shardMap.Load(key); ok {
 				shard := value.(*Shard)
 				memTables := shard.loadMemTables()
 				l0Tables := shard.loadL0Tables()
-				fmt.Fprintf(w, "\tShard ID %d, Version %d, SplitState %s\n", key, shard.Ver, sdbpb.SplitState_name[shard.splitState])
-				fmt.Fprintf(w, "\t\tMemTables %d\n", len(memTables.tables))
-				for i, t := range memTables.tables {
-					fmt.Fprintf(w, "\t\t\tMemTable %d, Size %s, Empty %t \n", i, formatInt(int(t.Size())), t.Empty())
+				if r.FormValue("detail") == "" {
+					fmt.Fprintf(w, "\tShard ID % 10d,\tVersion %d,\tSplitState % 20s,\tSize % 13s,\tMem % 13s,\tL0 % 13s,\tCF0 % 13s,\tCF1 % 13s\n",
+						key,
+						shard.Ver,
+						sdbpb.SplitState_name[shard.splitState],
+						formatInt(shardStat.ShardSize),
+						formatInt(shardStat.MemTablesSize),
+						formatInt(shardStat.L0TablesSize),
+						formatInt(shardStat.CFSize[0]),
+						formatInt(shardStat.CFSize[1]),
+					)
+					continue
 				}
-				fmt.Fprintf(w, "\t\tL0Tables %d\n", len(l0Tables.tables))
+				fmt.Fprintf(w, "\tShard ID %d, Version %d, SplitState %s, Size %s\n",
+					key,
+					shard.Ver,
+					sdbpb.SplitState_name[shard.splitState],
+					formatInt(shardStat.ShardSize),
+				)
+				fmt.Fprintf(w, "\t\tMemTables %d,  Size %s\n", len(memTables.tables), formatInt(shardStat.MemTablesSize))
+				for i, t := range memTables.tables {
+					if !t.Empty() {
+						fmt.Fprintf(w, "\t\t\tMemTable %d, Size %s\n", i, formatInt(int(t.Size())))
+					}
+				}
+				fmt.Fprintf(w, "\t\tL0Tables %d,  Size %s\n", len(l0Tables.tables), formatInt(shardStat.L0TablesSize))
 				for i, t := range l0Tables.tables {
 					fmt.Fprintf(w, "\t\t\tL0Table %d, fid %d, cfs %d, size %s \n", i, t.fid, len(t.cfs), formatInt(int(t.size)))
 				}
-				fmt.Fprintf(w, "\t\tcfs %d\n", len(shard.cfs))
-				for i, cf := range shard.cfs {
-					fmt.Fprintf(w, "\t\t\tCF %d, levels %d \n", i, len(cf.levels))
-					for l := range cf.levels {
-						level := cf.getLevelHandler(l + 1)
-						fmt.Fprintf(w, "\t\t\t\tLevelHandler %d, level %d, tables %d, totalSize %s \n", l, level.level, len(level.tables), formatInt(int(level.totalSize)))
+				fmt.Fprintf(w, "\t\tCFs Size %s\n", formatInt(shardStat.CFsSize))
+				if shardStat.CFsSize > 0 {
+					for i, cf := range shard.cfs {
+						fmt.Fprintf(w, "\t\t\tCF %d, Size %s\n", i, formatInt(shardStat.CFSize[i]))
+						if shardStat.CFSize[i] > 0 {
+							for l := range cf.levels {
+								level := cf.getLevelHandler(l + 1)
+								fmt.Fprintf(w, "\t\t\t\tlevel %d, tables %s, totalSize %s \n",
+									level.level,
+									formatInt(len(level.tables)),
+									formatInt(int(level.totalSize)),
+								)
+							}
+						}
+
 					}
 				}
 			}
@@ -337,6 +408,7 @@ func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 			return nil, err
 		}
 		shard.addEstimatedSize(tbl.Size())
+		handler.totalSize += tbl.Size()
 		handler.tables = append(handler.tables, tbl)
 	}
 	l0Tbls := shard.loadL0Tables()
