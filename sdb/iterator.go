@@ -309,7 +309,7 @@ func (s *Snapshot) appendMemTblIters(iters []y.Iterator, memTbls *memTables, cf 
 
 func (s *Snapshot) appendL0Iters(iters []y.Iterator, l0s *l0Tables, cf int, reverse bool) []y.Iterator {
 	for _, tbl := range l0s.tables {
-		it := tbl.newIterator(cf, reverse)
+		it := tbl.NewIterator(cf, reverse)
 		if it != nil {
 			iters = append(iters, it)
 		}

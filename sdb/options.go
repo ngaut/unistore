@@ -51,7 +51,6 @@ type Options struct {
 	NumLevelZeroTablesStall int
 
 	MaxBlockCacheSize int64
-	MaxIndexCacheSize int64
 
 	// Maximum total size for L1.
 	LevelOneSize int64

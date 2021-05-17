@@ -66,7 +66,8 @@ zstd = 2
 
 ## checksum_type
 ```
-crc32 = 1
+no_checksum = 0
+crc32Castagnoli = 1
 ```
 
 ## table_format_version
@@ -77,8 +78,8 @@ crc32 = 1
 ## data_section & old_data_section
 
 ```
-[compressed_block] + checksum(4)
-[compressed_block] + checksum(4)
+checksum(4) + [compressed_block]
+checksum(4) + [compressed_block]
 ...
 ```
 
@@ -101,7 +102,7 @@ key_suffix
 meta(1)        // bitmap for delete/hasOld
 version(8)
 old_version(8) // optional if has_old is true
-user_meta_len(2)
+user_meta_len(1)
 user_meta
 value
 ```
@@ -110,6 +111,7 @@ value
 The index_section contains block index and optional auxiliary indices includes bloom filter and hash index.   
 
 ```
+checksum(4)
 num_blocks(4)
 block_key_offset(4)
 block_key_offset(4)
@@ -137,6 +139,7 @@ current_offset(4)
 
 ## properties_section
 ```
+checksum(4)
 [property_entry]
 [property_entry]
 ...

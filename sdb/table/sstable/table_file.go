@@ -1,111 +1,72 @@
 package sstable
 
 import (
-	"io/ioutil"
-	"os"
-	"sync/atomic"
-	"unsafe"
-
-	"github.com/ngaut/unistore/s3util"
-	"github.com/ngaut/unistore/sdb/buffer"
-	"github.com/ngaut/unistore/sdb/cache"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
+	"github.com/pingcap/log"
+	"go.uber.org/zap"
+	"io"
+	"os"
 )
 
 type TableFile interface {
-	readBlock(offset, length int64) (*block, error)
-	ReadIndex() (*TableIndex, error)
-	LoadToMem() error
-	Close()
-	Delete()
+	ID() uint64
+	Size() int64
+	ReadAt(b []byte, off int64) (n int, err error)
+	IsMMap() bool
+	MMapRead(off int64, length int) []byte
+	LoadToRam() error
+	Close() error
+	Delete() error
 }
 
 // InMemFile keep data in memory.
 type InMemFile struct {
-	blocksData []byte
-	index      *TableIndex
+	id   uint64
+	data []byte
 }
 
-func NewInMemFile(blockData, indexData []byte) *InMemFile {
-	index := NewTableIndex(indexData)
-	return &InMemFile{
-		blocksData: blockData,
-		index:      index,
+func (f *InMemFile) ID() uint64 {
+	return f.id
+}
+
+func (f *InMemFile) Size() int64 {
+	return int64(len(f.data))
+}
+
+func (f *InMemFile) ReadAt(b []byte, off int64) (n int, err error) {
+	if off >= f.Size() {
+		return 0, io.EOF
 	}
-}
-
-func (r *InMemFile) readBlock(offset, length int64) (*block, error) {
-	blk := &block{
-		offset: int(offset),
-		data:   r.blocksData[offset : offset+length],
+	n = copy(b, f.data[off:])
+	if n < len(b) {
+		err = io.EOF
 	}
-	return blk, nil
+	return
 }
 
-func (r *InMemFile) ReadIndex() (*TableIndex, error) {
-	return r.index, nil
+func (f *InMemFile) IsMMap() bool {
+	return true
 }
 
-func (r *InMemFile) Close() {
+func (f *InMemFile) MMapRead(off int64, length int) []byte {
+	return f.data[off : off+int64(length)]
 }
 
-func (r *InMemFile) Delete() {
-}
-
-func (r *InMemFile) LoadToMem() error {
+func (f *InMemFile) LoadToRam() error {
 	return nil
 }
 
-func NewInMemFileFromFile(filename string) (*InMemFile, error) {
-	blockData, err := ioutil.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-	indexData, err := ioutil.ReadFile(IndexFilename(filename))
-	if err != nil {
-		return nil, err
-	}
-	return NewInMemFile(blockData, indexData), nil
+func (f *InMemFile) Close() error {
+	return nil
 }
 
-type MMapFile struct {
-	*InMemFile
-
-	fd    *os.File
-	idxFd *os.File
+func (f *InMemFile) Delete() error {
+	return nil
 }
 
-func NewMMapFile(filename string) (TableFile, error) {
-	fd, tblSize, err := getFdWithSize(filename)
-	if err != nil {
-		return nil, err
-	}
-	idxFd, idxSize, err := getFdWithSize(IndexFilename(filename))
-	if err != nil {
-		fd.Close()
-		return nil, err
-	}
-	mmReader := &MMapFile{
-		InMemFile: &InMemFile{},
-		fd:        fd,
-		idxFd:     fd,
-	}
-	mmReader.blocksData, err = y.Mmap(fd, false, tblSize)
-	if err != nil {
-		fd.Close()
-		idxFd.Close()
-		return nil, y.Wrapf(err, "Unable to map file")
-	}
-	var idxData []byte
-	idxData, err = y.Mmap(idxFd, false, idxSize)
-	if err != nil {
-		fd.Close()
-		idxFd.Close()
-		return nil, y.Wrapf(err, "Unable to map index")
-	}
-	mmReader.index = NewTableIndex(idxData)
-	return mmReader, nil
+func NewInMemFile(id uint64, data []byte) *InMemFile {
+	return &InMemFile{id: id, data: data}
 }
 
 func getFdWithSize(filename string) (fd *os.File, size int64, err error) {
@@ -120,36 +81,15 @@ func getFdWithSize(filename string) (fd *os.File, size int64, err error) {
 	return fd, fdi.Size(), nil
 }
 
-func (r *MMapFile) Close() {
-	y.Munmap(r.index.IndexData)
-	y.Munmap(r.blocksData)
-	r.idxFd.Close()
-	r.fd.Close()
-}
-
-func (r *MMapFile) LoadToMem() error {
-	return nil
-}
-
-func (r *MMapFile) Delete() {
-	filename := r.fd.Name()
-	r.Close()
-	os.Remove(filename)
-	os.Remove(IndexFilename(filename))
-}
-
 type LocalFile struct {
-	blockCache *cache.Cache
-	indexCache *cache.Cache
-	fid        uint32
-	fd         *os.File
-	tblSize    uint32
-	idxFd      *os.File
-	idxSize    uint32
-	memReader  unsafe.Pointer
+	filename string
+	fid      uint64
+	fd       *os.File
+	size     int64
+	mmapData []byte
 }
 
-func NewLocalFile(filename string, blockCache, indexCache *cache.Cache) (TableFile, error) {
+func NewLocalFile(filename string, mmap bool) (*LocalFile, error) {
 	fid, ok := ParseFileID(filename)
 	if !ok {
 		return nil, errors.Errorf("Invalid filename: %s", filename)
@@ -158,103 +98,59 @@ func NewLocalFile(filename string, blockCache, indexCache *cache.Cache) (TableFi
 	if err != nil {
 		return nil, err
 	}
-	idxFd, idxSize, err := getFdWithSize(IndexFilename(filename))
-	if err != nil {
-		fd.Close()
-		return nil, err
+	nFile := &LocalFile{
+		fid:  fid,
+		fd:   fd,
+		size: tblSize,
 	}
-	reader := &LocalFile{
-		blockCache: blockCache,
-		indexCache: indexCache,
-		fid:        uint32(fid),
-		fd:         fd,
-		tblSize:    uint32(tblSize),
-		idxFd:      idxFd,
-		idxSize:    uint32(idxSize),
-	}
-	return reader, nil
-}
-
-func (r *LocalFile) readBlock(offset, length int64) (*block, error) {
-	if ptr := atomic.LoadPointer(&r.memReader); ptr != nil {
-		return (*InMemFile)(ptr).readBlock(offset, length)
-	}
-	for {
-		blk, err := r.blockCache.GetOrCompute(blockCacheKey(r.fid, uint32(offset)), func() (interface{}, int64, error) {
-			data := buffer.GetBuffer(int(length))
-			if _, err := r.fd.ReadAt(data, offset); err != nil {
-				buffer.PutBuffer(data)
-				return nil, 0, err
-			}
-			blk := &block{
-				offset:    int(offset),
-				data:      data,
-				reference: 1,
-			}
-			return blk, length, nil
-		})
+	if mmap {
+		nFile.mmapData, err = y.Mmap(fd, false, tblSize)
 		if err != nil {
-			return nil, err
+			fd.Close()
+			return nil, y.Wrapf(err, "Unable to map file")
 		}
-		b := blk.(*block)
-		// When a block is evicted, the block counter fail to add reference.
-		if ok := b.add(); !ok {
-			// Add reference failed, so try to read block again until success.
-			continue
-		}
-		return b, nil
 	}
+	return nFile, nil
 }
 
-func (r *LocalFile) ReadIndex() (*TableIndex, error) {
-	if ptr := atomic.LoadPointer(&r.memReader); ptr != nil {
-		return (*InMemFile)(ptr).ReadIndex()
-	}
-	index, err := r.indexCache.GetOrCompute(uint64(r.fid), func() (interface{}, int64, error) {
-		data := make([]byte, r.idxSize)
-		_, err := r.idxFd.ReadAt(data, 0)
-		if err != nil {
-			return nil, 0, err
-		}
-		return NewTableIndex(data), int64(r.idxSize), err
-	})
-	if err != nil {
-		return nil, err
-	}
-	return index.(*TableIndex), nil
+func (f *LocalFile) ID() uint64 {
+	return f.fid
 }
 
-func (r *LocalFile) Close() {
-	r.idxFd.Close()
-	r.fd.Close()
+func (f *LocalFile) Size() int64 {
+	return f.size
 }
 
-func (r *LocalFile) Delete() {
-	r.indexCache.Del(uint64(r.fid))
-	filename := r.fd.Name()
-	r.Close()
-	os.Remove(filename)
-	os.Remove(IndexFilename(filename))
+func (f *LocalFile) ReadAt(b []byte, off int64) (n int, err error) {
+	return f.fd.ReadAt(b, off)
 }
 
-func (r *LocalFile) LoadToMem() error {
-	memReader, err := NewInMemFileFromFile(r.fd.Name())
-	if err != nil {
-		return err
-	}
-	atomic.StorePointer(&r.memReader, unsafe.Pointer(memReader))
+func (f *LocalFile) IsMMap() bool {
+	return f.mmapData != nil
+}
+
+func (f *LocalFile) MMapRead(off int64, length int) []byte {
+	return f.mmapData[off : off+int64(length)]
+}
+
+func (f *LocalFile) LoadToRam() error {
 	return nil
+}
+
+func (f *LocalFile) Close() error {
+	if f.mmapData != nil {
+		err := y.Munmap(f.mmapData)
+		if err != nil {
+			log.Error("munmap failed", zap.Error(err))
+		}
+	}
+	return f.fd.Close()
+}
+
+func (f *LocalFile) Delete() error {
+	return os.Remove(f.fd.Name())
 }
 
 func blockCacheKey(fid, offset uint32) uint64 {
 	return uint64(fid)<<32 | uint64(offset)
-}
-
-type S3File struct {
-	blockCache *cache.Cache
-	idxCache   *cache.Cache
-	fid        uint32
-	filename   string
-	s3c        *s3util.S3Client
-	memReader  unsafe.Pointer
 }

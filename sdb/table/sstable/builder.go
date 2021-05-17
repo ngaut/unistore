@@ -1,34 +1,31 @@
-/*
- * Copyright 2017 Dgraph Labs, Inc. and Contributors
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package sstable
 
 import (
 	"bytes"
 	"encoding/binary"
-	"math"
-	"os"
-	"reflect"
-	"unsafe"
-
 	"github.com/coocood/bbloom"
 	"github.com/dgryski/go-farm"
-	"github.com/ngaut/unistore/sdb/fileutil"
 	"github.com/pingcap/badger/y"
-	"golang.org/x/time/rate"
+	"github.com/pingcap/errors"
+	"hash/crc32"
+	"io"
+	"reflect"
+	"unsafe"
+)
+
+const (
+	footerSize    = int(unsafe.Sizeof(footer{}))
+	blockAddrSize = int(unsafe.Sizeof(blockAddress{}))
+	metaHasOld    = byte(1 << 1)
+	bloomFilter   = uint16(1)
+
+	noChecksum      = 0
+	crc32Castagnoli = 1
+	tableFormat     = 1
+	MagicNumber     = 2940551257
+	noCompression   = 0
+	propKeySmallest = "smallest"
+	propKeyBiggest  = "biggest"
 )
 
 type TableBuilderOptions struct {
@@ -83,137 +80,399 @@ func (es *entrySlice) reset() {
 	es.endOffs = es.endOffs[:0]
 }
 
-const headerSize = 4
-
 // Builder is used in building a table.
 type Builder struct {
-	counter int // Number of keys written for the current block.
+	fid        uint64
+	propKeys   []string
+	propValues [][]byte
 
-	file          *os.File
-	w             tableWriter
-	buf           []byte
-	writtenLen    int
-	rawWrittenLen int
-
-	baseKeys entrySlice
-
-	blockEndOffsets []uint32 // Base offsets of every block.
-
-	// end offsets of every entry within the current block being built.
-	// The offsets are relative to the start of the block.
-	entryEndOffsets []uint32
-
-	smallest y.Key
-	biggest  y.Key
-
-	hashEntries []hashEntry
-	bloomFpr    float64
-	useGlobalTS bool
-	opt         TableBuilderOptions
-
-	surfKeys [][]byte
-	surfVals [][]byte
-
-	tmpKeys    entrySlice
-	tmpVals    entrySlice
-	tmpOldOffs []uint32
-
-	singleKeyOldVers entrySlice
-	oldBlock         []byte
-}
-
-type tableWriter interface {
-	Reset(f *os.File)
-	Write(b []byte) (int, error)
-	Offset() int64
-	Finish() error
-}
-
-type inMemWriter struct {
-	*bytes.Buffer
-}
-
-func (w *inMemWriter) Reset(_ *os.File) {
-	w.Buffer.Reset()
-}
-
-func (w *inMemWriter) Offset() int64 {
-	return int64(w.Len())
-}
-
-func (w *inMemWriter) Finish() error {
-	return nil
+	blockBuilder blockBuilder
+	oldBuilder   blockBuilder
+	blockSize    int
+	bloomFpr     float64
+	checksumType byte
+	keyHashes    []uint64
+	smallest     []byte
+	biggest      []byte
 }
 
 // NewTableBuilder makes a new TableBuilder.
 // If the f is nil, the builder builds in-memory result.
 // If the limiter is nil, the write speed during table build will not be limited.
-func NewTableBuilder(f *os.File, limiter *rate.Limiter, level int, opt TableBuilderOptions) *Builder {
-	t := float64(opt.LevelSizeMultiplier)
-	fprBase := math.Pow(t, 1/(t-1)) * opt.LogicalBloomFPR * (t - 1)
-	levelFactor := math.Pow(t, float64(opt.MaxLevels-level))
-	b := &Builder{
-		file:        f,
-		buf:         make([]byte, 0, 4*1024),
-		hashEntries: make([]hashEntry, 0, 4*1024),
-		bloomFpr:    fprBase / levelFactor,
-		opt:         opt,
-		// add one byte so the offset would never be 0, so oldOffset is 0 means no old version.
-		oldBlock: []byte{0},
+func NewTableBuilder(fid uint64, opt TableBuilderOptions) *Builder {
+	return &Builder{
+		fid:          fid,
+		blockSize:    opt.BlockSize,
+		bloomFpr:     opt.LogicalBloomFPR,
+		checksumType: crc32Castagnoli,
 	}
-	if f != nil {
-		b.w = fileutil.NewBufferedWriter(f, opt.WriteBufferSize, limiter)
+}
+
+func (b *Builder) Reset(fid uint64) {
+	b.fid = fid
+	b.blockBuilder.resetAll()
+	b.oldBuilder.resetAll()
+	b.propKeys = b.propKeys[:0]
+	b.propValues = b.propValues[:0]
+	b.keyHashes = b.keyHashes[:0]
+	b.smallest = b.smallest[:0]
+	b.biggest = b.biggest[:0]
+}
+
+func (b *Builder) addProperty(key string, val []byte) {
+	b.propKeys = append(b.propKeys, key)
+	b.propValues = append(b.propValues, val)
+}
+
+func (b *Builder) Add(key []byte, val *y.ValueStruct) {
+	if b.blockBuilder.sameLastKey(key) {
+		b.blockBuilder.setLastEntryOldVersionIfZero(val.Version)
+		b.oldBuilder.addEntry(key, val)
 	} else {
-		b.w = &inMemWriter{Buffer: bytes.NewBuffer(make([]byte, 0, opt.MaxTableSize))}
+		// Only try to finish block when the key is different than last.
+		if b.blockBuilder.block.size > b.blockSize {
+			b.blockBuilder.finishBlock(b.fid, b.checksumType)
+		}
+		if b.oldBuilder.block.size > b.blockSize {
+			b.oldBuilder.finishBlock(b.fid, b.checksumType)
+		}
+		b.blockBuilder.addEntry(key, val)
+		b.keyHashes = append(b.keyHashes, farm.Fingerprint64(key))
+		if len(b.smallest) == 0 {
+			b.smallest = y.Copy(key)
+		}
 	}
+}
+
+func (b *Builder) EstimateSize() int {
+	return len(b.blockBuilder.buf) + len(b.oldBuilder.buf) + b.blockBuilder.block.size + b.oldBuilder.block.size
+}
+
+type bytesWriter interface {
+	Bytes() []byte
+}
+
+func (b *Builder) Finish(filename string, w io.Writer) (*BuildResult, error) {
+	if b.blockBuilder.block.size > 0 {
+		b.biggest = y.Copy(b.blockBuilder.block.tmpKeys.getLast())
+		b.blockBuilder.finishBlock(b.fid, b.checksumType)
+	}
+	if b.oldBuilder.block.size > 0 {
+		b.oldBuilder.finishBlock(b.fid, b.checksumType)
+	}
+	y.Assert(b.blockBuilder.blockKeys.length() > 0)
+	dataSectionSize, err := w.Write(b.blockBuilder.buf)
+	if err != nil {
+		return nil, err
+	}
+	oldDataSectionSize, err := w.Write(b.oldBuilder.buf)
+	if err != nil {
+		return nil, err
+	}
+	b.blockBuilder.buildIndex(0, b.keyHashes, b.bloomFpr, b.checksumType)
+	indexSectionSize, err := w.Write(b.blockBuilder.buf)
+	if err != nil {
+		return nil, err
+	}
+	b.oldBuilder.buildIndex(uint32(dataSectionSize), nil, 0, b.checksumType)
+	oldIndexSectionSize, err := w.Write(b.oldBuilder.buf)
+	if err != nil {
+		return nil, err
+	}
+	buf := b.blockBuilder.buf[:0]
+	buf = b.buildProperties(buf)
+	_, err = w.Write(buf)
+	if err != nil {
+		return nil, err
+	}
+	var footer footer
+	footer.oldDataOffset = uint32(dataSectionSize)
+	footer.indexOffset = footer.oldDataOffset + uint32(oldDataSectionSize)
+	footer.oldIndexOffset = footer.indexOffset + uint32(indexSectionSize)
+	footer.propertiesOffset = footer.oldIndexOffset + uint32(oldIndexSectionSize)
+	footer.compressionType = noCompression
+	footer.checksumType = b.checksumType
+	footer.tableFormatVersion = tableFormat
+	footer.magic = MagicNumber
+	_, err = w.Write(footer.marshal())
+	if err != nil {
+		return nil, err
+	}
+	result := &BuildResult{
+		FileName: filename,
+		Smallest: b.smallest,
+		Biggest:  b.biggest,
+	}
+	if x, ok := w.(bytesWriter); ok {
+		result.FileData = x.Bytes()
+	}
+	return result, nil
+}
+
+func (b *Builder) buildProperties(buf []byte) []byte {
+	buf = AppendU32(buf, 0)
+	b.addProperty(propKeySmallest, b.smallest)
+	b.addProperty(propKeyBiggest, b.biggest)
+	for i, key := range b.propKeys {
+		buf = AppendU16(buf, uint16(len(key)))
+		buf = append(buf, key...)
+		val := b.propValues[i]
+		buf = AppendU32(buf, uint32(len(val)))
+		buf = append(buf, val...)
+	}
+	if b.checksumType == crc32Castagnoli {
+		binary.LittleEndian.PutUint32(buf, crc32.Checksum(buf[4:], crc32.MakeTable(crc32.Castagnoli)))
+	}
+	return buf
+}
+
+// Empty returns whether it's empty.
+func (b *Builder) Empty() bool { return len(b.smallest) == 0 }
+
+type footer struct {
+	oldDataOffset      uint32
+	indexOffset        uint32
+	oldIndexOffset     uint32
+	propertiesOffset   uint32
+	compressionType    byte
+	checksumType       byte
+	tableFormatVersion uint16
+	magic              uint32
+}
+
+func (f *footer) marshal() []byte {
+	var b []byte
+	hdr := (*reflect.SliceHeader)(unsafe.Pointer(&b))
+	hdr.Len = footerSize
+	hdr.Cap = footerSize
+	hdr.Data = uintptr(unsafe.Pointer(f))
 	return b
 }
 
-func NewExternalTableBuilder(f *os.File, limiter *rate.Limiter, opt TableBuilderOptions) *Builder {
-	return &Builder{
-		file:        f,
-		w:           fileutil.NewBufferedWriter(f, opt.WriteBufferSize, limiter),
-		buf:         make([]byte, 0, 4*1024),
-		hashEntries: make([]hashEntry, 0, 4*1024),
-		bloomFpr:    opt.LogicalBloomFPR,
-		useGlobalTS: true,
-		opt:         opt,
+func (f *footer) unmarshal(b []byte) {
+	y.Assert(len(b) == footerSize)
+	*f = *(*footer)(unsafe.Pointer(&b[0]))
+}
+
+func (f *footer) dataLen() int {
+	return int(f.oldDataOffset)
+}
+
+func (f *footer) oldDataLen() int {
+	return int(f.indexOffset - f.oldDataOffset)
+}
+
+func (f *footer) indexLen() int {
+	return int(f.oldIndexOffset - f.indexOffset)
+}
+
+func (f *footer) oldIndexLen() int {
+	return int(f.propertiesOffset - f.oldIndexOffset)
+}
+
+func (f *footer) propertiesLen(tableSize int64) int {
+	return int(tableSize) - int(f.propertiesOffset) - footerSize
+}
+
+func (f *footer) validate(tableSize int64) error {
+	// make sure each section has sufficient length.
+	if f.dataLen()+f.oldDataLen()+f.indexLen()+f.oldIndexLen()+f.propertiesLen(tableSize)+
+		footerSize != int(tableSize) {
+		return errors.Errorf("invalid footer %v", f)
+	}
+	return nil
+}
+
+type blockBuffer struct {
+	tmpKeys    entrySlice
+	tmpVals    entrySlice
+	oldVers    []uint64
+	entrySizes []uint32
+	size       int
+}
+
+type blockAddress struct {
+	originFID  uint64
+	originOff  uint32
+	currentOff uint32
+}
+
+type blockBuilder struct {
+	buf        []byte
+	block      blockBuffer
+	blockKeys  entrySlice
+	blockAddrs []blockAddress
+}
+
+func (b *blockBuilder) sameLastKey(key []byte) bool {
+	if b.block.tmpKeys.length() > 0 {
+		last := b.block.tmpKeys.getLast()
+		return bytes.Equal(last, key)
+	}
+	return false
+}
+
+func (b *blockBuilder) setLastEntryOldVersionIfZero(oldVersion uint64) {
+	if b.block.oldVers[len(b.block.oldVers)-1] == 0 {
+		b.block.oldVers[len(b.block.oldVers)-1] = oldVersion
+		b.block.entrySizes[len(b.block.entrySizes)-1] += 8
+		b.block.size += 8
 	}
 }
 
-// Reset this builder with new file.
-func (b *Builder) Reset(f *os.File) {
-	b.file = f
-	b.resetBuffers()
-	b.w.Reset(f)
+func (b *blockBuilder) addEntry(key []byte, val *y.ValueStruct) {
+	b.block.tmpKeys.append(key)
+	b.block.tmpVals.appendVal(val)
+	b.block.oldVers = append(b.block.oldVers, 0)
+	// key_suffix_len(2) + len(key) + meta(1) + version(8) + user_meta_len(1) + len(user_meta) + len(value)
+	entrySize := 2 + len(key) + 1 + 8 + 1 + len(val.UserMeta) + len(val.Value)
+	b.block.entrySizes = append(b.block.entrySizes, uint32(entrySize))
+	b.block.size += entrySize
 }
 
-// SetIsManaged should be called when ingesting a table into a managed DB.
-func (b *Builder) SetIsManaged() {
-	b.useGlobalTS = false
+func (b *blockBuilder) finishBlock(fid uint64, checksumType byte) {
+	defer b.resetBlockBuffer()
+	b.blockKeys.append(b.block.tmpKeys.getEntry(0))
+	b.blockAddrs = append(b.blockAddrs, newBlockAddress(fid, uint32(len(b.buf))))
+	b.buf = AppendU32(b.buf, 0) // checksum place holder.
+	beginOff := len(b.buf)
+	numEntries := b.block.tmpKeys.length()
+	b.buf = AppendU32(b.buf, uint32(numEntries))
+	commonPrefix := b.getBlockCommonPrefix()
+	offset := uint32(0)
+	for i := 0; i < numEntries; i++ {
+		b.buf = AppendU32(b.buf, offset)
+		// The entry size calculated in the first pass use full key size, we need to subtract common prefix size.
+		offset += b.block.entrySizes[i] - uint32(len(commonPrefix))
+	}
+	b.buf = AppendU16(b.buf, uint16(len(commonPrefix)))
+	b.buf = append(b.buf, commonPrefix...)
+	for i := 0; i < numEntries; i++ {
+		b.buildEntry(i, len(commonPrefix))
+	}
+	checksum := uint32(0)
+	if checksumType == crc32Castagnoli {
+		checksum = crc32.Checksum(b.buf[beginOff:], crc32.MakeTable(crc32.Castagnoli))
+	}
+	binary.LittleEndian.PutUint32(b.buf[beginOff-4:], checksum)
 }
 
-func (b *Builder) resetBuffers() {
-	b.counter = 0
+func (b *blockBuilder) buildEntry(i, commonPrefixLen int) {
+	key := b.block.tmpKeys.getEntry(i)
+	keySuffix := key[commonPrefixLen:]
+	b.buf = AppendU16(b.buf, uint16(len(keySuffix)))
+	b.buf = append(b.buf, keySuffix...)
+	valBin := b.block.tmpVals.getEntry(i)
+	var val y.ValueStruct
+	val.Decode(valBin)
+	oldVersion := b.block.oldVers[i]
+	if oldVersion != 0 {
+		val.Meta |= metaHasOld
+	}
+	b.buf = append(b.buf, val.Meta)
+	b.buf = AppendU64(b.buf, val.Version)
+	if oldVersion != 0 {
+		b.buf = AppendU64(b.buf, oldVersion)
+	}
+	b.buf = append(b.buf, byte(len(val.UserMeta)))
+	b.buf = append(b.buf, val.UserMeta...)
+	b.buf = append(b.buf, val.Value...)
+}
+
+func (b *blockBuilder) getBlockCommonPrefix() []byte {
+	firstKey := b.block.tmpKeys.getEntry(0)
+	lastKey := b.block.tmpKeys.getLast()
+	return firstKey[:keyDiffIdx(firstKey, lastKey)]
+}
+
+func (b *blockBuilder) getIndexCommonPrefix() []byte {
+	firstKey := b.blockKeys.getEntry(0)
+	lastKey := b.blockKeys.getLast()
+	return firstKey[:keyDiffIdx(firstKey, lastKey)]
+}
+
+func (b *blockBuilder) resetBlockBuffer() {
+	b.block.tmpKeys.reset()
+	b.block.tmpVals.reset()
+	b.block.oldVers = b.block.oldVers[:0]
+	b.block.entrySizes = b.block.entrySizes[:0]
+	b.block.size = 0
+}
+
+func (b *blockBuilder) resetAll() {
+	b.resetBlockBuffer()
 	b.buf = b.buf[:0]
-	b.writtenLen = 0
-	b.rawWrittenLen = 0
-	b.baseKeys.reset()
-	b.blockEndOffsets = b.blockEndOffsets[:0]
-	b.entryEndOffsets = b.entryEndOffsets[:0]
-	b.hashEntries = b.hashEntries[:0]
-	b.surfKeys = nil
-	b.surfVals = nil
-	b.smallest.UserKey = b.smallest.UserKey[:0]
-	b.biggest.UserKey = b.biggest.UserKey[:0]
-	b.oldBlock = b.oldBlock[:0]
+	b.blockAddrs = b.blockAddrs[:0]
+	b.blockKeys.reset()
 }
 
-// Close closes the TableBuilder.
-func (b *Builder) Close() {}
+func (b *blockBuilder) buildIndex(baseOffset uint32, keyHashes []uint64, bloomFpr float64, checksumType byte) {
+	// At this time the block data is already written to the writer, we can reuse the buffer to build index.
+	b.buf = b.buf[:0]
+	numBlocks := len(b.blockAddrs)
+	// checksum place holder.
+	b.buf = AppendU32(b.buf, 0)
+	b.buf = AppendU32(b.buf, uint32(numBlocks))
+	var commonPrefix []byte
+	if numBlocks > 0 {
+		commonPrefix = b.getIndexCommonPrefix()
+	}
+	commonPrefixLen := len(commonPrefix)
+	keyOffset := 0
+	for i := 0; i < numBlocks; i++ {
+		b.buf = AppendU32(b.buf, uint32(keyOffset))
+		blockKey := b.blockKeys.getEntry(i)
+		keyOffset += len(blockKey) - commonPrefixLen
+	}
+	for i := 0; i < numBlocks; i++ {
+		blockAddr := b.blockAddrs[i]
+		b.buf = AppendU64(b.buf, blockAddr.originFID)
+		b.buf = AppendU32(b.buf, blockAddr.originOff+baseOffset)
+		b.buf = AppendU32(b.buf, blockAddr.currentOff+baseOffset)
+	}
+	b.buf = AppendU16(b.buf, uint16(commonPrefixLen))
+	b.buf = append(b.buf, commonPrefix...)
+	blockKeysLen := len(b.blockKeys.data) - numBlocks*commonPrefixLen
+	b.buf = AppendU32(b.buf, uint32(blockKeysLen))
+	for i := 0; i < numBlocks; i++ {
+		blockKey := b.blockKeys.getEntry(i)
+		b.buf = append(b.buf, blockKey[commonPrefixLen:]...)
+	}
+	if len(keyHashes) > 0 {
+		b.buildBloomFilter(keyHashes, bloomFpr)
+	}
+	if checksumType == crc32Castagnoli {
+		binary.LittleEndian.PutUint32(b.buf, crc32.Checksum(b.buf[4:], crc32.MakeTable(crc32.Castagnoli)))
+	}
+}
 
-// Empty returns whether it's empty.
-func (b *Builder) Empty() bool { return b.writtenLen+len(b.buf)+b.tmpKeys.length() == 0 }
+func (b *blockBuilder) buildBloomFilter(keyHashes []uint64, bloomFpr float64) {
+	bf := bbloom.New(float64(len(keyHashes)), bloomFpr)
+	for _, h := range keyHashes {
+		bf.Add(h)
+	}
+	bloomData := bf.BinaryMarshal()
+	b.buf = AppendU16(b.buf, bloomFilter)
+	b.buf = AppendU32(b.buf, uint32(len(bloomData)))
+	b.buf = append(b.buf, bloomData...)
+}
+
+func newBlockAddress(fid uint64, offset uint32) blockAddress {
+	return blockAddress{
+		originFID:  fid,
+		originOff:  offset,
+		currentOff: offset,
+	}
+}
+
+// BuildResult contains the build result info, if it's file based compaction, fileName should be used to open Table.
+// If it's in memory compaction, FileData and IndexData contains the data.
+type BuildResult struct {
+	FileName string
+	FileData []byte
+	Smallest []byte
+	Biggest  []byte
+}
 
 // keyDiff returns the first index at which the two keys are different.
 func keyDiffIdx(k1, k2 []byte) int {
@@ -226,267 +485,17 @@ func keyDiffIdx(k1, k2 []byte) int {
 	return i
 }
 
-func (b *Builder) addIndex(key y.Key) {
-	if b.smallest.IsEmpty() {
-		b.smallest.Copy(key)
-	}
-	if b.biggest.SameUserKey(key) {
-		return
-	}
-	b.biggest.Copy(key)
-
-	keyHash := farm.Fingerprint64(key.UserKey)
-	// It is impossible that a single table contains 16 million keys.
-	y.Assert(b.baseKeys.length() < maxBlockCnt)
-
-	pos := entryPosition{uint16(b.baseKeys.length()), uint8(b.counter)}
-	b.hashEntries = append(b.hashEntries, hashEntry{pos, keyHash})
-}
-
-func (b *Builder) addHelper(key y.Key, v y.ValueStruct) {
-	// Add key to bloom filter.
-	if len(key.UserKey) > 0 {
-		b.addIndex(key)
-	}
-	b.tmpKeys.append(key.UserKey)
-	v.Version = key.Version
-	b.tmpVals.appendVal(&v)
-	b.tmpOldOffs = append(b.tmpOldOffs, 0)
-	b.counter++
-}
-
-// oldEntry format:
-//   numEntries(4) | endOffsets(4 * numEntries) | entries
-//
-// entry format:
-//   version(8) | value
-func (b *Builder) addOld(key y.Key, v y.ValueStruct) {
-	v.Version = key.Version
-	keyIdx := b.tmpKeys.length() - 1
-	startOff := b.tmpOldOffs[keyIdx]
-	if startOff == 0 {
-		startOff = uint32(len(b.oldBlock))
-		b.tmpOldOffs[keyIdx] = startOff
-	}
-	b.singleKeyOldVers.appendVal(&v)
-}
-
-// entryFormat
-// no old entry:
-//  diffKeyLen(2) | diffKey | 0 | version(8) | value
-// has old entry:
-//  diffKeyLen(2) | diffKey | 1 | oldOffset(4) | version(8) | value
-func (b *Builder) finishBlock() error {
-	if b.tmpKeys.length() == 0 {
-		return nil
-	}
-	if b.singleKeyOldVers.length() > 0 {
-		b.flushSingleKeyOldVers()
-	}
-	firstKey := b.tmpKeys.getEntry(0)
-	lastKey := b.tmpKeys.getLast()
-	blockCommonLen := keyDiffIdx(firstKey, lastKey)
-	for i := 0; i < b.tmpKeys.length(); i++ {
-		key := b.tmpKeys.getEntry(i)
-		b.buf = appendU16(b.buf, uint16(len(key)-blockCommonLen))
-		b.buf = append(b.buf, key[blockCommonLen:]...)
-		if b.tmpOldOffs[i] == 0 {
-			b.buf = append(b.buf, 0)
-		} else {
-			b.buf = append(b.buf, 1)
-			b.buf = append(b.buf, u32ToBytes(b.tmpOldOffs[i])...)
-		}
-		b.buf = append(b.buf, b.tmpVals.getEntry(i)...)
-		b.entryEndOffsets = append(b.entryEndOffsets, uint32(len(b.buf)))
-	}
-	b.buf = append(b.buf, U32SliceToBytes(b.entryEndOffsets)...)
-	b.buf = append(b.buf, u32ToBytes(uint32(len(b.entryEndOffsets)))...)
-	b.buf = appendU16(b.buf, uint16(blockCommonLen))
-
-	// Add base key.
-	b.baseKeys.append(firstKey)
-
-	before := b.w.Offset()
-	if _, err := b.w.Write(b.buf); err != nil {
-		return err
-	}
-	size := b.w.Offset() - before
-	b.blockEndOffsets = append(b.blockEndOffsets, uint32(b.writtenLen+int(size)))
-	b.writtenLen += int(size)
-	b.rawWrittenLen += len(b.buf)
-
-	// Reset the block for the next build.
-	b.entryEndOffsets = b.entryEndOffsets[:0]
-	b.counter = 0
-	b.buf = b.buf[:0]
-	b.tmpKeys.reset()
-	b.tmpVals.reset()
-	b.tmpOldOffs = b.tmpOldOffs[:0]
-	return nil
-}
-
-// Add adds a key-value pair to the block.
-// If doNotRestart is true, we will not restart even if b.counter >= restartInterval.
-func (b *Builder) Add(key y.Key, value y.ValueStruct) error {
-	var lastUserKey []byte
-	if b.tmpKeys.length() > 0 {
-		lastUserKey = b.tmpKeys.getLast()
-	}
-	// Check old before check finish block, so two blocks never have the same key.
-	if bytes.Equal(lastUserKey, key.UserKey) {
-		b.addOld(key, value)
-		return nil
-	} else if b.singleKeyOldVers.length() > 0 {
-		b.flushSingleKeyOldVers()
-	}
-	if b.shouldFinishBlock() {
-		if err := b.finishBlock(); err != nil {
-			return err
-		}
-	}
-	b.addHelper(key, value)
-	return nil // Currently, there is no meaningful error.
-}
-
-func (b *Builder) flushSingleKeyOldVers() {
-	// numEntries
-	b.oldBlock = append(b.oldBlock, u32ToBytes(uint32(b.singleKeyOldVers.length()))...)
-	// endOffsets
-	b.oldBlock = append(b.oldBlock, U32SliceToBytes(b.singleKeyOldVers.endOffs)...)
-	// entries
-	b.oldBlock = append(b.oldBlock, b.singleKeyOldVers.data...)
-	b.singleKeyOldVers.reset()
-}
-
-func (b *Builder) shouldFinishBlock() bool {
-	// If there is no entry till now, we will return false.
-	if b.tmpKeys.length() == 0 {
-		return false
-	}
-	return uint32(b.tmpKeys.size()+b.tmpVals.size()) > uint32(b.opt.BlockSize)
-}
-
-// ReachedCapacity returns true if we... roughly (?) reached capacity?
-func (b *Builder) ReachedCapacity(capacity int64) bool {
-	estimateSz := b.rawWrittenLen + len(b.buf) +
-		4*len(b.blockEndOffsets) + b.baseKeys.size() + len(b.oldBlock)
-	return int64(estimateSz) > capacity
-}
-
-// EstimateSize returns the size of the SST to build.
-func (b *Builder) EstimateSize() int {
-	size := b.rawWrittenLen + len(b.buf) + 4*len(b.blockEndOffsets) + b.baseKeys.size() + len(b.oldBlock)
-	size += 3 * int(float32(len(b.hashEntries))/b.opt.HashUtilRatio)
-	return size
-}
-
-const (
-	idSmallest byte = iota
-	idBiggest
-	idBaseKeysEndOffs
-	idBaseKeys
-	idBlockEndOffsets
-	idBloomFilter
-	idHashIndex
-	idSuRFIndex
-	idOldBlockLen
-)
-
-// BuildResult contains the build result info, if it's file based compaction, fileName should be used to open Table.
-// If it's in memory compaction, FileData and IndexData contains the data.
-type BuildResult struct {
-	FileName  string
-	FileData  []byte
-	IndexData []byte
-	Smallest  y.Key
-	Biggest   y.Key
-}
-
-// Finish finishes the table by appending the index.
-func (b *Builder) Finish() (*BuildResult, error) {
-	err := b.finishBlock() // This will never start a new block.
-	if err != nil {
-		return nil, err
-	}
-	if len(b.oldBlock) > 1 {
-		_, err = b.w.Write(b.oldBlock)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if err = b.w.Finish(); err != nil {
-		return nil, err
-	}
-	result := new(BuildResult)
-	if b.file != nil {
-		idxFile, err := y.OpenTruncFile(IndexFilename(b.file.Name()), false)
-		if err != nil {
-			return nil, err
-		}
-		result.FileName = b.file.Name()
-		b.w.Reset(idxFile)
-	} else {
-		result.FileData = y.Copy(b.w.(*inMemWriter).Bytes())
-		b.w.Reset(nil)
-	}
-
-	// Don't compress the global ts, because it may be updated during ingest.
-	ts := uint64(0)
-	if b.useGlobalTS {
-		// External builder doesn't append ts to the keys, the output sst should has a non-zero global ts.
-		ts = 1
-	}
-
-	encoder := newMetaEncoder(b.buf, ts)
-	encoder.append(b.smallest.UserKey, idSmallest)
-	encoder.append(b.biggest.UserKey, idBiggest)
-	encoder.append(U32SliceToBytes(b.baseKeys.endOffs), idBaseKeysEndOffs)
-	encoder.append(b.baseKeys.data, idBaseKeys)
-	encoder.append(U32SliceToBytes(b.blockEndOffsets), idBlockEndOffsets)
-	if len(b.oldBlock) > 1 {
-		encoder.append(u32ToBytes(uint32(len(b.oldBlock))), idOldBlockLen)
-	}
-
-	var bloomFilter []byte
-	bf := bbloom.New(float64(len(b.hashEntries)), b.bloomFpr)
-	for _, he := range b.hashEntries {
-		bf.Add(he.hash)
-	}
-	bloomFilter = bf.BinaryMarshal()
-	encoder.append(bloomFilter, idBloomFilter)
-
-	hashIndex := buildHashIndex(b.hashEntries, b.opt.HashUtilRatio)
-	encoder.append(hashIndex, idHashIndex)
-
-	if err = encoder.finish(b.w); err != nil {
-		return nil, err
-	}
-
-	if err = b.w.Finish(); err != nil {
-		return nil, err
-	}
-	if b.file == nil {
-		result.IndexData = y.Copy(b.w.(*inMemWriter).Bytes())
-	}
-	result.Smallest.Copy(b.smallest)
-	result.Biggest.Copy(b.biggest)
-	return result, nil
-}
-
-func appendU16(buf []byte, v uint16) []byte {
+func AppendU16(buf []byte, v uint16) []byte {
 	return append(buf, byte(v), byte(v>>8))
 }
 
-func u32ToBytes(v uint32) []byte {
-	var uBuf [4]byte
-	binary.LittleEndian.PutUint32(uBuf[:], v)
-	return uBuf[:]
+func AppendU32(buf []byte, v uint32) []byte {
+	return append(buf, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
 }
 
-func U64ToBytes(v uint64) []byte {
-	var uBuf [8]byte
-	binary.LittleEndian.PutUint64(uBuf[:], v)
-	return uBuf[:]
+func AppendU64(buf []byte, v uint64) []byte {
+	return append(buf, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
+		byte(v>>32), byte(v>>40), byte(v>>48), byte(v>>56))
 }
 
 func U32SliceToBytes(u32s []uint32) []byte {
@@ -511,71 +520,4 @@ func BytesToU32Slice(b []byte) []uint32 {
 	hdr.Cap = hdr.Len
 	hdr.Data = uintptr(unsafe.Pointer(&b[0]))
 	return u32s
-}
-
-func bytesToU32(b []byte) uint32 {
-	return binary.LittleEndian.Uint32(b)
-}
-
-func bytesToU64(b []byte) uint64 {
-	return binary.LittleEndian.Uint64(b)
-}
-
-type metaEncoder struct {
-	buf []byte
-}
-
-func newMetaEncoder(buf []byte, globalTS uint64) *metaEncoder {
-	buf = append(buf, U64ToBytes(globalTS)...)
-	return &metaEncoder{
-		buf: buf,
-	}
-}
-
-func (e *metaEncoder) append(d []byte, id byte) {
-	e.buf = append(e.buf, id)
-	e.buf = append(e.buf, u32ToBytes(uint32(len(d)))...)
-	e.buf = append(e.buf, d...)
-}
-
-func (e *metaEncoder) finish(w tableWriter) error {
-	_, err := w.Write(e.buf)
-	return err
-}
-
-type metaDecoder struct {
-	buf      []byte
-	globalTS uint64
-
-	cursor int
-}
-
-func newMetaDecoder(buf []byte) *metaDecoder {
-	globalTS := bytesToU64(buf[:8])
-	buf = buf[8:]
-	return &metaDecoder{
-		buf:      buf,
-		globalTS: globalTS,
-	}
-}
-
-func (e *metaDecoder) valid() bool {
-	return e.cursor < len(e.buf)
-}
-
-func (e *metaDecoder) currentId() byte {
-	return e.buf[e.cursor]
-}
-
-func (e *metaDecoder) decode() []byte {
-	cursor := e.cursor + 1
-	l := int(bytesToU32(e.buf[cursor:]))
-	cursor += 4
-	d := e.buf[cursor : cursor+l]
-	return d
-}
-
-func (e *metaDecoder) next() {
-	l := int(bytesToU32(e.buf[e.cursor+1:]))
-	e.cursor += 1 + 4 + l
 }

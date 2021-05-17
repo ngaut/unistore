@@ -60,7 +60,6 @@ type Engine struct {
 	NumCompactors  int   `toml:"num-compactors"`
 	SurfStartLevel int   `toml:"surf-start-level"`
 	BlockCacheSize int64 `toml:"block-cache-size"`
-	IndexCacheSize int64 `toml:"index-cache-size"`
 
 	// Only used in tests.
 	VolatileMode bool
@@ -119,7 +118,6 @@ var DefaultConf = Config{
 		SurfStartLevel:     8,
 		L1Size:             512 * MB,
 		BlockCacheSize:     0, // 0 means disable block cache, use mmap to access sst.
-		IndexCacheSize:     0,
 		CompactL0WhenClose: true,
 	},
 	PessimisticTxn: PessimisticTxn{

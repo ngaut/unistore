@@ -125,6 +125,7 @@ func createKVDB(subPath string, safePoint *tikv.SafePoint, listener *raftstore.M
 	allocator sdb.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*sdb.DB, error) {
 	opts := sdb.DefaultOpt
 	opts.MaxMemTableSize = conf.MaxMemTableSize
+	opts.MaxBlockCacheSize = conf.BlockCacheSize
 	opts.NumCompactors = conf.NumCompactors
 	opts.CFs = []sdb.CFConfig{{Managed: true}, {Managed: false, ReadCommitted: true}, {Managed: true}}
 	opts.S3Options.InstanceID = conf.S3.InstanceID

@@ -17,251 +17,115 @@
 package sstable
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
-	"io"
-	"math"
-	"os"
-	"path"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"unsafe"
-
 	"github.com/coocood/bbloom"
 	"github.com/ngaut/unistore/sdb/buffer"
-	"github.com/ngaut/unistore/sdb/fileutil"
+	"github.com/ngaut/unistore/sdb/cache"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
+	"hash/crc32"
+	"math"
+	"path"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"unsafe"
 )
 
 const (
-	fileSuffix    = ".sst"
-	idxFileSuffix = ".idx"
-
-	intSize = int(unsafe.Sizeof(int(0)))
+	fileSuffix = ".sst"
+	intSize    = int(unsafe.Sizeof(int(0)))
 )
-
-func IndexFilename(tableFilename string) string { return tableFilename + idxFileSuffix }
-
-type TableIndex struct {
-	IndexData       []byte
-	globalTS        uint64
-	smallest        []byte
-	biggest         []byte
-	oldOffset       uint32
-	blockEndOffsets []uint32
-	baseKeys        entrySlice
-	bf              *bbloom.Bloom
-	hIdx            *hashIndex
-}
-
-func NewTableIndex(indexData []byte) *TableIndex {
-	idx := newMetaDecoder(indexData).decodeTableIndex()
-	idx.IndexData = indexData
-	return idx
-}
-
-// Table represents a loaded table file with the info we have about it
-type Table struct {
-	sync.Mutex
-	filename string
-
-	globalTs          uint64
-	tableSize         int64
-	smallest, biggest y.Key
-	id                uint64
-
-	file TableFile
-
-	compacting int32
-
-	oldBlockLen int64
-}
-
-// Delete delete table's file from disk.
-func (t *Table) Delete() error {
-	t.file.Delete()
-	return nil
-}
 
 // OpenTable assumes file has only one table and opens it.  Takes ownership of fd upon function
 // entry.  Returns a table with one reference count on it (decrementing which may delete the file!
 // -- consider t.Close() instead).  The fd has to writeable because we call Truncate on it before
 // deleting.
-func OpenTable(filename string, reader TableFile) (*Table, error) {
-	id, ok := ParseFileID(filename)
-	if !ok {
-		return nil, errors.Errorf("Invalid filename: %s", filename)
-	}
-
+func OpenTable(file TableFile, cache *cache.Cache) (*Table, error) {
 	t := &Table{
-		filename: filename,
-		id:       id,
-		file:     reader,
+		TableFile: file,
+		cache:     cache,
 	}
-	if err := t.initTableInfo(); err != nil {
-		t.Close()
+	if file.Size() < int64(footerSize) {
+		return nil, errors.Errorf("invalid file size %d", file.Size())
+	}
+	footerData := make([]byte, footerSize)
+	_, err := file.ReadAt(footerData, file.Size()-int64(footerSize))
+	if err != nil {
 		return nil, err
+	}
+	t.footer.unmarshal(footerData)
+	if t.footer.magic != MagicNumber {
+		return nil, errors.Errorf("magic number not match expect %d got %d", MagicNumber, t.footer.magic)
+	}
+	var indexData, oldIndexData, propsData []byte
+	if file.IsMMap() {
+		indexData = file.MMapRead(int64(t.footer.indexOffset), t.footer.indexLen())
+		oldIndexData = file.MMapRead(int64(t.footer.oldIndexOffset), t.footer.oldIndexLen())
+		propsData = file.MMapRead(int64(t.footer.propertiesOffset), t.footer.propertiesLen(file.Size()))
+	} else {
+		indexData = make([]byte, t.footer.indexLen())
+		_, err = file.ReadAt(indexData, int64(t.footer.indexOffset))
+		if err != nil {
+			return nil, err
+		}
+		oldIndexData = make([]byte, t.footer.oldIndexLen())
+		_, err = file.ReadAt(oldIndexData, int64(t.footer.oldIndexOffset))
+		if err != nil {
+			return nil, err
+		}
+		propsData = make([]byte, t.footer.propertiesLen(file.Size()))
+		_, err = file.ReadAt(propsData, int64(t.footer.propertiesOffset))
+		if err != nil {
+			return nil, err
+		}
+	}
+	t.idx, err = newIndex(indexData, t.footer.checksumType)
+	if err != nil {
+		return nil, err
+	}
+	t.oldIdx, err = newIndex(oldIndexData, t.footer.checksumType)
+	if err != nil {
+		return nil, err
+	}
+	if err = validateChecksum(propsData, t.footer.checksumType); err != nil {
+		return nil, err
+	}
+	propsData = propsData[4:]
+	var key string
+	var val []byte
+	for len(propsData) > 0 {
+		key, val, propsData = parsePropData(propsData)
+		switch key {
+		case propKeySmallest:
+			t.smallest = val
+		case propKeyBiggest:
+			t.biggest = val
+		}
 	}
 	return t, nil
 }
 
-func OpenMMapTable(filename string) (*Table, error) {
-	reader, err1 := NewMMapFile(filename)
-	if err1 != nil {
-		return nil, err1
-	}
-	return OpenTable(filename, reader)
-}
-
-// OpenInMemoryTable opens a table that has data in memory.
-func OpenInMemoryTable(reader *InMemFile) (*Table, error) {
-	t := &Table{
-		file: reader,
-	}
-	if err := t.initTableInfo(); err != nil {
-		return nil, err
-	}
-	return t, nil
-}
-
-// Close closes the open table.  (Releases resources back to the OS.)
-func (t *Table) Close() error {
-	t.file.Close()
-	return nil
-}
-
-func (t *Table) NewIterator(reversed bool) y.Iterator {
-	return t.newIterator(reversed)
-}
-
-func (t *Table) Get(key y.Key, keyHash uint64) (y.ValueStruct, error) {
-	resultKey, resultVs, ok, err := t.pointGet(key, keyHash)
-	if err != nil {
-		return y.ValueStruct{}, err
-	}
-	if !ok {
-		it := t.NewIterator(false)
-		defer it.Close()
-		it.Seek(key.UserKey)
-		if !it.Valid() {
-			return y.ValueStruct{}, nil
-		}
-		if !key.SameUserKey(it.Key()) {
-			return y.ValueStruct{}, nil
-		}
-		resultKey, resultVs = it.Key(), it.Value()
-	} else if resultKey.IsEmpty() {
-		return y.ValueStruct{}, nil
-	}
-	result := resultVs
-	result.Version = resultKey.Version
-	return result, nil
-}
-
-// pointGet try to lookup a key and its value by table's hash index.
-// If it find an hash collision the last return value will be false,
-// which means caller should fallback to seek search. Otherwise it value will be true.
-// If the hash index does not contain such an element the returned key will be nil.
-func (t *Table) pointGet(key y.Key, keyHash uint64) (y.Key, y.ValueStruct, bool, error) {
-	idx, err := t.file.ReadIndex()
-	if err != nil {
-		return y.Key{}, y.ValueStruct{}, false, err
-	}
-	if idx.bf != nil && !idx.bf.Has(keyHash) {
-		return y.Key{}, y.ValueStruct{}, true, err
-	}
-
-	blkIdx, offset := uint32(resultFallback), uint8(0)
-	if idx.hIdx != nil {
-		blkIdx, offset = idx.hIdx.lookup(keyHash)
-	}
-	if blkIdx == resultFallback {
-		return y.Key{}, y.ValueStruct{}, false, nil
-	}
-	if blkIdx == resultNoEntry {
-		return y.Key{}, y.ValueStruct{}, true, nil
-	}
-
-	it := t.newIterator(false)
-	defer it.Close()
-	it.seekFromOffset(int(blkIdx), int(offset), key.UserKey)
-
-	if !it.Valid() || !key.SameUserKey(it.Key()) {
-		return y.Key{}, y.ValueStruct{}, true, it.Error()
-	}
-	if !y.SeekToVersion(it, key.Version) {
-		return y.Key{}, y.ValueStruct{}, true, it.Error()
-	}
-	return it.Key(), it.Value(), true, nil
-}
-
-func (t *Table) initTableInfo() error {
-	index, err := t.file.ReadIndex()
-	if err != nil {
-		return err
-	}
-
-	d := newMetaDecoder(index.IndexData)
-	t.globalTs = d.globalTS
-
-	for ; d.valid(); d.next() {
-		switch d.currentId() {
-		case idSmallest:
-			if k := d.decode(); len(k) != 0 {
-				t.smallest = y.KeyWithTs(y.Copy(k), math.MaxUint64)
-			}
-		case idBiggest:
-			if k := d.decode(); len(k) != 0 {
-				t.biggest = y.KeyWithTs(y.Copy(k), 0)
-			}
-		case idBlockEndOffsets:
-			offsets := BytesToU32Slice(d.decode())
-			t.tableSize = int64(offsets[len(offsets)-1])
-		case idOldBlockLen:
-			t.oldBlockLen = int64(bytesToU32(d.decode()))
-			t.tableSize += t.oldBlockLen
-		}
-	}
-	return nil
-}
-
-func (d *metaDecoder) decodeTableIndex() *TableIndex {
-	idx := new(TableIndex)
-	for ; d.valid(); d.next() {
-		switch d.currentId() {
-		case idBaseKeysEndOffs:
-			idx.baseKeys.endOffs = BytesToU32Slice(d.decode())
-		case idBaseKeys:
-			idx.baseKeys.data = d.decode()
-		case idBlockEndOffsets:
-			idx.blockEndOffsets = BytesToU32Slice(d.decode())
-		case idBloomFilter:
-			if d := d.decode(); len(d) != 0 {
-				idx.bf = new(bbloom.Bloom)
-				idx.bf.BinaryUnmarshal(d)
-			}
-		case idHashIndex:
-			if d := d.decode(); len(d) != 0 {
-				idx.hIdx = new(hashIndex)
-				idx.hIdx.readIndex(d)
-			}
-		}
-	}
-	return idx
-}
-
-func (t *Table) PrepareForCompaction() error {
-	return t.file.LoadToMem()
+func parsePropData(propsData []byte) (key string, val, remained []byte) {
+	keyLen := binary.LittleEndian.Uint16(propsData)
+	propsData = propsData[2:]
+	key = string(propsData[:keyLen])
+	propsData = propsData[keyLen:]
+	valLen := binary.LittleEndian.Uint32(propsData)
+	propsData = propsData[4:]
+	val = propsData[:valLen]
+	propsData = propsData[valLen:]
+	remained = propsData
+	return
 }
 
 type block struct {
-	offset  int
-	data    []byte
-	baseKey []byte
-
+	data      []byte
 	reference int32
 }
 
@@ -295,85 +159,118 @@ func (b *block) size() int64 {
 	return int64(intSize + len(b.data))
 }
 
-func (t *Table) block(idx int, index *TableIndex) (*block, error) {
-	y.Assert(idx >= 0)
-
-	if idx >= len(index.blockEndOffsets) {
-		return &block{}, io.EOF
-	}
-	return t.loadBlock(idx, index)
+type Table struct {
+	TableFile
+	cache    *cache.Cache
+	footer   footer
+	smallest []byte
+	biggest  []byte
+	idx      *nIndex
+	oldIdx   *nIndex
 }
 
-func (t *Table) loadBlock(idx int, index *TableIndex) (*block, error) {
-	var startOffset int
-	if idx > 0 {
-		startOffset = int(index.blockEndOffsets[idx-1])
-	}
-	endOffset := int(index.blockEndOffsets[idx])
-	dataLen := endOffset - startOffset
-	var blk *block
-	var err error
-	if blk, err = t.file.readBlock(int64(startOffset), int64(dataLen)); err != nil {
-		return &block{}, errors.Wrapf(err,
-			"failed to read from file: %s at offset: %d, len: %d", t.filename, blk.offset, dataLen)
-	}
-	blk.baseKey = index.baseKeys.getEntry(idx)
-	return blk, nil
+func (t *Table) PrepareForCompaction() error {
+	return t.LoadToRam()
 }
 
-// HasGlobalTs returns table does set global ts.
-func (t *Table) HasGlobalTs() bool {
-	return t.globalTs != 0
-}
-
-// SetGlobalTs update the global ts of external ingested tables.
-func (t *Table) SetGlobalTs(ts uint64) error {
-	idxFd, err := os.OpenFile(IndexFilename(t.filename), os.O_RDWR, 0600)
-	if err != nil {
-		return err
+func (t *Table) loadBlock(pos int) (*block, error) {
+	addr := t.idx.blockAddrs[pos]
+	var length int
+	if pos+1 < t.idx.numBlocks() {
+		length = int(t.idx.blockAddrs[pos+1].currentOff - addr.currentOff)
+	} else {
+		length = t.footer.dataLen() - int(addr.currentOff)
 	}
-	if _, err := idxFd.WriteAt(U64ToBytes(ts), 0); err != nil {
-		return err
+	return t.loadBlockByAddrLen(addr, length)
+}
+
+func (t *Table) loadOldBlock(pos int) (*block, error) {
+	addr := t.oldIdx.blockAddrs[pos]
+	var length int
+	if pos+1 < t.oldIdx.numBlocks() {
+		length = int(t.oldIdx.blockAddrs[pos+1].currentOff - addr.currentOff)
+	} else {
+		length = int(t.footer.indexOffset - addr.currentOff)
 	}
-	if err := fileutil.Fsync(idxFd); err != nil {
-		return err
+	return t.loadBlockByAddrLen(addr, length)
+}
+
+func (t *Table) loadBlockByAddrLen(addr blockAddress, length int) (*block, error) {
+	if t.IsMMap() {
+		data := t.MMapRead(int64(addr.currentOff), length)
+		return &block{data: data[4:]}, nil
 	}
-	idxFd.Close()
-	t.globalTs = ts
-	return nil
+	return t.readBlock(addr, length)
 }
 
-func (t *Table) MarkCompacting(flag bool) {
-	if flag {
-		atomic.StoreInt32(&t.compacting, 1)
+func (t *Table) readBlock(addr blockAddress, length int) (*block, error) {
+	for {
+		blk, err := t.cache.GetOrCompute(blockCacheKey(uint32(addr.originFID), addr.originOff), func() (interface{}, int64, error) {
+			data := buffer.GetBuffer(length)
+			if _, err := t.ReadAt(data, int64(addr.currentOff)); err != nil {
+				buffer.PutBuffer(data)
+				return nil, 0, err
+			}
+			if err := validateChecksum(data, t.footer.checksumType); err != nil {
+				return nil, 0, err
+			}
+			blk := &block{
+				data:      data[4:],
+				reference: 1,
+			}
+			return blk, int64(length), nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		b := blk.(*block)
+		// When a block is evicted, the block counter fail to add reference.
+		if ok := b.add(); !ok {
+			// Add reference failed, so try to read block again until success.
+			continue
+		}
+		return b, nil
 	}
-	atomic.StoreInt32(&t.compacting, 0)
 }
 
-func (t *Table) IsCompacting() bool {
-	return atomic.LoadInt32(&t.compacting) == 1
+func (t *Table) NewIterator(reversed bool) y.Iterator {
+	return &Iterator{t: t, reversed: reversed}
 }
 
-func (t *Table) blockCacheKey(idx int) uint64 {
-	y.Assert(t.ID() < math.MaxUint32)
-	y.Assert(idx < math.MaxUint32)
-	return (t.ID() << 32) | uint64(idx)
+func (t *Table) Get(key y.Key, keyHash uint64) (y.ValueStruct, error) {
+	if t.idx.bloom != nil {
+		if !t.idx.bloom.Has(keyHash) {
+			return y.ValueStruct{}, nil
+		}
+	}
+	it := t.NewIterator(false)
+	defer it.Close()
+	it.Seek(key.UserKey)
+	if !it.Valid() || !key.SameUserKey(it.Key()) {
+		return y.ValueStruct{}, nil
+	}
+	for it.Key().Version > key.Version {
+		if !it.NextVersion() {
+			return y.ValueStruct{}, nil
+		}
+	}
+	return cloneValue(it.Value()), nil
 }
 
-// Size is its file size in bytes
-func (t *Table) Size() int64 { return t.tableSize }
+func cloneValue(v y.ValueStruct) y.ValueStruct {
+	bin := v.EncodeTo(make([]byte, 0, v.EncodedSize()))
+	var n y.ValueStruct
+	n.Decode(bin)
+	return n
+}
 
-// Smallest is its smallest key, or nil if there are none
-func (t *Table) Smallest() y.Key { return t.smallest }
+func (t *Table) Smallest() y.Key {
+	return y.KeyWithTs(t.smallest, math.MaxUint64)
+}
 
-// Biggest is its biggest key, or nil if there are none
-func (t *Table) Biggest() y.Key { return t.biggest }
-
-// Filename is NOT the file name.  Just kidding, it is.
-func (t *Table) Filename() string { return t.filename }
-
-// ID is the table's ID number (used to make the file name).
-func (t *Table) ID() uint64 { return t.id }
+func (t *Table) Biggest() y.Key {
+	return y.KeyWithTs(t.biggest, 0)
+}
 
 func (t *Table) HasOverlap(start, end y.Key, includeEnd bool) bool {
 	if start.Compare(t.Biggest()) > 0 {
@@ -385,19 +282,11 @@ func (t *Table) HasOverlap(start, end y.Key, includeEnd bool) bool {
 	} else if cmp == 0 {
 		return includeEnd
 	}
-
-	idx, err := t.file.ReadIndex()
-	if err != nil {
-		return true
-	}
-
-	// If there are errors occurred during seeking,
-	// we assume the table has overlapped with the range to prevent data loss.
-	it := t.newIteratorWithIdx(false, idx)
+	it := t.NewIterator(false).(*Iterator)
 	defer it.Close()
 	it.Seek(start.UserKey)
 	if !it.Valid() {
-		return it.Error() != nil
+		return it.err != nil
 	}
 	if cmp := it.Key().Compare(end); cmp > 0 {
 		return false
@@ -405,6 +294,101 @@ func (t *Table) HasOverlap(start, end y.Key, includeEnd bool) bool {
 		return includeEnd
 	}
 	return true
+}
+
+type nIndex struct {
+	commonPrefix []byte
+	blockKeyOffs []uint32
+	blockAddrs   []blockAddress
+	blockKeys    []byte
+	data         []byte
+	bloom        *bbloom.Bloom
+}
+
+func (idx *nIndex) numBlocks() int {
+	return len(idx.blockKeyOffs)
+}
+
+func (idx *nIndex) seekBlock(key []byte) int {
+	if len(key) <= len(idx.commonPrefix) {
+		if bytes.Compare(key, idx.commonPrefix) <= 0 {
+			return 0
+		}
+		return len(idx.blockKeyOffs)
+	}
+	cmp := bytes.Compare(key[:len(idx.commonPrefix)], idx.commonPrefix)
+	if cmp < 0 {
+		return 0
+	} else if cmp > 0 {
+		return len(idx.blockKeyOffs)
+	}
+	diffKey := key[len(idx.commonPrefix):]
+	return sort.Search(len(idx.blockKeyOffs), func(i int) bool {
+		return bytes.Compare(idx.blockDiffKey(i), diffKey) > 0
+	})
+}
+
+func (idx *nIndex) blockDiffKey(i int) []byte {
+	off := idx.blockKeyOffs[i]
+	endOff := uint32(len(idx.blockKeys))
+	if i+1 < len(idx.blockKeyOffs) {
+		endOff = idx.blockKeyOffs[i+1]
+	}
+	return idx.blockKeys[off:endOff]
+}
+
+func newIndex(data []byte, checksumType byte) (*nIndex, error) {
+	idx := &nIndex{data: data}
+	if err := validateChecksum(data, checksumType); err != nil {
+		return nil, err
+	}
+	off := 4
+	numBlocks := int(binary.LittleEndian.Uint32(data[off:]))
+	off += 4
+	idx.blockKeyOffs = BytesToU32Slice(data[off : off+4*numBlocks])
+	off += 4 * numBlocks
+	hdr := (*reflect.SliceHeader)(unsafe.Pointer(&idx.blockAddrs))
+	hdr.Len = numBlocks
+	hdr.Cap = hdr.Len
+	hdr.Data = uintptr(unsafe.Pointer(&data[off]))
+	off += blockAddrSize * numBlocks
+	commonPrefixLen := int(binary.LittleEndian.Uint16(data[off:]))
+	off += 2
+	idx.commonPrefix = data[off : off+commonPrefixLen]
+	off += commonPrefixLen
+	blockKeysLen := int(binary.LittleEndian.Uint32(data[off:]))
+	off += 4
+	idx.blockKeys = data[off : off+blockKeysLen]
+	off += blockKeysLen
+	for len(data[off:]) > 0 {
+		auxType := binary.LittleEndian.Uint16(data[off:])
+		off += 2
+		auxLen := int(binary.LittleEndian.Uint32(data[off:]))
+		off += 4
+		auxData := data[off : off+auxLen]
+		off += auxLen
+		switch auxType {
+		case bloomFilter:
+			idx.bloom = new(bbloom.Bloom)
+			idx.bloom.BinaryUnmarshal(auxData)
+		}
+	}
+	return idx, nil
+}
+
+func validateChecksum(data []byte, checksumType byte) error {
+	if len(data) < 4 {
+		return errors.New("data is too short")
+	}
+	checksum := binary.LittleEndian.Uint32(data)
+	content := data[4:]
+	if checksumType == crc32Castagnoli {
+		gotChecksum := crc32.Checksum(content, crc32.MakeTable(crc32.Castagnoli))
+		if checksum != gotChecksum {
+			return errors.Errorf("checksum mismatch expect %d got %d", checksum, gotChecksum)
+		}
+	}
+	return nil
 }
 
 // ParseFileID reads the file id out of a filename.

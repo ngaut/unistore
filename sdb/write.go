@@ -16,6 +16,18 @@ type memTables struct {
 	tables []*memtable.CFTable // tables from new to old, the first one is mutable.
 }
 
+type l0Tables struct {
+	tables []*sstable.L0Table
+}
+
+func (sl0s *l0Tables) totalSize() int64 {
+	var size int64
+	for _, tbl := range sl0s.tables {
+		size += tbl.Size()
+	}
+	return size
+}
+
 type engineTask struct {
 	writeTask       *WriteBatch
 	preSplitTask    *preSplitTask

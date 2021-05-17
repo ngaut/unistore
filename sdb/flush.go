@@ -97,7 +97,7 @@ func (sdb *DB) flushMemTable(shard *Shard, m *memtable.CFTable, props *sdbpb.Pro
 		return nil, err
 	}
 	writer := fileutil.NewBufferedWriter(fd, sdb.opt.TableBuilderOptions.WriteBufferSize, nil)
-	builder := newL0Builder(sdb.numCFs, sdb.opt.TableBuilderOptions, m.GetVersion())
+	builder := sstable.NewL0Builder(sdb.numCFs, id, sdb.opt.TableBuilderOptions, m.GetVersion())
 	for cf := 0; cf < sdb.numCFs; cf++ {
 		it := m.NewIterator(cf, false)
 		if it == nil {
@@ -131,8 +131,8 @@ func (sdb *DB) flushMemTable(shard *Shard, m *memtable.CFTable, props *sdbpb.Pro
 	_ = fd.Close()
 	result := &sstable.BuildResult{
 		FileName: filename,
-		Smallest: y.KeyWithTs(shard.Start, 0),
-		Biggest:  y.KeyWithTs(shard.End, 0),
+		Smallest: shard.Start,
+		Biggest:  shard.End,
 	}
 	if sdb.s3c != nil {
 		err = putSSTBuildResultToS3(sdb.s3c, result)
@@ -175,14 +175,14 @@ func atomicRemoveMemTable(pointer *unsafe.Pointer, cnt int) {
 	}
 }
 
-func atomicAddL0(shard *Shard, l0Tbls ...*l0Table) {
+func atomicAddL0(shard *Shard, l0Tbls ...*sstable.L0Table) {
 	if len(l0Tbls) == 0 {
 		return
 	}
 	pointer := shard.l0s
 	for {
 		oldL0Tbls := (*l0Tables)(atomic.LoadPointer(pointer))
-		newL0Tbls := &l0Tables{make([]*l0Table, 0, len(oldL0Tbls.tables)+1)}
+		newL0Tbls := &l0Tables{make([]*sstable.L0Table, 0, len(oldL0Tbls.tables)+1)}
 		newL0Tbls.tables = append(newL0Tbls.tables, l0Tbls...)
 		newL0Tbls.tables = append(newL0Tbls.tables, oldL0Tbls.tables...)
 		if atomic.CompareAndSwapPointer(pointer, unsafe.Pointer(oldL0Tbls), unsafe.Pointer(newL0Tbls)) {
@@ -198,9 +198,9 @@ func atomicRemoveL0(shard *Shard, cnt int) int64 {
 		var size int64
 		oldL0Tbls := (*l0Tables)(atomic.LoadPointer(pointer))
 		for i := len(oldL0Tbls.tables) - cnt; i < len(oldL0Tbls.tables); i++ {
-			size += oldL0Tbls.tables[i].size
+			size += oldL0Tbls.tables[i].Size()
 		}
-		newL0Tbls := &l0Tables{make([]*l0Table, len(oldL0Tbls.tables)-cnt)}
+		newL0Tbls := &l0Tables{make([]*sstable.L0Table, len(oldL0Tbls.tables)-cnt)}
 		copy(newL0Tbls.tables, oldL0Tbls.tables)
 		if atomic.CompareAndSwapPointer(pointer, unsafe.Pointer(oldL0Tbls), unsafe.Pointer(newL0Tbls)) {
 			log.S().Infof("shard %d:%d atomic removed %d l0s", shard.ID, shard.Ver, cnt)

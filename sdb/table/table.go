@@ -14,7 +14,5 @@ type Table interface {
 	Smallest() y.Key
 	Biggest() y.Key
 	HasOverlap(start, end y.Key, includeEnd bool) bool
-	IsCompacting() bool
-	MarkCompacting(flag bool)
 	Close() error
 }

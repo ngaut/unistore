@@ -106,7 +106,7 @@ func (s *Shard) tableIDs() []uint64 {
 	var ids []uint64
 	l0s := s.loadL0Tables()
 	for _, tbl := range l0s.tables {
-		ids = append(ids, tbl.fid)
+		ids = append(ids, tbl.ID())
 	}
 	s.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
 		for _, tbl := range level.tables {

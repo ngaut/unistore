@@ -23,7 +23,6 @@ type Table struct {
 	skl         *skiplist
 	id          uint64
 	pendingList unsafe.Pointer // *listNode
-	compacting  int32
 }
 
 func New(arenaSize int64, id uint64) *Table {
@@ -116,17 +115,6 @@ func (t *Table) HasOverlap(start, end y.Key, includeEnd bool) bool {
 		return includeEnd
 	}
 	return true
-}
-
-func (t *Table) MarkCompacting(flag bool) {
-	if flag {
-		atomic.StoreInt32(&t.compacting, 1)
-	}
-	atomic.StoreInt32(&t.compacting, 0)
-}
-
-func (t *Table) IsCompacting() bool {
-	return atomic.LoadInt32(&t.compacting) == 1
 }
 
 // PutToSkl directly insert entry into SkipList.
