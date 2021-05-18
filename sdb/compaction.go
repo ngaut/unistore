@@ -927,6 +927,14 @@ func (sdb *DB) applyCompaction(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 	}
 	del := &deletions{resources: map[uint64]epoch.Resource{}}
 	if comp.Level == 0 {
+		l0Tbls := shard.loadL0Tables()
+		if l0Tbls != nil {
+			for _, tbl := range l0Tbls.tables {
+				if containsUint64(comp.TopDeletes, tbl.fid) {
+					del.add(tbl.fid, tbl)
+				}
+			}
+		}
 		for cf := 0; cf < sdb.numCFs; cf++ {
 			err := sdb.compactionUpdateLevelHandler(shard, cf, 1, comp.TableCreates, comp.BottomDeletes, del)
 			if err != nil {
