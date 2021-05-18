@@ -114,7 +114,7 @@ func createRaftDB(subPath string, conf *config.Engine) (*badger.DB, error) {
 	opts.LevelOneSize = conf.L1Size
 	opts.SyncWrites = conf.SyncWrite
 	opts.MaxBlockCacheSize = conf.BlockCacheSize
-	opts.MaxIndexCacheSize = conf.IndexCacheSize
+	opts.MaxIndexCacheSize = conf.BlockCacheSize / 4
 	opts.TableBuilderOptions.SuRFStartLevel = conf.SurfStartLevel
 	opts.CompactL0WhenClose = conf.CompactL0WhenClose
 	opts.VolatileMode = conf.VolatileMode

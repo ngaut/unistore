@@ -2,7 +2,6 @@ package tikv
 
 import (
 	"bytes"
-	"github.com/ngaut/unistore/sdb"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -26,8 +25,7 @@ import (
 type MockRegionManager struct {
 	regionManager
 
-	db            *sdb.DB
-	regionShard   *sdb.Shard
+	db            *badger.DB
 	sortedRegions *btree.BTree
 	stores        map[uint64]*metapb.Store
 	id            uint64
@@ -36,7 +34,7 @@ type MockRegionManager struct {
 	closed        uint32
 }
 
-func NewMockRegionManager(db *sdb.DB, clusterID uint64, opts RegionOptions) (*MockRegionManager, error) {
+func NewMockRegionManager(db *badger.DB, clusterID uint64, opts RegionOptions) (*MockRegionManager, error) {
 	rm := &MockRegionManager{
 		db:            db,
 		clusterID:     clusterID,
@@ -204,15 +202,18 @@ func (rm *MockRegionManager) Bootstrap(stores []*metapb.Store, region *metapb.Re
 	if err != nil {
 		return err
 	}
-	wb := rm.db.NewWriteBatch(rm.regionShard)
-	y.Assert(wb.Put(raftCF, InternalStoreMetaKey, y.ValueStruct{Value: storeBuf}) == nil)
-	return rm.db.Write(wb)
+	return rm.db.Update(func(txn *badger.Txn) error {
+		return txn.Set(InternalStoreMetaKey, storeBuf)
+	})
 }
 
 func (rm *MockRegionManager) IsBootstrapped() (bool, error) {
-	snap := rm.db.NewSnapshot(rm.regionShard)
-	defer snap.Discard()
-	item, err := snap.Get(raftCF, y.KeyWithTs(InternalStoreMetaKey, 0))
+	var item *badger.Item
+	err := rm.db.View(func(txn *badger.Txn) error {
+		var err2 error
+		item, err2 = txn.Get(InternalStoreMetaKey)
+		return err2
+	})
 	if err != nil && err != badger.ErrKeyNotFound {
 		return false, err
 	}
@@ -289,21 +290,23 @@ func (rm *MockRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest, _ *req
 }
 
 func (rm *MockRegionManager) calculateSplitKeys(start, end []byte, count int) [][]byte {
-	region, _ := rm.GetRegionByEndKey(end)
 	var keys [][]byte
-	snap := rm.db.NewSnapshot(rm.db.GetShard(region.Id))
-	defer snap.Discard()
-	it := snap.NewIterator(writeCF, false, true)
-	for it.Seek(start); it.Valid(); it.Next() {
-		item := it.Item()
-		key := item.Key()
-		if bytes.Compare(key, end) >= 0 {
-			break
+	err := rm.db.View(func(txn *badger.Txn) error {
+		iter := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer iter.Close()
+		for iter.Seek(start); iter.Valid(); iter.Next() {
+			item := iter.Item()
+			key := item.Key()
+			if bytes.Compare(key, end) >= 0 {
+				break
+			}
+			keys = append(keys, safeCopy(key))
 		}
-
-		keys = append(keys, safeCopy(key))
+		return nil
+	})
+	if err != nil {
+		return nil
 	}
-
 	splitKeys := make([][]byte, 0, count)
 	quotient := len(keys) / count
 	remainder := len(keys) % count
@@ -445,11 +448,12 @@ func (rm *MockRegionManager) saveRegions(regions []*regionCtx) error {
 	if atomic.LoadUint32(&rm.closed) == 1 {
 		return nil
 	}
-	wb := rm.db.NewWriteBatch(rm.regionShard)
-	for _, r := range regions {
-		y.Assert(wb.Put(raftCF, InternalRegionMetaKey(r.meta.Id), y.ValueStruct{Value: r.marshal()}) == nil)
-	}
-	return rm.db.Write(wb)
+	return rm.db.Update(func(txn *badger.Txn) error {
+		for _, r := range regions {
+			y.Assert(txn.Set(InternalRegionMetaKey(r.meta.Id), r.marshal()) == nil)
+		}
+		return nil
+	})
 }
 
 func (rm *MockRegionManager) ScanRegions(startKey, endKey []byte, limit int) []*pdclient.Region {

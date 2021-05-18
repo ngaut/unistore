@@ -998,7 +998,7 @@ func (store *MVCCStore) rollbackKeyReadDB(req *requestCtx, batch mvcc.WriteBatch
 func (store *MVCCStore) checkCommitted(reader *dbreader.DBReader, key []byte, startTS uint64) (uint64, error) {
 	snap := reader.GetSnapshot()
 	item, err := snap.Get(mvcc.WriteCF, y.KeyWithTs(key, 0))
-	if err != nil && err != badger.ErrKeyNotFound {
+	if err != nil && err != sdb.ErrKeyNotFound {
 		return 0, errors.Trace(err)
 	}
 	if item == nil {

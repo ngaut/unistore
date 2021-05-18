@@ -143,7 +143,7 @@ func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
 	engines := raftstore.NewEngines(kvDB, raftDB, kvPath, raftPath, nil)
 	writer := raftstore.NewTestRaftWriter(engines)
 
-	rm, err := NewMockRegionManager(kvDB, 1, RegionOptions{
+	rm, err := NewMockRegionManager(raftDB, 1, RegionOptions{
 		StoreAddr:  "127.0.0.1:10086",
 		PDAddr:     "127.0.0.1:2379",
 		RegionSize: 96 * 1024 * 1024,

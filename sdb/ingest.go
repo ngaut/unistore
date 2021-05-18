@@ -119,8 +119,10 @@ func (sdb *DB) loadFiles(ingestTree *IngestTree) error {
 			return sdb.loadFileFromS3(l0.ID, true)
 		})
 	}
-	if err := sdb.s3c.BatchSchedule(bt); err != nil {
-		return err
+	if sdb.s3c != nil {
+		if err := sdb.s3c.BatchSchedule(bt); err != nil {
+			return err
+		}
 	}
 	bt = s3util.NewBatchTasks()
 	for i := range snap.TableCreates {
@@ -132,8 +134,10 @@ func (sdb *DB) loadFiles(ingestTree *IngestTree) error {
 			return sdb.loadFileFromS3(tbl.ID, false)
 		})
 	}
-	if err := sdb.s3c.BatchSchedule(bt); err != nil {
-		return err
+	if sdb.s3c != nil {
+		if err := sdb.s3c.BatchSchedule(bt); err != nil {
+			return err
+		}
 	}
 
 	return nil
