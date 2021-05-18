@@ -13,6 +13,7 @@ import (
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
+	"io"
 	"io/ioutil"
 	"math"
 	"os"
@@ -297,8 +298,8 @@ func newTableCreateByResult(result *sstable.BuildResult, cf int, level int) *sdb
 		ID:       id,
 		Level:    uint32(level),
 		CF:       int32(cf),
-		Smallest: result.Smallest.UserKey,
-		Biggest:  result.Biggest.UserKey,
+		Smallest: result.Smallest,
+		Biggest:  result.Biggest,
 	}
 }
 
@@ -307,8 +308,8 @@ func newL0CreateByResult(result *sstable.BuildResult, props *sdbpb.Properties) *
 	y.Assert(ok)
 	change := &sdbpb.L0Create{
 		ID:         id,
-		Start:      result.Smallest.UserKey,
-		End:        result.Biggest.UserKey,
+		Start:      result.Smallest,
+		End:        result.Biggest,
 		Properties: props,
 	}
 	return change
@@ -366,7 +367,7 @@ func newCompactL0Helper(db *DB, shard *Shard, l0Tbls *l0Tables, cf int) *compact
 	var iters []y.Iterator
 	if l0Tbls != nil {
 		for _, tbl := range l0Tbls.tables {
-			it := tbl.newIterator(cf, false)
+			it := tbl.NewIterator(cf, false)
 			if it != nil {
 				iters = append(iters, it)
 			}
@@ -381,21 +382,22 @@ func newCompactL0Helper(db *DB, shard *Shard, l0Tbls *l0Tables, cf int) *compact
 	return helper
 }
 
-func (h *compactL0Helper) setFD(fd *os.File) {
+func (h *compactL0Helper) setFID(fid uint64) {
 	if h.builder == nil {
-		h.builder = sstable.NewTableBuilder(fd, nil, 1, h.db.opt.TableBuilderOptions)
+		h.builder = sstable.NewTableBuilder(fid, h.db.opt.TableBuilderOptions)
 	} else {
-		h.builder.Reset(fd)
+		h.builder.Reset(fid)
 	}
 }
 
 func (h *compactL0Helper) buildOne() (*sstable.BuildResult, error) {
-	filename := sstable.NewFilename(h.db.idAlloc.AllocID(), h.db.opt.Dir)
+	id := h.db.idAlloc.AllocID()
+	filename := sstable.NewFilename(id, h.db.opt.Dir)
 	fd, err := y.OpenSyncedFile(filename, false)
 	if err != nil {
 		return nil, err
 	}
-	h.setFD(fd)
+	h.setFID(id)
 	h.lastKey.Reset()
 	h.skipKey.Reset()
 	it := h.iter
@@ -428,7 +430,7 @@ func (h *compactL0Helper) buildOne() (*sstable.BuildResult, error) {
 				switch h.filter.Filter(h.cf, key.UserKey, vs.Value, vs.UserMeta) {
 				case DecisionMarkTombstone:
 					// There may have ole versions for this key, so convert to delete tombstone.
-					h.builder.Add(key, y.ValueStruct{Meta: bitDelete})
+					h.builder.Add(key.UserKey, &y.ValueStruct{Meta: bitDelete, Version: key.Version})
 					continue
 				case DecisionDrop:
 					continue
@@ -436,18 +438,16 @@ func (h *compactL0Helper) buildOne() (*sstable.BuildResult, error) {
 				}
 			}
 		}
-		h.builder.Add(key, vs)
+		h.builder.Add(key.UserKey, &vs)
 	}
 	if h.builder.Empty() {
 		return nil, nil
 	}
-	result, err := h.builder.Finish()
+	result, err := h.builder.Finish(fd.Name(), fd)
 	if err != nil {
 		return nil, err
 	}
-	if fd != nil {
-		result.FileName = fd.Name()
-	}
+	fd.Sync()
 	fd.Close()
 	return result, nil
 }
@@ -488,9 +488,9 @@ func (sdb *DB) compactL0(shard *Shard, guard *epoch.Guard) error {
 	if l0Tbls != nil {
 		// A splitting shard does not run compaction.
 		for _, tbl := range l0Tbls.tables {
-			comp.TopDeletes = append(comp.TopDeletes, tbl.fid)
+			comp.TopDeletes = append(comp.TopDeletes, tbl.ID())
 			toBeDelete = append(toBeDelete, tbl)
-			shardSizeChange -= tbl.size
+			shardSizeChange -= tbl.Size()
 		}
 	}
 	change := newChangeSet(shard)
@@ -829,7 +829,7 @@ func (sdb *DB) openTables(buildResults []*sstable.BuildResult) (newTables []tabl
 		if err != nil {
 			return nil, err
 		}
-		tbl, err = sstable.OpenTable(filename, reader)
+		tbl, err = sstable.OpenTable(reader, sdb.blkCache)
 		if err != nil {
 			return nil, err
 		}
@@ -877,7 +877,7 @@ func (sdb *DB) applyFlush(shard *Shard, changeSet *sdbpb.ChangeSet) error {
 	newL0 := flush.L0Create
 	if newL0 != nil {
 		bt.AppendTask(func() error {
-			return sdb.loadFileFromS3(flush.L0Create.ID, true)
+			return sdb.loadFileFromS3(flush.L0Create.ID)
 		})
 	}
 	if err := sdb.s3c.BatchSchedule(bt); err != nil {
@@ -891,11 +891,11 @@ func (sdb *DB) applyFlush(shard *Shard, changeSet *sdbpb.ChangeSet) error {
 	}
 	if newL0 != nil {
 		filename := sstable.NewFilename(newL0.ID, sdb.opt.Dir)
-		tbl, err := openL0Table(filename, newL0.ID)
+		tbl, err := sstable.OpenL0Table(filename, newL0.ID)
 		if err != nil {
 			return err
 		}
-		shard.addEstimatedSize(tbl.size)
+		shard.addEstimatedSize(tbl.Size())
 		atomicAddL0(shard, tbl)
 		atomicRemoveMemTable(shard.memTbls, 1)
 	}
@@ -912,7 +912,7 @@ func (sdb *DB) applyCompaction(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 		for i := range comp.TableCreates {
 			tbl := comp.TableCreates[i]
 			bt.AppendTask(func() error {
-				return sdb.loadFileFromS3(tbl.ID, false)
+				return sdb.loadFileFromS3(tbl.ID)
 			})
 		}
 		if err := sdb.s3c.BatchSchedule(bt); err != nil {
@@ -930,8 +930,8 @@ func (sdb *DB) applyCompaction(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 		l0Tbls := shard.loadL0Tables()
 		if l0Tbls != nil {
 			for _, tbl := range l0Tbls.tables {
-				if containsUint64(comp.TopDeletes, tbl.fid) {
-					del.add(tbl.fid, tbl)
+				if containsUint64(comp.TopDeletes, tbl.ID()) {
+					del.add(tbl.ID(), tbl)
 				}
 			}
 		}
@@ -973,7 +973,7 @@ func (sdb *DB) compactionUpdateLevelHandler(shard *Shard, cf, level int,
 		if err != nil {
 			return err
 		}
-		tbl, err := sstable.OpenTable(filename, reader)
+		tbl, err := sstable.OpenTable(reader, sdb.blkCache)
 		if err != nil {
 			return err
 		}
@@ -1005,7 +1005,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 	for i := range splitFiles.L0Creates {
 		l0 := splitFiles.L0Creates[i]
 		bt.AppendTask(func() error {
-			return sdb.loadFileFromS3(l0.ID, true)
+			return sdb.loadFileFromS3(l0.ID)
 		})
 	}
 	if err := sdb.s3c.BatchSchedule(bt); err != nil {
@@ -1015,7 +1015,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 	for i := range splitFiles.TableCreates {
 		tbl := splitFiles.TableCreates[i]
 		bt.AppendTask(func() error {
-			return sdb.loadFileFromS3(tbl.ID, false)
+			return sdb.loadFileFromS3(tbl.ID)
 		})
 	}
 	if err := sdb.s3c.BatchSchedule(bt); err != nil {
@@ -1028,25 +1028,25 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 		return err
 	}
 	oldL0s := shard.loadL0Tables()
-	newL0Tbls := &l0Tables{make([]*l0Table, 0, len(oldL0s.tables)*2)}
+	newL0Tbls := &l0Tables{make([]*sstable.L0Table, 0, len(oldL0s.tables)*2)}
 	del := &deletions{resources: map[uint64]epoch.Resource{}}
 	for _, l0 := range splitFiles.L0Creates {
 		filename := sstable.NewFilename(l0.ID, sdb.opt.Dir)
-		tbl, err := openL0Table(filename, l0.ID)
+		tbl, err := sstable.OpenL0Table(filename, l0.ID)
 		if err != nil {
 			return err
 		}
 		newL0Tbls.tables = append(newL0Tbls.tables, tbl)
 	}
 	for _, oldL0 := range oldL0s.tables {
-		if containsUint64(splitFiles.TableDeletes, oldL0.fid) {
-			del.add(oldL0.fid, oldL0)
+		if containsUint64(splitFiles.TableDeletes, oldL0.ID()) {
+			del.add(oldL0.ID(), oldL0)
 		} else {
 			newL0Tbls.tables = append(newL0Tbls.tables, oldL0)
 		}
 	}
 	sort.Slice(newL0Tbls.tables, func(i, j int) bool {
-		return newL0Tbls.tables[i].commitTS > newL0Tbls.tables[j].commitTS
+		return newL0Tbls.tables[i].CommitTS() > newL0Tbls.tables[j].CommitTS()
 	})
 	y.Assert(atomic.CompareAndSwapPointer(shard.l0s, unsafe.Pointer(oldL0s), unsafe.Pointer(newL0Tbls)))
 	newHandlers := make([][]*levelHandler, sdb.numCFs)
@@ -1064,7 +1064,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 		if err != nil {
 			return err
 		}
-		tbl, err := sstable.OpenTable(filename, reader)
+		tbl, err := sstable.OpenTable(reader, sdb.blkCache)
 		if err != nil {
 			return err
 		}
@@ -1133,8 +1133,10 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 	for it.Valid() {
 		var fd *os.File
 		var filename string
+		var id uint64
 		if cd.AllocIDFunc != nil {
-			filename = sstable.NewFilename(cd.AllocIDFunc(), cd.Dir)
+			id = cd.AllocIDFunc()
+			filename = sstable.NewFilename(id, cd.Dir)
 		}
 		if !cd.InMemory {
 			var err error
@@ -1144,9 +1146,9 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 			}
 		}
 		if builder == nil {
-			builder = sstable.NewTableBuilder(fd, cd.Limiter, cd.Level+1, cd.Opt)
+			builder = sstable.NewTableBuilder(id, cd.Opt)
 		} else {
-			builder.Reset(fd)
+			builder.Reset(id)
 		}
 		lastKey.Reset()
 		for ; it.Valid(); y.NextAllVersion(it) {
@@ -1200,7 +1202,7 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 						discardStats.collect(vs)
 						if cd.HasOverlap {
 							// There may have ole versions for this key, so convert to delete tombstone.
-							builder.Add(key, y.ValueStruct{Meta: bitDelete})
+							builder.Add(key.UserKey, &y.ValueStruct{Meta: bitDelete, Version: key.Version})
 						}
 						continue
 					case DecisionDrop:
@@ -1210,18 +1212,21 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 					}
 				}
 			}
-			builder.Add(key, vs)
+			builder.Add(key.UserKey, &vs)
 			stats.KeysWrite++
 			stats.BytesWrite += kvSize
 		}
 		if builder.Empty() {
 			continue
 		}
-		result, err := builder.Finish()
+		var w io.Writer = fd
+		if fd == nil {
+			w = bytes.NewBuffer(make([]byte, 0, builder.EstimateSize()))
+		}
+		result, err := builder.Finish(filename, w)
 		if err != nil {
 			return nil, err
 		}
-		result.FileName = filename
 		if s3c != nil {
 			err = putSSTBuildResultToS3(s3c, result)
 			if err != nil {
@@ -1261,24 +1266,8 @@ func putSSTBuildResultToS3(s3c *s3util.S3Client, result *sstable.BuildResult) (e
 		if err != nil {
 			return
 		}
-		indexFileName := sstable.IndexFilename(result.FileName)
-		if _, err = os.Stat(indexFileName); err == nil {
-			result.IndexData, err = ioutil.ReadFile(indexFileName)
-			if err != nil {
-				return
-			}
-		} else if !os.IsNotExist(err) {
-			return err
-		}
 	}
-	err = s3c.Put(s3c.BlockKey(fileID), result.FileData)
-	if err != nil {
-		return
-	}
-	if len(result.IndexData) > 0 {
-		err = s3c.Put(s3c.IndexKey(fileID), result.IndexData)
-	}
-	return
+	return s3c.Put(s3c.BlockKey(fileID), result.FileData)
 }
 
 func sortTables(tables []table.Table) {

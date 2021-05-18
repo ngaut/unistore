@@ -36,7 +36,6 @@ type DB struct {
 	dirLock       *directoryLockGuard
 	shardMap      sync.Map
 	blkCache      *cache.Cache
-	idxCache      *cache.Cache
 	resourceMgr   *epoch.ResourceManager
 	safeTsTracker safeTsTracker
 	closers       closers
@@ -84,7 +83,7 @@ func OpenDB(opt Options) (db *DB, err error) {
 		commits:    make(map[uint64]uint64),
 	}
 	manifest.orc = orc
-	blkCache, idxCache, err := createCache(opt)
+	blkCache, err := createCache(opt)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create block cache")
 	}
@@ -96,7 +95,6 @@ func OpenDB(opt Options) (db *DB, err error) {
 		dirLock:            dirLockGuard,
 		metrics:            metrics,
 		blkCache:           blkCache,
-		idxCache:           idxCache,
 		flushCh:            make(chan *flushTask, opt.NumMemtables),
 		writeCh:            make(chan engineTask, kvWriteChCapacity),
 		manifest:           manifest,
@@ -153,7 +151,7 @@ func exists(path string) (bool, error) {
 	return true, err
 }
 
-func createCache(opt Options) (blkCache, idxCache *cache.Cache, err error) {
+func createCache(opt Options) (blkCache *cache.Cache, err error) {
 	if opt.MaxBlockCacheSize != 0 {
 		blkCache, err = cache.NewCache(&cache.Config{
 			// The expected keys is MaxCacheSize / BlockSize, then x10 as documentation suggests.
@@ -163,17 +161,7 @@ func createCache(opt Options) (blkCache, idxCache *cache.Cache, err error) {
 			OnEvict:     sstable.OnEvict,
 		})
 		if err != nil {
-			return nil, nil, errors.Wrap(err, "failed to create block cache")
-		}
-
-		indexSizeHint := float64(opt.TableBuilderOptions.MaxTableSize) / 6.0
-		idxCache, err = cache.NewCache(&cache.Config{
-			NumCounters: int64(float64(opt.MaxIndexCacheSize) / indexSizeHint * 10),
-			MaxCost:     opt.MaxIndexCacheSize,
-			BufferItems: 64,
-		})
-		if err != nil {
-			return nil, nil, errors.Wrap(err, "failed to create index cache")
+			return nil, errors.Wrap(err, "failed to create block cache")
 		}
 	}
 	return
@@ -218,7 +206,7 @@ func (sdb *DB) DebugHandler() http.HandlerFunc {
 			L0Tables += len(l0Tables.tables)
 			ShardL0TablesSize := 0
 			for _, t := range l0Tables.tables {
-				ShardL0TablesSize += int(t.size)
+				ShardL0TablesSize += int(t.Size())
 			}
 			L0TablesSize += ShardL0TablesSize
 			CFs += len(shard.cfs)
@@ -295,7 +283,7 @@ func (sdb *DB) DebugHandler() http.HandlerFunc {
 				}
 				fmt.Fprintf(w, "\t\tL0Tables %d,  Size %s\n", len(l0Tables.tables), formatInt(shardStat.L0TablesSize))
 				for i, t := range l0Tables.tables {
-					fmt.Fprintf(w, "\t\t\tL0Table %d, fid %d, cfs %d, size %s \n", i, t.fid, len(t.cfs), formatInt(int(t.size)))
+					fmt.Fprintf(w, "\t\t\tL0Table %d, fid %d, size %s \n", i, t.ID(), formatInt(int(t.Size())))
 				}
 				fmt.Fprintf(w, "\t\tCFs Size %s\n", formatInt(shardStat.CFsSize))
 				if shardStat.CFsSize > 0 {
@@ -386,11 +374,11 @@ func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 		cf := cfLevel.cf
 		if cf == -1 {
 			filename := sstable.NewFilename(fid, sdb.opt.Dir)
-			sl0Tbl, err := openL0Table(filename, fid)
+			sl0Tbl, err := sstable.OpenL0Table(filename, fid)
 			if err != nil {
 				return nil, err
 			}
-			shard.addEstimatedSize(sl0Tbl.size)
+			shard.addEstimatedSize(sl0Tbl.Size())
 			l0Tbls := shard.loadL0Tables()
 			l0Tbls.tables = append(l0Tbls.tables, sl0Tbl)
 			continue
@@ -403,7 +391,7 @@ func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 		if err != nil {
 			return nil, err
 		}
-		tbl, err := sstable.OpenTable(filename, reader)
+		tbl, err := sstable.OpenTable(reader, sdb.blkCache)
 		if err != nil {
 			return nil, err
 		}
@@ -414,7 +402,7 @@ func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 	l0Tbls := shard.loadL0Tables()
 	// Sort the l0 tables by age.
 	sort.Slice(l0Tbls.tables, func(i, j int) bool {
-		return l0Tbls.tables[i].commitTS > l0Tbls.tables[j].commitTS
+		return l0Tbls.tables[i].CommitTS() > l0Tbls.tables[j].CommitTS()
 	})
 	for cf := 0; cf < len(sdb.opt.CFs); cf++ {
 		scf := shard.cfs[cf]
@@ -429,13 +417,7 @@ func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 }
 
 func newTableFile(filename string, sdb *DB) (sstable.TableFile, error) {
-	var reader sstable.TableFile
-	var err error
-	if sdb.blkCache != nil {
-		reader, err = sstable.NewLocalFile(filename, sdb.blkCache, sdb.idxCache)
-	} else {
-		reader, err = sstable.NewMMapFile(filename)
-	}
+	reader, err := sstable.NewLocalFile(filename, sdb.blkCache == nil)
 	if err != nil {
 		return nil, err
 	}
@@ -494,7 +476,7 @@ func (sdb *DB) PrintStructure() {
 		l0s := shard.loadL0Tables()
 		var l0IDs []uint64
 		for _, tbl := range l0s.tables {
-			l0IDs = append(l0IDs, tbl.fid)
+			l0IDs = append(l0IDs, tbl.ID())
 		}
 		shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
 			assertTablesOrder(level.level, level.tables, nil)
