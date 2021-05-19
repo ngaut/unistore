@@ -30,7 +30,6 @@ import (
 	"bytes"
 	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/tikv/mvcc"
-	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/log"
@@ -94,7 +93,7 @@ func (r *DBReader) GetMvccInfoByKey(key []byte, isRowKey bool, mvccInfo *kvrpcpb
 }
 
 func (r *DBReader) Get(key []byte, startTS uint64) ([]byte, error) {
-	item, err := r.snap.Get(writeCF, y.KeyWithTs(key, startTS))
+	item, err := r.snap.Get(writeCF, key, startTS)
 	if err != nil && err != sdb.ErrKeyNotFound {
 		return nil, errors.Trace(err)
 	}
@@ -112,7 +111,7 @@ func (r *DBReader) GetIter() *sdb.Iterator {
 }
 
 func (r *DBReader) GetLock(key []byte, buf []byte) []byte {
-	item, err := r.snap.Get(lockCF, y.KeyWithTs(key, 0))
+	item, err := r.snap.Get(lockCF, key, 0)
 	if err != nil && err != sdb.ErrKeyNotFound {
 		log.Error("get lock failed", zap.Error(err))
 		return nil
@@ -149,7 +148,7 @@ type BatchGetFunc = func(key, value []byte, err error)
 
 func (r *DBReader) BatchGet(keys [][]byte, startTS uint64, f BatchGetFunc) {
 	for _, key := range keys {
-		item, err := r.snap.Get(0, y.KeyWithTs(key, startTS))
+		item, err := r.snap.Get(0, key, startTS)
 		if err == nil {
 			val, _ := item.Value()
 			f(key, val, nil)

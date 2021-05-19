@@ -96,29 +96,29 @@ func (kvWB *KVWriteBatch) DeleteLock(regionID uint64, key []byte) {
 	y.Assert(wb.Delete(mvcc.LockCF, key, 0) == nil)
 }
 
-func (kvWB *KVWriteBatch) Rollback(regionID uint64, key y.Key) {
+func (kvWB *KVWriteBatch) Rollback(regionID uint64, key []byte, version uint64) {
 	wb := kvWB.getEngineWriteBatch(regionID)
-	rollbackKey := mvcc.EncodeExtraTxnStatusKey(key.UserKey, key.Version)
+	rollbackKey := mvcc.EncodeExtraTxnStatusKey(key, version)
 	y.Assert(wb.Put(mvcc.ExtraCF, rollbackKey, y.ValueStruct{
-		UserMeta: mvcc.NewDBUserMeta(key.Version, 0),
-		Version:  key.Version,
+		UserMeta: mvcc.NewDBUserMeta(version, 0),
+		Version:  version,
 	}) == nil)
 }
 
-func (kvWB *KVWriteBatch) SetWithUserMeta(regionID uint64, key y.Key, val, userMeta []byte) {
+func (kvWB *KVWriteBatch) SetWithUserMeta(regionID uint64, key, val, userMeta []byte, version uint64) {
 	wb := kvWB.getEngineWriteBatch(regionID)
-	y.Assert(wb.Put(mvcc.WriteCF, key.UserKey, y.ValueStruct{
+	y.Assert(wb.Put(mvcc.WriteCF, key, y.ValueStruct{
 		UserMeta: userMeta,
 		Value:    val,
-		Version:  key.Version,
+		Version:  version,
 	}) == nil)
 }
 
-func (kvWB *KVWriteBatch) SetOpLock(regionID uint64, key y.Key, userMeta []byte) {
+func (kvWB *KVWriteBatch) SetOpLock(regionID uint64, key, userMeta []byte, version uint64) {
 	wb := kvWB.getEngineWriteBatch(regionID)
 	startTS := mvcc.DBUserMeta(userMeta).StartTS()
-	opLockKey := mvcc.EncodeExtraTxnStatusKey(key.UserKey, startTS)
-	y.Assert(wb.Put(mvcc.ExtraCF, opLockKey, y.ValueStruct{UserMeta: userMeta, Version: key.Version}) == nil)
+	opLockKey := mvcc.EncodeExtraTxnStatusKey(key, startTS)
+	y.Assert(wb.Put(mvcc.ExtraCF, opLockKey, y.ValueStruct{UserMeta: userMeta, Version: version}) == nil)
 }
 
 func (kvWB *KVWriteBatch) SetApplyState(regionID uint64, state applyState) {

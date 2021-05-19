@@ -379,13 +379,13 @@ func TestPutWithHint(t *testing.T) {
 	}
 	it := l.NewIterator()
 	defer it.Close()
-	var lastKey y.Key
+	var lastKey []byte
 	cntGot := 0
 	for it.SeekToFirst(); it.Valid(); it.Next() {
-		require.True(t, lastKey.Compare(it.Key()) <= 0)
-		require.True(t, bytes.Compare(it.Key().UserKey, it.Value().Value) == 0)
+		require.True(t, bytes.Compare(lastKey, it.Key()) <= 0)
+		require.True(t, bytes.Compare(it.Key(), it.Value().Value) == 0)
 		cntGot++
-		lastKey.Copy(it.Key())
+		lastKey = y.Copy(it.Key())
 	}
 	require.True(t, cntGot == cnt)
 }
@@ -477,41 +477,41 @@ func TestIterateMultiVersion(t *testing.T) {
 	skl := buildMultiVersionSkiopList(keyVals)
 	it := skl.NewIterator()
 	defer it.Close()
-	var lastKey y.Key
+	var lastKey []byte
 	for it.SeekToFirst(); it.Valid(); it.Next() {
-		if !lastKey.IsEmpty() {
-			require.True(t, bytes.Compare(lastKey.UserKey, it.Key().UserKey) < 0)
+		if len(lastKey) > 0 {
+			require.True(t, bytes.Compare(lastKey, it.Key()) < 0)
 		}
-		lastKey.Copy(it.Key())
+		lastKey = y.Copy(it.Key())
 	}
 	for i := 0; i < 1000; i++ {
 		id := int(z.FastRand() % 4000)
-		k := y.KeyWithTs([]byte(key("key", id)), uint64(5+z.FastRand()%5))
-		val := skl.Get(k.UserKey, k.Version)
+		k := []byte(key("key", id))
+		ver := uint64(5 + z.FastRand()%5)
+		val := skl.Get(k, ver)
 		if val.Valid() {
-			valStr := fmt.Sprintf("%d_%d", id, k.Version)
+			valStr := fmt.Sprintf("%d_%d", id, ver)
 			require.Equal(t, valStr, string(val.Value))
 		} else {
-			it.Seek(k.UserKey)
+			it.Seek(k)
 			if it.Valid() {
-				require.True(t, bytes.Compare(it.Key().UserKey, k.UserKey) >= 0)
-				var cpKey y.Key
-				cpKey.Copy(it.Key())
+				require.True(t, bytes.Compare(it.Key(), k) >= 0)
+				cpKey := y.Copy(it.Key())
 				it.Prev()
 				if it.Valid() {
-					require.True(t, bytes.Compare(it.Key().UserKey, k.UserKey) < 0, "%s %s %s", it.Key(), cpKey, k)
+					require.True(t, bytes.Compare(it.Key(), k) < 0, "%s %s %s", it.Key(), cpKey, k)
 				}
 			}
 		}
 	}
 	revIt := skl.NewUniIterator(true)
 	defer revIt.Close()
-	lastKey.Reset()
+	lastKey = nil
 	for revIt.Rewind(); revIt.Valid(); revIt.Next() {
-		if !lastKey.IsEmpty() {
-			require.Truef(t, bytes.Compare(lastKey.UserKey, revIt.Key().UserKey) > 0, "%v %v", lastKey.String(), revIt.Key().String())
+		if len(lastKey) > 0 {
+			require.Truef(t, bytes.Compare(lastKey, revIt.Key()) > 0, "%s %s", lastKey, revIt.Key())
 		}
-		lastKey.Copy(revIt.Key())
+		lastKey = y.Copy(revIt.Key())
 	}
 	for i := 0; i < 1000; i++ {
 		k := y.KeyWithTs([]byte(key("key", int(z.FastRand()%4000))), uint64(5+z.FastRand()%5))
@@ -520,7 +520,7 @@ func TestIterateMultiVersion(t *testing.T) {
 		if !revIt.Valid() {
 			continue
 		}
-		require.True(t, bytes.Compare(revIt.Key().UserKey, k.UserKey) <= 0, "%s %s", revIt.Key(), k)
+		require.True(t, bytes.Compare(revIt.Key(), k.UserKey) <= 0, "%s %s", revIt.Key(), k)
 	}
 }
 

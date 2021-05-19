@@ -11,7 +11,8 @@ import (
 // Item is returned during iteration. Both the Key() and Value() output is only valid until
 // iterator.Next() is called.
 type Item struct {
-	key      y.Key
+	key      []byte
+	ver      uint64
 	val      []byte
 	meta     byte // We need to store meta to know about bitValuePointer.
 	userMeta []byte
@@ -27,19 +28,19 @@ func (item *Item) String() string {
 // Key is only valid as long as item is valid, or transaction is valid.  If you need to use it
 // outside its validity, please use KeyCopy
 func (item *Item) Key() []byte {
-	return item.key.UserKey
+	return item.key
 }
 
 // KeyCopy returns a copy of the key of the item, writing it to dst slice.
 // If nil is passed, or capacity of dst isn't sufficient, a new slice would be allocated and
 // returned.
 func (item *Item) KeyCopy(dst []byte) []byte {
-	return y.SafeCopy(dst, item.key.UserKey)
+	return y.SafeCopy(dst, item.key)
 }
 
 // Version returns the commit timestamp of the item.
 func (item *Item) Version() uint64 {
-	return item.key.Version
+	return item.ver
 }
 
 // IsEmpty checks if the value is empty.
@@ -102,7 +103,7 @@ func (item *Item) EstimatedSize() int64 {
 	if !item.hasValue() {
 		return 0
 	}
-	return int64(item.key.Len() + len(item.val))
+	return int64(len(item.key) + len(item.val))
 }
 
 // UserMeta returns the userMeta set by the user. Typically, this byte, optionally set by the user
@@ -123,15 +124,15 @@ type IteratorOptions struct {
 
 	// StartKey and EndKey are used to prune non-overlapping table iterators.
 	// They are not boundary limits, the EndKey is exclusive.
-	StartKey y.Key
-	EndKey   y.Key
+	StartKey []byte
+	EndKey   []byte
 
 	internalAccess bool // Used to allow internal access to badger keys.
 }
 
 // Iterator helps iterating over the KV pairs in a lexicographically sorted order.
 type Iterator struct {
-	iitr   y.Iterator
+	iitr   table.Iterator
 	readTs uint64
 
 	opt   IteratorOptions
@@ -155,7 +156,7 @@ func (it *Iterator) Valid() bool { return it.item != nil }
 // ValidForPrefix returns false when iteration is done
 // or when the current key is not prefixed by the specified prefix.
 func (it *Iterator) ValidForPrefix(prefix []byte) bool {
-	return it.item != nil && bytes.HasPrefix(it.item.key.UserKey, prefix)
+	return it.item != nil && bytes.HasPrefix(it.item.key, prefix)
 }
 
 // Close would close the iterator. It is important to call this when you're done with iteration.
@@ -193,12 +194,12 @@ func (it *Iterator) parseItem() {
 	iitr := it.iitr
 	for iitr.Valid() {
 		key := iitr.Key()
-		if !it.opt.internalAccess && key.UserKey[0] == '!' {
+		if !it.opt.internalAccess && key[0] == '!' {
 			iitr.Next()
 			continue
 		}
-		if key.Version > it.readTs {
-			if !y.SeekToVersion(iitr, it.readTs) {
+		if iitr.Value().Version > it.readTs {
+			if !table.SeekToVersion(iitr, it.readTs) {
 				iitr.Next()
 				continue
 			}
@@ -206,11 +207,11 @@ func (it *Iterator) parseItem() {
 		it.updateItem()
 		if !it.opt.AllVersions && isDeleted(it.vs.Meta) {
 			if it.opt.Reverse {
-				if bytes.Compare(key.UserKey, it.bound) < 0 {
+				if bytes.Compare(key, it.bound) < 0 {
 					break
 				}
 			} else {
-				if bytes.Compare(key.UserKey, it.bound) >= 0 {
+				if bytes.Compare(key, it.bound) >= 0 {
 					break
 				}
 			}
@@ -271,8 +272,8 @@ func (s *Snapshot) NewIterator(cf int, reversed, allVersions bool) *Iterator {
 	return iter
 }
 
-func (s *Snapshot) newIterator(cf int, reverse bool) y.Iterator {
-	iters := make([]y.Iterator, 0, 12)
+func (s *Snapshot) newIterator(cf int, reverse bool) table.Iterator {
+	iters := make([]table.Iterator, 0, 12)
 	if s.shard.isSplitting() {
 		for i := 0; i < len(s.shard.splittingMemTbls); i++ {
 			memTbl := s.shard.loadSplittingMemTable(i)
@@ -297,7 +298,7 @@ func (s *Snapshot) newIterator(cf int, reverse bool) y.Iterator {
 	return table.NewMergeIterator(iters, reverse)
 }
 
-func (s *Snapshot) appendMemTblIters(iters []y.Iterator, memTbls *memTables, cf int, reverse bool) []y.Iterator {
+func (s *Snapshot) appendMemTblIters(iters []table.Iterator, memTbls *memTables, cf int, reverse bool) []table.Iterator {
 	for _, tbl := range memTbls.tables {
 		it := tbl.NewIterator(cf, reverse)
 		if it != nil {
@@ -307,7 +308,7 @@ func (s *Snapshot) appendMemTblIters(iters []y.Iterator, memTbls *memTables, cf 
 	return iters
 }
 
-func (s *Snapshot) appendL0Iters(iters []y.Iterator, l0s *l0Tables, cf int, reverse bool) []y.Iterator {
+func (s *Snapshot) appendL0Iters(iters []table.Iterator, l0s *l0Tables, cf int, reverse bool) []table.Iterator {
 	for _, tbl := range l0s.tables {
 		it := tbl.NewIterator(cf, reverse)
 		if it != nil {
@@ -317,7 +318,7 @@ func (s *Snapshot) appendL0Iters(iters []y.Iterator, l0s *l0Tables, cf int, reve
 	return iters
 }
 
-func appendIteratorsReversed(out []y.Iterator, th []table.Table, reversed bool) []y.Iterator {
+func appendIteratorsReversed(out []table.Iterator, th []table.Table, reversed bool) []table.Iterator {
 	for i := len(th) - 1; i >= 0; i-- {
 		// This will increment the reference of the table handler.
 		out = append(out, table.NewConcatIterator(th[i:i+1], reversed))

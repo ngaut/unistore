@@ -133,7 +133,7 @@ func (sdb *DB) splitShardL0Tables(shard *Shard, splitFiles *sdbpb.SplitFiles) er
 }
 
 func (sdb *DB) splitShardL0Table(shard *Shard, l0 *sstable.L0Table) ([]*sdbpb.L0Create, error) {
-	iters := make([]y.Iterator, sdb.numCFs)
+	iters := make([]table.Iterator, sdb.numCFs)
 	for cf := 0; cf < sdb.numCFs; cf++ {
 		iters[cf] = l0.NewIterator(cf, false)
 		if iters[cf] != nil {
@@ -168,7 +168,7 @@ func (sdb *DB) splitShardL0Table(shard *Shard, l0 *sstable.L0Table) ([]*sdbpb.L0
 	return newL0s, nil
 }
 
-func (sdb *DB) buildShardL0BeforeKey(iters []y.Iterator, startKey, endKey []byte, commitTS uint64) (*sdbpb.L0Create, error) {
+func (sdb *DB) buildShardL0BeforeKey(iters []table.Iterator, startKey, endKey []byte, commitTS uint64) (*sdbpb.L0Create, error) {
 	fid := sdb.idAlloc.AllocID()
 	builder := sstable.NewL0Builder(sdb.numCFs, fid, sdb.opt.TableBuilderOptions, commitTS)
 	var hasData bool
@@ -177,8 +177,8 @@ func (sdb *DB) buildShardL0BeforeKey(iters []y.Iterator, startKey, endKey []byte
 		if iter == nil {
 			continue
 		}
-		for ; iter.Valid(); y.NextAllVersion(iter) {
-			if bytes.Compare(iter.Key().UserKey, endKey) >= 0 {
+		for ; iter.Valid(); table.NextAllVersion(iter) {
+			if bytes.Compare(iter.Key(), endKey) >= 0 {
 				break
 			}
 			builder.Add(cf, iter.Key(), iter.Value())
@@ -227,8 +227,8 @@ func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, split
 	for _, tbl := range oldTables {
 		relatedKeys = relatedKeys[:0]
 		for _, key := range keys {
-			if bytes.Compare(tbl.Smallest().UserKey, key) < 0 &&
-				bytes.Compare(key, tbl.Biggest().UserKey) <= 0 {
+			if bytes.Compare(tbl.Smallest(), key) < 0 &&
+				bytes.Compare(key, tbl.Biggest()) <= 0 {
 				relatedKeys = append(relatedKeys, key)
 			}
 		}
@@ -255,7 +255,7 @@ func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, split
 	return nil
 }
 
-func (sdb *DB) buildTableBeforeKey(itr y.Iterator, key []byte, level int, opt sstable.TableBuilderOptions) (*sstable.BuildResult, error) {
+func (sdb *DB) buildTableBeforeKey(itr table.Iterator, key []byte, level int, opt sstable.TableBuilderOptions) (*sstable.BuildResult, error) {
 	id := sdb.idAlloc.AllocID()
 	filename := sstable.NewFilename(id, sdb.opt.Dir)
 	fd, err := y.OpenSyncedFile(filename, false)
@@ -264,12 +264,12 @@ func (sdb *DB) buildTableBeforeKey(itr y.Iterator, key []byte, level int, opt ss
 	}
 	b := sstable.NewTableBuilder(id, opt)
 	for itr.Valid() {
-		if len(key) > 0 && bytes.Compare(itr.Key().UserKey, key) >= 0 {
+		if len(key) > 0 && bytes.Compare(itr.Key(), key) >= 0 {
 			break
 		}
 		val := itr.Value()
-		b.Add(itr.Key().UserKey, &val)
-		y.NextAllVersion(itr)
+		b.Add(itr.Key(), &val)
+		table.NextAllVersion(itr)
 	}
 	if b.Empty() {
 		return nil, nil
@@ -382,17 +382,17 @@ func (sdb *DB) getL0SplitIndex(l0 *sstable.L0Table, splitKeys [][]byte) int {
 	for i := 0; i < sdb.numCFs; i++ {
 		cfTbl := l0.GetCF(i)
 		if cfTbl != nil {
-			return getSplitShardIndex(splitKeys, cfTbl.Smallest().UserKey)
+			return getSplitShardIndex(splitKeys, cfTbl.Smallest())
 		}
 	}
 	return 0
 }
 
 func (sdb *DB) insertTableToNewShard(t table.Table, cf, level int, shards []*Shard, splitKeys [][]byte) {
-	idx := getSplitShardIndex(splitKeys, t.Smallest().UserKey)
+	idx := getSplitShardIndex(splitKeys, t.Smallest())
 	shard := shards[idx]
-	y.Assert(shard.OverlapKey(t.Smallest().UserKey))
-	y.Assert(shard.OverlapKey(t.Biggest().UserKey))
+	y.Assert(shard.OverlapKey(t.Smallest()))
+	y.Assert(shard.OverlapKey(t.Biggest()))
 	sCF := shard.cfs[cf]
 	handler := sCF.getLevelHandler(level)
 	handler.totalSize += t.Size()

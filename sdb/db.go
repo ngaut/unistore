@@ -481,8 +481,8 @@ func (sdb *DB) PrintStructure() {
 		shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
 			assertTablesOrder(level.level, level.tables, nil)
 			for _, tbl := range level.tables {
-				y.Assert(shard.OverlapKey(tbl.Smallest().UserKey))
-				y.Assert(shard.OverlapKey(tbl.Biggest().UserKey))
+				y.Assert(shard.OverlapKey(tbl.Smallest()))
+				y.Assert(shard.OverlapKey(tbl.Biggest()))
 			}
 			return false
 		})
@@ -651,16 +651,16 @@ type Snapshot struct {
 	buffer *memtable.CFTable
 }
 
-func (s *Snapshot) Get(cf int, key y.Key) (*Item, error) {
-	if key.Version == 0 {
-		key.Version = s.getDefaultVersion(cf)
+func (s *Snapshot) Get(cf int, key []byte, version uint64) (*Item, error) {
+	if version == 0 {
+		version = s.getDefaultVersion(cf)
 	}
 	var vs y.ValueStruct
 	if s.buffer != nil {
-		vs = s.buffer.Get(cf, key.UserKey, key.Version)
+		vs = s.buffer.Get(cf, key, version)
 	}
 	if !vs.Valid() {
-		vs = s.shard.Get(cf, key)
+		vs = s.shard.Get(cf, key, version)
 	}
 	if !vs.Valid() {
 		return nil, ErrKeyNotFound
@@ -669,8 +669,8 @@ func (s *Snapshot) Get(cf int, key y.Key) (*Item, error) {
 		return nil, ErrKeyNotFound
 	}
 	item := new(Item)
-	item.key.UserKey = key.UserKey
-	item.key.Version = vs.Version
+	item.key = key
+	item.ver = vs.Version
 	item.meta = vs.Meta
 	item.userMeta = vs.UserMeta
 	item.val = vs.Value
@@ -690,7 +690,7 @@ func (s *Snapshot) MultiGet(cf int, keys [][]byte, version uint64) ([]*Item, err
 	}
 	items := make([]*Item, len(keys))
 	for i, key := range keys {
-		item, err := s.Get(cf, y.KeyWithTs(key, version))
+		item, err := s.Get(cf, key, version)
 		if err != nil && err != ErrKeyNotFound {
 			return nil, err
 		}

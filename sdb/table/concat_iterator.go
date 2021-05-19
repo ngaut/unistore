@@ -11,9 +11,9 @@ import (
 // TableIterators, probably just because it's faster to not be so generic.)
 type ConcatIterator struct {
 	idx      int // Which iterator is active now.
-	cur      y.Iterator
-	iters    []y.Iterator // Corresponds to tables.
-	tables   []Table      // Disregarding reversed, this is in ascending order.
+	cur      Iterator
+	iters    []Iterator // Corresponds to tables.
+	tables   []Table    // Disregarding reversed, this is in ascending order.
 	reversed bool
 }
 
@@ -21,7 +21,7 @@ type ConcatIterator struct {
 func NewConcatIterator(tbls []Table, reversed bool) *ConcatIterator {
 	return &ConcatIterator{
 		reversed: reversed,
-		iters:    make([]y.Iterator, len(tbls)),
+		iters:    make([]Iterator, len(tbls)),
 		tables:   tbls,
 		idx:      -1, // Not really necessary because s.it.Valid()=false, but good to have.
 	}
@@ -60,7 +60,7 @@ func (s *ConcatIterator) Valid() bool {
 }
 
 // Key implements y.Interface
-func (s *ConcatIterator) Key() y.Key {
+func (s *ConcatIterator) Key() []byte {
 	return s.cur.Key()
 }
 
@@ -78,12 +78,12 @@ func (s *ConcatIterator) Seek(key []byte) {
 	var idx int
 	if !s.reversed {
 		idx = sort.Search(len(s.tables), func(i int) bool {
-			return bytes.Compare(s.tables[i].Biggest().UserKey, key) >= 0
+			return bytes.Compare(s.tables[i].Biggest(), key) >= 0
 		})
 	} else {
 		n := len(s.tables)
 		idx = n - 1 - sort.Search(n, func(i int) bool {
-			return bytes.Compare(s.tables[n-1-i].Smallest().UserKey, key) <= 0
+			return bytes.Compare(s.tables[n-1-i].Smallest(), key) <= 0
 		})
 	}
 	if idx >= len(s.tables) || idx < 0 {

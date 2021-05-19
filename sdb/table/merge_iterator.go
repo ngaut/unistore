@@ -13,22 +13,23 @@ type MergeIterator struct {
 	bigger  *mergeIteratorChild
 
 	// when the two iterators has the same value, the value in the second iterator is ignored.
-	second  y.Iterator
+	second  Iterator
 	reverse bool
 	sameKey bool
 }
 
 type mergeIteratorChild struct {
 	valid bool
-	key   y.Key
-	iter  y.Iterator
+	key   []byte
+	ver   uint64
+	iter  Iterator
 
 	// The two iterators are type asserted from `y.Iterator`, used to inline more function calls.
 	merge  *MergeIterator
 	concat *ConcatIterator
 }
 
-func (child *mergeIteratorChild) setIterator(iter y.Iterator) {
+func (child *mergeIteratorChild) setIterator(iter Iterator) {
 	child.iter = iter
 	child.merge, _ = iter.(*MergeIterator)
 	child.concat, _ = iter.(*ConcatIterator)
@@ -39,16 +40,19 @@ func (child *mergeIteratorChild) reset() {
 		child.valid = child.merge.smaller.valid
 		if child.valid {
 			child.key = child.merge.smaller.key
+			child.ver = child.merge.smaller.ver
 		}
 	} else if child.concat != nil {
 		child.valid = child.concat.Valid()
 		if child.valid {
 			child.key = child.concat.Key()
+			child.ver = child.concat.Value().Version
 		}
 	} else {
 		child.valid = child.iter.Valid()
 		if child.valid {
 			child.key = child.iter.Key()
+			child.ver = child.iter.Value().Version
 		}
 	}
 }
@@ -58,7 +62,7 @@ func (mt *MergeIterator) fix() {
 		return
 	}
 	for mt.smaller.valid {
-		cmp := bytes.Compare(mt.smaller.key.UserKey, mt.bigger.key.UserKey)
+		cmp := bytes.Compare(mt.smaller.key, mt.bigger.key)
 		if cmp == 0 {
 			mt.sameKey = true
 			if mt.smaller.iter == mt.second {
@@ -119,12 +123,12 @@ func (mt *MergeIterator) NextVersion() bool {
 	if !mt.bigger.valid {
 		return false
 	}
-	if mt.smaller.key.Version < mt.bigger.key.Version {
+	if mt.smaller.ver < mt.bigger.ver {
 		// The smaller is second iterator, the bigger is first iterator.
 		// We have swapped already, no more versions.
 		return false
 	}
-	if mt.smaller.key.Version == mt.bigger.key.Version {
+	if mt.smaller.ver == mt.bigger.ver {
 		// have duplicated key in the two iterators.
 		if mt.bigger.iter.NextVersion() {
 			mt.bigger.reset()
@@ -161,7 +165,7 @@ func (mt *MergeIterator) Valid() bool {
 }
 
 // Key returns the key associated with the current iterator
-func (mt *MergeIterator) Key() y.Key {
+func (mt *MergeIterator) Key() []byte {
 	return mt.smaller.key
 }
 
@@ -194,7 +198,7 @@ func (mt *MergeIterator) Close() error {
 }
 
 // NewMergeIterator creates a merge iterator
-func NewMergeIterator(iters []y.Iterator, reverse bool) y.Iterator {
+func NewMergeIterator(iters []Iterator, reverse bool) Iterator {
 	if len(iters) == 0 {
 		return &EmptyIterator{}
 	} else if len(iters) == 1 {
@@ -211,7 +215,7 @@ func NewMergeIterator(iters []y.Iterator, reverse bool) y.Iterator {
 		return mi
 	}
 	mid := len(iters) / 2
-	return NewMergeIterator([]y.Iterator{NewMergeIterator(iters[:mid], reverse), NewMergeIterator(iters[mid:], reverse)}, reverse)
+	return NewMergeIterator([]Iterator{NewMergeIterator(iters[:mid], reverse), NewMergeIterator(iters[mid:], reverse)}, reverse)
 }
 
 type EmptyIterator struct{}
@@ -226,8 +230,8 @@ func (e *EmptyIterator) Rewind() {}
 
 func (e *EmptyIterator) Seek(key []byte) {}
 
-func (e *EmptyIterator) Key() y.Key {
-	return y.Key{}
+func (e *EmptyIterator) Key() []byte {
+	return nil
 }
 
 func (e *EmptyIterator) Value() y.ValueStruct {

@@ -79,14 +79,14 @@ func (s *SimpleIterator) Seek(key []byte) {
 	})
 	s.verIdx = 0
 	if s.reversed {
-		if !s.Valid() || !bytes.Equal(s.Key().UserKey, key) {
+		if !s.Valid() || !bytes.Equal(s.Key(), key) {
 			s.idx--
 		}
 	}
 }
 
-func (s *SimpleIterator) Key() y.Key {
-	return s.keys[s.entryIdx()]
+func (s *SimpleIterator) Key() []byte {
+	return s.keys[s.entryIdx()].UserKey
 }
 
 func (s *SimpleIterator) entryIdx() int {
@@ -98,6 +98,7 @@ func (s *SimpleIterator) Value() y.ValueStruct {
 		Value:    s.vals[s.entryIdx()],
 		UserMeta: []byte{55},
 		Meta:     0,
+		Version:  s.keys[s.entryIdx()].Version,
 	}
 }
 func (s *SimpleIterator) FillValue(vs *y.ValueStruct) {
@@ -156,11 +157,11 @@ func newMultiVersionSimpleIterator(maxVersion, minVersion uint64, reversed bool)
 	}
 }
 
-func getAll(it y.Iterator) ([]string, []string) {
+func getAll(it Iterator) ([]string, []string) {
 	var keys, vals []string
 	for ; it.Valid(); it.Next() {
 		k := it.Key()
-		keys = append(keys, string(k.UserKey))
+		keys = append(keys, string(k))
 		v := it.Value()
 		vals = append(vals, string(v.Value))
 	}
@@ -190,7 +191,7 @@ func TestMergeSingle(t *testing.T) {
 	keys := []string{"1", "2", "3"}
 	vals := []string{"v1", "v2", "v3"}
 	it := newSimpleIterator(keys, vals, false)
-	mergeIt := NewMergeIterator([]y.Iterator{it}, false)
+	mergeIt := NewMergeIterator([]Iterator{it}, false)
 	defer mergeIt.Close()
 	mergeIt.Rewind()
 	k, v := getAll(mergeIt)
@@ -202,7 +203,7 @@ func TestMergeSingleReversed(t *testing.T) {
 	keys := []string{"1", "2", "3"}
 	vals := []string{"v1", "v2", "v3"}
 	it := newSimpleIterator(keys, vals, true)
-	mergeIt := NewMergeIterator([]y.Iterator{it}, true)
+	mergeIt := NewMergeIterator([]Iterator{it}, true)
 	defer mergeIt.Close()
 	mergeIt.Rewind()
 	k, v := getAll(mergeIt)
@@ -216,7 +217,7 @@ func TestMergeMore(t *testing.T) {
 	it3 := newSimpleIterator([]string{"1"}, []string{"c1"}, false)
 	it4 := newSimpleIterator([]string{"1", "7", "9"}, []string{"d1", "d7", "d9"}, false)
 
-	mergeIt := NewMergeIterator([]y.Iterator{it1, it2, it3, it4}, false)
+	mergeIt := NewMergeIterator([]Iterator{it1, it2, it3, it4}, false)
 	defer mergeIt.Close()
 	expectedKeys := []string{"1", "2", "3", "5", "7", "9"}
 	expectedVals := []string{"a1", "b2", "a3", "b5", "a7", "d9"}
@@ -231,8 +232,8 @@ func TestMergeIteratorNested(t *testing.T) {
 	keys := []string{"1", "2", "3"}
 	vals := []string{"v1", "v2", "v3"}
 	it := newSimpleIterator(keys, vals, false)
-	mergeIt := NewMergeIterator([]y.Iterator{it}, false)
-	mergeIt2 := NewMergeIterator([]y.Iterator{mergeIt}, false)
+	mergeIt := NewMergeIterator([]Iterator{it}, false)
+	mergeIt2 := NewMergeIterator([]Iterator{mergeIt}, false)
 	defer mergeIt2.Close()
 	mergeIt2.Rewind()
 	k, v := getAll(mergeIt2)
@@ -245,7 +246,7 @@ func TestMergeIteratorSeek(t *testing.T) {
 	it2 := newSimpleIterator([]string{"2", "3", "5"}, []string{"b2", "b3", "b5"}, false)
 	it3 := newSimpleIterator([]string{"1"}, []string{"c1"}, false)
 	it4 := newSimpleIterator([]string{"1", "7", "9"}, []string{"d1", "d7", "d9"}, false)
-	mergeIt := NewMergeIterator([]y.Iterator{it, it2, it3, it4}, false)
+	mergeIt := NewMergeIterator([]Iterator{it, it2, it3, it4}, false)
 	defer mergeIt.Close()
 	mergeIt.Seek([]byte("4"))
 	k, v := getAll(mergeIt)
@@ -258,7 +259,7 @@ func TestMergeIteratorSeekReversed(t *testing.T) {
 	it2 := newSimpleIterator([]string{"2", "3", "5"}, []string{"b2", "b3", "b5"}, true)
 	it3 := newSimpleIterator([]string{"1"}, []string{"c1"}, true)
 	it4 := newSimpleIterator([]string{"1", "7", "9"}, []string{"d1", "d7", "d9"}, true)
-	mergeIt := NewMergeIterator([]y.Iterator{it, it2, it3, it4}, true)
+	mergeIt := NewMergeIterator([]Iterator{it, it2, it3, it4}, true)
 	defer mergeIt.Close()
 	mergeIt.Seek([]byte("5"))
 	k, v := getAll(mergeIt)
@@ -271,7 +272,7 @@ func TestMergeIteratorSeekInvalid(t *testing.T) {
 	it2 := newSimpleIterator([]string{"2", "3", "5"}, []string{"b2", "b3", "b5"}, false)
 	it3 := newSimpleIterator([]string{"1"}, []string{"c1"}, false)
 	it4 := newSimpleIterator([]string{"1", "7", "9"}, []string{"d1", "d7", "d9"}, false)
-	mergeIt := NewMergeIterator([]y.Iterator{it, it2, it3, it4}, false)
+	mergeIt := NewMergeIterator([]Iterator{it, it2, it3, it4}, false)
 	defer mergeIt.Close()
 	mergeIt.Seek([]byte("f"))
 	require.False(t, mergeIt.Valid())
@@ -282,7 +283,7 @@ func TestMergeIteratorSeekInvalidReversed(t *testing.T) {
 	it2 := newSimpleIterator([]string{"2", "3", "5"}, []string{"b2", "b3", "b5"}, true)
 	it3 := newSimpleIterator([]string{"1"}, []string{"c1"}, true)
 	it4 := newSimpleIterator([]string{"1", "7", "9"}, []string{"d1", "d7", "d9"}, true)
-	mergeIt := NewMergeIterator([]y.Iterator{it, it2, it3, it4}, true)
+	mergeIt := NewMergeIterator([]Iterator{it, it2, it3, it4}, true)
 	defer mergeIt.Close()
 	mergeIt.Seek([]byte("0"))
 	require.False(t, mergeIt.Valid())
@@ -292,12 +293,12 @@ func TestMergeIteratorDuplicate(t *testing.T) {
 	it1 := newSimpleIterator([]string{"0", "1", "2"}, []string{"0", "1", "2"}, false)
 	it2 := newSimpleIterator([]string{"1"}, []string{"1"}, false)
 	it3 := newSimpleIterator([]string{"2"}, []string{"2"}, false)
-	it := NewMergeIterator([]y.Iterator{it3, it2, it1}, false)
+	it := NewMergeIterator([]Iterator{it3, it2, it1}, false)
 	defer it.Close()
 
 	var cnt int
 	for it.Rewind(); it.Valid(); it.Next() {
-		require.EqualValues(t, cnt+48, it.Key().UserKey[0])
+		require.EqualValues(t, cnt+48, it.Key()[0])
 		cnt++
 	}
 	require.Equal(t, 3, cnt)
@@ -309,30 +310,30 @@ func TestMultiVersionMergeIterator(t *testing.T) {
 		it2 := newMultiVersionSimpleIterator(90, 80, reverse)
 		it3 := newMultiVersionSimpleIterator(80, 70, reverse)
 		it4 := newMultiVersionSimpleIterator(70, 60, reverse)
-		it := NewMergeIterator([]y.Iterator{it1, it2, it3, it4}, reverse)
+		it := NewMergeIterator([]Iterator{it1, it2, it3, it4}, reverse)
 
 		it.Rewind()
-		curKey := it.Key().UserKey
+		curKey := it.Key()
 		for i := 1; i < 100; i++ {
 			it.Next()
 			require.True(t, it.Valid())
-			require.False(t, bytes.Equal(curKey, it.Key().UserKey))
-			curKey = it.Key().UserKey
-			curVer := it.Key().Version
+			require.False(t, bytes.Equal(curKey, it.Key()))
+			curKey = it.Key()
+			curVer := it.Value().Version
 			for it.NextVersion() {
-				require.True(t, it.Key().Version < curVer)
-				curVer = it.Key().Version
+				require.Truef(t, it.Value().Version < curVer, "%d %d", it.Value().Version, curVer)
+				curVer = it.Value().Version
 			}
 		}
 		for i := 0; i < 100; i++ {
 			key := []byte(fmt.Sprintf("key%.3d", z.FastRand()%100))
 			it.Seek(key)
 			require.True(t, it.Valid())
-			require.EqualValues(t, it.Key().UserKey, key)
-			curVer := it.Key().Version
+			require.EqualValues(t, it.Key(), key)
+			curVer := it.Value().Version
 			for it.NextVersion() {
-				require.True(t, it.Key().Version < curVer)
-				curVer = it.Key().Version
+				require.True(t, it.Value().Version < curVer)
+				curVer = it.Value().Version
 			}
 			require.True(t, curVer <= 70)
 		}
@@ -342,7 +343,7 @@ func TestMultiVersionMergeIterator(t *testing.T) {
 
 func BenchmarkMergeIterator(b *testing.B) {
 	num := 2
-	simpleIters := make([]y.Iterator, num)
+	simpleIters := make([]Iterator, num)
 	for i := 0; i < num; i++ {
 		simpleIters[i] = new(SimpleIterator)
 	}

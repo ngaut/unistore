@@ -2,6 +2,7 @@ package sstable
 
 import (
 	"bytes"
+	"github.com/ngaut/unistore/sdb/table"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
@@ -98,12 +99,12 @@ func OpenL0Table(filename string, fid uint64) (*L0Table, error) {
 	return l0, nil
 }
 
-func (sl0 *L0Table) Get(cf int, key y.Key, keyHash uint64) y.ValueStruct {
+func (sl0 *L0Table) Get(cf int, key []byte, version, keyHash uint64) y.ValueStruct {
 	tbl := sl0.cfs[cf]
 	if tbl == nil {
 		return y.ValueStruct{}
 	}
-	v, err := tbl.Get(key, keyHash)
+	v, err := tbl.Get(key, version, keyHash)
 	if err != nil {
 		// TODO: handle error
 		log.Error("get data in table failed", zap.Error(err))
@@ -111,7 +112,7 @@ func (sl0 *L0Table) Get(cf int, key y.Key, keyHash uint64) y.ValueStruct {
 	return v
 }
 
-func (sl0 *L0Table) NewIterator(cf int, reverse bool) y.Iterator {
+func (sl0 *L0Table) NewIterator(cf int, reverse bool) table.Iterator {
 	tbl := sl0.cfs[cf]
 	if tbl == nil {
 		return nil
@@ -135,8 +136,8 @@ func NewL0Builder(numCFs int, fid uint64, opt TableBuilderOptions, commitTS uint
 	return sdb
 }
 
-func (e *L0Builder) Add(cf int, key y.Key, value y.ValueStruct) {
-	e.builders[cf].Add(key.UserKey, &value)
+func (e *L0Builder) Add(cf int, key []byte, value y.ValueStruct) {
+	e.builders[cf].Add(key, &value)
 }
 
 func (e *L0Builder) Finish() []byte {
