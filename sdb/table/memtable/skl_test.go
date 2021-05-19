@@ -33,6 +33,10 @@ import (
 
 const arenaSize = 1 << 20
 
+func newKey(i int) []byte {
+	return []byte(fmt.Sprintf("key%.3d", i))
+}
+
 func newValue(v int) []byte {
 	return []byte(fmt.Sprintf("%05d", v))
 }

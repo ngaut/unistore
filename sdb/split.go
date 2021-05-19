@@ -351,7 +351,7 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 		}
 		log.S().Infof("new shard %d:%d state %s", shard.ID, shard.Ver, shard.GetSplitState())
 		shard.memTbls = new(unsafe.Pointer)
-		atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.CFTable{oldShard.loadSplittingMemTable(i)}}))
+		atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{oldShard.loadSplittingMemTable(i)}}))
 		shard.l0s = new(unsafe.Pointer)
 		atomic.StorePointer(shard.l0s, unsafe.Pointer(new(l0Tables)))
 		newShards[i] = shard

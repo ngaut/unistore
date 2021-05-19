@@ -112,30 +112,13 @@ func (item *Item) UserMeta() []byte {
 	return item.userMeta
 }
 
-// IteratorOptions is used to set options when iterating over Badger key-value
-// stores.
-//
-// This package provides DefaultIteratorOptions which contains options that
-// should work for most applications. Consider using that as a starting point
-// before customizing it for your own needs.
-type IteratorOptions struct {
-	Reverse     bool // Direction of iteration. False is forward, true is backward.
-	AllVersions bool // Fetch all valid versions of the same key.
-
-	// StartKey and EndKey are used to prune non-overlapping table iterators.
-	// They are not boundary limits, the EndKey is exclusive.
-	StartKey []byte
-	EndKey   []byte
-
-	internalAccess bool // Used to allow internal access to badger keys.
-}
-
 // Iterator helps iterating over the KV pairs in a lexicographically sorted order.
 type Iterator struct {
-	iitr   table.Iterator
-	readTs uint64
+	iitr        table.Iterator
+	readTs      uint64
+	reversed    bool
+	allVersions bool
 
-	opt   IteratorOptions
 	item  *Item
 	itBuf Item
 	vs    y.ValueStruct
@@ -171,7 +154,7 @@ func (it *Iterator) Close() {
 // Next would advance the iterator by one. Always check it.Valid() after a Next()
 // to ensure you have access to a valid it.Item().
 func (it *Iterator) Next() {
-	if it.opt.AllVersions && it.Valid() && it.iitr.NextVersion() {
+	if it.allVersions && it.Valid() && it.iitr.NextVersion() {
 		it.updateItem()
 		return
 	}
@@ -194,10 +177,6 @@ func (it *Iterator) parseItem() {
 	iitr := it.iitr
 	for iitr.Valid() {
 		key := iitr.Key()
-		if !it.opt.internalAccess && key[0] == '!' {
-			iitr.Next()
-			continue
-		}
 		if iitr.Value().Version > it.readTs {
 			if !table.SeekToVersion(iitr, it.readTs) {
 				iitr.Next()
@@ -205,8 +184,8 @@ func (it *Iterator) parseItem() {
 			}
 		}
 		it.updateItem()
-		if !it.opt.AllVersions && isDeleted(it.vs.Meta) {
-			if it.opt.Reverse {
+		if !it.allVersions && isDeleted(it.vs.Meta) {
+			if it.reversed {
 				if bytes.Compare(key, it.bound) < 0 {
 					break
 				}
@@ -231,7 +210,7 @@ func isDeleted(meta byte) bool {
 // greater than provided if iterating in the forward direction. Behavior would be reversed is
 // iterating backwards.
 func (it *Iterator) Seek(key []byte) {
-	if !it.opt.Reverse {
+	if !it.reversed {
 		it.iitr.Seek(key)
 	} else {
 		if len(key) == 0 {
@@ -252,13 +231,14 @@ func (it *Iterator) Rewind() {
 }
 
 func (it *Iterator) SetAllVersions(allVersions bool) {
-	it.opt.AllVersions = allVersions
+	it.allVersions = allVersions
 }
 
 func (s *Snapshot) NewIterator(cf int, reversed, allVersions bool) *Iterator {
 	iter := &Iterator{
-		iitr: s.newIterator(cf, reversed),
-		opt:  IteratorOptions{Reverse: reversed, AllVersions: allVersions},
+		iitr:        s.newIterator(cf, reversed),
+		reversed:    reversed,
+		allVersions: allVersions,
 	}
 	if s.cfs[cf].Managed {
 		if s.managedReadTS != 0 {

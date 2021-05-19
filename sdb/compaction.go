@@ -219,36 +219,10 @@ func (cd *CompactDef) buildIterator() table.Iterator {
 type keyRange struct {
 	left  []byte
 	right []byte
-	inf   bool
 }
-
-var infRange = keyRange{inf: true}
 
 func (r keyRange) String() string {
-	return fmt.Sprintf("[left=%x, right=%x, inf=%v]", r.left, r.right, r.inf)
-}
-
-func (r keyRange) equals(dst keyRange) bool {
-	return bytes.Equal(r.left, dst.left) &&
-		bytes.Equal(r.right, dst.right) &&
-		r.inf == dst.inf
-}
-
-func (r keyRange) overlapsWith(dst keyRange) bool {
-	if r.inf || dst.inf {
-		return true
-	}
-
-	// If my left is greater than dst right, we have no overlap.
-	if bytes.Compare(r.left, dst.right) > 0 {
-		return false
-	}
-	// If my right is less than dst left, we have no overlap.
-	if bytes.Compare(r.right, dst.left) < 0 {
-		return false
-	}
-	// We have overlap.
-	return true
+	return fmt.Sprintf("[left=%x, right=%x]", r.left, r.right)
 }
 
 func getKeyRange(tables []table.Table) keyRange {
@@ -313,16 +287,6 @@ func newL0CreateByResult(result *sstable.BuildResult, props *sdbpb.Properties) *
 		Properties: props,
 	}
 	return change
-}
-
-func debugTableCount(tbl table.Table) int {
-	it := tbl.NewIterator(false)
-	defer it.Close()
-	rowCnt := 0
-	for it.Rewind(); it.Valid(); it.Next() {
-		rowCnt++
-	}
-	return rowCnt
 }
 
 func (sdb *DB) UpdateMangedSafeTs(ts uint64) {

@@ -18,7 +18,7 @@ import (
 	"unsafe"
 )
 
-const ShardMaxLevel = 4
+const ShardMaxLevel = 3
 
 type Shard struct {
 	ID    uint64
@@ -215,15 +215,15 @@ func (s *Shard) getSplittingIndex(key []byte) int {
 	return i
 }
 
-func (s *Shard) loadSplittingMemTable(i int) *memtable.CFTable {
-	return (*memtable.CFTable)(atomic.LoadPointer(&s.splittingMemTbls[i]))
+func (s *Shard) loadSplittingMemTable(i int) *memtable.Table {
+	return (*memtable.Table)(atomic.LoadPointer(&s.splittingMemTbls[i]))
 }
 
 func (s *Shard) loadMemTables() *memTables {
 	return (*memTables)(atomic.LoadPointer(s.memTbls))
 }
 
-func (s *Shard) loadWritableMemTable() *memtable.CFTable {
+func (s *Shard) loadWritableMemTable() *memtable.Table {
 	tbls := s.loadMemTables()
 	if len(tbls.tables) > 0 {
 		return tbls.tables[0]

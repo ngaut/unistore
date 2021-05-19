@@ -15,7 +15,7 @@ import (
 
 type flushTask struct {
 	shard         *Shard
-	tbl           *memtable.CFTable
+	tbl           *memtable.Table
 	preSplitFlush bool
 	properties    *sdbpb.Properties
 	commitTS      uint64
@@ -91,7 +91,7 @@ func (sdb *DB) flushFinishSplit(task *flushTask) error {
 	return nil
 }
 
-func (sdb *DB) flushMemTable(shard *Shard, m *memtable.CFTable, props *sdbpb.Properties) (*sdbpb.L0Create, error) {
+func (sdb *DB) flushMemTable(shard *Shard, m *memtable.Table, props *sdbpb.Properties) (*sdbpb.L0Create, error) {
 	y.Assert(sdb.idAlloc != nil)
 	id := sdb.idAlloc.AllocID()
 	fd, err := sdb.createL0File(id)
@@ -146,10 +146,10 @@ func (sdb *DB) flushMemTable(shard *Shard, m *memtable.CFTable, props *sdbpb.Pro
 	return newL0CreateByResult(result, props), nil
 }
 
-func atomicAddMemTable(pointer *unsafe.Pointer, memTbl *memtable.CFTable) {
+func atomicAddMemTable(pointer *unsafe.Pointer, memTbl *memtable.Table) {
 	for {
 		oldMemTbls := (*memTables)(atomic.LoadPointer(pointer))
-		newMemTbls := &memTables{make([]*memtable.CFTable, 0, len(oldMemTbls.tables)+1)}
+		newMemTbls := &memTables{make([]*memtable.Table, 0, len(oldMemTbls.tables)+1)}
 		newMemTbls.tables = append(newMemTbls.tables, memTbl)
 		newMemTbls.tables = append(newMemTbls.tables, oldMemTbls.tables...)
 		if atomic.CompareAndSwapPointer(pointer, unsafe.Pointer(oldMemTbls), unsafe.Pointer(newMemTbls)) {
@@ -169,7 +169,7 @@ func atomicRemoveMemTable(pointer *unsafe.Pointer, cnt int) {
 		if newLen < 0 {
 			newLen = 0
 		}
-		newMemTbls := &memTables{make([]*memtable.CFTable, newLen)}
+		newMemTbls := &memTables{make([]*memtable.Table, newLen)}
 		copy(newMemTbls.tables, oldMemTbls.tables)
 		if atomic.CompareAndSwapPointer(pointer, unsafe.Pointer(oldMemTbls), unsafe.Pointer(newMemTbls)) {
 			break
