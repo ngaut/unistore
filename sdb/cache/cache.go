@@ -58,7 +58,7 @@ type Config struct {
 	Metrics bool
 	// OnEvict is called for every eviction and passes the hashed key and
 	// value to the function.
-	OnEvict func(key uint64, value interface{})
+	OnEvict func(key Key, value interface{})
 	// Cost evaluates a value and outputs a corresponding cost. This function
 	// is ran after Set is called for a new item or an item update with a cost
 	// param of 0.
@@ -72,8 +72,17 @@ const (
 
 type setEvent struct {
 	del  bool
-	key  uint64
+	key  Key
 	cost int64
+}
+
+type Key struct {
+	ID     uint64
+	Offset uint32
+}
+
+func (k Key) Hash() uint64 {
+	return k.ID + uint64(k.Offset)
 }
 
 // Cache is a thread-safe implementation of a hashmap with a TinyLFU admission
@@ -91,7 +100,7 @@ type Cache struct {
 	// contention
 	setBuf chan setEvent
 	// onEvict is called for item evictions
-	onEvict func(uint64, interface{})
+	onEvict func(Key, interface{})
 	// stop is used to stop the processItems goroutine
 	stop chan struct{}
 	// cost calculates cost from a value
@@ -134,16 +143,16 @@ func NewCache(config *Config) (*Cache, error) {
 // Get returns the value (if any) and a boolean representing whether the
 // value was found or not. The value can be nil and the boolean can be true at
 // the same time.
-func (c *Cache) Get(key uint64) (interface{}, bool) {
+func (c *Cache) Get(key Key) (interface{}, bool) {
 	if c == nil {
 		return nil, false
 	}
 	c.getBuf.Push(key)
 	value, ok := c.store.GetValue(key)
 	if ok {
-		c.Metrics.add(hit, key, 1)
+		c.Metrics.add(hit, key.Hash(), 1)
 	} else {
-		c.Metrics.add(miss, key, 1)
+		c.Metrics.add(miss, key.Hash(), 1)
 	}
 	return value, ok
 }
@@ -156,7 +165,7 @@ func (c *Cache) Get(key uint64) (interface{}, bool) {
 // To dynamically evaluate the items cost using the Config.Coster function, set
 // the cost parameter to 0 and Coster will be ran when needed in order to find
 // the items true cost.
-func (c *Cache) Set(key uint64, value interface{}, cost int64) {
+func (c *Cache) Set(key Key, value interface{}, cost int64) {
 	if c == nil {
 		return
 	}
@@ -195,7 +204,7 @@ func (c *Cache) SetNewMaxCost(newMaxCost int64) {
 // GetOrCompute returns the value of key. If there is no such key, it will compute the
 // value using the factory function `f`. If there are concurrent call on same key,
 // the factory function will be called only once.
-func (c *Cache) GetOrCompute(key uint64, f func() (interface{}, int64, error)) (interface{}, error) {
+func (c *Cache) GetOrCompute(key Key, f func() (interface{}, int64, error)) (interface{}, error) {
 	if c == nil {
 		return nil, nil
 	}
@@ -236,7 +245,7 @@ func (c *Cache) compute(i *item, f func() (interface{}, int64, error)) (interfac
 }
 
 // Del deletes the key-value item from the cache if it exists.
-func (c *Cache) Del(key uint64) interface{} {
+func (c *Cache) Del(key Key) interface{} {
 	if c == nil {
 		return nil
 	}
@@ -321,7 +330,7 @@ func (c *Cache) processItems() {
 	}
 }
 
-func (c *Cache) handleNewItem(key uint64, cost int64) {
+func (c *Cache) handleNewItem(key Key, cost int64) {
 	itemInMap, ok := c.store.Get(key)
 	if !ok {
 		// This item dropped by admission policy,

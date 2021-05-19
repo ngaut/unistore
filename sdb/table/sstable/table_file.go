@@ -1,6 +1,7 @@
 package sstable
 
 import (
+	"github.com/ngaut/unistore/sdb/cache"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
@@ -151,6 +152,6 @@ func (f *LocalFile) Delete() error {
 	return os.Remove(f.fd.Name())
 }
 
-func blockCacheKey(fid, offset uint32) uint64 {
-	return uint64(fid)<<32 | uint64(offset)
+func blockCacheKey(fid uint64, offset uint32) cache.Key {
+	return cache.Key{ID: fid, Offset: offset}
 }
