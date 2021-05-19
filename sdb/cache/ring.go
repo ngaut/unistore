@@ -23,33 +23,33 @@ import (
 // ringConsumer is the user-defined object responsible for receiving and
 // processing items in batches when buffers are drained.
 type ringConsumer interface {
-	Push([]uint64) bool
+	Push([]Key) bool
 }
 
 // ringStripe is a singular ring buffer that is not concurrent safe.
 type ringStripe struct {
 	cons ringConsumer
-	data []uint64
+	data []Key
 	capa int
 }
 
 func newRingStripe(cons ringConsumer, capa int64) *ringStripe {
 	return &ringStripe{
 		cons: cons,
-		data: make([]uint64, 0, capa),
+		data: make([]Key, 0, capa),
 		capa: int(capa),
 	}
 }
 
 // Push appends an item in the ring buffer and drains (copies items and
 // sends to Consumer) if full.
-func (s *ringStripe) Push(item uint64) {
+func (s *ringStripe) Push(item Key) {
 	s.data = append(s.data, item)
 	// if we should drain
 	if len(s.data) >= s.capa {
 		// Send elements to consumer. Create a new one.
 		if s.cons.Push(s.data) {
-			s.data = make([]uint64, 0, s.capa)
+			s.data = make([]Key, 0, s.capa)
 		} else {
 			s.data = s.data[:0]
 		}
@@ -83,7 +83,7 @@ func newRingBuffer(cons ringConsumer, capa int64) *ringBuffer {
 
 // Push adds an element to one of the internal stripes and possibly drains if
 // the stripe becomes full.
-func (b *ringBuffer) Push(item uint64) {
+func (b *ringBuffer) Push(item Key) {
 	// reuse or create a new stripe
 	stripe := b.pool.Get().(*ringStripe)
 	stripe.Push(item)

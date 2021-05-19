@@ -129,7 +129,7 @@ type block struct {
 	reference int32
 }
 
-func OnEvict(key uint64, value interface{}) {
+func OnEvict(key cache.Key, value interface{}) {
 	if b, ok := value.(*block); ok {
 		b.done()
 	}
@@ -205,7 +205,7 @@ func (t *Table) loadBlockByAddrLen(addr blockAddress, length int) (*block, error
 
 func (t *Table) readBlock(addr blockAddress, length int) (*block, error) {
 	for {
-		blk, err := t.cache.GetOrCompute(blockCacheKey(uint32(addr.originFID), addr.originOff), func() (interface{}, int64, error) {
+		blk, err := t.cache.GetOrCompute(blockCacheKey(addr.originFID, addr.originOff), func() (interface{}, int64, error) {
 			data := buffer.GetBuffer(length)
 			if _, err := t.ReadAt(data, int64(addr.currentOff)); err != nil {
 				buffer.PutBuffer(data)

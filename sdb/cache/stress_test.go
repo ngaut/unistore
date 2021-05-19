@@ -22,8 +22,8 @@ func TestStressSetGet(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	for i := uint64(0); i < 100; i++ {
-		c.Set(i, i, 1)
+	for i := 0; i < 100; i++ {
+		c.Set(iKey(i), uint64(i), 1)
 	}
 	time.Sleep(wait)
 	wg := &sync.WaitGroup{}
@@ -32,11 +32,11 @@ func TestStressSetGet(t *testing.T) {
 		go func() {
 			r := rand.New(rand.NewSource(time.Now().UnixNano()))
 			for a := 0; a < 1000; a++ {
-				k := r.Uint64() % 10
+				k := iKey(int(r.Uint64() % 10))
 				if val, ok := c.Get(k); val == nil || !ok {
 					err = fmt.Errorf("expected %d but got nil", k)
 					break
-				} else if val != nil && val.(uint64) != k {
+				} else if val != nil && val.(uint64) != k.ID {
 					err = fmt.Errorf("expected %d but got %d", k, val.(int))
 					break
 				}
@@ -73,8 +73,8 @@ func TestStressHitRatio(t *testing.T) {
 		if _, ok := o.Get(k); !ok {
 			o.Set(k, k, 1)
 		}
-		if _, ok := c.Get(k); !ok {
-			c.Set(k, k, 1)
+		if _, ok := c.Get(iKey(int(k))); !ok {
+			c.Set(iKey(int(k)), k, 1)
 		}
 	}
 	t.Logf("actual: %.2f, optimal: %.2f", c.Metrics.Ratio(), o.Metrics().Ratio())

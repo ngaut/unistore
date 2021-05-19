@@ -33,7 +33,7 @@ type policy struct {
 	sync.Mutex
 	admit   *tinyLFU
 	evict   *sampledLFU
-	itemsCh chan []uint64
+	itemsCh chan []Key
 	stop    chan struct{}
 	metrics *Metrics
 }
@@ -42,7 +42,7 @@ func newPolicy(numCounters, maxCost int64) *policy {
 	p := &policy{
 		admit:   newTinyLFU(numCounters),
 		evict:   newSampledLFU(maxCost),
-		itemsCh: make(chan []uint64, 3),
+		itemsCh: make(chan []Key, 3),
 		stop:    make(chan struct{}),
 	}
 	go p.processItems()
@@ -55,7 +55,7 @@ func (p *policy) CollectMetrics(metrics *Metrics) {
 }
 
 type policyPair struct {
-	key  uint64
+	key  Key
 	cost int64
 }
 
@@ -78,21 +78,21 @@ func (p *policy) setNewMaxCost(newMaxCost int64) {
 	p.Unlock()
 }
 
-func (p *policy) Push(keys []uint64) bool {
+func (p *policy) Push(keys []Key) bool {
 	if len(keys) == 0 {
 		return true
 	}
 	select {
 	case p.itemsCh <- keys:
-		p.metrics.add(keepGets, keys[0], uint64(len(keys)))
+		p.metrics.add(keepGets, keys[0].Hash(), uint64(len(keys)))
 		return true
 	default:
-		p.metrics.add(dropGets, keys[0], uint64(len(keys)))
+		p.metrics.add(dropGets, keys[0].Hash(), uint64(len(keys)))
 		return false
 	}
 }
 
-func (p *policy) Add(key uint64, cost int64) ([]*item, bool) {
+func (p *policy) Add(key Key, cost int64) ([]*item, bool) {
 	p.Lock()
 	defer p.Unlock()
 	// can't add an item bigger than entire cache
@@ -111,8 +111,8 @@ func (p *policy) Add(key uint64, cost int64) ([]*item, bool) {
 		// there's enough room in the cache to store the new item without
 		// overflowing, so we can do that now and stop here
 		p.evict.add(key, cost)
-		p.metrics.add(costAdd, key, uint64(cost))
-		p.metrics.add(keyAdd, key, 1)
+		p.metrics.add(costAdd, key.Hash(), uint64(cost))
+		p.metrics.add(keyAdd, key.Hash(), 1)
 		return nil, true
 	}
 	// incHits is the hit count for the incoming item
@@ -131,7 +131,7 @@ func (p *policy) Add(key uint64, cost int64) ([]*item, bool) {
 		// fill up empty slots in sample
 		sample = p.evict.fillSample(sample)
 		// find minimally used item in sample
-		minKey, minHits, minId := uint64(0), int64(math.MaxInt64), 0
+		minKey, minHits, minId := Key{}, int64(math.MaxInt64), 0
 		for i, pair := range sample {
 			// look up hit count for sample key
 			if hits := p.admit.Estimate(pair.key); hits < minHits {
@@ -140,7 +140,7 @@ func (p *policy) Add(key uint64, cost int64) ([]*item, bool) {
 		}
 		// if the incoming item isn't worth keeping in the policy, reject.
 		if incHits < minHits {
-			p.metrics.add(rejectSets, key, 1)
+			p.metrics.add(rejectSets, key.Hash(), 1)
 			return victims, false
 		}
 		// delete the victim from metadata
@@ -155,19 +155,19 @@ func (p *policy) Add(key uint64, cost int64) ([]*item, bool) {
 		})
 	}
 	p.evict.add(key, cost)
-	p.metrics.add(costAdd, key, uint64(cost))
-	p.metrics.add(keyAdd, key, 1)
+	p.metrics.add(costAdd, key.Hash(), uint64(cost))
+	p.metrics.add(keyAdd, key.Hash(), 1)
 	return victims, true
 }
 
-func (p *policy) Has(key uint64) bool {
+func (p *policy) Has(key Key) bool {
 	p.Lock()
 	_, exists := p.evict.keyCosts[key]
 	p.Unlock()
 	return exists
 }
 
-func (p *policy) Del(key uint64) {
+func (p *policy) Del(key Key) {
 	p.Lock()
 	p.evict.del(key)
 	p.Unlock()
@@ -180,13 +180,13 @@ func (p *policy) Cap() int64 {
 	return capacity
 }
 
-func (p *policy) Update(key uint64, cost int64) {
+func (p *policy) Update(key Key, cost int64) {
 	p.Lock()
 	p.evict.updateIfHas(key, cost)
 	p.Unlock()
 }
 
-func (p *policy) Cost(key uint64) int64 {
+func (p *policy) Cost(key Key) int64 {
 	p.Lock()
 	if cost, found := p.evict.keyCosts[key]; found {
 		p.Unlock()
@@ -212,7 +212,7 @@ func (p *policy) Close() {
 
 // sampledLFU is an eviction helper storing key-cost pairs.
 type sampledLFU struct {
-	keyCosts map[uint64]int64
+	keyCosts map[Key]int64
 	maxCost  int64
 	used     int64
 	metrics  *Metrics
@@ -220,7 +220,7 @@ type sampledLFU struct {
 
 func newSampledLFU(maxCost int64) *sampledLFU {
 	return &sampledLFU{
-		keyCosts: make(map[uint64]int64),
+		keyCosts: make(map[Key]int64),
 		maxCost:  maxCost,
 	}
 }
@@ -242,33 +242,33 @@ func (p *sampledLFU) fillSample(in []*policyPair) []*policyPair {
 	return in
 }
 
-func (p *sampledLFU) del(key uint64) {
+func (p *sampledLFU) del(key Key) {
 	cost, ok := p.keyCosts[key]
 	if !ok {
 		return
 	}
 	p.used -= cost
 	delete(p.keyCosts, key)
-	p.metrics.add(costEvict, key, uint64(cost))
-	p.metrics.add(keyEvict, key, 1)
+	p.metrics.add(costEvict, key.Hash(), uint64(cost))
+	p.metrics.add(keyEvict, key.Hash(), 1)
 }
 
-func (p *sampledLFU) add(key uint64, cost int64) {
+func (p *sampledLFU) add(key Key, cost int64) {
 	p.keyCosts[key] = cost
 	p.used += cost
 }
 
-func (p *sampledLFU) updateIfHas(key uint64, cost int64) bool {
+func (p *sampledLFU) updateIfHas(key Key, cost int64) bool {
 	if prev, found := p.keyCosts[key]; found {
 		// update the cost of an existing key, but don't worry about evicting,
 		// evictions will be handled the next time a new item is added
-		p.metrics.add(keyUpdate, key, 1)
+		p.metrics.add(keyUpdate, key.Hash(), 1)
 		if prev > cost {
 			diff := prev - cost
-			p.metrics.add(costAdd, key, ^uint64(uint64(diff)-1))
+			p.metrics.add(costAdd, key.Hash(), ^uint64(uint64(diff)-1))
 		} else if cost > prev {
 			diff := cost - prev
-			p.metrics.add(costAdd, key, uint64(diff))
+			p.metrics.add(costAdd, key.Hash(), uint64(diff))
 		}
 		p.used += cost - prev
 		p.keyCosts[key] = cost
@@ -279,7 +279,7 @@ func (p *sampledLFU) updateIfHas(key uint64, cost int64) bool {
 
 func (p *sampledLFU) clear() {
 	p.used = 0
-	p.keyCosts = make(map[uint64]int64)
+	p.keyCosts = make(map[Key]int64)
 }
 
 // tinyLFU is an admission helper that keeps track of access frequency using
@@ -300,25 +300,25 @@ func newTinyLFU(numCounters int64) *tinyLFU {
 	}
 }
 
-func (p *tinyLFU) Push(keys []uint64) {
+func (p *tinyLFU) Push(keys []Key) {
 	for _, key := range keys {
 		p.Increment(key)
 	}
 }
 
-func (p *tinyLFU) Estimate(key uint64) int64 {
-	hits := p.freq.Estimate(key)
-	if p.door.Has(key) {
+func (p *tinyLFU) Estimate(key Key) int64 {
+	hits := p.freq.Estimate(key.Hash())
+	if p.door.Has(key.Hash()) {
 		hits += 1
 	}
 	return hits
 }
 
-func (p *tinyLFU) Increment(key uint64) {
+func (p *tinyLFU) Increment(key Key) {
 	// flip doorkeeper bit if not already
-	if added := p.door.AddIfNotHas(key); !added {
+	if added := p.door.AddIfNotHas(key.Hash()); !added {
 		// increment count-min counter if doorkeeper bit is already set.
-		p.freq.Increment(key)
+		p.freq.Increment(key.Hash())
 	}
 	p.incrs++
 	if p.incrs >= p.resetAt {

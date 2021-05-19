@@ -13,8 +13,8 @@ import (
 var wait time.Duration = time.Millisecond * 10
 
 func TestCacheMaxCost(t *testing.T) {
-	key := func() uint64 {
-		return uint64(rand.Intn(36 * 36))
+	key := func() Key {
+		return Key{ID: uint64(rand.Intn(36 * 36))}
 	}
 	c, err := NewCache(&Config{
 		NumCounters: 12960, // 36^2 * 10
@@ -93,7 +93,7 @@ func TestCache(t *testing.T) {
 
 func TestCacheProcessItems(t *testing.T) {
 	m := &sync.Mutex{}
-	evicted := make(map[uint64]struct{})
+	evicted := make(map[Key]struct{})
 	c, err := NewCache(&Config{
 		NumCounters: 100,
 		MaxCost:     10,
@@ -101,7 +101,7 @@ func TestCacheProcessItems(t *testing.T) {
 		Cost: func(value interface{}) int64 {
 			return int64(value.(int))
 		},
-		OnEvict: func(key uint64, value interface{}) {
+		OnEvict: func(key Key, value interface{}) {
 			m.Lock()
 			defer m.Unlock()
 			evicted[key] = struct{}{}
@@ -111,29 +111,29 @@ func TestCacheProcessItems(t *testing.T) {
 		panic(err)
 	}
 
-	c.Set(1, 1, 0)
+	c.Set(iKey(1), 1, 0)
 	time.Sleep(wait)
-	if !c.policy.Has(1) || c.policy.Cost(1) != 1 {
+	if !c.policy.Has(Key{ID: 1}) || c.policy.Cost(iKey(1)) != 1 {
 		t.Fatal("cache processItems didn't add new item")
 	}
-	c.Set(1, 2, 0)
+	c.Set(iKey(1), 2, 0)
 	time.Sleep(wait)
-	if c.policy.Cost(1) != 2 {
+	if c.policy.Cost(iKey(1)) != 2 {
 		t.Fatal("cache processItems didn't update item cost")
 	}
-	c.Del(1)
+	c.Del(iKey(1))
 	time.Sleep(wait)
-	if val, ok := c.store.Get(1); val != nil || ok {
+	if val, ok := c.store.Get(iKey(1)); val != nil || ok {
 		t.Fatal("cache processItems didn't delete item")
 	}
-	if c.policy.Has(1) {
+	if c.policy.Has(iKey(1)) {
 		t.Fatal("cache processItems didn't delete item")
 	}
-	c.Set(2, 2, 3)
-	c.Set(3, 3, 3)
-	c.Set(5, 3, 3)
-	c.Set(5, 3, 5)
-	c.Set(1, 3, 3)
+	c.Set(iKey(2), 2, 3)
+	c.Set(iKey(3), 3, 3)
+	c.Set(iKey(5), 3, 3)
+	c.Set(iKey(5), 3, 5)
+	c.Set(iKey(1), 3, 3)
 	time.Sleep(wait)
 	m.Lock()
 	if len(evicted) == 0 {
@@ -142,6 +142,18 @@ func TestCacheProcessItems(t *testing.T) {
 	}
 	m.Unlock()
 	c.Close()
+}
+
+func iKey(id int) Key {
+	return Key{ID: uint64(id)}
+}
+
+func makeKeys(ids ...int) []Key {
+	keys := make([]Key, len(ids))
+	for i, id := range ids {
+		keys[i] = iKey(id)
+	}
+	return keys
 }
 
 func TestCacheGet(t *testing.T) {
@@ -154,11 +166,11 @@ func TestCacheGet(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	c.Set(1, 1, 1)
-	if val, ok := c.Get(1); val == nil || !ok {
+	c.Set(iKey(1), 1, 1)
+	if val, ok := c.Get(iKey(1)); val == nil || !ok {
 		t.Fatal("get should be successful")
 	}
-	if val, ok := c.Get(2); val != nil || ok {
+	if val, ok := c.Get(iKey(2)); val != nil || ok {
 		t.Fatal("get should not be successful")
 	}
 	// 0.5 and not 1.0 because we tried Getting each item twice
@@ -166,7 +178,7 @@ func TestCacheGet(t *testing.T) {
 		t.Fatal("get should record metrics")
 	}
 	c = nil
-	if val, ok := c.Get(0); val != nil || ok {
+	if val, ok := c.Get(iKey(0)); val != nil || ok {
 		t.Fatal("get should not be successful with nil cache")
 	}
 }
@@ -181,20 +193,20 @@ func TestCacheSet(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	c.Set(1, 1, 1)
+	c.Set(iKey(1), 1, 1)
 	time.Sleep(wait)
-	if val, ok := c.Get(1); val == nil || val.(int) != 1 || !ok {
+	if val, ok := c.Get(iKey(1)); val == nil || val.(int) != 1 || !ok {
 		t.Fatal("set/get returned wrong value")
 	}
 
-	c.Set(1, 2, 2)
-	val, ok := c.store.GetValue(1)
+	c.Set(iKey(1), 2, 2)
+	val, ok := c.store.GetValue(iKey(1))
 	if val == nil || val.(int) != 2 || !ok {
 		t.Fatal("set/update was unsuccessful")
 	}
 	c.stop <- struct{}{}
 	for i := 0; i < setBufSize; i++ {
-		c.Set(1, 1, 1)
+		c.Set(iKey(1), 1, 1)
 	}
 	close(c.setBuf)
 	close(c.stop)
@@ -224,7 +236,7 @@ func TestCacheGetOrCompute(t *testing.T) {
 			var set bool
 			var result interface{}
 			for i := 0; i < 10; i++ {
-				result, _ = c.GetOrCompute(uint64(0), func() (interface{}, int64, error) {
+				result, _ = c.GetOrCompute(iKey(0), func() (interface{}, int64, error) {
 					set = true
 					atomic.AddUint32(&cnt, 1)
 					return id, 1, nil
@@ -269,10 +281,10 @@ func TestCacheDel(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	c.Set(1, 1, 1)
-	c.Del(1)
+	c.Set(iKey(1), 1, 1)
+	c.Del(iKey(1))
 	time.Sleep(wait)
-	if val, ok := c.Get(1); val != nil || ok {
+	if val, ok := c.Get(iKey(1)); val != nil || ok {
 		t.Fatal("del didn't delete")
 	}
 	c = nil
@@ -281,7 +293,7 @@ func TestCacheDel(t *testing.T) {
 			t.Fatal("del panic with nil cache")
 		}
 	}()
-	c.Del(1)
+	c.Del(iKey(1))
 }
 
 func TestCacheClear(t *testing.T) {
@@ -294,8 +306,8 @@ func TestCacheClear(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	for i := uint64(0); i < 10; i++ {
-		c.Set(i, i, 1)
+	for i := 0; i < 10; i++ {
+		c.Set(iKey(i), i, 1)
 	}
 	time.Sleep(wait)
 	if c.Metrics.KeysAdded() != 10 {
@@ -305,8 +317,8 @@ func TestCacheClear(t *testing.T) {
 	if c.Metrics.KeysAdded() != 0 {
 		t.Fatal("clear didn't reset metrics")
 	}
-	for i := uint64(0); i < 10; i++ {
-		if val, ok := c.Get(i); val != nil || ok {
+	for i := 0; i < 10; i++ {
+		if val, ok := c.Get(iKey(i)); val != nil || ok {
 			t.Fatal("clear didn't delete values")
 		}
 	}
@@ -322,8 +334,8 @@ func TestCacheMetrics(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	for i := uint64(0); i < 10; i++ {
-		c.Set(i, i, 1)
+	for i := 0; i < 10; i++ {
+		c.Set(iKey(i), i, 1)
 	}
 	time.Sleep(wait)
 	m := c.Metrics
@@ -410,7 +422,7 @@ func TestCacheMetricsClear(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	c.Set(1, 1, 1)
+	c.Set(iKey(1), 1, 1)
 	stop := make(chan struct{})
 	go func() {
 		for {
@@ -418,7 +430,7 @@ func TestCacheMetricsClear(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				c.Get(1)
+				c.Get(iKey(1))
 			}
 		}
 	}()
