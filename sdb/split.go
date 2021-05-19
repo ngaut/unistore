@@ -391,8 +391,10 @@ func (sdb *DB) getL0SplitIndex(l0 *sstable.L0Table, splitKeys [][]byte) int {
 func (sdb *DB) insertTableToNewShard(t table.Table, cf, level int, shards []*Shard, splitKeys [][]byte) {
 	idx := getSplitShardIndex(splitKeys, t.Smallest())
 	shard := shards[idx]
-	y.Assert(shard.OverlapKey(t.Smallest()))
-	y.Assert(shard.OverlapKey(t.Biggest()))
+	if !shard.OverlapKey(t.Smallest()) || !shard.OverlapKey(t.Biggest()) {
+		log.S().Fatalf("shard:%d:%d start:%x end:%x insert table %d smallest:%x biggest:%x",
+			shard.ID, shard.Ver, shard.Start, shard.End, t.ID(), t.Smallest(), t.Biggest())
+	}
 	sCF := shard.cfs[cf]
 	handler := sCF.getLevelHandler(level)
 	handler.totalSize += t.Size()
