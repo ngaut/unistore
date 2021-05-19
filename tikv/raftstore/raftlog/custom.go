@@ -278,3 +278,7 @@ func u64ToBytes(v uint64) []byte {
 func IsChangeSetLog(data []byte) bool {
 	return len(data) > 2 && data[0] == CustomRaftLogFlag && data[1] == byte(TypeChangeSet)
 }
+
+func IsPreSplitLog(data []byte) bool {
+	return len(data) > 2 && data[0] == CustomRaftLogFlag && data[1] == byte(TypePreSplit)
+}
