@@ -13,7 +13,7 @@ const (
 )
 
 type memTables struct {
-	tables []*memtable.CFTable // tables from new to old, the first one is mutable.
+	tables []*memtable.Table // tables from new to old, the first one is mutable.
 }
 
 type l0Tables struct {
@@ -100,7 +100,7 @@ func (sdb *DB) collectTasks(c *y.Closer) []engineTask {
 	return engineTasks
 }
 
-func (sdb *DB) switchMemTable(shard *Shard, minSize int64, commitTS uint64) *memtable.CFTable {
+func (sdb *DB) switchMemTable(shard *Shard, minSize int64, commitTS uint64) *memtable.Table {
 	newTableSize := sdb.opt.MaxMemTableSize
 	if newTableSize < minSize {
 		newTableSize = minSize
@@ -207,7 +207,7 @@ func (sdb *DB) executeTriggerFlushTask(eTask engineTask) {
 	eTask.notify <- nil
 }
 
-func (sdb *DB) scheduleFlushTask(shard *Shard, memTbl *memtable.CFTable, commitTS uint64, preSplitFlush bool) {
+func (sdb *DB) scheduleFlushTask(shard *Shard, memTbl *memtable.Table, commitTS uint64, preSplitFlush bool) {
 	if !shard.IsPassive() {
 		sdb.flushCh <- &flushTask{
 			shard:         shard,

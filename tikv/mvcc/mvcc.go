@@ -156,5 +156,4 @@ const (
 	WriteCF = 0
 	LockCF  = 1
 	ExtraCF = 2
-	RaftCF  = 3
 )

@@ -324,8 +324,6 @@ func formatInt(n int) string {
 }
 
 func (sdb *DB) loadShards() error {
-	log.Info("before load shards")
-	sdb.PrintStructure()
 	for _, mShard := range sdb.manifest.shards {
 		parent := mShard.parent
 		if parent != nil && !parent.recovered && sdb.opt.RecoverHandler != nil {
@@ -361,8 +359,6 @@ func (sdb *DB) loadShards() error {
 			}
 		}
 	}
-	log.Info("after load shards")
-	sdb.PrintStructure()
 	return nil
 }
 
@@ -455,80 +451,6 @@ func (sdb *DB) Close() error {
 
 func (sdb *DB) GetSafeTS() (uint64, uint64, uint64) {
 	return sdb.orc.readTs(), sdb.orc.commitTs(), atomic.LoadUint64(&sdb.safeTsTracker.safeTs)
-}
-
-func (sdb *DB) PrintStructure() {
-	var allShards []*Shard
-	sdb.shardMap.Range(func(key, value interface{}) bool {
-		allShards = append(allShards, value.(*Shard))
-		return true
-	})
-	var strs []string
-	for _, shard := range allShards {
-		mems := shard.loadMemTables()
-		var memSizes []int64
-		for _, mem := range mems.tables {
-			memSizes = append(memSizes, mem.Size())
-		}
-		if len(memSizes) > 0 {
-			strs = append(strs, fmt.Sprintf("shard %d mem sizes %v", shard.ID, memSizes))
-		}
-		l0s := shard.loadL0Tables()
-		var l0IDs []uint64
-		for _, tbl := range l0s.tables {
-			l0IDs = append(l0IDs, tbl.ID())
-		}
-		shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
-			assertTablesOrder(level.level, level.tables, nil)
-			for _, tbl := range level.tables {
-				y.Assert(shard.OverlapKey(tbl.Smallest()))
-				y.Assert(shard.OverlapKey(tbl.Biggest()))
-			}
-			return false
-		})
-		if len(l0IDs) > 0 {
-			strs = append(strs, fmt.Sprintf("shard %d l0 tables %v", shard.ID, l0IDs))
-		}
-		for cf, scf := range shard.cfs {
-			var tableIDs [][]uint64
-			var tableCnt int
-			for l := 1; l <= ShardMaxLevel; l++ {
-				levelTblIDs := getTblIDs(scf.getLevelHandler(l).tables)
-				tableIDs = append(tableIDs, levelTblIDs)
-				tableCnt += len(levelTblIDs)
-			}
-			if tableCnt > 0 {
-				strs = append(strs, fmt.Sprintf("shard %d cf %d tables %v", shard.ID, cf, tableIDs))
-			}
-		}
-	}
-	for id, fi := range sdb.manifest.shards {
-		cfs := make([][]uint64, sdb.numCFs)
-		l0s := make([]uint64, 0, 10)
-		for fid := range fi.files {
-			cfLevel, ok := sdb.manifest.globalFiles[fid]
-			if !ok {
-				log.S().Errorf("shard %d fid %d not found in global", fi.ID, fid)
-			}
-			if cfLevel.cf == -1 {
-				l0s = append(l0s, fid)
-			} else {
-				cfs[cfLevel.cf] = append(cfs[cfLevel.cf], fid)
-			}
-		}
-		if len(l0s) > 0 {
-			strs = append(strs, fmt.Sprintf("manifest shard %d l0 tables %v", id, l0s))
-		}
-		for cf, cfIDs := range cfs {
-			if len(cfIDs) > 0 {
-				strs = append(strs, fmt.Sprintf("manifest shard %d cf %d tables %v", id, cf, cfIDs))
-			}
-		}
-	}
-	sort.Strings(strs)
-	for _, str := range strs {
-		log.Info(str)
-	}
 }
 
 type WriteBatch struct {
@@ -647,21 +569,13 @@ type Snapshot struct {
 	cfs    []CFConfig
 
 	managedReadTS uint64
-
-	buffer *memtable.CFTable
 }
 
 func (s *Snapshot) Get(cf int, key []byte, version uint64) (*Item, error) {
 	if version == 0 {
 		version = s.getDefaultVersion(cf)
 	}
-	var vs y.ValueStruct
-	if s.buffer != nil {
-		vs = s.buffer.Get(cf, key, version)
-	}
-	if !vs.Valid() {
-		vs = s.shard.Get(cf, key, version)
-	}
+	vs := s.shard.Get(cf, key, version)
 	if !vs.Valid() {
 		return nil, ErrKeyNotFound
 	}
@@ -709,10 +623,6 @@ func (s *Snapshot) SetManagedReadTS(ts uint64) {
 
 func (s *Snapshot) GetReadTS() uint64 {
 	return s.readTS
-}
-
-func (s *Snapshot) SetBuffer(buf *memtable.CFTable) {
-	s.buffer = buf
 }
 
 func (sdb *DB) NewSnapshot(shard *Shard) *Snapshot {
