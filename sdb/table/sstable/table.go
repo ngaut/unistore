@@ -408,7 +408,7 @@ func ParseFileID(name string) (uint64, bool) {
 
 // IDToFilename does the inverse of ParseFileID
 func IDToFilename(id uint64) string {
-	return fmt.Sprintf("%08x", id) + fileSuffix
+	return fmt.Sprintf("%016x", id) + fileSuffix
 }
 
 // NewFilename should be named TableFilepath -- it combines the dir with the ID to make a table

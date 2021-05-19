@@ -844,8 +844,10 @@ func (sdb *DB) applyFlush(shard *Shard, changeSet *sdbpb.ChangeSet) error {
 			return sdb.loadFileFromS3(flush.L0Create.ID)
 		})
 	}
-	if err := sdb.s3c.BatchSchedule(bt); err != nil {
-		return err
+	if sdb.s3c != nil {
+		if err := sdb.s3c.BatchSchedule(bt); err != nil {
+			return err
+		}
 	}
 	if err := sdb.manifest.writeChangeSet(changeSet); err != nil {
 		if err == errDupChange {
@@ -972,8 +974,10 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 			return sdb.loadFileFromS3(l0.ID)
 		})
 	}
-	if err := sdb.s3c.BatchSchedule(bt); err != nil {
-		return err
+	if sdb.s3c != nil {
+		if err := sdb.s3c.BatchSchedule(bt); err != nil {
+			return err
+		}
 	}
 	bt = s3util.NewBatchTasks()
 	for i := range splitFiles.TableCreates {
@@ -982,8 +986,10 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 			return sdb.loadFileFromS3(tbl.ID)
 		})
 	}
-	if err := sdb.s3c.BatchSchedule(bt); err != nil {
-		return err
+	if sdb.s3c != nil {
+		if err := sdb.s3c.BatchSchedule(bt); err != nil {
+			return err
+		}
 	}
 	if err := sdb.manifest.writeChangeSet(changeSet); err != nil {
 		if err == errDupChange {
