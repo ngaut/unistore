@@ -19,7 +19,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/ngaut/unistore/sdb"
-	"github.com/pingcap/badger/y"
 	"math"
 	"sort"
 	"sync/atomic"
@@ -266,7 +265,7 @@ func (s extraTxnStatus) isOpLockCommitted() bool {
 func (store *MVCCStore) checkExtraTxnStatus(reqCtx *requestCtx, key []byte, startTS uint64) extraTxnStatus {
 	snap := reqCtx.getDBReader().GetSnapshot()
 	txnStatusKey := mvcc.EncodeExtraTxnStatusKey(key, startTS)
-	item, err := snap.Get(extraCF, y.KeyWithTs(txnStatusKey, 0))
+	item, err := snap.Get(extraCF, txnStatusKey, 0)
 	if err != nil {
 		return extraTxnStatus{}
 	}
@@ -898,7 +897,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 
 func (store *MVCCStore) handleLockNotFound(reqCtx *requestCtx, key []byte, startTS, commitTS uint64) error {
 	snap := reqCtx.getDBReader().GetSnapshot()
-	item, err := snap.Get(mvcc.WriteCF, y.KeyWithTs(key, commitTS))
+	item, err := snap.Get(mvcc.WriteCF, key, commitTS)
 	if err != nil && err != badger.ErrKeyNotFound {
 		return errors.Trace(err)
 	}
@@ -997,7 +996,7 @@ func (store *MVCCStore) rollbackKeyReadDB(req *requestCtx, batch mvcc.WriteBatch
 
 func (store *MVCCStore) checkCommitted(reader *dbreader.DBReader, key []byte, startTS uint64) (uint64, error) {
 	snap := reader.GetSnapshot()
-	item, err := snap.Get(mvcc.WriteCF, y.KeyWithTs(key, 0))
+	item, err := snap.Get(mvcc.WriteCF, key, 0)
 	if err != nil && err != sdb.ErrKeyNotFound {
 		return 0, errors.Trace(err)
 	}

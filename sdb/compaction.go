@@ -60,15 +60,15 @@ func (cd *CompactDef) String() string {
 		cd.botLeftIdx, cd.botRightIdx, cd.botSize, len(cd.SkippedTbls), float64(cd.topSize+cd.botSize)/float64(cd.topSize))
 }
 
-func (cd *CompactDef) smallest() y.Key {
-	if len(cd.Bot) > 0 && cd.nextRange.left.Compare(cd.thisRange.left) < 0 {
+func (cd *CompactDef) smallest() []byte {
+	if len(cd.Bot) > 0 && bytes.Compare(cd.nextRange.left, cd.thisRange.left) < 0 {
 		return cd.nextRange.left
 	}
 	return cd.thisRange.left
 }
 
-func (cd *CompactDef) biggest() y.Key {
-	if len(cd.Bot) > 0 && cd.nextRange.right.Compare(cd.thisRange.right) > 0 {
+func (cd *CompactDef) biggest() []byte {
+	if len(cd.Bot) > 0 && bytes.Compare(cd.nextRange.right, cd.thisRange.right) > 0 {
 		return cd.nextRange.right
 	}
 	return cd.thisRange.right
@@ -199,13 +199,13 @@ func (cd *CompactDef) moveDown() bool {
 	return cd.Level > 0 && len(cd.Bot) == 0 && len(cd.SkippedTbls) == 0
 }
 
-func (cd *CompactDef) buildIterator() y.Iterator {
+func (cd *CompactDef) buildIterator() table.Iterator {
 	// Create iterators across all the tables involved first.
-	var iters []y.Iterator
+	var iters []table.Iterator
 	if cd.Level == 0 {
 		iters = appendIteratorsReversed(iters, cd.Top, false)
 	} else {
-		iters = []y.Iterator{table.NewConcatIterator(cd.Top, false)}
+		iters = []table.Iterator{table.NewConcatIterator(cd.Top, false)}
 	}
 
 	// Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
@@ -217,8 +217,8 @@ func (cd *CompactDef) buildIterator() y.Iterator {
 }
 
 type keyRange struct {
-	left  y.Key
-	right y.Key
+	left  []byte
+	right []byte
 	inf   bool
 }
 
@@ -229,8 +229,8 @@ func (r keyRange) String() string {
 }
 
 func (r keyRange) equals(dst keyRange) bool {
-	return r.left.Equal(dst.left) &&
-		r.right.Equal(dst.right) &&
+	return bytes.Equal(r.left, dst.left) &&
+		bytes.Equal(r.right, dst.right) &&
 		r.inf == dst.inf
 }
 
@@ -240,11 +240,11 @@ func (r keyRange) overlapsWith(dst keyRange) bool {
 	}
 
 	// If my left is greater than dst right, we have no overlap.
-	if r.left.Compare(dst.right) > 0 {
+	if bytes.Compare(r.left, dst.right) > 0 {
 		return false
 	}
 	// If my right is less than dst left, we have no overlap.
-	if r.right.Compare(dst.left) < 0 {
+	if bytes.Compare(r.right, dst.left) < 0 {
 		return false
 	}
 	// We have overlap.
@@ -256,10 +256,10 @@ func getKeyRange(tables []table.Table) keyRange {
 	smallest := tables[0].Smallest()
 	biggest := tables[0].Biggest()
 	for i := 1; i < len(tables); i++ {
-		if tables[i].Smallest().Compare(smallest) < 0 {
+		if bytes.Compare(tables[i].Smallest(), smallest) < 0 {
 			smallest = tables[i].Smallest()
 		}
-		if tables[i].Biggest().Compare(biggest) > 0 {
+		if bytes.Compare(tables[i].Biggest(), biggest) > 0 {
 			biggest = tables[i].Biggest()
 		}
 	}
@@ -286,8 +286,8 @@ func newTableCreate(tbl table.Table, cf int, level int) *sdbpb.TableCreate {
 		ID:       tbl.ID(),
 		Level:    uint32(level),
 		CF:       int32(cf),
-		Smallest: tbl.Smallest().UserKey,
-		Biggest:  tbl.Biggest().UserKey,
+		Smallest: tbl.Smallest(),
+		Biggest:  tbl.Biggest(),
 	}
 }
 
@@ -350,11 +350,11 @@ type compactL0Helper struct {
 	builder    *sstable.Builder
 	shard      *Shard
 	l0Tbls     *l0Tables
-	lastKey    y.Key
-	skipKey    y.Key
+	lastKey    []byte
+	skipKey    []byte
 	safeTS     uint64
 	filter     CompactionFilter
-	iter       y.Iterator
+	iter       table.Iterator
 	oldHandler *levelHandler
 }
 
@@ -364,7 +364,7 @@ func newCompactL0Helper(db *DB, shard *Shard, l0Tbls *l0Tables, cf int) *compact
 		helper.filter = db.opt.CompactionFilterFactory(1, nil, globalShardEndKey)
 	}
 	helper.safeTS = db.getCFSafeTS(cf)
-	var iters []y.Iterator
+	var iters []table.Iterator
 	if l0Tbls != nil {
 		for _, tbl := range l0Tbls.tables {
 			it := tbl.NewIterator(cf, false)
@@ -398,39 +398,39 @@ func (h *compactL0Helper) buildOne() (*sstable.BuildResult, error) {
 		return nil, err
 	}
 	h.setFID(id)
-	h.lastKey.Reset()
-	h.skipKey.Reset()
+	h.lastKey = h.lastKey[:0]
+	h.skipKey = h.skipKey[:0]
 	it := h.iter
 	rc := h.db.opt.CFs[h.cf].ReadCommitted
-	for ; it.Valid(); y.NextAllVersion(it) {
+	for ; it.Valid(); table.NextAllVersion(it) {
 		vs := it.Value()
 		key := it.Key()
 		// See if we need to skip this key.
-		if !h.skipKey.IsEmpty() {
-			if key.SameUserKey(h.skipKey) {
+		if len(h.skipKey) > 0 {
+			if bytes.Equal(key, h.skipKey) {
 				continue
 			} else {
-				h.skipKey.Reset()
+				h.skipKey = h.skipKey[:0]
 			}
 		}
-		if !key.SameUserKey(h.lastKey) {
+		if !bytes.Equal(key, h.lastKey) {
 			// We only break on table size.
 			if h.builder.EstimateSize() > int(h.db.opt.TableBuilderOptions.MaxTableSize) {
 				break
 			}
-			h.lastKey.Copy(key)
+			h.lastKey = append(h.lastKey[:0], key...)
 		}
 
 		// Only consider the versions which are below the safeTS, otherwise, we might end up discarding the
 		// only valid version for a running transaction.
-		if rc || key.Version <= h.safeTS {
+		if rc || vs.Version <= h.safeTS {
 			// key is the latest readable version of this key, so we simply discard all the rest of the versions.
-			h.skipKey.Copy(key)
+			h.skipKey = append(h.skipKey[:0], key...)
 			if !isDeleted(vs.Meta) && h.filter != nil {
-				switch h.filter.Filter(h.cf, key.UserKey, vs.Value, vs.UserMeta) {
+				switch h.filter.Filter(h.cf, key, vs.Value, vs.UserMeta) {
 				case DecisionMarkTombstone:
 					// There may have ole versions for this key, so convert to delete tombstone.
-					h.builder.Add(key.UserKey, &y.ValueStruct{Meta: bitDelete, Version: key.Version})
+					h.builder.Add(key, &y.ValueStruct{Meta: bitDelete, Version: vs.Version})
 					continue
 				case DecisionDrop:
 					continue
@@ -438,7 +438,7 @@ func (h *compactL0Helper) buildOne() (*sstable.BuildResult, error) {
 				}
 			}
 		}
-		h.builder.Add(key.UserKey, &vs)
+		h.builder.Add(key, &vs)
 	}
 	if h.builder.Empty() {
 		return nil, nil
@@ -688,9 +688,9 @@ func assertTablesOrder(level int, tables []table.Table, cd *CompactDef) {
 	}
 
 	for i := 0; i < len(tables)-1; i++ {
-		if tables[i].Smallest().Compare(tables[i].Biggest()) > 0 ||
-			tables[i].Smallest().Compare(tables[i+1].Smallest()) >= 0 ||
-			tables[i].Biggest().Compare(tables[i+1].Biggest()) >= 0 {
+		if bytes.Compare(tables[i].Smallest(), tables[i].Biggest()) > 0 ||
+			bytes.Compare(tables[i].Smallest(), tables[i+1].Smallest()) >= 0 ||
+			bytes.Compare(tables[i].Biggest(), tables[i+1].Biggest()) >= 0 {
 
 			var sb strings.Builder
 			if cd != nil {
@@ -796,7 +796,7 @@ func (sdb *DB) prepareCompactionDef(cf int, cd *CompactDef) error {
 	// would affect the snapshot view guarantee provided by transactions.
 	cd.SafeTS = sdb.getCFSafeTS(cf)
 	if sdb.opt.CompactionFilterFactory != nil {
-		cd.Filter = sdb.opt.CompactionFilterFactory(cd.Level+1, cd.smallest().UserKey, cd.biggest().UserKey)
+		cd.Filter = sdb.opt.CompactionFilterFactory(cd.Level+1, cd.smallest(), cd.biggest())
 	}
 	cd.Opt = sdb.opt.TableBuilderOptions
 	cd.Dir = sdb.opt.Dir
@@ -1087,7 +1087,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 				}
 			}
 			sort.Slice(newHandler.tables, func(i, j int) bool {
-				return bytes.Compare(newHandler.tables[i].Smallest().UserKey, newHandler.tables[j].Smallest().UserKey) < 0
+				return bytes.Compare(newHandler.tables[i].Smallest(), newHandler.tables[j].Smallest()) < 0
 			})
 			y.Assert(shard.cfs[cf].casLevelHandler(level, oldHandler, newHandler))
 		}
@@ -1128,7 +1128,7 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 
 	skippedTbls := cd.SkippedTbls
 
-	var lastKey, skipKey y.Key
+	var lastKey, skipKey []byte
 	var builder *sstable.Builder
 	for it.Valid() {
 		var fd *os.File
@@ -1150,23 +1150,23 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 		} else {
 			builder.Reset(id)
 		}
-		lastKey.Reset()
-		for ; it.Valid(); y.NextAllVersion(it) {
+		lastKey = lastKey[:0]
+		for ; it.Valid(); table.NextAllVersion(it) {
 			stats.KeysRead++
 			vs := it.Value()
 			key := it.Key()
-			kvSize := int(vs.EncodedSize()) + key.Len()
+			kvSize := int(vs.EncodedSize()) + len(key)
 			stats.BytesRead += kvSize
 			// See if we need to skip this key.
-			if !skipKey.IsEmpty() {
-				if key.SameUserKey(skipKey) {
+			if len(skipKey) > 0 {
+				if bytes.Equal(key, skipKey) {
 					discardStats.collect(vs)
 					continue
 				} else {
-					skipKey.Reset()
+					skipKey = skipKey[:0]
 				}
 			}
-			if !key.SameUserKey(lastKey) {
+			if !bytes.Equal(key, lastKey) {
 				// Only break if we are on a different key, and have reached capacity. We want
 				// to ensure that all versions of the key are stored in the same sstable, and
 				// not divided across multiple tables at the same level.
@@ -1180,14 +1180,14 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 				if shouldFinishFile(lastKey, int64(builder.EstimateSize()+kvSize), cd.Opt.MaxTableSize) {
 					break
 				}
-				lastKey.Copy(key)
+				lastKey = append(lastKey[:0], key...)
 			}
 
 			// Only consider the versions which are below the minReadTs, otherwise, we might end up discarding the
 			// only valid version for a running transaction.
-			if key.Version <= cd.SafeTS {
+			if vs.Version <= cd.SafeTS {
 				// key is the latest readable version of this key, so we simply discard all the rest of the versions.
-				skipKey.Copy(key)
+				skipKey = append(skipKey[:0], key...)
 
 				if isDeleted(vs.Meta) {
 					// If this key range has overlap with lower levels, then keep the deletion
@@ -1197,12 +1197,12 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 						continue
 					}
 				} else if cd.Filter != nil {
-					switch cd.Filter.Filter(cd.CF, key.UserKey, vs.Value, vs.UserMeta) {
+					switch cd.Filter.Filter(cd.CF, key, vs.Value, vs.UserMeta) {
 					case DecisionMarkTombstone:
 						discardStats.collect(vs)
 						if cd.HasOverlap {
 							// There may have ole versions for this key, so convert to delete tombstone.
-							builder.Add(key.UserKey, &y.ValueStruct{Meta: bitDelete, Version: key.Version})
+							builder.Add(key, &y.ValueStruct{Meta: bitDelete, Version: vs.Version})
 						}
 						continue
 					case DecisionDrop:
@@ -1212,7 +1212,7 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 					}
 				}
 			}
-			builder.Add(key.UserKey, &vs)
+			builder.Add(key, &vs)
 			stats.KeysWrite++
 			stats.BytesWrite += kvSize
 		}
@@ -1239,18 +1239,15 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 	return buildResults, nil
 }
 
-func shouldFinishFile(lastKey y.Key, currentSize, maxSize int64) bool {
-	if lastKey.IsEmpty() {
-		return false
-	}
-	return !lastKey.IsEmpty() && currentSize > maxSize
+func shouldFinishFile(lastKey []byte, currentSize, maxSize int64) bool {
+	return len(lastKey) > 0 && currentSize > maxSize
 }
 
-func overSkipTables(key y.Key, skippedTables []table.Table) (newSkippedTables []table.Table, over bool) {
+func overSkipTables(key []byte, skippedTables []table.Table) (newSkippedTables []table.Table, over bool) {
 	var i int
 	for i < len(skippedTables) {
 		t := skippedTables[i]
-		if key.Compare(t.Biggest()) > 0 {
+		if bytes.Compare(key, t.Biggest()) > 0 {
 			i++
 		} else {
 			break
@@ -1272,6 +1269,6 @@ func putSSTBuildResultToS3(s3c *s3util.S3Client, result *sstable.BuildResult) (e
 
 func sortTables(tables []table.Table) {
 	sort.Slice(tables, func(i, j int) bool {
-		return tables[i].Smallest().Compare(tables[j].Smallest()) < 0
+		return bytes.Compare(tables[i].Smallest(), tables[j].Smallest()) < 0
 	})
 }

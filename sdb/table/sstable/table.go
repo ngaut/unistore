@@ -23,10 +23,10 @@ import (
 	"github.com/coocood/bbloom"
 	"github.com/ngaut/unistore/sdb/buffer"
 	"github.com/ngaut/unistore/sdb/cache"
+	"github.com/ngaut/unistore/sdb/table"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"hash/crc32"
-	"math"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -233,11 +233,11 @@ func (t *Table) readBlock(addr blockAddress, length int) (*block, error) {
 	}
 }
 
-func (t *Table) NewIterator(reversed bool) y.Iterator {
+func (t *Table) NewIterator(reversed bool) table.Iterator {
 	return &Iterator{t: t, reversed: reversed}
 }
 
-func (t *Table) Get(key y.Key, keyHash uint64) (y.ValueStruct, error) {
+func (t *Table) Get(key []byte, version, keyHash uint64) (y.ValueStruct, error) {
 	if t.idx.bloom != nil {
 		if !t.idx.bloom.Has(keyHash) {
 			return y.ValueStruct{}, nil
@@ -245,11 +245,11 @@ func (t *Table) Get(key y.Key, keyHash uint64) (y.ValueStruct, error) {
 	}
 	it := t.NewIterator(false)
 	defer it.Close()
-	it.Seek(key.UserKey)
-	if !it.Valid() || !key.SameUserKey(it.Key()) {
+	it.Seek(key)
+	if !it.Valid() || !bytes.Equal(key, it.Key()) {
 		return y.ValueStruct{}, nil
 	}
-	for it.Key().Version > key.Version {
+	for it.Value().Version > version {
 		if !it.NextVersion() {
 			return y.ValueStruct{}, nil
 		}
@@ -264,31 +264,31 @@ func cloneValue(v y.ValueStruct) y.ValueStruct {
 	return n
 }
 
-func (t *Table) Smallest() y.Key {
-	return y.KeyWithTs(t.smallest, math.MaxUint64)
+func (t *Table) Smallest() []byte {
+	return t.smallest
 }
 
-func (t *Table) Biggest() y.Key {
-	return y.KeyWithTs(t.biggest, 0)
+func (t *Table) Biggest() []byte {
+	return t.biggest
 }
 
-func (t *Table) HasOverlap(start, end y.Key, includeEnd bool) bool {
-	if start.Compare(t.Biggest()) > 0 {
+func (t *Table) HasOverlap(start, end []byte, includeEnd bool) bool {
+	if bytes.Compare(start, t.Biggest()) > 0 {
 		return false
 	}
 
-	if cmp := end.Compare(t.Smallest()); cmp < 0 {
+	if cmp := bytes.Compare(end, t.Smallest()); cmp < 0 {
 		return false
 	} else if cmp == 0 {
 		return includeEnd
 	}
 	it := t.NewIterator(false).(*Iterator)
 	defer it.Close()
-	it.Seek(start.UserKey)
+	it.Seek(start)
 	if !it.Valid() {
 		return it.err != nil
 	}
-	if cmp := it.Key().Compare(end); cmp > 0 {
+	if cmp := bytes.Compare(it.Key(), end); cmp > 0 {
 		return false
 	} else if cmp == 0 {
 		return includeEnd

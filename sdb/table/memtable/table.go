@@ -60,10 +60,10 @@ func (t *Table) Get(key y.Key, keyHash uint64) (y.ValueStruct, error) {
 	return t.skl.Get(key.UserKey, key.Version), nil
 }
 
-func (t *Table) NewIterator(reverse bool) y.Iterator {
+func (t *Table) NewIterator(reverse bool) table.Iterator {
 	var (
 		sklItr = t.skl.NewUniIterator(reverse)
-		its    []y.Iterator
+		its    []table.Iterator
 	)
 	curr := (*listNode)(atomic.LoadPointer(&t.pendingList))
 	for curr != nil {
@@ -88,28 +88,28 @@ func (t *Table) Size() int64 {
 	return t.skl.MemSize() + sz
 }
 
-func (t *Table) Smallest() y.Key {
+func (t *Table) Smallest() []byte {
 	it := t.NewIterator(false)
 	defer it.Close()
 	it.Rewind()
 	return it.Key()
 }
 
-func (t *Table) Biggest() y.Key {
+func (t *Table) Biggest() []byte {
 	it := t.NewIterator(true)
 	defer it.Close()
 	it.Rewind()
 	return it.Key()
 }
 
-func (t *Table) HasOverlap(start, end y.Key, includeEnd bool) bool {
+func (t *Table) HasOverlap(start, end []byte, includeEnd bool) bool {
 	it := t.NewIterator(false)
 	defer it.Close()
-	it.Seek(start.UserKey)
+	it.Seek(start)
 	if !it.Valid() {
 		return false
 	}
-	if cmp := it.Key().Compare(end); cmp > 0 {
+	if cmp := bytes.Compare(it.Key(), end); cmp > 0 {
 		return false
 	} else if cmp == 0 {
 		return includeEnd
@@ -264,18 +264,18 @@ func (it *listNodeIterator) Seek(key []byte) {
 	})
 	it.verIdx = 0
 	if it.reversed {
-		if !it.Valid() || !bytes.Equal(it.Key().UserKey, key) {
+		if !it.Valid() || !bytes.Equal(it.Key(), key) {
 			it.idx--
 		}
 	}
 }
 
-func (it *listNodeIterator) Key() y.Key {
+func (it *listNodeIterator) Key() []byte {
 	e := &it.n.entries[it.getEntryIdx()]
-	return y.KeyWithTs(e.Key, e.Value.Version)
+	return e.Key
 }
 
-func (it *listNodeIterator) Value() y.ValueStruct { return it.n.entries[it.idx].Value }
+func (it *listNodeIterator) Value() y.ValueStruct { return it.n.entries[it.getEntryIdx()].Value }
 
 func (it *listNodeIterator) FillValue(vs *y.ValueStruct) { *vs = it.Value() }
 

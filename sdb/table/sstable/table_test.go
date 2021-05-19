@@ -150,7 +150,7 @@ func TestTableIterator(t *testing.T) {
 			count := 0
 			for it.Rewind(); it.Valid(); it.Next() {
 				v := it.Value()
-				k := y.KeyWithTs([]byte(key("key", count)), 0)
+				k := []byte(key("key", count))
 				require.EqualValues(t, k, it.Key())
 				require.EqualValues(t, fmt.Sprintf("%d", count), string(v.Value))
 				count++
@@ -169,17 +169,17 @@ func TestPointGet(t *testing.T) {
 	defer table.Delete()
 
 	for i := 0; i < 8000; i++ {
-		k := y.KeyWithTs([]byte(key("key", i)), math.MaxUint64)
-		keyHash := farm.Fingerprint64(k.UserKey)
-		val, err1 := table.Get(k, keyHash)
+		k := []byte(key("key", i))
+		keyHash := farm.Fingerprint64(k)
+		val, err1 := table.Get(k, math.MaxUint64, keyHash)
 		require.NoError(t, err1)
 		require.True(t, string(val.Value) == keyVals[i][1], "point get not point to correct key %d %s", i, val.Value)
 	}
 
 	for i := 8000; i < 10000; i++ {
-		k := y.KeyWithTs([]byte(key("key", i)), math.MaxUint64)
-		keyHash := farm.Fingerprint64(k.UserKey)
-		val, err1 := table.Get(k, keyHash)
+		k := []byte(key("key", i))
+		keyHash := farm.Fingerprint64(k)
+		val, err1 := table.Get(k, math.MaxUint64, keyHash)
 		require.NoError(t, err1)
 		require.True(t, !val.Valid())
 	}
@@ -258,7 +258,7 @@ func TestSeekBasic(t *testing.T) {
 		}
 		require.True(t, it.Valid())
 		k := it.Key()
-		require.EqualValues(t, tt.out, string(k.UserKey))
+		require.EqualValues(t, tt.out, string(k))
 	}
 }
 
@@ -293,7 +293,7 @@ func TestSeekForPrev(t *testing.T) {
 		}
 		require.True(t, it.Valid())
 		k := it.Key()
-		require.EqualValues(t, tt.out, string(k.UserKey))
+		require.EqualValues(t, tt.out, string(k))
 	}
 }
 
@@ -357,10 +357,10 @@ func TestTable(t *testing.T) {
 	ti := table.NewIterator(false)
 	defer ti.Close()
 	kid := 1010
-	seek := y.KeyWithTs([]byte(key("key", kid)), 0)
-	for ti.Seek(seek.UserKey); ti.Valid(); ti.Next() {
+	seek := []byte(key("key", kid))
+	for ti.Seek(seek); ti.Valid(); ti.Next() {
 		k := ti.Key()
-		require.EqualValues(t, string(k.UserKey), key("key", kid))
+		require.EqualValues(t, string(k), key("key", kid))
 		kid++
 	}
 	if kid != 10000 {
@@ -373,7 +373,7 @@ func TestTable(t *testing.T) {
 	ti.Seek([]byte(key("key", -1)))
 	require.True(t, ti.Valid())
 	k := ti.Key()
-	require.EqualValues(t, string(k.UserKey), key("key", 0))
+	require.EqualValues(t, string(k), key("key", 0))
 }
 
 func TestIterateBackAndForth(t *testing.T) {
@@ -382,10 +382,10 @@ func TestIterateBackAndForth(t *testing.T) {
 	require.NoError(t, err)
 	defer table.Delete()
 
-	seek := y.KeyWithTs([]byte(key("key", 1010)), 0)
+	seek := []byte(key("key", 1010))
 	it := table.NewIterator(false).(*Iterator)
 	defer it.Close()
-	it.Seek(seek.UserKey)
+	it.Seek(seek)
 	require.True(t, it.Valid())
 	k := it.Key()
 	require.EqualValues(t, seek, k)
@@ -394,27 +394,27 @@ func TestIterateBackAndForth(t *testing.T) {
 	it.prev()
 	require.True(t, it.Valid())
 	k = it.Key()
-	require.EqualValues(t, key("key", 1008), string(k.UserKey))
+	require.EqualValues(t, key("key", 1008), string(k))
 
 	it.next()
 	it.next()
 	require.True(t, it.Valid())
 	k = it.Key()
-	require.EqualValues(t, key("key", 1010), k.UserKey)
+	require.EqualValues(t, key("key", 1010), k)
 
 	it.seek([]byte(key("key", 2000)))
 	require.True(t, it.Valid())
 	k = it.Key()
-	require.EqualValues(t, key("key", 2000), k.UserKey)
+	require.EqualValues(t, key("key", 2000), k)
 
 	it.prev()
 	require.True(t, it.Valid())
 	k = it.Key()
-	require.EqualValues(t, key("key", 1999), k.UserKey)
+	require.EqualValues(t, key("key", 1999), k)
 
 	it.seekToFirst()
 	k = it.Key()
-	require.EqualValues(t, key("key", 0), k.UserKey)
+	require.EqualValues(t, key("key", 0), k)
 }
 
 func TestIterateMultiVersion(t *testing.T) {
@@ -425,12 +425,12 @@ func TestIterateMultiVersion(t *testing.T) {
 	it := table.NewIterator(false)
 	defer it.Close()
 	itCnt := 0
-	var lastKey y.Key
+	var lastKey []byte
 	for it.Rewind(); it.Valid(); it.Next() {
-		if !lastKey.IsEmpty() {
-			require.True(t, lastKey.Compare(it.Key()) < 0)
+		if len(lastKey) > 0 {
+			require.True(t, bytes.Compare(lastKey, it.Key()) < 0)
 		}
-		lastKey.Copy(it.Key())
+		lastKey = y.Copy(it.Key())
 		itCnt++
 		for it.NextVersion() {
 			itCnt++
@@ -438,32 +438,33 @@ func TestIterateMultiVersion(t *testing.T) {
 	}
 	require.Equal(t, itCnt, allCnt)
 	for i := 0; i < 1000; i++ {
-		k := y.KeyWithTs([]byte(key("key", int(z.FastRand()%4000))), uint64(5+z.FastRand()%5))
-		kHash := farm.Fingerprint64(k.UserKey)
-		val, err1 := table.Get(k, kHash)
+		k := []byte(key("key", int(z.FastRand()%4000)))
+		ver := uint64(5 + z.FastRand()%5)
+		kHash := farm.Fingerprint64(k)
+		val, err1 := table.Get(k, ver, kHash)
 		require.Nil(t, err1)
 		if val.Valid() {
-			require.True(t, it.Key().Version <= k.Version)
+			require.True(t, val.Version <= ver)
 		}
 	}
 	revIt := table.NewIterator(true)
 	defer revIt.Close()
-	lastKey.Reset()
+	lastKey = nil
 	for revIt.Rewind(); revIt.Valid(); revIt.Next() {
-		if !lastKey.IsEmpty() {
-			require.Truef(t, lastKey.Compare(revIt.Key()) > 0, "%v %v", lastKey.String(), revIt.Key().String())
+		if len(lastKey) > 0 {
+			require.Truef(t, bytes.Compare(lastKey, revIt.Key()) > 0, "%s %s", lastKey, revIt.Key())
 		}
-		lastKey.Copy(revIt.Key())
+		lastKey = y.Copy(revIt.Key())
 	}
 	for i := 0; i < 1000; i++ {
-		k := y.KeyWithTs([]byte(key("key", int(z.FastRand()%4000))), uint64(5+z.FastRand()%5))
+		k := []byte(key("key", int(z.FastRand()%4000)))
 		// reverse iterator never seek to the same key with smaller version.
-		revIt.Seek(k.UserKey)
+		revIt.Seek(k)
 		if !revIt.Valid() {
 			continue
 		}
-		require.True(t, revIt.Key().Version == 9)
-		require.True(t, revIt.Key().Compare(k) <= 0, "%s %s", revIt.Key(), k)
+		require.True(t, revIt.Value().Version == 9)
+		require.True(t, bytes.Compare(revIt.Key(), k) <= 0, "%s %s", revIt.Key(), k)
 	}
 }
 
@@ -515,7 +516,7 @@ func TestConcatIteratorOneTable(t *testing.T) {
 	it.Rewind()
 	require.True(t, it.Valid())
 	k := it.Key()
-	require.EqualValues(t, "k1", string(k.UserKey))
+	require.EqualValues(t, "k1", string(k))
 	vs := it.Value()
 	require.EqualValues(t, "a1", string(vs.Value))
 	require.EqualValues(t, 'A', vs.Meta)
@@ -549,17 +550,17 @@ func TestConcatIterator(t *testing.T) {
 		require.EqualValues(t, 30000, count)
 
 		it.Seek([]byte("a"))
-		require.EqualValues(t, "keya0000", string(it.Key().UserKey))
+		require.EqualValues(t, "keya0000", string(it.Key()))
 		vs := it.Value()
 		require.EqualValues(t, "0", string(vs.Value))
 
 		it.Seek([]byte("keyb"))
-		require.EqualValues(t, "keyb0000", string(it.Key().UserKey))
+		require.EqualValues(t, "keyb0000", string(it.Key()))
 		vs = it.Value()
 		require.EqualValues(t, "0", string(vs.Value))
 
 		it.Seek([]byte("keyb9999b"))
-		require.EqualValues(t, "keyc0000", string(it.Key().UserKey))
+		require.EqualValues(t, "keyc0000", string(it.Key()))
 		vs = it.Value()
 		require.EqualValues(t, "0", string(vs.Value))
 
@@ -584,17 +585,17 @@ func TestConcatIterator(t *testing.T) {
 		require.False(t, it.Valid())
 
 		it.Seek([]byte("keyb"))
-		require.EqualValues(t, "keya9999", string(it.Key().UserKey))
+		require.EqualValues(t, "keya9999", string(it.Key()))
 		vs := it.Value()
 		require.EqualValues(t, "9999", string(vs.Value))
 
 		it.Seek([]byte("keyb9999b"))
-		require.EqualValues(t, "keyb9999", string(it.Key().UserKey))
+		require.EqualValues(t, "keyb9999", string(it.Key()))
 		vs = it.Value()
 		require.EqualValues(t, "9999", string(vs.Value))
 
 		it.Seek([]byte("keyd"))
-		require.EqualValues(t, "keyc9999", string(it.Key().UserKey))
+		require.EqualValues(t, "keyc9999", string(it.Key()))
 		vs = it.Value()
 		require.EqualValues(t, "9999", string(vs.Value))
 		it.Close()
@@ -618,13 +619,13 @@ func TestMergingIterator(t *testing.T) {
 	defer tbl2.Delete()
 	it1 := tbl1.NewIterator(false)
 	it2 := table.NewConcatIterator([]table.Table{tbl2}, false)
-	it := table.NewMergeIterator([]y.Iterator{it1, it2}, false)
+	it := table.NewMergeIterator([]table.Iterator{it1, it2}, false)
 	defer it.Close()
 
 	it.Rewind()
 	require.True(t, it.Valid())
 	k := it.Key()
-	require.EqualValues(t, "k1", string(k.UserKey))
+	require.EqualValues(t, "k1", string(k))
 	vs := it.Value()
 	require.EqualValues(t, "a1", string(vs.Value))
 	require.EqualValues(t, 'A', vs.Meta)
@@ -632,7 +633,7 @@ func TestMergingIterator(t *testing.T) {
 
 	require.True(t, it.Valid())
 	k = it.Key()
-	require.EqualValues(t, "k2", string(k.UserKey))
+	require.EqualValues(t, "k2", string(k))
 	vs = it.Value()
 	require.EqualValues(t, "a2", string(vs.Value))
 	require.EqualValues(t, 'A', vs.Meta)
@@ -658,13 +659,13 @@ func TestMergingIteratorReversed(t *testing.T) {
 	defer tbl2.Delete()
 	it1 := tbl1.NewIterator(true)
 	it2 := table.NewConcatIterator([]table.Table{tbl2}, true)
-	it := table.NewMergeIterator([]y.Iterator{it1, it2}, true)
+	it := table.NewMergeIterator([]table.Iterator{it1, it2}, true)
 	defer it.Close()
 
 	it.Rewind()
 	require.True(t, it.Valid())
 	k := it.Key()
-	require.EqualValues(t, "k2", string(k.UserKey))
+	require.EqualValues(t, "k2", string(k))
 	vs := it.Value()
 	require.EqualValues(t, "a2", string(vs.Value))
 	require.EqualValues(t, 'A', vs.Meta)
@@ -672,7 +673,7 @@ func TestMergingIteratorReversed(t *testing.T) {
 
 	require.True(t, it.Valid())
 	k = it.Key()
-	require.EqualValues(t, "k1", string(k.UserKey))
+	require.EqualValues(t, "k1", string(k))
 	vs = it.Value()
 	require.EqualValues(t, "a1", string(vs.Value))
 	require.EqualValues(t, 'A', vs.Meta)
@@ -698,13 +699,13 @@ func TestMergingIteratorTakeOne(t *testing.T) {
 
 	it1 := table.NewConcatIterator([]table.Table{t1}, false)
 	it2 := table.NewConcatIterator([]table.Table{t2}, false)
-	it := table.NewMergeIterator([]y.Iterator{it1, it2}, false)
+	it := table.NewMergeIterator([]table.Iterator{it1, it2}, false)
 	defer it.Close()
 
 	it.Rewind()
 	require.True(t, it.Valid())
 	k := it.Key()
-	require.EqualValues(t, "k1", string(k.UserKey))
+	require.EqualValues(t, "k1", string(k))
 	vs := it.Value()
 	require.EqualValues(t, "a1", string(vs.Value))
 	require.EqualValues(t, 'A', vs.Meta)
@@ -712,14 +713,14 @@ func TestMergingIteratorTakeOne(t *testing.T) {
 
 	require.True(t, it.Valid())
 	k = it.Key()
-	require.EqualValues(t, "k2", string(k.UserKey))
+	require.EqualValues(t, "k2", string(k))
 	vs = it.Value()
 	require.EqualValues(t, "a2", string(vs.Value))
 	require.EqualValues(t, 'A', vs.Meta)
 	it.Next()
 
 	k = it.Key()
-	require.EqualValues(t, "l1", string(k.UserKey))
+	require.EqualValues(t, "l1", string(k))
 	vs = it.Value()
 	require.EqualValues(t, "b1", string(vs.Value))
 	require.EqualValues(t, 'A', vs.Meta)
@@ -744,13 +745,13 @@ func TestMergingIteratorTakeTwo(t *testing.T) {
 
 	it1 := table.NewConcatIterator([]table.Table{t1}, false)
 	it2 := table.NewConcatIterator([]table.Table{t2}, false)
-	it := table.NewMergeIterator([]y.Iterator{it1, it2}, false)
+	it := table.NewMergeIterator([]table.Iterator{it1, it2}, false)
 	defer it.Close()
 
 	it.Rewind()
 	require.True(t, it.Valid())
 	k := it.Key()
-	require.EqualValues(t, "k1", string(k.UserKey))
+	require.EqualValues(t, "k1", string(k))
 	vs := it.Value()
 	require.EqualValues(t, "a1", string(vs.Value))
 	require.EqualValues(t, 'A', vs.Meta)
@@ -758,7 +759,7 @@ func TestMergingIteratorTakeTwo(t *testing.T) {
 
 	require.True(t, it.Valid())
 	k = it.Key()
-	require.EqualValues(t, "k2", string(k.UserKey))
+	require.EqualValues(t, "k2", string(k))
 	vs = it.Value()
 	require.EqualValues(t, "a2", string(vs.Value))
 	require.EqualValues(t, 'A', vs.Meta)
@@ -766,7 +767,7 @@ func TestMergingIteratorTakeTwo(t *testing.T) {
 	require.True(t, it.Valid())
 
 	k = it.Key()
-	require.EqualValues(t, "l1", string(k.UserKey))
+	require.EqualValues(t, "l1", string(k))
 	vs = it.Value()
 	require.EqualValues(t, "b1", string(vs.Value))
 	require.EqualValues(t, 'A', vs.Meta)
@@ -851,9 +852,9 @@ func TestBuildImMemoryTable(t *testing.T) {
 	tbl, err := OpenTable(NewInMemFile(1, buffer.Bytes()), nil)
 	y.Check(err)
 	for _, kv := range keyValues {
-		key := y.KeyWithTs([]byte(kv[0]), 0)
-		keyHash := farm.Fingerprint64(key.UserKey)
-		v, err := tbl.Get(key, keyHash)
+		key := []byte(kv[0])
+		keyHash := farm.Fingerprint64(key)
+		v, err := tbl.Get(key, 0, keyHash)
 		require.Nil(t, err)
 		require.EqualValues(t, v.Value, []byte(kv[1]))
 	}
@@ -977,7 +978,7 @@ func BenchmarkPointGet(b *testing.B) {
 						it.Close()
 						continue
 					}
-					if !bytes.Equal(k, it.Key().UserKey) {
+					if !bytes.Equal(k, it.Key()) {
 						it.Close()
 						continue
 					}
@@ -996,7 +997,7 @@ func BenchmarkPointGet(b *testing.B) {
 				for i := 0; i < n; i++ {
 					k := keys[rand.Intn(n)]
 					keyHash := farm.Fingerprint64(k)
-					resultVs, _ = tbl.Get(y.KeyWithTs(k, 0), keyHash)
+					resultVs, _ = tbl.Get(k, 0, keyHash)
 				}
 			}
 			_ = resultVs
@@ -1036,7 +1037,7 @@ func BenchmarkReadAndBuild(b *testing.B) {
 			defer it.Close()
 			for it.Rewind(); it.Valid(); it.Next() {
 				vs := it.Value()
-				newBuilder.Add(it.Key().UserKey, &vs)
+				newBuilder.Add(it.Key(), &vs)
 			}
 			_, err = newBuilder.Finish(f.Name(), f)
 			y.Check(err)
@@ -1077,7 +1078,7 @@ func BenchmarkReadMerged(b *testing.B) {
 	// Iterate b.N times over the entire table.
 	for i := 0; i < b.N; i++ {
 		func() {
-			var iters []y.Iterator
+			var iters []table.Iterator
 			for _, tbl := range tables {
 				iters = append(iters, tbl.NewIterator(false))
 			}

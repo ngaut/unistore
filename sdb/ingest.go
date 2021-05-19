@@ -1,6 +1,7 @@
 package sdb
 
 import (
+	"bytes"
 	"github.com/ngaut/unistore/s3util"
 	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
@@ -100,7 +101,7 @@ func (sdb *DB) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*l0Tables,
 		for l := 1; l <= ShardMaxLevel; l++ {
 			handler := newHandlers[cf][l-1]
 			sort.Slice(handler.tables, func(i, j int) bool {
-				return handler.tables[i].Smallest().Compare(handler.tables[j].Smallest()) < 0
+				return bytes.Compare(handler.tables[i].Smallest(), handler.tables[j].Smallest()) < 0
 			})
 		}
 	}

@@ -1,7 +1,9 @@
 package sdb
 
 import (
+	"bytes"
 	"github.com/ngaut/unistore/sdb/fileutil"
+	"github.com/ngaut/unistore/sdb/table"
 	"github.com/ngaut/unistore/sdb/table/memtable"
 	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
@@ -104,15 +106,15 @@ func (sdb *DB) flushMemTable(shard *Shard, m *memtable.CFTable, props *sdbpb.Pro
 			continue
 		}
 		rc := sdb.opt.CFs[cf].ReadCommitted
-		var prevKey y.Key
-		for it.Rewind(); it.Valid(); y.NextAllVersion(it) {
-			if rc && prevKey.SameUserKey(it.Key()) {
+		var prevKey []byte
+		for it.Rewind(); it.Valid(); table.NextAllVersion(it) {
+			if rc && bytes.Equal(prevKey, it.Key()) {
 				// For read committed CF, we can discard all the old versions.
 				continue
 			}
 			builder.Add(cf, it.Key(), it.Value())
 			if rc {
-				prevKey.Copy(it.Key())
+				prevKey = append(prevKey[:0], it.Key()...)
 			}
 		}
 		it.Close()

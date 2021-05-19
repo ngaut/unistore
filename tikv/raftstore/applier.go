@@ -855,7 +855,7 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		})
 	case raftlog.TypeRollback:
 		cl.IterateRollback(func(key []byte, startTS uint64, deleteLock bool) {
-			aCtx.wb.Rollback(cl.RegionID(), y.KeyWithTs(key, startTS))
+			aCtx.wb.Rollback(cl.RegionID(), key, startTS)
 			if deleteLock {
 				aCtx.wb.DeleteLock(cl.RegionID(), key)
 			}
@@ -887,10 +887,10 @@ func (a *applier) commitLock(aCtx *applyContext, regionID uint64, rawKey []byte,
 	var sizeDiff int64
 	userMeta := mvcc.NewDBUserMeta(lock.StartTS, commitTS)
 	if lock.Op != uint8(kvrpcpb.Op_Lock) {
-		aCtx.wb.SetWithUserMeta(regionID, y.KeyWithTs(rawKey, commitTS), lock.Value, userMeta)
+		aCtx.wb.SetWithUserMeta(regionID, rawKey, lock.Value, userMeta, commitTS)
 		sizeDiff = int64(len(rawKey) + len(lock.Value))
 	} else if bytes.Equal(lock.Primary, rawKey) {
-		aCtx.wb.SetOpLock(regionID, y.KeyWithTs(rawKey, commitTS), userMeta)
+		aCtx.wb.SetOpLock(regionID, rawKey, userMeta, commitTS)
 	}
 	if sizeDiff > 0 {
 		a.metrics.sizeDiffHint += uint64(sizeDiff)

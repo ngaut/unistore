@@ -21,26 +21,26 @@ func TestListNodeIterator(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		key := newKey(i)
 		it.Seek(key)
-		require.EqualValues(t, it.Key().UserKey, key)
+		require.EqualValues(t, it.Key(), key)
 		numVer := i%10 + 1
-		require.True(t, it.Key().Version == 10)
+		require.True(t, it.Value().Version == 10)
 		for j := 1; j < numVer; j++ {
 			require.True(t, it.NextVersion())
-			require.True(t, it.Key().Version == uint64(10-j))
+			require.Truef(t, it.Value().Version == uint64(10-j), "got version %d idx %d", it.Value().Version, it.idx)
 		}
 	}
 	it.Rewind()
 	for i := 98; i >= 0; i-- {
 		it.Next()
 		key := newKey(i)
-		require.EqualValues(t, it.Key().UserKey, key)
+		require.EqualValues(t, it.Key(), key)
 	}
 	it.Close()
 	it = ln.newIterator(false)
 	for i := 1; i < 100; i++ {
 		it.Next()
 		key := newKey(i)
-		require.EqualValues(t, it.Key().UserKey, key)
+		require.EqualValues(t, it.Key(), key)
 	}
 	it.Close()
 }

@@ -276,7 +276,7 @@ func (itr *Iterator) seek(key []byte) {
 func (itr *Iterator) seekForPrev(key []byte) {
 	// TODO: Optimize this. We shouldn't have to take a Prev step.
 	itr.seek(key)
-	if !bytes.Equal(itr.Key().UserKey, key) {
+	if !bytes.Equal(itr.Key(), key) {
 		itr.prev()
 	}
 }
@@ -339,8 +339,8 @@ func (itr *Iterator) prev() {
 }
 
 // Key follows the y.Iterator interface
-func (itr *Iterator) Key() y.Key {
-	return y.KeyWithTs(itr.keyBuf, itr.bi.ver)
+func (itr *Iterator) Key() []byte {
+	return itr.keyBuf
 }
 
 // Value follows the y.Iterator interface

@@ -167,26 +167,26 @@ func (s *Shard) foreachLevel(f func(cf int, level *levelHandler) (stop bool)) {
 	}
 }
 
-func (s *Shard) Get(cf int, key y.Key) y.ValueStruct {
-	keyHash := farm.Fingerprint64(key.UserKey)
+func (s *Shard) Get(cf int, key []byte, version uint64) y.ValueStruct {
+	keyHash := farm.Fingerprint64(key)
 	if s.isSplitting() {
-		idx := s.getSplittingIndex(key.UserKey)
+		idx := s.getSplittingIndex(key)
 		memTbl := s.loadSplittingMemTable(idx)
-		v := memTbl.Get(cf, key.UserKey, key.Version)
+		v := memTbl.Get(cf, key, version)
 		if v.Valid() {
 			return v
 		}
 	}
 	memTbls := s.loadMemTables()
 	for _, tbl := range memTbls.tables {
-		v := tbl.Get(cf, key.UserKey, key.Version)
+		v := tbl.Get(cf, key, version)
 		if v.Valid() {
 			return v
 		}
 	}
 	l0Tbls := s.loadL0Tables()
 	for _, tbl := range l0Tbls.tables {
-		v := tbl.Get(cf, key, keyHash)
+		v := tbl.Get(cf, key, version, keyHash)
 		if v.Valid() {
 			return v
 		}
@@ -197,7 +197,7 @@ func (s *Shard) Get(cf int, key y.Key) y.ValueStruct {
 		if len(level.tables) == 0 {
 			continue
 		}
-		v := level.get(key, keyHash)
+		v := level.get(key, version, keyHash)
 		if v.Valid() {
 			return v
 		}
@@ -255,7 +255,7 @@ func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
 	for i, tbl := range maxLevel.tables {
 		currentSize += tbl.Size()
 		if i != 0 && currentSize > levelTargetSize {
-			keys = append(keys, tbl.Smallest().UserKey)
+			keys = append(keys, tbl.Smallest())
 			currentSize = 0
 		}
 	}
@@ -474,28 +474,28 @@ func (s *levelHandler) overlappingTables(kr keyRange) (int, int) {
 	return getTablesInRange(s.tables, kr.left, kr.right)
 }
 
-func getTablesInRange(tbls []table.Table, start, end y.Key) (int, int) {
+func getTablesInRange(tbls []table.Table, start, end []byte) (int, int) {
 	left := sort.Search(len(tbls), func(i int) bool {
-		return start.Compare(tbls[i].Biggest()) <= 0
+		return bytes.Compare(start, tbls[i].Biggest()) <= 0
 	})
 	right := sort.Search(len(tbls), func(i int) bool {
-		return end.Compare(tbls[i].Smallest()) < 0
+		return bytes.Compare(end, tbls[i].Smallest()) < 0
 	})
 	return left, right
 }
 
 // get returns value for a given key or the key after that. If not found, return nil.
-func (s *levelHandler) get(key y.Key, keyHash uint64) y.ValueStruct {
-	return s.getInTable(key, keyHash, s.getTable(key))
+func (s *levelHandler) get(key []byte, version, keyHash uint64) y.ValueStruct {
+	return s.getInTable(key, version, keyHash, s.getTable(key))
 }
 
-func (s *levelHandler) getInTable(key y.Key, keyHash uint64, table table.Table) y.ValueStruct {
+func (s *levelHandler) getInTable(key []byte, version, keyHash uint64, table table.Table) y.ValueStruct {
 	if table == nil {
 		return y.ValueStruct{}
 	}
 	s.metrics.NumLSMGets.Inc()
 	// TODO: error handling here
-	result, err := table.Get(key, keyHash)
+	result, err := table.Get(key, version, keyHash)
 	if err != nil {
 		log.Error("get data in table failed", zap.Error(err))
 	}
@@ -505,10 +505,10 @@ func (s *levelHandler) getInTable(key y.Key, keyHash uint64, table table.Table) 
 	return result
 }
 
-func (s *levelHandler) getTable(key y.Key) table.Table {
+func (s *levelHandler) getTable(key []byte) table.Table {
 	// For level >= 1, we can do a binary search as key range does not overlap.
 	idx := sort.Search(len(s.tables), func(i int) bool {
-		return s.tables[i].Biggest().Compare(key) >= 0
+		return bytes.Compare(s.tables[i].Biggest(), key) >= 0
 	})
 	if idx >= len(s.tables) {
 		// Given key is strictly > than every element we have.

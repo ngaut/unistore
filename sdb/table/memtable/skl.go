@@ -587,8 +587,8 @@ type Iterator struct {
 func (s *Iterator) Valid() bool { return s.n != nil }
 
 // Key returns the key at the current position.
-func (s *Iterator) Key() y.Key {
-	return y.KeyWithTs(s.uk, s.v.Version)
+func (s *Iterator) Key() []byte {
+	return s.uk
 }
 
 // Value returns value.
@@ -733,7 +733,7 @@ func (s *UniIterator) Seek(key []byte) {
 }
 
 // Key implements y.Interface
-func (s *UniIterator) Key() y.Key { return s.iter.Key() }
+func (s *UniIterator) Key() []byte { return s.iter.Key() }
 
 // Value implements y.Interface
 func (s *UniIterator) Value() y.ValueStruct { return s.iter.Value() }
