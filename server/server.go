@@ -38,7 +38,7 @@ func New(conf *config.Config, pdClient pd.Client) (*tikv.Server, error) {
 	allocator := &idAllocator{
 		pdCli: pdClient,
 	}
-	raftDB, err := createRaftDB(subPathRaft, &conf.Engine)
+	raftDB, err := createRaftDB(subPathRaft, &conf.RaftEngine)
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
@@ -113,9 +113,6 @@ func createRaftDB(subPath string, conf *config.Engine) (*badger.DB, error) {
 	opts.NumLevelZeroTablesStall = conf.NumL0TablesStall
 	opts.LevelOneSize = conf.L1Size
 	opts.SyncWrites = conf.SyncWrite
-	opts.MaxBlockCacheSize = conf.BlockCacheSize
-	opts.MaxIndexCacheSize = conf.BlockCacheSize / 4
-	opts.TableBuilderOptions.SuRFStartLevel = conf.SurfStartLevel
 	opts.CompactL0WhenClose = conf.CompactL0WhenClose
 	opts.VolatileMode = conf.VolatileMode
 	return badger.Open(opts)

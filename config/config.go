@@ -22,6 +22,7 @@ import (
 type Config struct {
 	Server         Server         `toml:"server"`          // Unistore server options
 	Engine         Engine         `toml:"engine"`          // Engine options.
+	RaftEngine     Engine         `toml:"raft-engine"`
 	RaftStore      RaftStore      `toml:"raftstore"`       // RaftStore configs
 	PessimisticTxn PessimisticTxn `toml:"pessimistic-txn"` // Pessimistic txn related
 }
@@ -113,6 +114,21 @@ var DefaultConf = Config{
 		NumMemTables:       3,
 		NumL0Tables:        4,
 		NumL0TablesStall:   8,
+		VlogFileSize:       256 * MB,
+		NumCompactors:      3,
+		SurfStartLevel:     8,
+		L1Size:             512 * MB,
+		BlockCacheSize:     0, // 0 means disable block cache, use mmap to access sst.
+		CompactL0WhenClose: true,
+	},
+	RaftEngine: Engine{
+		DBPath:             "/tmp/badger",
+		ValueThreshold:     256,
+		MaxMemTableSize:    128 * MB,
+		MaxTableSize:       16 * MB,
+		NumMemTables:       3,
+		NumL0Tables:        4,
+		NumL0TablesStall:   10,
 		VlogFileSize:       256 * MB,
 		NumCompactors:      3,
 		SurfStartLevel:     8,
