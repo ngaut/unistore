@@ -42,7 +42,6 @@ type S3Client struct {
 	Options
 	*scheduler
 	cli       *s3.S3
-	dirPath   string
 	lock      sync.RWMutex
 	deletions deletions
 }
@@ -51,7 +50,6 @@ func NewS3Client(c *y.Closer, dirPath string, opts Options) *S3Client {
 	s3c := &S3Client{
 		Options:   opts,
 		scheduler: newScheduler(256),
-		dirPath:   dirPath,
 	}
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
@@ -77,8 +75,13 @@ func NewS3Client(c *y.Closer, dirPath string, opts Options) *S3Client {
 		WithHTTPClient(client).
 		WithRegion(opts.Region)))
 	s3c.cli = s3.New(sess)
+	filePath := filepath.Join(dirPath, DeletionFileName)
+	err := s3c.deletions.load(filePath)
+	if err != nil {
+		log.S().Errorf("cannot open deletion file: %s", err.Error())
+	}
 	c.AddRunning(1)
-	go s3c.deleteLoop(c)
+	go s3c.deleteLoop(c, filePath)
 	return s3c
 }
 
@@ -181,25 +184,16 @@ func (c *S3Client) SetExpiredTime(fid uint64) {
 	c.lock.Unlock()
 }
 
-func (c *S3Client) deleteLoop(closer *y.Closer) {
+func (c *S3Client) deleteLoop(closer *y.Closer, filePath string) {
 	defer closer.Done()
 	ticker := time.NewTicker(time.Second)
-	filePath, err := filepath.Abs(filepath.Join(c.dirPath, DeletionFileName))
-	if err != nil {
-		log.S().Errorf("cannot get absolute path for deletion file: %s", err.Error())
-		return
-	}
-	err = c.deletions.load(filePath)
-	if err != nil {
-		log.S().Errorf("cannot open deletion file: %s", err.Error())
-	}
 	for {
 		select {
 		case <-ticker.C:
 			c.deleteExpiredFile()
 		case <-closer.HasBeenClosed():
 			// write deletions to disk
-			err = c.deletions.write(filePath)
+			err := c.deletions.write(filePath)
 			if err != nil {
 				log.S().Errorf("cannot write deletion file: %s", err.Error())
 			}
