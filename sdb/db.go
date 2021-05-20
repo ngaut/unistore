@@ -449,7 +449,7 @@ func (sdb *DB) Close() error {
 	}
 	sdb.closers.resourceManager.SignalAndWait()
 	if sdb.opt.S3Options.EndPoint != "" {
-		sdb.closers.compactors.SignalAndWait()
+		sdb.closers.s3Client.SignalAndWait()
 	}
 	return sdb.dirLock.release()
 }
