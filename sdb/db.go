@@ -27,6 +27,7 @@ type closers struct {
 	blobManager     *y.Closer
 	memtable        *y.Closer
 	writes          *y.Closer
+	s3Client        *y.Closer
 }
 
 type DB struct {
@@ -107,8 +108,9 @@ func OpenDB(opt Options) (db *DB, err error) {
 	}
 	db.closers.resourceManager = y.NewCloser(0)
 	db.resourceMgr = epoch.NewResourceManager(db.closers.resourceManager, &db.safeTsTracker)
+	db.closers.s3Client = y.NewCloser(0)
 	if opt.S3Options.EndPoint != "" {
-		db.s3c = s3util.NewS3Client(opt.S3Options)
+		db.s3c = s3util.NewS3Client(db.closers.s3Client, opt.Dir, opt.S3Options)
 	}
 	if err = db.loadShards(); err != nil {
 		return nil, errors.AddStack(err)
@@ -446,6 +448,9 @@ func (sdb *DB) Close() error {
 		sdb.closers.compactors.SignalAndWait()
 	}
 	sdb.closers.resourceManager.SignalAndWait()
+	if sdb.opt.S3Options.EndPoint != "" {
+		sdb.closers.compactors.SignalAndWait()
+	}
 	return sdb.dirLock.release()
 }
 
@@ -656,7 +661,16 @@ func (sdb *DB) RemoveShard(shardID uint64, removeFile bool) error {
 	sdb.shardMap.Delete(shardID)
 	guard := sdb.resourceMgr.Acquire()
 	defer guard.Done()
-	guard.Delete([]epoch.Resource{shard})
+	guard.Delete([]epoch.Resource{&deletion{res: shard, delete: func() {
+		shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
+			for _, tbl := range level.tables {
+				if shard.removeFilesOnDel {
+					sdb.s3c.SetExpiredTime(tbl.ID())
+				}
+			}
+			return false
+		})
+	}}})
 	return nil
 }
 

@@ -687,7 +687,9 @@ func (sdb *DB) replaceTables(old *levelHandler, newTables []table.Table, cd *Com
 		tbl := old.tables[i]
 		if containsTable(cd.Bot, tbl) {
 			newHandler.totalSize -= tbl.Size()
-			toDelete = append(toDelete, tbl)
+			toDelete = append(toDelete, &deletion{res: tbl, delete: func() {
+				sdb.s3c.SetExpiredTime(tbl.ID())
+			}})
 		}
 	}
 	tables := make([]table.Table, 0, left+len(newTables)+len(cd.SkippedTbls)+(len(old.tables)-right))
@@ -897,7 +899,10 @@ func (sdb *DB) applyCompaction(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 		if l0Tbls != nil {
 			for _, tbl := range l0Tbls.tables {
 				if containsUint64(comp.TopDeletes, tbl.ID()) {
-					del.add(tbl.ID(), tbl)
+					res := tbl
+					del.add(res.ID(), &deletion{res: res, delete: func() {
+						sdb.s3c.SetExpiredTime(res.ID())
+					}})
 				}
 			}
 		}
@@ -926,6 +931,18 @@ func (sdb *DB) applyCompaction(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 	return nil
 }
 
+type deletion struct {
+	res    epoch.Resource
+	delete func()
+}
+
+func (d *deletion) Delete() error {
+	if d.delete != nil {
+		d.delete()
+	}
+	return d.res.Delete()
+}
+
 func (sdb *DB) compactionUpdateLevelHandler(shard *Shard, cf, level int,
 	creates []*sdbpb.TableCreate, delIDs []uint64, del *deletions) error {
 	oldLevel := shard.cfs[cf].getLevelHandler(level)
@@ -948,7 +965,10 @@ func (sdb *DB) compactionUpdateLevelHandler(shard *Shard, cf, level int,
 	}
 	for _, oldTbl := range oldLevel.tables {
 		if containsUint64(delIDs, oldTbl.ID()) {
-			del.add(oldTbl.ID(), oldTbl)
+			res := oldTbl
+			del.add(res.ID(), &deletion{res: res, delete: func() {
+				sdb.s3c.SetExpiredTime(res.ID())
+			}})
 		} else {
 			newLevel.tables = append(newLevel.tables, oldTbl)
 			newLevel.totalSize += oldTbl.Size()
@@ -1010,7 +1030,10 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 	}
 	for _, oldL0 := range oldL0s.tables {
 		if containsUint64(splitFiles.TableDeletes, oldL0.ID()) {
-			del.add(oldL0.ID(), oldL0)
+			res := oldL0
+			del.add(res.ID(), &deletion{res: res, delete: func() {
+				sdb.s3c.SetExpiredTime(res.ID())
+			}})
 		} else {
 			newL0Tbls.tables = append(newL0Tbls.tables, oldL0)
 		}
@@ -1050,7 +1073,10 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 			oldHandler := shard.cfs[cf].getLevelHandler(level)
 			for _, oldTbl := range oldHandler.tables {
 				if containsUint64(splitFiles.TableDeletes, oldTbl.ID()) {
-					del.add(oldTbl.ID(), oldTbl)
+					res := oldTbl
+					del.add(res.ID(), &deletion{res: res, delete: func() {
+						sdb.s3c.SetExpiredTime(res.ID())
+					}})
 				} else {
 					newHandler.totalSize += oldTbl.Size()
 					newHandler.tables = append(newHandler.tables, oldTbl)

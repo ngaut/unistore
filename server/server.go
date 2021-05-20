@@ -134,6 +134,7 @@ func createKVDB(subPath string, safePoint *tikv.SafePoint, listener *raftstore.M
 	opts.S3Options.KeyID = conf.S3.KeyID
 	opts.S3Options.Bucket = conf.S3.Bucket
 	opts.S3Options.Region = conf.S3.Region
+	opts.S3Options.DelayedTime = conf.S3.DelayedTime
 	opts.Dir = filepath.Join(conf.DBPath, subPath)
 	if safePoint != nil {
 		opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
