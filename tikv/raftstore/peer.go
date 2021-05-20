@@ -849,6 +849,10 @@ func (p *Peer) HandleRaftReadyAppend(trans *RaftClient, raftWB *RaftWriteBatch, 
 	}
 	for i := 0; i < len(ready.CommittedEntries); i++ {
 		e := &ready.CommittedEntries[i]
+		if raftlog.IsPreSplitLog(e.Data) {
+			// Set the PreSplit state so we can reject any future compaction.
+			p.Store().splitState = sdbpb.SplitState_PRE_SPLIT
+		}
 		if raftlog.IsChangeSetLog(e.Data) {
 			p.scheduleApplyShardChangeSet(e)
 		}
@@ -876,6 +880,11 @@ func (p *Peer) scheduleApplyShardChangeSet(entry *eraftpb.Entry) {
 	change, err := clog.GetShardChangeSet()
 	y.Assert(err == nil)
 	store := p.Store()
+	if store.splitState >= sdbpb.SplitState_PRE_SPLIT && change != nil && change.Compaction != nil {
+		log.S().Warnf("region %d:%d reject compaction for splitting state",
+			p.regionId, p.Region().RegionEpoch.Version)
+		return
+	}
 	store.applyingChanges = append(store.applyingChanges, change)
 	p.Store().regionSched <- task{
 		tp: taskTypeRegionApplyChangeSet,
