@@ -213,10 +213,13 @@ func (c *S3Client) deleteExpiredFile() {
 		f := c.deletions[0]
 		if f.expiredTime < uint64(time.Now().Unix()) {
 			c.lock.RUnlock()
-			c.lock.Lock()
-			c.deletions = c.deletions[1:]
-			c.lock.Unlock()
-			c.Delete(c.BlockKey(f.fid))
+			if err := c.Delete(c.BlockKey(f.fid)); err != nil {
+				log.S().Errorf("cannot delete expired file: %s", err.Error())
+			} else {
+				c.lock.Lock()
+				c.deletions = c.deletions[1:]
+				c.lock.Unlock()
+			}
 			c.lock.RLock()
 		} else {
 			break
