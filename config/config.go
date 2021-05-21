@@ -34,6 +34,7 @@ type Server struct {
 	LogLevel    string `toml:"log-level"`
 	RegionSize  int64  `toml:"region-size"` // Average region size.
 	MaxProcs    int    `toml:"max-procs"`   // Max CPU cores to use, set 0 to use all CPU cores in the machine.
+	GCPercent   int    `toml:"gc-percent"`  // GC percent
 	LogfilePath string `toml:"log-file"`    // Log file path for unistore server
 }
 
@@ -97,6 +98,7 @@ var DefaultConf = Config{
 		RegionSize:  64 * MB,
 		LogLevel:    "info",
 		MaxProcs:    0,
+		GCPercent:   20,
 		LogfilePath: "",
 	},
 	RaftStore: RaftStore{

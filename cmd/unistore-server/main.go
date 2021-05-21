@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -107,6 +108,7 @@ func main() {
 	loadCmdConf(conf)
 	runtime.GOMAXPROCS(conf.Server.MaxProcs)
 	runtime.SetMutexProfileFraction(10)
+	debug.SetGCPercent(conf.Server.GCPercent)
 	logger, p, err := log.InitLogger(&log.Config{
 		Level: conf.Server.LogLevel,
 		File: log.FileLogConfig{
