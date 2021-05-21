@@ -45,7 +45,7 @@ type S3Client struct {
 	Options
 	*scheduler
 	cli               *s3.S3
-	ExpirationSeconds uint64
+	expirationSeconds uint64
 	lock              sync.RWMutex
 	deletions         deletions
 }
@@ -80,8 +80,8 @@ func NewS3Client(c *y.Closer, dirPath string, opts Options) *S3Client {
 		WithRegion(opts.Region)))
 	s3c.cli = s3.New(sess)
 	if len(opts.ExpirationDuration) > 0 {
-		s3c.ExpirationSeconds = uint64(config.ParseDuration(opts.ExpirationDuration) / time.Second)
-		if s3c.ExpirationSeconds > 0 {
+		s3c.expirationSeconds = uint64(config.ParseDuration(opts.ExpirationDuration) / time.Second)
+		if s3c.expirationSeconds > 0 {
 			filePath := filepath.Join(dirPath, DeletionFileName)
 			err := s3c.deletions.load(filePath)
 			if err != nil {
@@ -221,9 +221,9 @@ func (c *S3Client) ParseFileID(key string) (uint64, bool) {
 }
 
 func (c *S3Client) SetExpired(fid uint64) {
-	if c.ExpirationSeconds > 0 {
+	if c.expirationSeconds > 0 {
 		c.lock.Lock()
-		c.deletions = append(c.deletions, deletion{fid: fid, expiredTime: uint64(time.Now().Unix()) + c.ExpirationSeconds})
+		c.deletions = append(c.deletions, deletion{fid: fid, expiredTime: uint64(time.Now().Unix()) + c.expirationSeconds})
 		c.lock.Unlock()
 	}
 }
