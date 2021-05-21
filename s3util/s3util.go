@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -129,6 +130,11 @@ func (c *S3Client) GetToFile(key string, filePath string) error {
 }
 
 func (c *S3Client) Put(key string, data []byte) error {
+	if fid, ok := c.ParseFileID(key); !ok {
+		log.S().Errorf("fail to parse file id: %s", key)
+	} else {
+		log.S().Infof("put file to s3: %d", fid)
+	}
 	input := &s3.PutObjectInput{}
 	input.SetContentLength(int64(len(data)))
 	input.Bucket = &c.Bucket
@@ -139,6 +145,11 @@ func (c *S3Client) Put(key string, data []byte) error {
 }
 
 func (c *S3Client) Delete(key string) error {
+	if fid, ok := c.ParseFileID(key); !ok {
+		log.S().Errorf("fail to parse file id: %s", key)
+	} else {
+		log.S().Infof("delete file from s3: %d", fid)
+	}
 	input := &s3.DeleteObjectInput{}
 	input.Bucket = &c.Bucket
 	input.Key = &key
@@ -176,6 +187,24 @@ func (c *S3Client) ListFiles() (map[uint64]struct{}, error) {
 
 func (c *S3Client) BlockKey(fid uint64) string {
 	return fmt.Sprintf("bg%08x%016x.sst", c.InstanceID, fid)
+}
+
+func (c *S3Client) ParseFileID(key string) (uint64, bool) {
+	if len(key) != 30 {
+		return 0, false
+	}
+	if !strings.HasPrefix(key, "bg") {
+		return 0, false
+	}
+	if !strings.HasSuffix(key, ".sst") {
+		return 0, false
+	}
+	var fid uint64
+	_, err := fmt.Sscanf(key[10:26], "%016x", &fid)
+	if err != nil {
+		return 0, false
+	}
+	return fid, true
 }
 
 func (c *S3Client) SetExpiredTime(fid uint64) {
