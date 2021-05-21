@@ -362,13 +362,22 @@ func (m *Manifest) applyFlush(cs *sdbpb.ChangeSet, shardInfo *ShardMeta) {
 }
 
 func (m *Manifest) addFile(fid uint64, cf int32, level uint32, smallest, biggest []byte, shardInfo *ShardMeta) {
-	log.S().Infof("manifest add file %d l%d smalleset %v biggest %v", fid, level, smallest, biggest)
+	log.S().Infof("manifest add file %d l%d smalleset %x biggest %x", fid, level, smallest, biggest)
 	if fid > m.lastID {
 		m.lastID = fid
 	}
 	m.creations++
 	shardInfo.files[fid] = int(level)
 	m.globalFiles[fid] = fileMeta{cf: cf, level: level, smallest: smallest, biggest: biggest}
+}
+
+func (m *Manifest) moveDownFile(fid uint64, cf int32, level uint32, shardInfo *ShardMeta) {
+	log.S().Infof("manifest moveDown file %d l%d", fid, level)
+	old := m.globalFiles[fid]
+	y.Assert(old.level+1 == level)
+	y.Assert(old.cf == cf)
+	shardInfo.files[fid] = int(level)
+	m.globalFiles[fid] = fileMeta{cf: cf, level: level, smallest: old.smallest, biggest: old.biggest}
 }
 
 func (m *Manifest) deleteFile(fid uint64, shardInfo *ShardMeta) {
@@ -380,6 +389,13 @@ func (m *Manifest) deleteFile(fid uint64, shardInfo *ShardMeta) {
 
 func (m *Manifest) applyCompaction(cs *sdbpb.ChangeSet, shardInfo *ShardMeta) {
 	log.S().Infof("%d:%d apply compaction", cs.ShardID, cs.ShardVer)
+	if len(cs.Compaction.TopDeletes) == len(cs.Compaction.TableCreates) &&
+		cs.Compaction.TopDeletes[0] == cs.Compaction.TableCreates[0].ID {
+		for _, create := range cs.Compaction.TableCreates {
+			m.moveDownFile(create.ID, create.CF, create.Level, shardInfo)
+		}
+		return
+	}
 	for _, id := range cs.Compaction.TopDeletes {
 		m.deleteFile(id, shardInfo)
 	}
@@ -433,7 +449,7 @@ func (m *Manifest) applySplit(shardID uint64, split *sdbpb.Split) {
 		newShards[shardIdx].files[fid] = int(fileMeta.level)
 	}
 	for _, nShard := range newShards {
-		log.S().Infof("new shard %d:%d smallest %v biggest %v files %v",
+		log.S().Infof("new shard %d:%d smallest %x biggest %x files %v",
 			nShard.ID, nShard.Ver, nShard.Start, nShard.End, nShard.files)
 	}
 }

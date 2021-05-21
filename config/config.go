@@ -20,8 +20,8 @@ import (
 )
 
 type Config struct {
-	Server         Server         `toml:"server"`          // Unistore server options
-	Engine         Engine         `toml:"engine"`          // Engine options.
+	Server         Server         `toml:"server"` // Unistore server options
+	Engine         Engine         `toml:"engine"` // Engine options.
 	RaftEngine     Engine         `toml:"raft-engine"`
 	RaftStore      RaftStore      `toml:"raftstore"`       // RaftStore configs
 	PessimisticTxn PessimisticTxn `toml:"pessimistic-txn"` // Pessimistic txn related

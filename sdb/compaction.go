@@ -1042,7 +1042,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 		newHandler.tables = append(newHandler.tables, tbl)
 	}
 	for cf := 0; cf < sdb.numCFs; cf++ {
-		for level := 1; level < ShardMaxLevel; level++ {
+		for level := 1; level <= ShardMaxLevel; level++ {
 			newHandler := newHandlers[cf][level-1]
 			if newHandler == nil {
 				continue
