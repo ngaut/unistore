@@ -270,9 +270,12 @@ func (s *Shard) GetPreSplitKeys() [][]byte {
 }
 
 func (s *Shard) Delete() error {
+	l0s := s.loadL0Tables()
+	for _, l0 := range l0s.tables {
+		l0.Delete()
+	}
 	s.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
 		for _, tbl := range level.tables {
-			tbl.Close()
 			if s.removeFilesOnDel {
 				tbl.Delete()
 			}

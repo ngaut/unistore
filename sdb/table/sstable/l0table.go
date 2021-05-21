@@ -4,11 +4,8 @@ import (
 	"bytes"
 	"github.com/ngaut/unistore/sdb/table"
 	"github.com/pingcap/badger/y"
-	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
-	"io/ioutil"
-	"os"
 	"reflect"
 	"unsafe"
 )
@@ -37,10 +34,10 @@ func (f *l0Footer) unmarshal(b []byte) {
 
 type L0Table struct {
 	l0Footer
+	file     TableFile
 	cfs      []*Table
 	fid      uint64
 	filename string
-	data     []byte
 	cfOffs   []uint32
 }
 
@@ -49,7 +46,8 @@ func (st *L0Table) ID() uint64 {
 }
 
 func (st *L0Table) Delete() error {
-	return os.Remove(st.filename)
+	st.file.Close()
+	return st.file.Delete()
 }
 
 func (st *L0Table) GetCF(cf int) *Table {
@@ -57,7 +55,7 @@ func (st *L0Table) GetCF(cf int) *Table {
 }
 
 func (st *L0Table) Size() int64 {
-	return int64(len(st.data))
+	return st.file.Size()
 }
 
 func (st *L0Table) CommitTS() uint64 {
@@ -65,26 +63,26 @@ func (st *L0Table) CommitTS() uint64 {
 }
 
 func OpenL0Table(filename string, fid uint64) (*L0Table, error) {
-	shardData, err := ioutil.ReadFile(filename)
+	file, err := NewLocalFile(filename, true)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 	l0 := &L0Table{
 		fid:      fid,
+		file:     file,
 		filename: filename,
-		data:     shardData,
 	}
-	footerOff := len(l0.data) - l0FooterSize
-	l0.l0Footer.unmarshal(l0.data[footerOff:])
-	cfOffsOff := footerOff - 4*int(l0.numCFs)
-	l0.cfOffs = BytesToU32Slice(l0.data[cfOffsOff:footerOff])
+	footerOff := file.Size() - int64(l0FooterSize)
+	l0.l0Footer.unmarshal(l0.file.MMapRead(footerOff, l0FooterSize))
+	cfOffsOff := footerOff - 4*int64(l0.numCFs)
+	l0.cfOffs = BytesToU32Slice(l0.file.MMapRead(cfOffsOff, 4*int(l0.numCFs)))
 	l0.cfs = make([]*Table, 0, l0.numCFs)
 	for i, off := range l0.cfOffs {
 		endOff := uint32(cfOffsOff)
 		if i+1 < len(l0.cfOffs) {
 			endOff = l0.cfOffs[i+1]
 		}
-		data := shardData[off:endOff]
+		data := l0.file.MMapRead(int64(off), int(endOff-off))
 		if len(data) == 0 {
 			l0.cfs = append(l0.cfs, nil)
 			continue
@@ -118,6 +116,10 @@ func (sl0 *L0Table) NewIterator(cf int, reverse bool) table.Iterator {
 		return nil
 	}
 	return tbl.NewIterator(reverse)
+}
+
+func (sl0 *L0Table) Close() error {
+	return sl0.file.Close()
 }
 
 type L0Builder struct {

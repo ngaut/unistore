@@ -144,11 +144,13 @@ func (f *LocalFile) Close() error {
 		if err != nil {
 			log.Error("munmap failed", zap.Error(err))
 		}
+		f.mmapData = nil
 	}
 	return f.fd.Close()
 }
 
 func (f *LocalFile) Delete() error {
+	f.Close()
 	return os.Remove(f.fd.Name())
 }
 
