@@ -20,7 +20,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/ngaut/unistore/config"
 	"github.com/pingcap/badger/y"
+	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
 )
 
@@ -30,21 +32,22 @@ const (
 )
 
 type Options struct {
-	InstanceID  uint32
-	EndPoint    string
-	KeyID       string
-	SecretKey   string
-	Bucket      string
-	Region      string
-	DelayedTime uint64
+	InstanceID         uint32
+	EndPoint           string
+	KeyID              string
+	SecretKey          string
+	Bucket             string
+	Region             string
+	ExpirationDuration string
 }
 
 type S3Client struct {
 	Options
 	*scheduler
-	cli       *s3.S3
-	lock      sync.RWMutex
-	deletions deletions
+	cli               *s3.S3
+	ExpirationSeconds uint64
+	lock              sync.RWMutex
+	deletions         deletions
 }
 
 func NewS3Client(c *y.Closer, dirPath string, opts Options) *S3Client {
@@ -76,13 +79,18 @@ func NewS3Client(c *y.Closer, dirPath string, opts Options) *S3Client {
 		WithHTTPClient(client).
 		WithRegion(opts.Region)))
 	s3c.cli = s3.New(sess)
-	filePath := filepath.Join(dirPath, DeletionFileName)
-	err := s3c.deletions.load(filePath)
-	if err != nil {
-		log.S().Errorf("cannot open deletion file: %s", err.Error())
+	if len(opts.ExpirationDuration) > 0 {
+		s3c.ExpirationSeconds = uint64(config.ParseDuration(opts.ExpirationDuration) / time.Second)
+		if s3c.ExpirationSeconds > 0 {
+			filePath := filepath.Join(dirPath, DeletionFileName)
+			err := s3c.deletions.load(filePath)
+			if err != nil {
+				log.S().Errorf("cannot open deletion file: %s", err.Error())
+			}
+			c.AddRunning(1)
+			go s3c.deleteLoop(c, filePath)
+		}
 	}
-	c.AddRunning(1)
-	go s3c.deleteLoop(c, filePath)
 	return s3c
 }
 
@@ -112,6 +120,11 @@ func (c *S3Client) Get(key string, offset, length int64) ([]byte, error) {
 }
 
 func (c *S3Client) GetToFile(key string, filePath string) error {
+	fid, ok := c.ParseFileID(key)
+	if !ok {
+		return errors.New("fail to parse file id:" + key)
+	}
+	log.S().Infof("get file from s3:%d", fid)
 	fd, err := y.OpenTruncFile(filePath, false)
 	if err != nil {
 		return err
@@ -130,11 +143,11 @@ func (c *S3Client) GetToFile(key string, filePath string) error {
 }
 
 func (c *S3Client) Put(key string, data []byte) error {
-	if fid, ok := c.ParseFileID(key); !ok {
-		log.S().Errorf("fail to parse file id: %s", key)
-	} else {
-		log.S().Infof("put file to s3: %d", fid)
+	fid, ok := c.ParseFileID(key)
+	if !ok {
+		return errors.New("fail to parse file id:" + key)
 	}
+	log.S().Infof("put file to s3:%d", fid)
 	input := &s3.PutObjectInput{}
 	input.SetContentLength(int64(len(data)))
 	input.Bucket = &c.Bucket
@@ -145,11 +158,11 @@ func (c *S3Client) Put(key string, data []byte) error {
 }
 
 func (c *S3Client) Delete(key string) error {
-	if fid, ok := c.ParseFileID(key); !ok {
-		log.S().Errorf("fail to parse file id: %s", key)
-	} else {
-		log.S().Infof("delete file from s3: %d", fid)
+	fid, ok := c.ParseFileID(key)
+	if !ok {
+		return errors.New("fail to parse file id:" + key)
 	}
+	log.S().Infof("delete file from s3:%d", fid)
 	input := &s3.DeleteObjectInput{}
 	input.Bucket = &c.Bucket
 	input.Key = &key
@@ -207,10 +220,12 @@ func (c *S3Client) ParseFileID(key string) (uint64, bool) {
 	return fid, true
 }
 
-func (c *S3Client) SetExpiredTime(fid uint64) {
-	c.lock.Lock()
-	c.deletions = append(c.deletions, deletion{fid: fid, expiredTime: uint64(time.Now().Unix()) + c.DelayedTime})
-	c.lock.Unlock()
+func (c *S3Client) SetExpired(fid uint64) {
+	if c.ExpirationSeconds > 0 {
+		c.lock.Lock()
+		c.deletions = append(c.deletions, deletion{fid: fid, expiredTime: uint64(time.Now().Unix()) + c.ExpirationSeconds})
+		c.lock.Unlock()
+	}
 }
 
 func (c *S3Client) deleteLoop(closer *y.Closer, filePath string) {
@@ -231,24 +246,28 @@ func (c *S3Client) deleteLoop(closer *y.Closer, filePath string) {
 	}
 }
 func (c *S3Client) deleteExpiredFile() {
+	var toDelete deletions
+	now := uint64(time.Now().Unix())
 	c.lock.RLock()
-	for len(c.deletions) > 0 {
-		f := c.deletions[0]
-		if f.expiredTime < uint64(time.Now().Unix()) {
-			c.lock.RUnlock()
-			if err := c.Delete(c.BlockKey(f.fid)); err != nil {
-				log.S().Errorf("cannot delete expired file: %s", err.Error())
-			} else {
-				c.lock.Lock()
-				c.deletions = c.deletions[1:]
-				c.lock.Unlock()
-			}
-			c.lock.RLock()
-		} else {
+	for i, d := range c.deletions {
+		if d.expiredTime > now {
+			toDelete = c.deletions[:i]
 			break
+		} else if i == len(c.deletions)-1 {
+			toDelete = c.deletions
 		}
 	}
 	c.lock.RUnlock()
+	if len(toDelete) > 0 {
+		for _, d := range toDelete {
+			if err := c.Delete(c.BlockKey(d.fid)); err != nil {
+				log.S().Errorf("cannot delete expired file: %s", err.Error())
+			}
+		}
+		c.lock.Lock()
+		c.deletions = c.deletions[len(toDelete):]
+		c.lock.Unlock()
+	}
 }
 
 type deletion struct {
@@ -273,6 +292,9 @@ func (d deletions) write(filePath string) error {
 func (d *deletions) load(filePath string) error {
 	f, err := os.Open(filePath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
 	defer f.Close()

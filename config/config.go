@@ -69,13 +69,13 @@ type Engine struct {
 }
 
 type S3Options struct {
-	Endpoint    string `toml:"endpoint"`
-	KeyID       string `toml:"key-id"`
-	SecretKey   string `toml:"secret-key"`
-	Bucket      string `toml:"bucket"`
-	InstanceID  uint32 `toml:"instance-id"`
-	Region      string `toml:"region"`
-	DelayedTime uint64 `toml:"delayed-time"`
+	Endpoint           string `toml:"endpoint"`
+	KeyID              string `toml:"key-id"`
+	SecretKey          string `toml:"secret-key"`
+	Bucket             string `toml:"bucket"`
+	InstanceID         uint32 `toml:"instance-id"`
+	Region             string `toml:"region"`
+	ExpirationDuration string `toml:"expiration-duration"`
 }
 
 type PessimisticTxn struct {
