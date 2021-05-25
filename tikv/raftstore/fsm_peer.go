@@ -1512,7 +1512,7 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 			store.stableApplyState = applyState
 		}
 	}
-	if change.State != store.splitState {
+	if change.State > store.splitState {
 		log.S().Infof("%d:%d peer store split state is changed from %s to %s",
 			change.ShardID, change.ShardVer, store.splitState, change.State)
 		store.splitState = change.State
