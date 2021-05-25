@@ -42,7 +42,7 @@ func (sdb *DB) Ingest(ingestTree *IngestTree) error {
 		return err
 	}
 
-	shard := newShardForIngest(ingestTree.ChangeSet, sdb.opt, sdb.metrics)
+	shard := newShardForIngest(ingestTree.ChangeSet, &sdb.opt, sdb.metrics)
 	for _, l0 := range l0s.tables {
 		shard.addEstimatedSize(l0.Size())
 	}

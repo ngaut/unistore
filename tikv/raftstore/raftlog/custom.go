@@ -33,7 +33,9 @@ const (
 	TypePessimisticLock     CustomRaftLogType = 4
 	TypePessimisticRollback CustomRaftLogType = 5
 	TypePreSplit            CustomRaftLogType = 6
-	TypeChangeSet           CustomRaftLogType = 7
+	TypeFlush               CustomRaftLogType = 7
+	TypeCompaction          CustomRaftLogType = 8
+	TypeSplitFiles          CustomRaftLogType = 9
 )
 
 // CustomRaftLog is the raft log format for unistore to store Prewrite/Commit/PessimisticLock.
@@ -234,9 +236,16 @@ func (b *CustomBuilder) AppendKeyOnly(key []byte) {
 	b.cnt++
 }
 
-func (b *CustomBuilder) AppendChangeSet(changeSet *sdbpb.ChangeSet) {
+func (b *CustomBuilder) SetChangeSet(changeSet *sdbpb.ChangeSet) {
 	changeSetData, _ := changeSet.Marshal()
 	b.data = append(b.data, changeSetData...)
+	if changeSet.Flush != nil {
+		b.SetType(TypeFlush)
+	} else if changeSet.Compaction != nil {
+		b.SetType(TypeCompaction)
+	} else if changeSet.SplitFiles != nil {
+		b.SetType(TypeSplitFiles)
+	}
 }
 
 func (b *CustomBuilder) SetType(tp CustomRaftLogType) {
@@ -276,7 +285,14 @@ func u64ToBytes(v uint64) []byte {
 }
 
 func IsChangeSetLog(data []byte) bool {
-	return len(data) > 2 && data[0] == CustomRaftLogFlag && data[1] == byte(TypeChangeSet)
+	if len(data) <= 2 || data[0] != CustomRaftLogFlag {
+		return false
+	}
+	switch CustomRaftLogType(data[1]) {
+	case TypeFlush, TypeSplitFiles, TypeCompaction:
+		return true
+	}
+	return false
 }
 
 func IsPreSplitLog(data []byte) bool {

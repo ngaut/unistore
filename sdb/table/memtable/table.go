@@ -21,10 +21,10 @@ type Table struct {
 	flushing uint32
 }
 
-func NewCFTable(arenaSize int64, numCFs int) *Table {
+func NewCFTable(numCFs int) *Table {
 	t := &Table{
 		skls:  make([]*skiplist, numCFs),
-		arena: newArena(arenaSize),
+		arena: newArena(),
 	}
 	for i := 0; i < numCFs; i++ {
 		head := newNode(t.arena, nil, y.ValueStruct{}, maxHeight)

@@ -36,24 +36,17 @@ type Options struct {
 	// Directory to store the data in. Should exist and be writable.
 	Dir string
 
-	// 3. Flags that user might want to review
-	// ----------------------------------------
-	// The following affect all levels of LSM tree.
-	MaxMemTableSize int64 // Each mem table is at most this size.
+	// BaseSize is th maximum L1 size before trigger a compaction.
+	// The L2 size is 10x of the base size, L3 size is 100x of the base size.
+	BaseSize int64
 	// Maximum number of tables to keep in memory, before stalling.
 	NumMemtables int
-	// The following affect how we handle LSM tree L0.
-	// Maximum number of Level 0 tables before we start compacting.
-	NumLevelZeroTables int
 
 	// If we hit this number of Level 0 tables, we will stall until L0 is
 	// compacted away.
 	NumLevelZeroTablesStall int
 
 	MaxBlockCacheSize int64
-
-	// Maximum total size for L1.
-	LevelOneSize int64
 
 	// Number of compaction workers to run concurrently.
 	NumCompactors int
@@ -77,6 +70,11 @@ type Options struct {
 	MetaChangeListener MetaChangeListener
 
 	RecoverHandler RecoverHandler
+
+	// Max mem size is dynamically adjusted for each time the mem-table get flushed.
+	// The formula is (factor * write_bytes_per_second)
+	// And limited in range [2MB, 256MB].
+	MaxMemTableSizeFactor int
 }
 
 type CFConfig struct {
@@ -118,10 +116,8 @@ type MetaChangeListener interface {
 
 var DefaultOpt = Options{
 	DoNotCompact:            false,
-	LevelOneSize:            16 << 20,
-	MaxMemTableSize:         16 << 20,
+	BaseSize:                64 << 20,
 	NumCompactors:           3,
-	NumLevelZeroTables:      5,
 	NumLevelZeroTablesStall: 10,
 	NumMemtables:            16,
 	TableBuilderOptions: sstable.TableBuilderOptions{
@@ -134,5 +130,6 @@ var DefaultOpt = Options{
 		LogicalBloomFPR:     0.01,
 		MaxLevels:           5,
 	},
-	CFs: []CFConfig{{Managed: true}, {Managed: false}, {Managed: true}},
+	CFs:                   []CFConfig{{Managed: true}, {Managed: false}, {Managed: true}},
+	MaxMemTableSizeFactor: 256,
 }

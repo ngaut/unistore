@@ -40,7 +40,7 @@ type arena struct {
 }
 
 // newArena returns a new arena.
-func newArena(n int64) *arena {
+func newArena() *arena {
 	// Don't store data at position 0 in order to reserve offset=0 as a kind
 	// of nil pointer.
 	out := &arena{

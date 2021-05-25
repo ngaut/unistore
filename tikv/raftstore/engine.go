@@ -126,6 +126,11 @@ func (kvWB *KVWriteBatch) SetApplyState(regionID uint64, state applyState) {
 	wb.SetProperty(applyStateKey, state.Marshal())
 }
 
+func (kvWB *KVWriteBatch) SetMaxMemTableSize(regionID uint64, val []byte) {
+	wb := kvWB.getEngineWriteBatch(regionID)
+	wb.SetProperty(sdb.MemTableSizeKey, val)
+}
+
 func (kvWB *KVWriteBatch) WriteToEngine() error {
 	batches := make([]*sdb.WriteBatch, 0, len(kvWB.batches))
 	for _, wb := range kvWB.batches {

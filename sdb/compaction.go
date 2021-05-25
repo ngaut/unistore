@@ -508,17 +508,17 @@ type CompactionPriority struct {
 func (sdb *DB) getCompactionPriority(shard *Shard) CompactionPriority {
 	maxPri := CompactionPriority{Shard: shard}
 	l0 := shard.loadL0Tables()
-	if l0 != nil && len(l0.tables) > sdb.opt.NumLevelZeroTables {
-		sizeScore := float64(l0.totalSize()) * 10 / float64(sdb.opt.LevelOneSize)
-		numTblsScore := float64(len(l0.tables)) / float64(sdb.opt.NumLevelZeroTables)
-		maxPri.Score = sizeScore*0.6 + numTblsScore*0.4
+	if l0 != nil {
+		sizeScore := float64(l0.totalSize()) / float64(sdb.opt.BaseSize)
+		numTblsScore := float64(len(l0.tables)) / 5
+		maxPri.Score = sizeScore*0.7 + numTblsScore*0.3
 		maxPri.CF = -1
 		return maxPri
 	}
 	for i, scf := range shard.cfs {
 		for level := 1; level < ShardMaxLevel; level++ {
 			h := scf.getLevelHandler(level)
-			score := float64(h.totalSize) / (float64(sdb.opt.LevelOneSize) * math.Pow(10, float64(level-1)))
+			score := float64(h.totalSize) / (float64(sdb.opt.BaseSize) * math.Pow(10, float64(level-1)))
 			if score > maxPri.Score {
 				maxPri.Score = score
 				maxPri.CF = i

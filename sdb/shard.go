@@ -2,8 +2,10 @@ package sdb
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"github.com/dgryski/go-farm"
+	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/sdb/epoch"
 	"github.com/ngaut/unistore/sdb/table"
 	"github.com/ngaut/unistore/sdb/table/memtable"
@@ -15,6 +17,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
 
@@ -27,6 +30,7 @@ type Shard struct {
 	End   []byte
 	cfs   []*shardCF
 	lock  sync.Mutex
+	opt   *Options
 
 	memTbls *unsafe.Pointer
 	l0s     *unsafe.Pointer
@@ -42,19 +46,32 @@ type Shard struct {
 	// If the shard is passive, flush mem table and do compaction will ignore this shard.
 	passive int32
 
-	properties     *properties
-	compacting     int32
-	initialFlushed int32
+	properties      *properties
+	compacting      int32
+	initialFlushed  int32
+	lastSwitchTime  time.Time
+	maxMemTableSize int64
 }
 
-func newShard(props *sdbpb.Properties, ver uint64, start, end []byte, opt Options, metrics *y.MetricsSet) *Shard {
+const (
+	MemTableSizeKey = "_mem_table_size"
+)
+
+func newShard(props *sdbpb.Properties, ver uint64, start, end []byte, opt *Options, metrics *y.MetricsSet) *Shard {
 	shard := &Shard{
-		ID:         props.ShardID,
-		Ver:        ver,
-		Start:      start,
-		End:        end,
-		cfs:        make([]*shardCF, len(opt.CFs)),
-		properties: newProperties().applyPB(props),
+		ID:              props.ShardID,
+		Ver:             ver,
+		Start:           start,
+		End:             end,
+		opt:             opt,
+		cfs:             make([]*shardCF, len(opt.CFs)),
+		properties:      newProperties().applyPB(props),
+		maxMemTableSize: opt.BaseSize / 4,
+		lastSwitchTime:  time.Now(),
+	}
+	val, ok := shard.properties.get(MemTableSizeKey)
+	if ok {
+		shard.maxMemTableSize = int64(binary.LittleEndian.Uint64(val))
 	}
 	shard.memTbls = new(unsafe.Pointer)
 	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{}))
@@ -72,7 +89,7 @@ func newShard(props *sdbpb.Properties, ver uint64, start, end []byte, opt Option
 	return shard
 }
 
-func newShardForLoading(shardInfo *ShardMeta, opt Options, metrics *y.MetricsSet) *Shard {
+func newShardForLoading(shardInfo *ShardMeta, opt *Options, metrics *y.MetricsSet) *Shard {
 	shard := newShard(shardInfo.properties.toPB(shardInfo.ID), shardInfo.Ver, shardInfo.Start, shardInfo.End, opt, metrics)
 	if shardInfo.preSplit != nil {
 		if shardInfo.preSplit.MemProps != nil {
@@ -90,7 +107,7 @@ func newShardForLoading(shardInfo *ShardMeta, opt Options, metrics *y.MetricsSet
 	return shard
 }
 
-func newShardForIngest(changeSet *sdbpb.ChangeSet, opt Options, metrics *y.MetricsSet) *Shard {
+func newShardForIngest(changeSet *sdbpb.ChangeSet, opt *Options, metrics *y.MetricsSet) *Shard {
 	shardSnap := changeSet.Snapshot
 	shard := newShard(shardSnap.Properties, changeSet.ShardVer, shardSnap.Start, shardSnap.End, opt, metrics)
 	if changeSet.PreSplit != nil {
@@ -146,7 +163,7 @@ func (s *Shard) setSplitKeys(keys [][]byte) bool {
 		s.splitKeys = keys
 		s.splittingMemTbls = make([]unsafe.Pointer, len(keys)+1)
 		for i := range s.splittingMemTbls {
-			atomic.StorePointer(&s.splittingMemTbls[i], unsafe.Pointer(memtable.NewCFTable(0, len(s.cfs))))
+			atomic.StorePointer(&s.splittingMemTbls[i], unsafe.Pointer(memtable.NewCFTable(len(s.cfs))))
 		}
 		s.setSplitState(sdbpb.SplitState_PRE_SPLIT)
 		log.S().Debugf("shard %d:%d pre-split", s.ID, s.Ver)
@@ -351,6 +368,20 @@ func (s *Shard) setInitialFlushed() {
 	atomic.StoreInt32(&s.initialFlushed, 1)
 }
 
+func (s *Shard) nextMemTableSize(writableMemTableSize int64, lastSwitchTime time.Time) int64 {
+	dur := time.Since(lastSwitchTime)
+	timeInMs := int64(dur/time.Millisecond) + 1 // + 1 to avoid divide by zero.
+	bytesPerSec := writableMemTableSize * 1000 / timeInMs
+	nextMemSize := bytesPerSec * int64(s.opt.MaxMemTableSizeFactor)
+	if nextMemSize > 256*config.MB {
+		nextMemSize = 256 * config.MB
+	}
+	if nextMemSize < 2*config.MB {
+		nextMemSize = 2 * config.MB
+	}
+	return nextMemSize
+}
+
 type shardCF struct {
 	levels []unsafe.Pointer
 }
@@ -446,6 +477,17 @@ func GetShardProperty(key string, props *sdbpb.Properties) ([]byte, bool) {
 		}
 	}
 	return nil, false
+}
+
+func SetShardProperty(key string, value []byte, props *sdbpb.Properties) {
+	for i, k := range props.Keys {
+		if key == k {
+			props.Values[i] = value
+			return
+		}
+	}
+	props.Keys = append(props.Keys, key)
+	props.Values = append(props.Values, value)
 }
 
 type levelHandler struct {

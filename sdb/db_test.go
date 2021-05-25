@@ -21,8 +21,8 @@ import (
 func getTestOptions(dir string) Options {
 	opt := DefaultOpt
 	opt.TableBuilderOptions.MaxTableSize = 4 << 15 // Force more compaction.
-	opt.MaxMemTableSize = 4 << 15                  // Force more compaction.
-	opt.LevelOneSize = 4 << 15                     // Force more compaction.
+	opt.MaxMemTableSizeFactor = 1                  // Force more compaction.
+	opt.BaseSize = 4 << 15                         // Force more compaction.
 	opt.Dir = dir
 	return opt
 }
@@ -34,7 +34,6 @@ func TestDB(t *testing.T) {
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
 	opts.NumCompactors = 1
-	opts.NumLevelZeroTables = 1
 	opts.CFs = []CFConfig{{Managed: true}, {Managed: false}, {Managed: false}}
 	db, err := OpenDB(opts)
 	require.NoError(t, err)
@@ -181,7 +180,6 @@ func TestSplitSuggestion(t *testing.T) {
 	alloc := new(localIDAllocator)
 	opts := getTestOptions(dir)
 	opts.NumCompactors = 2
-	opts.NumLevelZeroTables = 1
 	opts.CFs = []CFConfig{{Managed: true}, {Managed: false}, {Managed: false}}
 	opts.IDAllocator = alloc
 	db, err := OpenDB(opts)
@@ -193,7 +191,7 @@ func TestSplitSuggestion(t *testing.T) {
 	}
 	sc.loadData(0, 20000)
 	time.Sleep(time.Second * 2)
-	keys := db.GetSplitSuggestion(1, opts.MaxMemTableSize)
+	keys := db.GetSplitSuggestion(1, opts.BaseSize)
 	log.S().Infof("split keys %s", keys)
 	require.Greater(t, len(keys), 2)
 	require.NoError(t, db.Close())
@@ -205,7 +203,6 @@ func TestShardingMetaChangeListener(t *testing.T) {
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
 	opts.NumCompactors = 2
-	opts.NumLevelZeroTables = 1
 	opts.CFs = []CFConfig{{Managed: false}}
 	l := new(metaListener)
 	opts.MetaChangeListener = l
@@ -259,7 +256,6 @@ func TestMigration(t *testing.T) {
 	opts := getTestOptions(dirA)
 	opts.IDAllocator = allocator
 	opts.NumCompactors = 2
-	opts.NumLevelZeroTables = 1
 	opts.CFs = []CFConfig{{Managed: true}, {Managed: false}}
 	db, err := OpenDB(opts)
 	require.NoError(t, err)
@@ -279,7 +275,6 @@ func TestMigration(t *testing.T) {
 	opts = getTestOptions(dirB)
 	opts.IDAllocator = allocator
 	opts.NumCompactors = 2
-	opts.NumLevelZeroTables = 1
 	opts.CFs = []CFConfig{{Managed: true}, {Managed: false}}
 	dbB, err := OpenDB(opts)
 	require.Nil(t, err)

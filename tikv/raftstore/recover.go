@@ -88,7 +88,7 @@ func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMe
 			// must be delete range request. TODO: handle it in the future.
 			continue
 		}
-		if cl.Type() == raftlog.TypeChangeSet {
+		if raftlog.IsChangeSetLog(cl.Data) {
 			// We don't have a background region worker now, should do it synchronously.
 			cs, err := cl.GetShardChangeSet()
 			if err != nil {

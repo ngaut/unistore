@@ -876,8 +876,18 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 			log.S().Warn("region %d:%d failed to execute pre-split, may be already pre-split by ingest.",
 				a.region.Id, a.region.RegionEpoch.Version)
 		}
-	case raftlog.TypeChangeSet:
-		// It is already scheduled in peer worker. Do nothing here.
+	case raftlog.TypeFlush:
+		cs, err := cl.GetShardChangeSet()
+		y.Assert(err == nil)
+		if cs.Flush.L0Create != nil {
+			props := cs.Flush.L0Create.Properties
+			val, ok := sdb.GetShardProperty(sdb.MemTableSizeKey, props)
+			if ok {
+				aCtx.wb.SetMaxMemTableSize(a.region.Id, val)
+				// We need to make sure the table size change happens at exact position, so we must write to engine here.
+				aCtx.commit(a)
+			}
+		}
 	}
 	return cnt
 }

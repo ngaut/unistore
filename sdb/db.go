@@ -365,7 +365,7 @@ func (sdb *DB) loadShards() error {
 }
 
 func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
-	shard := newShardForLoading(shardInfo, sdb.opt, sdb.metrics)
+	shard := newShardForLoading(shardInfo, &sdb.opt, sdb.metrics)
 	for fid := range shardInfo.files {
 		cfLevel, ok := sdb.manifest.globalFiles[fid]
 		y.AssertTruef(ok, "%d:%d global file %d not found", shardInfo.ID, shardInfo.Ver, fid)
