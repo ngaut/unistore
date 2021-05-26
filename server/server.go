@@ -106,22 +106,21 @@ func createRaftDB(subPath string, conf *config.Engine) (*badger.DB, error) {
 	opts.ValueDir = opts.Dir
 	opts.ValueLogFileSize = conf.VlogFileSize
 	opts.ValueLogMaxNumFiles = 3
-	opts.MaxMemTableSize = conf.MaxMemTableSize
-	opts.TableBuilderOptions.MaxTableSize = conf.MaxTableSize
-	opts.NumMemtables = conf.NumMemTables
+	opts.MaxMemTableSize = conf.BaseSize / 4
+	opts.TableBuilderOptions.MaxTableSize = conf.BaseSize / 4
 	opts.NumLevelZeroTables = conf.NumL0Tables
 	opts.NumLevelZeroTablesStall = conf.NumL0TablesStall
-	opts.LevelOneSize = conf.L1Size
+	opts.LevelOneSize = conf.BaseSize
 	opts.SyncWrites = conf.SyncWrite
 	opts.CompactL0WhenClose = conf.CompactL0WhenClose
-	opts.VolatileMode = conf.VolatileMode
 	return badger.Open(opts)
 }
 
 func createKVDB(subPath string, safePoint *tikv.SafePoint, listener *raftstore.MetaChangeListener,
 	allocator sdb.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*sdb.DB, error) {
 	opts := sdb.DefaultOpt
-	opts.MaxMemTableSize = conf.MaxMemTableSize
+	opts.MaxMemTableSizeFactor = conf.MaxMemTableSizeFactor
+	opts.RemoteCompactionAddr = conf.RemoteCompactionAddr
 	opts.MaxBlockCacheSize = conf.BlockCacheSize
 	opts.NumCompactors = conf.NumCompactors
 	opts.CFs = []sdb.CFConfig{{Managed: true}, {Managed: false, ReadCommitted: true}, {Managed: true}}

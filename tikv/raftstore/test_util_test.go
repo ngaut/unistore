@@ -14,6 +14,7 @@
 package raftstore
 
 import (
+	"github.com/ngaut/unistore/sdb"
 	"github.com/pingcap/log"
 	"io/ioutil"
 	"os"
@@ -88,13 +89,11 @@ func newTestEntry(index, term uint64) eraftpb.Entry {
 	}
 }
 
-func openKVDB(t *testing.T, path string) *badger.ShardingDB {
-	opts := badger.ShardingDBDefaultOpt
+func openKVDB(t *testing.T, path string) *sdb.DB {
+	opts := sdb.DefaultOpt
 	opts.Dir = path
-	opts.ValueDir = path
-	opts.CFs = []badger.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}}
 	log.S().Info("kvdb path ", path)
-	kvdb, err := badger.OpenShardingDB(opts)
+	kvdb, err := sdb.OpenDB(opts)
 	if err != nil {
 		t.Fatal(err)
 	}

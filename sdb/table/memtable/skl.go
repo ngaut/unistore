@@ -108,8 +108,8 @@ func newNode(a *arena, key []byte, v y.ValueStruct, height int) *node {
 }
 
 // newSkiplist makes a new empty skiplist, with a given arena size
-func newSkiplist(arenaSize int64) *skiplist {
-	arena := newArena(arenaSize)
+func newSkiplist() *skiplist {
+	arena := newArena()
 	head := newNode(arena, nil, y.ValueStruct{}, maxHeight)
 	return &skiplist{
 		height: 1,

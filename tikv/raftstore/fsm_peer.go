@@ -1476,8 +1476,7 @@ func (d *peerMsgHandler) onGenerateMetaChangeEvent(e *sdbpb.ChangeSet) {
 		StoreID:  d.storeID(),
 	}
 	b := raftlog.NewBuilder(header)
-	b.SetType(raftlog.TypeChangeSet)
-	b.AppendChangeSet(e)
+	b.SetChangeSet(e)
 	d.proposeRaftCommand(b.Build(), nil)
 }
 

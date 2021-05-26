@@ -47,27 +47,25 @@ type RaftStore struct {
 }
 
 type Engine struct {
-	DBPath           string `toml:"db-path"`            // Directory to store the data in. Should exist and be writable.
-	ValueThreshold   int    `toml:"value-threshold"`    // If value size >= this threshold, only store value offsets in tree.
-	MaxMemTableSize  int64  `toml:"max-mem-table-size"` // Each mem table is at most this size.
-	MaxTableSize     int64  `toml:"max-table-size"`     // Each table file is at most this size.
-	L1Size           int64  `toml:"l1-size"`
-	NumMemTables     int    `toml:"num-mem-tables"`      // Maximum number of tables to keep in memory, before stalling.
+	// Used in both.
+	DBPath           string `toml:"db-path"`        // Directory to store the data in. Should exist and be writable.
+	MaxTableSize     int64  `toml:"max-table-size"` // Each table file is at most this size.
+	BaseSize         int64  `toml:"base-size"`
 	NumL0Tables      int    `toml:"num-L0-tables"`       // Maximum number of Level 0 tables before we start compacting.
 	NumL0TablesStall int    `toml:"num-L0-tables-stall"` // Maximum number of Level 0 tables before stalling.
-	VlogFileSize     int64  `toml:"vlog-file-size"`      // Value log file size.
+	NumCompactors    int    `toml:"num-compactors"`
+	BlockCacheSize   int64  `toml:"block-cache-size"`
 
-	// 	Sync all writes to disk. Setting this to true would slow down data loading significantly.")
-	SyncWrite      bool  `toml:"sync-write"`
-	NumCompactors  int   `toml:"num-compactors"`
-	SurfStartLevel int   `toml:"surf-start-level"`
-	BlockCacheSize int64 `toml:"block-cache-size"`
+	// Only used in raft engine
+	ValueThreshold     int   `toml:"value-threshold"` // If value size >= this threshold, only store value offsets in tree.
+	VlogFileSize       int64 `toml:"vlog-file-size"`  // Value log file size.
+	CompactL0WhenClose bool  `toml:"compact-l0-when-close"`
+	SyncWrite          bool  `toml:"sync-write"`
 
-	// Only used in tests.
-	VolatileMode bool
-
-	CompactL0WhenClose bool      `toml:"compact-l0-when-close"`
-	S3                 S3Options `toml:"s3"`
+	// Only used in KV engine.
+	MaxMemTableSizeFactor int       `toml:"max-mem-table-size-factor"` // Each mem table is at most this size.
+	RemoteCompactionAddr  string    `toml:"remote-compaction-addr"`
+	S3                    S3Options `toml:"s3"`
 }
 
 type S3Options struct {
@@ -110,34 +108,28 @@ var DefaultConf = Config{
 		RaftElectionTimeoutTicks: 10,
 	},
 	Engine: Engine{
-		DBPath:             "/tmp/badger",
-		ValueThreshold:     256,
-		MaxMemTableSize:    64 * MB,
-		MaxTableSize:       8 * MB,
-		NumMemTables:       3,
-		NumL0Tables:        4,
-		NumL0TablesStall:   8,
-		VlogFileSize:       256 * MB,
-		NumCompactors:      3,
-		SurfStartLevel:     8,
-		L1Size:             512 * MB,
-		BlockCacheSize:     0, // 0 means disable block cache, use mmap to access sst.
-		CompactL0WhenClose: true,
+		DBPath:                "/tmp/badger",
+		ValueThreshold:        256,
+		MaxMemTableSizeFactor: 128,
+		MaxTableSize:          8 * MB,
+		NumL0Tables:           4,
+		NumL0TablesStall:      8,
+		NumCompactors:         3,
+		BaseSize:              64 * MB,
+		BlockCacheSize:        0, // 0 means disable block cache, use mmap to access sst.
 	},
 	RaftEngine: Engine{
-		DBPath:             "/tmp/badger",
-		ValueThreshold:     256,
-		MaxMemTableSize:    128 * MB,
-		MaxTableSize:       16 * MB,
-		NumMemTables:       3,
-		NumL0Tables:        4,
-		NumL0TablesStall:   10,
-		VlogFileSize:       256 * MB,
-		NumCompactors:      3,
-		SurfStartLevel:     8,
-		L1Size:             512 * MB,
-		BlockCacheSize:     0, // 0 means disable block cache, use mmap to access sst.
-		CompactL0WhenClose: true,
+		DBPath:                "/tmp/badger",
+		ValueThreshold:        256,
+		MaxMemTableSizeFactor: 256,
+		MaxTableSize:          16 * MB,
+		NumL0Tables:           4,
+		NumL0TablesStall:      10,
+		VlogFileSize:          256 * MB,
+		NumCompactors:         3,
+		BaseSize:              256 * MB,
+		BlockCacheSize:        0, // 0 means disable block cache, use mmap to access sst.
+		CompactL0WhenClose:    true,
 	},
 	PessimisticTxn: PessimisticTxn{
 		WaitForLockTimeout:  1000, // 1000ms same with tikv default value

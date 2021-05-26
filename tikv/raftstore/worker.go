@@ -337,8 +337,7 @@ func splitShardFiles(router *router, engine *sdb.DB, peer *metapb.Peer, region *
 		StoreID:  peer.StoreId,
 	}
 	builder := raftlog.NewBuilder(header)
-	builder.AppendChangeSet(change)
-	builder.SetType(raftlog.TypeChangeSet)
+	builder.SetChangeSet(change)
 	cb := NewCallback()
 	cmd := &MsgRaftCmd{
 		SendTime: time.Now(),

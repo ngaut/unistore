@@ -1,11 +1,13 @@
 package sdb
 
 import (
+	"encoding/binary"
 	"github.com/ngaut/unistore/sdb/table/memtable"
 	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/y"
 	"os"
+	"time"
 )
 
 const (
@@ -100,14 +102,10 @@ func (sdb *DB) collectTasks(c *y.Closer) []engineTask {
 	return engineTasks
 }
 
-func (sdb *DB) switchMemTable(shard *Shard, minSize int64, commitTS uint64) *memtable.Table {
-	newTableSize := sdb.opt.MaxMemTableSize
-	if newTableSize < minSize {
-		newTableSize = minSize
-	}
+func (sdb *DB) switchMemTable(shard *Shard, commitTS uint64) *memtable.Table {
 	writableMemTbl := shard.loadWritableMemTable()
 	if writableMemTbl == nil {
-		writableMemTbl = memtable.NewCFTable(newTableSize, sdb.numCFs)
+		writableMemTbl = memtable.NewCFTable(sdb.numCFs)
 		atomicAddMemTable(shard.memTbls, writableMemTbl)
 	}
 	empty := writableMemTbl.Empty()
@@ -115,7 +113,7 @@ func (sdb *DB) switchMemTable(shard *Shard, minSize int64, commitTS uint64) *mem
 		return nil
 	}
 	writableMemTbl.SetVersion(commitTS)
-	newMemTable := memtable.NewCFTable(newTableSize, sdb.numCFs)
+	newMemTable := memtable.NewCFTable(sdb.numCFs)
 	atomicAddMemTable(shard.memTbls, newMemTable)
 	return writableMemTbl
 }
@@ -140,8 +138,8 @@ func (sdb *DB) executeWriteTask(eTask engineTask) {
 		return
 	}
 	memTbl := shard.loadWritableMemTable()
-	if memTbl == nil || (shard.IsInitialFlushed() && memTbl.Size()+task.estimatedSize > sdb.opt.MaxMemTableSize) {
-		oldMemTbl := sdb.switchMemTable(shard, task.estimatedSize, commitTS)
+	if memTbl == nil || (shard.IsInitialFlushed() && memTbl.Size()+task.estimatedSize > shard.maxMemTableSize) {
+		oldMemTbl := sdb.switchMemTable(shard, commitTS)
 		if oldMemTbl != nil {
 			sdb.scheduleFlushTask(shard, oldMemTbl, commitTS, false)
 		}
@@ -161,6 +159,9 @@ func (sdb *DB) executeWriteTask(eTask engineTask) {
 	}
 	for key, val := range task.properties {
 		shard.properties.set(key, val)
+		if key == MemTableSizeKey {
+			shard.maxMemTableSize = int64(binary.LittleEndian.Uint64(val))
+		}
 	}
 }
 
@@ -201,19 +202,29 @@ func (sdb *DB) executeTriggerFlushTask(eTask engineTask) {
 	task := eTask.triggerFlush
 	shard := task.shard
 	commitTS := sdb.orc.allocTs()
-	memTbl := sdb.switchMemTable(shard, 0, commitTS)
+	memTbl := sdb.switchMemTable(shard, commitTS)
 	sdb.scheduleFlushTask(shard, memTbl, commitTS, shard.GetSplitState() == sdbpb.SplitState_PRE_SPLIT)
 	sdb.orc.doneCommit(commitTS)
 	eTask.notify <- nil
 }
 
 func (sdb *DB) scheduleFlushTask(shard *Shard, memTbl *memtable.Table, commitTS uint64, preSplitFlush bool) {
+	lastSwitchTime := shard.lastSwitchTime
+	shard.lastSwitchTime = time.Now()
 	if !shard.IsPassive() {
+		props := shard.properties.toPB(shard.ID)
+		var memTblSize int64
+		if memTbl != nil && !memTbl.Empty() && shard.IsInitialFlushed() {
+			memTblSize = shard.nextMemTableSize(memTbl.Size(), lastSwitchTime)
+			propVal := make([]byte, 8)
+			binary.LittleEndian.PutUint64(propVal, uint64(memTblSize))
+			SetShardProperty(MemTableSizeKey, propVal, props)
+		}
 		sdb.flushCh <- &flushTask{
 			shard:         shard,
 			tbl:           memTbl,
 			preSplitFlush: preSplitFlush,
-			properties:    shard.properties.toPB(shard.ID),
+			properties:    props,
 			commitTS:      commitTS,
 		}
 	}

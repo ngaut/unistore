@@ -66,7 +66,7 @@ func (sdb *DB) executePreSplitTask(eTask engineTask) {
 		return
 	}
 	commitTS := sdb.orc.readTs()
-	memTbl := sdb.switchMemTable(shard, 0, commitTS)
+	memTbl := sdb.switchMemTable(shard, commitTS)
 	sdb.scheduleFlushTask(shard, memTbl, commitTS, true)
 	eTask.notify <- nil
 }
@@ -345,7 +345,7 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 	newVer := oldShard.Ver + uint64(len(newShardsProps)) - 1
 	for i := range oldShard.splittingMemTbls {
 		startKey, endKey := getSplittingStartEnd(oldShard.Start, oldShard.End, oldShard.splitKeys, i)
-		shard := newShard(newShardsProps[i], newVer, startKey, endKey, sdb.opt, sdb.metrics)
+		shard := newShard(newShardsProps[i], newVer, startKey, endKey, &sdb.opt, sdb.metrics)
 		if oldShard.IsPassive() {
 			shard.SetPassive(true)
 		}
@@ -355,6 +355,13 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 		shard.l0s = new(unsafe.Pointer)
 		atomic.StorePointer(shard.l0s, unsafe.Pointer(new(l0Tables)))
 		newShards[i] = shard
+		if shard.ID == oldShard.ID {
+			// A derived shard usually has more write traffic.
+			shard.maxMemTableSize = oldShard.maxMemTableSize * 2 / 3
+		} else {
+			// Other shards share the remained 1/3 of the old shard's mem table size.
+			shard.maxMemTableSize = oldShard.maxMemTableSize / 3 / int64(len(oldShard.splittingMemTbls)-1)
+		}
 	}
 	l0s := oldShard.loadL0Tables()
 	for _, l0 := range l0s.tables {
