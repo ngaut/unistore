@@ -284,8 +284,8 @@ func (d deletions) write(filePath string) error {
 		return err
 	}
 	f.Write(d.marshal())
-	f.Close()
 	f.Sync()
+	f.Close()
 	return os.Rename(tmpFilePath, filePath)
 }
 

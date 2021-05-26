@@ -240,6 +240,10 @@ func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, split
 	oldTables := oldHandler.tables
 	toDeleteIDs := make(map[uint64]struct{})
 	var relatedKeys [][]byte
+	var bt *s3util.BatchTasks
+	if sdb.s3c != nil {
+		bt = s3util.NewBatchTasks()
+	}
 	for _, tbl := range oldTables {
 		relatedKeys = relatedKeys[:0]
 		for _, key := range keys {
@@ -257,10 +261,6 @@ func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, split
 		itr := tbl.NewIterator(false)
 		defer itr.Close()
 		itr.Rewind()
-		var bt *s3util.BatchTasks
-		if sdb.s3c != nil {
-			bt = s3util.NewBatchTasks()
-		}
 		for _, relatedKey := range relatedKeys {
 			result, err := sdb.buildTableBeforeKey(itr, relatedKey, level, sdb.opt.TableBuilderOptions)
 			if err != nil {
@@ -275,12 +275,12 @@ func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, split
 				splitFiles.TableCreates = append(splitFiles.TableCreates, newTableCreateByResult(result, cf, level))
 			}
 		}
-		if sdb.s3c != nil {
-			if err := sdb.s3c.BatchSchedule(bt); err != nil {
-				return err
-			}
-		}
 		splitFiles.TableDeletes = append(splitFiles.TableDeletes, tbl.ID())
+	}
+	if sdb.s3c != nil {
+		if err := sdb.s3c.BatchSchedule(bt); err != nil {
+			return err
+		}
 	}
 	return nil
 }
