@@ -47,7 +47,7 @@ func (sdb *DB) runFlushMemTable(c *y.Closer) {
 			change.Flush.L0Create = l0Table
 		}
 		if task.preSplitFlush {
-			change.State = sdbpb.SplitState_PRE_SPLIT_FLUSH_DONE
+			change.Stage = sdbpb.SplitStage_PRE_SPLIT_FLUSH_DONE
 		}
 		if sdb.metaChangeListener != nil {
 			sdb.metaChangeListener.OnChange(change)

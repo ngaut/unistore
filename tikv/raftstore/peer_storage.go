@@ -229,7 +229,7 @@ type PeerStorage struct {
 	stableApplyState applyState
 
 	applyingChanges []*sdbpb.ChangeSet
-	splitState      sdbpb.SplitState
+	splitStage      sdbpb.SplitStage
 	initialFlushed  bool
 
 	Tag string
@@ -254,10 +254,10 @@ func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- 
 		return nil, err
 	}
 	var initialFlushed bool
-	splitState := sdbpb.SplitState_INITIAL
+	splitStage := sdbpb.SplitStage_INITIAL
 	if shard := engines.kv.GetShard(region.Id); shard != nil {
 		initialFlushed = shard.IsInitialFlushed()
-		splitState = shard.GetSplitState()
+		splitStage = shard.GetSplitStage()
 	}
 	return &PeerStorage{
 		Engines:        engines,
@@ -270,7 +270,7 @@ func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- 
 		regionSched:    regionSched,
 		cache:          &EntryCache{},
 		stats:          &CacheQueryStats{},
-		splitState:     splitState,
+		splitStage:     splitStage,
 		initialFlushed: initialFlushed,
 	}, nil
 }
@@ -901,7 +901,7 @@ func (ps *PeerStorage) hasOnGoingFlush() bool {
 func (ps *PeerStorage) hasOnGoingPreSplitFlush() bool {
 	for _, change := range ps.applyingChanges {
 		if change.Flush != nil {
-			if change.State == sdbpb.SplitState_PRE_SPLIT_FLUSH_DONE {
+			if change.Stage == sdbpb.SplitStage_PRE_SPLIT_FLUSH_DONE {
 				return true
 			}
 		}

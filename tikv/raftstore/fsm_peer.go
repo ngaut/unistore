@@ -338,7 +338,7 @@ func (d *peerMsgHandler) HandleRaftReady(ready *raft.Ready, ic *InvokeContext) {
 		d.onReadyRollbackMerge(0, nil)
 	}
 	if d.peer.waitFollowerSplitFiles != nil {
-		if d.peer.Store().splitState == sdbpb.SplitState_SPLIT_FILE_DONE {
+		if d.peer.Store().splitStage == sdbpb.SplitStage_SPLIT_FILE_DONE {
 			epochVer := d.region().RegionEpoch.Version
 			matchCnt := 0
 			for _, followerVer := range d.peer.followersSplitFilesDone {
@@ -836,7 +836,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 			d.ctx.raftWB.Set(y.KeyWithTs(RaftStateKey(newRegion), RaftTS), store.raftState.Marshal())
 			// Reset the flush state for derived region.
 			store.initialFlushed = false
-			store.splitState = sdbpb.SplitState_INITIAL
+			store.splitStage = sdbpb.SplitStage_INITIAL
 			continue
 		}
 
@@ -1511,10 +1511,10 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 			store.stableApplyState = applyState
 		}
 	}
-	if change.State > store.splitState {
-		log.S().Infof("%d:%d peer store split state is changed from %s to %s",
-			change.ShardID, change.ShardVer, store.splitState, change.State)
-		store.splitState = change.State
+	if change.Stage > store.splitStage {
+		log.S().Infof("%d:%d peer store split stage is changed from %s to %s",
+			change.ShardID, change.ShardVer, store.splitStage, change.Stage)
+		store.splitStage = change.Stage
 		d.hasReady = true
 	}
 	for i, applying := range store.applyingChanges {

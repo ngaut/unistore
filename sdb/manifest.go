@@ -61,7 +61,7 @@ type ShardMeta struct {
 	properties *properties
 	preSplit   *sdbpb.PreSplit
 	split      *sdbpb.Split
-	splitState sdbpb.SplitState
+	splitStage sdbpb.SplitStage
 	commitTS   uint64
 	parent     *ShardMeta
 	recovered  bool
@@ -138,7 +138,7 @@ func (m *Manifest) toChangeSet(shardID uint64) (*sdbpb.ChangeSet, error) {
 		DataVer:  m.dataVersion,
 		ShardID:  shard.ID,
 		ShardVer: shard.Ver,
-		State:    shard.splitState,
+		Stage:    shard.splitStage,
 	}
 	if shard.preSplit != nil {
 		cs.PreSplit = shard.preSplit
@@ -288,8 +288,8 @@ func (m *Manifest) ApplyChangeSet(cs *sdbpb.ChangeSet) error {
 	y.Assert(shardInfo.Ver == cs.ShardVer)
 	if cs.Flush != nil {
 		m.applyFlush(cs, shardInfo)
-		if cs.State == sdbpb.SplitState_PRE_SPLIT_FLUSH_DONE {
-			shardInfo.splitState = sdbpb.SplitState_PRE_SPLIT_FLUSH_DONE
+		if cs.Stage == sdbpb.SplitStage_PRE_SPLIT_FLUSH_DONE {
+			shardInfo.splitStage = sdbpb.SplitStage_PRE_SPLIT_FLUSH_DONE
 			if shardInfo.preSplit != nil && shardInfo.preSplit.MemProps != nil {
 				shardInfo.preSplit.MemProps = nil
 			}
@@ -303,12 +303,12 @@ func (m *Manifest) ApplyChangeSet(cs *sdbpb.ChangeSet) error {
 	if cs.PreSplit != nil {
 		y.Assert(cs.PreSplit.MemProps != nil)
 		shardInfo.preSplit = cs.PreSplit
-		shardInfo.splitState = sdbpb.SplitState_PRE_SPLIT
+		shardInfo.splitStage = sdbpb.SplitStage_PRE_SPLIT
 		return nil
 	}
 	if cs.SplitFiles != nil {
 		m.applySplitFiles(cs, shardInfo)
-		shardInfo.splitState = sdbpb.SplitState_SPLIT_FILE_DONE
+		shardInfo.splitStage = sdbpb.SplitStage_SPLIT_FILE_DONE
 		return nil
 	}
 	if cs.Split != nil {
@@ -331,7 +331,7 @@ func (m *Manifest) applySnapshot(cs *sdbpb.ChangeSet) {
 		End:        snap.End,
 		files:      map[uint64]int{},
 		properties: newProperties().applyPB(snap.Properties),
-		splitState: cs.State,
+		splitStage: cs.Stage,
 		commitTS:   snap.CommitTS,
 	}
 	if len(cs.Snapshot.SplitKeys) > 0 {
@@ -501,7 +501,7 @@ func (m *Manifest) isDuplicatedChange(change *sdbpb.ChangeSet) bool {
 			return false
 		}
 		if flush.L0Create == nil {
-			return meta.splitState >= change.State
+			return meta.splitStage >= change.Stage
 		}
 		return meta.commitTS >= flush.CommitTS
 	}
@@ -516,7 +516,7 @@ func (m *Manifest) isDuplicatedChange(change *sdbpb.ChangeSet) bool {
 		}
 	}
 	if splitFiles := change.SplitFiles; splitFiles != nil {
-		return meta.splitState == change.State
+		return meta.splitStage == change.Stage
 	}
 	return false
 }
@@ -628,6 +628,6 @@ func newChangeSet(shard *Shard) *sdbpb.ChangeSet {
 	return &sdbpb.ChangeSet{
 		ShardID:  shard.ID,
 		ShardVer: shard.Ver,
-		State:    shard.GetSplitState(),
+		Stage:    shard.GetSplitStage(),
 	}
 }

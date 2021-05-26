@@ -36,8 +36,8 @@ type Shard struct {
 	l0s     *unsafe.Pointer
 	flushCh chan *flushTask
 
-	// split state transition: initial(0) -> pre-split (1) -> pre-split-flush-done (2) -> split-file-done (3)
-	splitState       int32
+	// split stage transition: initial(0) -> pre-split (1) -> pre-split-flush-done (2) -> split-file-done (3)
+	splitStage       int32
 	splitKeys        [][]byte
 	splittingMemTbls []unsafe.Pointer
 	estimatedSize    int64
@@ -102,7 +102,7 @@ func newShardForLoading(shardInfo *ShardMeta, opt *Options, metrics *y.MetricsSe
 		// Loading a parent shard info.
 		shard.setSplitKeys(shardInfo.split.Keys)
 	}
-	shard.setSplitState(shardInfo.splitState)
+	shard.setSplitStage(shardInfo.splitStage)
 	shard.setInitialFlushed()
 	return shard
 }
@@ -114,7 +114,7 @@ func newShardForIngest(changeSet *sdbpb.ChangeSet, opt *Options, metrics *y.Metr
 		log.S().Infof("shard %d:%d set pre-split keys by ingest", changeSet.ShardID, changeSet.ShardVer)
 		shard.setSplitKeys(changeSet.PreSplit.Keys)
 	}
-	shard.setSplitState(changeSet.State)
+	shard.setSplitStage(changeSet.Stage)
 	shard.setInitialFlushed()
 	return shard
 }
@@ -147,7 +147,7 @@ func (s *Shard) SetPassive(passive bool) {
 }
 
 func (s *Shard) isSplitting() bool {
-	return atomic.LoadInt32(&s.splitState) >= int32(sdbpb.SplitState_PRE_SPLIT)
+	return atomic.LoadInt32(&s.splitStage) >= int32(sdbpb.SplitStage_PRE_SPLIT)
 }
 
 func (s *Shard) GetEstimatedSize() int64 {
@@ -159,17 +159,17 @@ func (s *Shard) addEstimatedSize(size int64) int64 {
 }
 
 func (s *Shard) setSplitKeys(keys [][]byte) bool {
-	if s.GetSplitState() == sdbpb.SplitState_INITIAL {
+	if s.GetSplitStage() == sdbpb.SplitStage_INITIAL {
 		s.splitKeys = keys
 		s.splittingMemTbls = make([]unsafe.Pointer, len(keys)+1)
 		for i := range s.splittingMemTbls {
 			atomic.StorePointer(&s.splittingMemTbls[i], unsafe.Pointer(memtable.NewCFTable(len(s.cfs))))
 		}
-		s.setSplitState(sdbpb.SplitState_PRE_SPLIT)
+		s.setSplitStage(sdbpb.SplitStage_PRE_SPLIT)
 		log.S().Debugf("shard %d:%d pre-split", s.ID, s.Ver)
 		return true
 	}
-	log.S().Warnf("shard %d:%d failed to set split key got state %s", s.ID, s.Ver, s.GetSplitState())
+	log.S().Warnf("shard %d:%d failed to set split key got stage %s", s.ID, s.Ver, s.GetSplitStage())
 	return false
 }
 
@@ -280,7 +280,7 @@ func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
 }
 
 func (s *Shard) GetPreSplitKeys() [][]byte {
-	if s.GetSplitState() == sdbpb.SplitState_INITIAL {
+	if s.GetSplitStage() == sdbpb.SplitStage_INITIAL {
 		return nil
 	}
 	return s.splitKeys
@@ -324,20 +324,20 @@ func (s *Shard) OverlapKey(key []byte) bool {
 	return bytes.Compare(s.Start, key) <= 0 && bytes.Compare(key, s.End) < 0
 }
 
-func (s *Shard) GetSplitState() sdbpb.SplitState {
-	return sdbpb.SplitState(atomic.LoadInt32(&s.splitState))
+func (s *Shard) GetSplitStage() sdbpb.SplitStage {
+	return sdbpb.SplitStage(atomic.LoadInt32(&s.splitStage))
 }
 
-func (s *Shard) setSplitState(state sdbpb.SplitState) {
-	oldState := s.GetSplitState()
-	if int32(oldState) == int32(state) {
+func (s *Shard) setSplitStage(stage sdbpb.SplitStage) {
+	oldStage := s.GetSplitStage()
+	if int32(oldStage) == int32(stage) {
 		return
 	}
-	if int32(oldState) > int32(state) {
+	if int32(oldStage) > int32(stage) {
 		return
 	}
-	atomic.CompareAndSwapInt32(&s.splitState, int32(oldState), int32(state))
-	log.S().Infof("shard %d:%d set split state %s", s.ID, s.Ver, state)
+	atomic.CompareAndSwapInt32(&s.splitStage, int32(oldStage), int32(stage))
+	log.S().Infof("shard %d:%d set split stage %s", s.ID, s.Ver, stage)
 }
 
 func (s *Shard) RecoverGetProperty(key string) ([]byte, bool) {

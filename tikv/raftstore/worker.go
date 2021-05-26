@@ -294,8 +294,8 @@ func preSplitRegion(router *router, engine *sdb.DB, peer *metapb.Peer, region *m
 		time.Sleep(time.Second)
 		log.S().Infof("shard %d:%d wait for initial flush", shard.ID, shard.Ver)
 	}
-	if shard.GetSplitState() != sdbpb.SplitState_INITIAL {
-		return errors.New("wrong split state " + shard.GetSplitState().String())
+	if shard.GetSplitStage() != sdbpb.SplitStage_INITIAL {
+		return errors.New("wrong split stage " + shard.GetSplitStage().String())
 	}
 	header := raftlog.CustomHeader{
 		RegionID: region.Id,
@@ -512,7 +512,7 @@ func (r *regionTaskHandler) handle(t task) {
 		} else if changeSet.SplitFiles != nil {
 			changeSetTp = "split_files"
 		}
-		log.S().Infof("shard %d:%d apply change set %s split state %s", changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.State)
+		log.S().Infof("shard %d:%d apply change set %s split stage %s", changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage)
 		err := kv.ApplyChangeSet(changeSet)
 		if err != nil {
 			log.Error("failed to apply passive change set", zap.Error(err), zap.String("changeSet", changeSet.String()))
@@ -549,8 +549,8 @@ func (r *regionTaskHandler) shutdown() {
 
 func (r *regionTaskHandler) handleRecoverSplit(region *metapb.Region, peer *metapb.Peer) error {
 	shard := r.kv.GetShard(region.Id)
-	switch shard.GetSplitState() {
-	case sdbpb.SplitState_PRE_SPLIT, sdbpb.SplitState_PRE_SPLIT_FLUSH_DONE:
+	switch shard.GetSplitStage() {
+	case sdbpb.SplitStage_PRE_SPLIT, sdbpb.SplitStage_PRE_SPLIT_FLUSH_DONE:
 		err := splitShardFiles(r.router, r.kv, peer, region)
 		if err != nil {
 			return err
