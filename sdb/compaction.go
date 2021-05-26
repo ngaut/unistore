@@ -421,6 +421,10 @@ func (sdb *DB) compactL0(shard *Shard, guard *epoch.Guard) error {
 	comp := &sdbpb.Compaction{}
 	var toBeDelete []epoch.Resource
 	var shardSizeChange int64
+	var bt *s3util.BatchTasks
+	if sdb.s3c != nil {
+		bt = s3util.NewBatchTasks()
+	}
 	for cf := 0; cf < sdb.numCFs; cf++ {
 		helper := newCompactL0Helper(sdb, shard, l0Tbls, cf)
 		defer helper.iter.Close()
@@ -434,10 +438,9 @@ func (sdb *DB) compactL0(shard *Shard, guard *epoch.Guard) error {
 				break
 			}
 			if sdb.s3c != nil {
-				err = putSSTBuildResultToS3(sdb.s3c, result)
-				if err != nil {
-					return err
-				}
+				bt.AppendTask(func() error {
+					return putSSTBuildResultToS3(sdb.s3c, result)
+				})
 			}
 			results = append(results, result)
 		}
@@ -447,6 +450,11 @@ func (sdb *DB) compactL0(shard *Shard, guard *epoch.Guard) error {
 		for _, oldTbl := range helper.oldHandler.tables {
 			comp.BottomDeletes = append(comp.BottomDeletes, oldTbl.ID())
 			toBeDelete = append(toBeDelete, oldTbl)
+		}
+	}
+	if sdb.s3c != nil {
+		if err := sdb.s3c.BatchSchedule(bt); err != nil {
+			return err
 		}
 	}
 	if l0Tbls != nil {
@@ -688,7 +696,9 @@ func (sdb *DB) replaceTables(old *levelHandler, newTables []table.Table, cd *Com
 		if containsTable(cd.Bot, tbl) {
 			newHandler.totalSize -= tbl.Size()
 			toDelete = append(toDelete, &deletion{res: tbl, delete: func() {
-				sdb.s3c.SetExpired(tbl.ID())
+				if sdb.s3c != nil {
+					sdb.s3c.SetExpired(tbl.ID())
+				}
 			}})
 		}
 	}
@@ -901,7 +911,9 @@ func (sdb *DB) applyCompaction(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 				if containsUint64(comp.TopDeletes, tbl.ID()) {
 					res := tbl
 					del.add(res.ID(), &deletion{res: res, delete: func() {
-						sdb.s3c.SetExpired(res.ID())
+						if sdb.s3c != nil {
+							sdb.s3c.SetExpired(res.ID())
+						}
 					}})
 				}
 			}
@@ -967,7 +979,9 @@ func (sdb *DB) compactionUpdateLevelHandler(shard *Shard, cf, level int,
 		if containsUint64(delIDs, oldTbl.ID()) {
 			res := oldTbl
 			del.add(res.ID(), &deletion{res: res, delete: func() {
-				sdb.s3c.SetExpired(res.ID())
+				if sdb.s3c != nil {
+					sdb.s3c.SetExpired(res.ID())
+				}
 			}})
 		} else {
 			newLevel.tables = append(newLevel.tables, oldTbl)
@@ -1032,7 +1046,9 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 		if containsUint64(splitFiles.TableDeletes, oldL0.ID()) {
 			res := oldL0
 			del.add(res.ID(), &deletion{res: res, delete: func() {
-				sdb.s3c.SetExpired(res.ID())
+				if sdb.s3c != nil {
+					sdb.s3c.SetExpired(res.ID())
+				}
 			}})
 		} else {
 			newL0Tbls.tables = append(newL0Tbls.tables, oldL0)
@@ -1075,7 +1091,9 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 				if containsUint64(splitFiles.TableDeletes, oldTbl.ID()) {
 					res := oldTbl
 					del.add(res.ID(), &deletion{res: res, delete: func() {
-						sdb.s3c.SetExpired(res.ID())
+						if sdb.s3c != nil {
+							sdb.s3c.SetExpired(res.ID())
+						}
 					}})
 				} else {
 					newHandler.totalSize += oldTbl.Size()
@@ -1126,6 +1144,10 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 
 	var lastKey, skipKey []byte
 	var builder *sstable.Builder
+	var bt *s3util.BatchTasks
+	if s3c != nil {
+		bt = s3util.NewBatchTasks()
+	}
 	for it.Valid() {
 		var fd *os.File
 		var filename string
@@ -1224,13 +1246,17 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 			return nil, err
 		}
 		if s3c != nil {
-			err = putSSTBuildResultToS3(s3c, result)
-			if err != nil {
-				return nil, err
-			}
+			bt.AppendTask(func() error {
+				return putSSTBuildResultToS3(s3c, result)
+			})
 		}
 		fd.Close()
 		buildResults = append(buildResults, result)
+	}
+	if s3c != nil {
+		if err := s3c.BatchSchedule(bt); err != nil {
+			return nil, err
+		}
 	}
 	return buildResults, nil
 }

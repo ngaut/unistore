@@ -9,6 +9,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ngaut/unistore/s3util"
 	"github.com/ngaut/unistore/sdb/fileutil"
 	"github.com/ngaut/unistore/sdb/table"
 	"github.com/ngaut/unistore/sdb/table/sstable"
@@ -145,30 +146,51 @@ func (sdb *DB) splitShardL0Table(shard *Shard, l0 *sstable.L0Table) ([]*sdbpb.L0
 		}
 	}
 	var newL0s []*sdbpb.L0Create
+	var bt *s3util.BatchTasks
+	if sdb.s3c != nil {
+		bt = s3util.NewBatchTasks()
+	}
 	for i, key := range shard.splitKeys {
 		startKey := shard.Start
 		if i != 0 {
 			startKey = shard.splitKeys[i-1]
 		}
-		newL0, err := sdb.buildShardL0BeforeKey(iters, startKey, key, l0.CommitTS())
+		result, err := sdb.buildShardL0BeforeKey(iters, startKey, key, l0.CommitTS())
 		if err != nil {
 			return nil, err
 		}
-		if newL0 != nil {
+		if result != nil {
+			if sdb.s3c != nil {
+				bt.AppendTask(func() error {
+					return putSSTBuildResultToS3(sdb.s3c, result)
+				})
+			}
+			newL0 := newL0CreateByResult(result, nil)
 			newL0s = append(newL0s, newL0)
 		}
 	}
-	lastL0, err := sdb.buildShardL0BeforeKey(iters, shard.splitKeys[len(shard.splitKeys)-1], shard.End, l0.CommitTS())
+	result, err := sdb.buildShardL0BeforeKey(iters, shard.splitKeys[len(shard.splitKeys)-1], shard.End, l0.CommitTS())
 	if err != nil {
 		return nil, err
 	}
-	if lastL0 != nil {
+	if result != nil {
+		if sdb.s3c != nil {
+			bt.AppendTask(func() error {
+				return putSSTBuildResultToS3(sdb.s3c, result)
+			})
+		}
+		lastL0 := newL0CreateByResult(result, nil)
 		newL0s = append(newL0s, lastL0)
+	}
+	if sdb.s3c != nil {
+		if err := sdb.s3c.BatchSchedule(bt); err != nil {
+			return nil, err
+		}
 	}
 	return newL0s, nil
 }
 
-func (sdb *DB) buildShardL0BeforeKey(iters []table.Iterator, startKey, endKey []byte, commitTS uint64) (*sdbpb.L0Create, error) {
+func (sdb *DB) buildShardL0BeforeKey(iters []table.Iterator, startKey, endKey []byte, commitTS uint64) (*sstable.BuildResult, error) {
 	fid := sdb.idAlloc.AllocID()
 	builder := sstable.NewL0Builder(sdb.numCFs, fid, sdb.opt.TableBuilderOptions, commitTS)
 	var hasData bool
@@ -209,13 +231,7 @@ func (sdb *DB) buildShardL0BeforeKey(iters []table.Iterator, startKey, endKey []
 		Smallest: startKey,
 		Biggest:  endKey,
 	}
-	if sdb.s3c != nil {
-		err = putSSTBuildResultToS3(sdb.s3c, result)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return newL0CreateByResult(result, nil), nil
+	return result, nil
 }
 
 func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, splitFiles *sdbpb.SplitFiles) error {
@@ -224,6 +240,10 @@ func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, split
 	oldTables := oldHandler.tables
 	toDeleteIDs := make(map[uint64]struct{})
 	var relatedKeys [][]byte
+	var bt *s3util.BatchTasks
+	if sdb.s3c != nil {
+		bt = s3util.NewBatchTasks()
+	}
 	for _, tbl := range oldTables {
 		relatedKeys = relatedKeys[:0]
 		for _, key := range keys {
@@ -247,10 +267,20 @@ func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, split
 				return err
 			}
 			if result != nil {
+				if sdb.s3c != nil {
+					bt.AppendTask(func() error {
+						return putSSTBuildResultToS3(sdb.s3c, result)
+					})
+				}
 				splitFiles.TableCreates = append(splitFiles.TableCreates, newTableCreateByResult(result, cf, level))
 			}
 		}
 		splitFiles.TableDeletes = append(splitFiles.TableDeletes, tbl.ID())
+	}
+	if sdb.s3c != nil {
+		if err := sdb.s3c.BatchSchedule(bt); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -277,12 +307,6 @@ func (sdb *DB) buildTableBeforeKey(itr table.Iterator, key []byte, level int, op
 	result, err1 := b.Finish(fd.Name(), fd)
 	if err1 != nil {
 		return nil, err1
-	}
-	if sdb.s3c != nil {
-		err = putSSTBuildResultToS3(sdb.s3c, result)
-		if err != nil {
-			return nil, err
-		}
 	}
 	return result, nil
 }

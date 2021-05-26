@@ -665,7 +665,9 @@ func (sdb *DB) RemoveShard(shardID uint64, removeFile bool) error {
 		shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
 			for _, tbl := range level.tables {
 				if shard.removeFilesOnDel {
-					sdb.s3c.SetExpired(tbl.ID())
+					if sdb.s3c != nil {
+						sdb.s3c.SetExpired(tbl.ID())
+					}
 				}
 			}
 			return false
