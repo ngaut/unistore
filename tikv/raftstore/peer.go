@@ -739,16 +739,8 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 				p.leaderChecker.term.Store(p.Term())
 			}
 			store := p.Store()
-			if !store.initialFlushed && !store.hasOnGoingFlush() {
-				// The initial flush command for a newly split region is not replicated, need to re-trigger.
-				p.Store().Engines.kv.TriggerFlush(shard)
-			}
+			p.Store().Engines.kv.TriggerFlush(shard, store.onGoingFlushCnt())
 			if shard.GetSplitStage() != sdbpb.SplitStage_INITIAL {
-				// Unfinished split need to be recovered by the new leader.
-				if shard.GetSplitStage() == sdbpb.SplitStage_PRE_SPLIT && !store.hasOnGoingPreSplitFlush() {
-					// The pre-split flush command is not replicated, need to re-trigger.
-					p.Store().Engines.kv.TriggerFlush(shard)
-				}
 				p.Store().regionSched <- task{
 					tp: taskTypeRecoverSplit,
 					data: &regionTask{

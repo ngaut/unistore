@@ -51,6 +51,9 @@ type Shard struct {
 	initialFlushed  int32
 	lastSwitchTime  time.Time
 	maxMemTableSize int64
+
+	skippedFlushes   []*flushTask
+	skippedFlushLock sync.Mutex
 }
 
 const (

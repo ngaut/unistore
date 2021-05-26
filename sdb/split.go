@@ -68,7 +68,7 @@ func (sdb *DB) executePreSplitTask(eTask engineTask) {
 	}
 	commitTS := sdb.orc.readTs()
 	memTbl := sdb.switchMemTable(shard, commitTS)
-	sdb.scheduleFlushTask(shard, memTbl, commitTS, true)
+	sdb.scheduleFlushTask(shard, memTbl)
 	eTask.notify <- nil
 }
 
@@ -370,7 +370,8 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 	for i := range oldShard.splittingMemTbls {
 		startKey, endKey := getSplittingStartEnd(oldShard.Start, oldShard.End, oldShard.splitKeys, i)
 		shard := newShard(newShardsProps[i], newVer, startKey, endKey, &sdb.opt, sdb.metrics)
-		if oldShard.IsPassive() {
+		if oldShard.IsPassive() || shard.ID != oldShard.ID {
+			// If the shard is not derived shard, the flush will be triggered later when the new shard elected a leader.
 			shard.SetPassive(true)
 		}
 		log.S().Infof("new shard %d:%d stage %s", shard.ID, shard.Ver, shard.GetSplitStage())
@@ -402,9 +403,13 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 			}
 		}
 	}
+	commitTS := sdb.orc.allocTs()
 	for _, nShard := range newShards {
 		sdb.shardMap.Store(nShard.ID, nShard)
+		mem := sdb.switchMemTable(nShard, commitTS)
+		sdb.scheduleFlushTask(nShard, mem)
 	}
+	sdb.orc.doneCommit(commitTS)
 	log.S().Infof("shard %d split to %s", oldShard.ID, newShardsProps)
 	return
 }

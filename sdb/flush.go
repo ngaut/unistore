@@ -14,40 +14,24 @@ import (
 )
 
 type flushTask struct {
-	shard         *Shard
-	tbl           *memtable.Table
-	preSplitFlush bool
-	properties    *sdbpb.Properties
-	commitTS      uint64
-
-	finishSplitShards  []*Shard
-	finishSplitMemTbls []*memTables
-	finishSplitProps   []*sdbpb.Properties
+	shard *Shard
+	tbl   *memtable.Table
 }
 
 func (sdb *DB) runFlushMemTable(c *y.Closer) {
 	defer c.Done()
 	for task := range sdb.flushCh {
-		if len(task.finishSplitShards) > 0 {
-			err := sdb.flushFinishSplit(task)
-			if err != nil {
-				panic(err)
-			}
-			continue
-		}
 		change := newChangeSet(task.shard)
-		change.DataVer = task.commitTS
-		change.Flush = &sdbpb.Flush{CommitTS: task.commitTS}
-		if task.tbl != nil {
-			l0Table, err := sdb.flushMemTable(task.shard, task.tbl, task.properties)
+		change.DataVer = task.tbl.GetVersion()
+		change.Flush = &sdbpb.Flush{CommitTS: task.tbl.GetVersion()}
+		change.Stage = task.tbl.GetSplitStage()
+		if !task.tbl.Empty() {
+			l0Table, err := sdb.flushMemTable(task.shard, task.tbl)
 			if err != nil {
 				// TODO: handle S3 error by queue the failed operation and retry.
 				panic(err)
 			}
 			change.Flush.L0Create = l0Table
-		}
-		if task.preSplitFlush {
-			change.Stage = sdbpb.SplitStage_PRE_SPLIT_FLUSH_DONE
 		}
 		if sdb.metaChangeListener != nil {
 			sdb.metaChangeListener.OnChange(change)
@@ -60,38 +44,7 @@ func (sdb *DB) runFlushMemTable(c *y.Closer) {
 	}
 }
 
-func (sdb *DB) flushFinishSplit(task *flushTask) error {
-	log.S().Info("flush finish split")
-	if atomic.LoadUint32(&sdb.closed) == 1 {
-		return nil
-	}
-	for idx, memTbls := range task.finishSplitMemTbls {
-		flushChangeSet := newChangeSet(task.finishSplitShards[idx])
-		flushChangeSet.Flush = &sdbpb.Flush{CommitTS: task.commitTS}
-		y.Assert(len(memTbls.tables) <= 1)
-		if len(memTbls.tables) == 1 {
-			memTbl := memTbls.tables[0]
-			l0Table, err := sdb.flushMemTable(task.finishSplitShards[idx], memTbl, task.finishSplitProps[idx])
-			if err != nil {
-				// TODO: handle s3 error by queue the failed operation and retry.
-				panic(err)
-			}
-			l0Table.Properties = task.finishSplitProps[idx]
-			flushChangeSet.Flush.L0Create = l0Table
-		}
-		if sdb.metaChangeListener != nil {
-			sdb.metaChangeListener.OnChange(flushChangeSet)
-		} else {
-			err := sdb.ApplyChangeSet(flushChangeSet)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (sdb *DB) flushMemTable(shard *Shard, m *memtable.Table, props *sdbpb.Properties) (*sdbpb.L0Create, error) {
+func (sdb *DB) flushMemTable(shard *Shard, m *memtable.Table) (*sdbpb.L0Create, error) {
 	y.Assert(sdb.idAlloc != nil)
 	id := sdb.idAlloc.AllocID()
 	fd, err := sdb.createL0File(id)
@@ -120,7 +73,7 @@ func (sdb *DB) flushMemTable(shard *Shard, m *memtable.Table, props *sdbpb.Prope
 		it.Close()
 	}
 	shardL0Data := builder.Finish()
-	log.S().Infof("flush memtable id:%d, size:%d, l0 size: %d", id, m.Size(), len(shardL0Data))
+	log.S().Infof("%d:%d flush memtable id:%d, size:%d, l0 size: %d", shard.ID, shard.Ver, id, m.Size(), len(shardL0Data))
 	_, err = writer.Write(shardL0Data)
 	if err != nil {
 		return nil, err
@@ -143,7 +96,7 @@ func (sdb *DB) flushMemTable(shard *Shard, m *memtable.Table, props *sdbpb.Prope
 			return nil, err
 		}
 	}
-	return newL0CreateByResult(result, props), nil
+	return newL0CreateByResult(result, m.GetProps()), nil
 }
 
 func atomicAddMemTable(pointer *unsafe.Pointer, memTbl *memtable.Table) {

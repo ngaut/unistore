@@ -362,7 +362,7 @@ func (m *Manifest) applyFlush(cs *sdbpb.ChangeSet, shardInfo *ShardMeta) {
 }
 
 func (m *Manifest) addFile(fid uint64, cf int32, level uint32, smallest, biggest []byte, shardInfo *ShardMeta) {
-	log.S().Infof("manifest add file %d l%d smalleset %x biggest %x", fid, level, smallest, biggest)
+	log.S().Infof("manifest %d:%d add file %d l%d smalleset %x biggest %x", shardInfo.ID, shardInfo.Ver, fid, level, smallest, biggest)
 	if fid > m.lastID {
 		m.lastID = fid
 	}

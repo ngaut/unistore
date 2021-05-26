@@ -1,6 +1,7 @@
 package memtable
 
 import (
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/y"
 	"sync/atomic"
 )
@@ -15,10 +16,11 @@ func (e *Entry) EstimateSize() int64 {
 }
 
 type Table struct {
-	skls     []*skiplist
-	arena    *arena
-	version  uint64
-	flushing uint32
+	skls    []*skiplist
+	arena   *arena
+	version uint64
+	props   *sdbpb.Properties
+	stage   int32
 }
 
 func NewCFTable(numCFs int) *Table {
@@ -84,4 +86,20 @@ func (cft *Table) SetVersion(version uint64) {
 
 func (cft *Table) GetVersion() uint64 {
 	return atomic.LoadUint64(&cft.version)
+}
+
+func (cft *Table) SetProps(props *sdbpb.Properties) {
+	cft.props = props
+}
+
+func (cft *Table) GetProps() *sdbpb.Properties {
+	return cft.props
+}
+
+func (cft *Table) SetSplitStage(stage sdbpb.SplitStage) {
+	atomic.StoreInt32(&cft.stage, int32(stage))
+}
+
+func (cft *Table) GetSplitStage() sdbpb.SplitStage {
+	return sdbpb.SplitStage(atomic.LoadInt32(&cft.stage))
 }
