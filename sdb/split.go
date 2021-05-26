@@ -55,7 +55,7 @@ func (sdb *DB) executePreSplitTask(eTask engineTask) {
 		return
 	}
 	change := newChangeSet(shard)
-	change.State = sdbpb.SplitState_PRE_SPLIT
+	change.Stage = sdbpb.SplitStage_PRE_SPLIT
 	change.PreSplit = &sdbpb.PreSplit{
 		Keys:     task.keys,
 		MemProps: shard.properties.toPB(shard.ID),
@@ -84,12 +84,12 @@ func (sdb *DB) SplitShardFiles(shardID, ver uint64) (*sdbpb.ChangeSet, error) {
 		return nil, errShardNotMatch
 	}
 	if !shard.isSplitting() {
-		log.S().Infof("wrong splitting state %s", shard.GetSplitState())
-		return nil, errShardWrongSplittingState
+		log.S().Infof("wrong splitting stage %s", shard.GetSplitStage())
+		return nil, errShardWrongSplittingStage
 	}
 	change := newChangeSet(shard)
 	change.SplitFiles = &sdbpb.SplitFiles{}
-	change.State = sdbpb.SplitState_SPLIT_FILE_DONE
+	change.Stage = sdbpb.SplitStage_SPLIT_FILE_DONE
 	shard.lock.Lock()
 	defer shard.lock.Unlock()
 	keys := shard.splitKeys
@@ -110,8 +110,8 @@ func (sdb *DB) SplitShardFiles(shardID, ver uint64) (*sdbpb.ChangeSet, error) {
 
 func (sdb *DB) waitForPreSplitFlushState(shard *Shard) {
 	for {
-		switch shard.GetSplitState() {
-		case sdbpb.SplitState_PRE_SPLIT_FLUSH_DONE, sdbpb.SplitState_SPLIT_FILE_DONE:
+		switch shard.GetSplitStage() {
+		case sdbpb.SplitStage_PRE_SPLIT_FLUSH_DONE, sdbpb.SplitStage_SPLIT_FILE_DONE:
 			return
 		}
 		time.Sleep(time.Millisecond * 100)
@@ -287,7 +287,7 @@ func (sdb *DB) buildTableBeforeKey(itr table.Iterator, key []byte, level int, op
 	return result, nil
 }
 
-// FinishSplit finishes the Split process on a Shard in PreSplitState.
+// FinishSplit finishes the Split process on a Shard in PreSplitStage.
 // This is done after preSplit is done, so we don't need to acquire any lock, just atomic CAS will do.
 func (sdb *DB) FinishSplit(oldShardID, ver uint64, newShardsProps []*sdbpb.Properties) (newShards []*Shard, err error) {
 	oldShard := sdb.GetShard(oldShardID)
@@ -295,7 +295,7 @@ func (sdb *DB) FinishSplit(oldShardID, ver uint64, newShardsProps []*sdbpb.Prope
 		return nil, errShardNotMatch
 	}
 	if !oldShard.isSplitting() {
-		return nil, errors.New("shard is not in splitting state")
+		return nil, errors.New("shard is not in splitting stage")
 	}
 	if len(newShardsProps) != len(oldShard.splittingMemTbls) {
 		return nil, fmt.Errorf("newShardsProps length %d is not equals to splittingMemTbls length %d", len(newShardsProps), len(oldShard.splittingMemTbls))
@@ -349,7 +349,7 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 		if oldShard.IsPassive() {
 			shard.SetPassive(true)
 		}
-		log.S().Infof("new shard %d:%d state %s", shard.ID, shard.Ver, shard.GetSplitState())
+		log.S().Infof("new shard %d:%d stage %s", shard.ID, shard.Ver, shard.GetSplitStage())
 		shard.memTbls = new(unsafe.Pointer)
 		atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{oldShard.loadSplittingMemTable(i)}}))
 		shard.l0s = new(unsafe.Pointer)

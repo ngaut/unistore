@@ -743,9 +743,9 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 				// The initial flush command for a newly split region is not replicated, need to re-trigger.
 				p.Store().Engines.kv.TriggerFlush(shard)
 			}
-			if shard.GetSplitState() != sdbpb.SplitState_INITIAL {
+			if shard.GetSplitStage() != sdbpb.SplitStage_INITIAL {
 				// Unfinished split need to be recovered by the new leader.
-				if shard.GetSplitState() == sdbpb.SplitState_PRE_SPLIT && !store.hasOnGoingPreSplitFlush() {
+				if shard.GetSplitStage() == sdbpb.SplitStage_PRE_SPLIT && !store.hasOnGoingPreSplitFlush() {
 					// The pre-split flush command is not replicated, need to re-trigger.
 					p.Store().Engines.kv.TriggerFlush(shard)
 				}
@@ -851,7 +851,7 @@ func (p *Peer) HandleRaftReadyAppend(trans *RaftClient, raftWB *RaftWriteBatch, 
 		e := &ready.CommittedEntries[i]
 		if raftlog.IsPreSplitLog(e.Data) {
 			// Set the PreSplit state so we can reject any future compaction.
-			p.Store().splitState = sdbpb.SplitState_PRE_SPLIT
+			p.Store().splitStage = sdbpb.SplitStage_PRE_SPLIT
 		}
 		if raftlog.IsChangeSetLog(e.Data) {
 			p.scheduleApplyShardChangeSet(e)
@@ -880,7 +880,7 @@ func (p *Peer) scheduleApplyShardChangeSet(entry *eraftpb.Entry) {
 	change, err := clog.GetShardChangeSet()
 	y.Assert(err == nil)
 	store := p.Store()
-	if store.splitState >= sdbpb.SplitState_PRE_SPLIT && change != nil && change.Compaction != nil {
+	if store.splitStage >= sdbpb.SplitStage_PRE_SPLIT && change != nil && change.Compaction != nil {
 		log.S().Warnf("region %d:%d reject compaction for splitting state",
 			p.regionId, p.Region().RegionEpoch.Version)
 		return
@@ -1022,7 +1022,7 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans *RaftClient) error {
 		ConfVer: p.Region().RegionEpoch.ConfVer,
 		Version: p.Region().RegionEpoch.Version,
 	}
-	if !p.IsLeader() && p.Store().splitState == sdbpb.SplitState_SPLIT_FILE_DONE {
+	if !p.IsLeader() && p.Store().splitStage == sdbpb.SplitStage_SPLIT_FILE_DONE {
 		sendMsg.ExtraMsg = &rspb.ExtraMessage{Type: ExtraMessageTypeSplitFilesDone}
 		log.S().Infof("follower %d:%d add extra message split file done", p.regionId, sendMsg.RegionEpoch.Version)
 	}

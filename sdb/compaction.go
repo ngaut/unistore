@@ -867,7 +867,7 @@ func (sdb *DB) applyFlush(shard *Shard, changeSet *sdbpb.ChangeSet) error {
 		atomicAddL0(shard, tbl)
 		atomicRemoveMemTable(shard.memTbls, 1)
 	}
-	shard.setSplitState(changeSet.State)
+	shard.setSplitStage(changeSet.Stage)
 	shard.setInitialFlushed()
 	return nil
 }
@@ -982,9 +982,9 @@ func (sdb *DB) compactionUpdateLevelHandler(shard *Shard, cf, level int,
 }
 
 func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *epoch.Guard) error {
-	if shard.GetSplitState() != sdbpb.SplitState_PRE_SPLIT_FLUSH_DONE {
-		log.S().Errorf("wrong split state %s", shard.GetSplitState())
-		return errShardWrongSplittingState
+	if shard.GetSplitStage() != sdbpb.SplitStage_PRE_SPLIT_FLUSH_DONE {
+		log.S().Errorf("wrong split stage %s", shard.GetSplitStage())
+		return errShardWrongSplittingStage
 	}
 	splitFiles := changeSet.SplitFiles
 	bt := s3util.NewBatchTasks()
@@ -1088,7 +1088,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 			y.Assert(shard.cfs[cf].casLevelHandler(level, oldHandler, newHandler))
 		}
 	}
-	shard.setSplitState(changeSet.State)
+	shard.setSplitStage(changeSet.Stage)
 	guard.Delete(del.collect())
 	return nil
 }

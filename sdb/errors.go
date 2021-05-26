@@ -8,5 +8,5 @@ var (
 
 	errShardNotFound            = errors.New("shard not found")
 	errShardNotMatch            = errors.New("shard not match")
-	errShardWrongSplittingState = errors.New("shard wrong splitting state")
+	errShardWrongSplittingStage = errors.New("shard wrong splitting stage")
 )

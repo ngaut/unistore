@@ -203,7 +203,7 @@ func (sdb *DB) executeTriggerFlushTask(eTask engineTask) {
 	shard := task.shard
 	commitTS := sdb.orc.allocTs()
 	memTbl := sdb.switchMemTable(shard, commitTS)
-	sdb.scheduleFlushTask(shard, memTbl, commitTS, shard.GetSplitState() == sdbpb.SplitState_PRE_SPLIT)
+	sdb.scheduleFlushTask(shard, memTbl, commitTS, shard.GetSplitStage() == sdbpb.SplitStage_PRE_SPLIT)
 	sdb.orc.doneCommit(commitTS)
 	eTask.notify <- nil
 }
