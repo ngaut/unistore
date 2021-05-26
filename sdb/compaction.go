@@ -425,6 +425,10 @@ func (sdb *DB) compactL0(shard *Shard, guard *epoch.Guard) error {
 		helper := newCompactL0Helper(sdb, shard, l0Tbls, cf)
 		defer helper.iter.Close()
 		var results []*sstable.BuildResult
+		var bt *s3util.BatchTasks
+		if sdb.s3c != nil {
+			bt = s3util.NewBatchTasks()
+		}
 		for {
 			result, err := helper.buildOne()
 			if err != nil {
@@ -434,12 +438,16 @@ func (sdb *DB) compactL0(shard *Shard, guard *epoch.Guard) error {
 				break
 			}
 			if sdb.s3c != nil {
-				err = putSSTBuildResultToS3(sdb.s3c, result)
-				if err != nil {
-					return err
-				}
+				bt.AppendTask(func() error {
+					return putSSTBuildResultToS3(sdb.s3c, result)
+				})
 			}
 			results = append(results, result)
+		}
+		if sdb.s3c != nil {
+			if err := sdb.s3c.BatchSchedule(bt); err != nil {
+				return err
+			}
 		}
 		for _, result := range results {
 			comp.TableCreates = append(comp.TableCreates, newTableCreateByResult(result, cf, 1))
@@ -1126,6 +1134,10 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 
 	var lastKey, skipKey []byte
 	var builder *sstable.Builder
+	var bt *s3util.BatchTasks
+	if s3c != nil {
+		bt = s3util.NewBatchTasks()
+	}
 	for it.Valid() {
 		var fd *os.File
 		var filename string
@@ -1224,13 +1236,17 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 			return nil, err
 		}
 		if s3c != nil {
-			err = putSSTBuildResultToS3(s3c, result)
-			if err != nil {
-				return nil, err
-			}
+			bt.AppendTask(func() error {
+				return putSSTBuildResultToS3(s3c, result)
+			})
 		}
 		fd.Close()
 		buildResults = append(buildResults, result)
+	}
+	if s3c != nil {
+		if err := s3c.BatchSchedule(bt); err != nil {
+			return nil, err
+		}
 	}
 	return buildResults, nil
 }
