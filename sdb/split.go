@@ -66,7 +66,7 @@ func (sdb *DB) executePreSplitTask(eTask engineTask) {
 		eTask.notify <- err
 		return
 	}
-	commitTS := sdb.orc.readTs()
+	commitTS := shard.commitTS
 	memTbl := sdb.switchMemTable(shard, commitTS)
 	sdb.scheduleFlushTask(shard, memTbl)
 	eTask.notify <- nil
@@ -367,6 +367,7 @@ func (sdb *DB) executeFinishSplitTask(eTask engineTask) {
 func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Properties) (newShards []*Shard) {
 	newShards = make([]*Shard, len(oldShard.splittingMemTbls))
 	newVer := oldShard.Ver + uint64(len(newShardsProps)) - 1
+	commitTS := oldShard.allocCommitTS()
 	for i := range oldShard.splittingMemTbls {
 		startKey, endKey := getSplittingStartEnd(oldShard.Start, oldShard.End, oldShard.splitKeys, i)
 		shard := newShard(newShardsProps[i], newVer, startKey, endKey, &sdb.opt, sdb.metrics)
@@ -374,19 +375,12 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 			// If the shard is not derived shard, the flush will be triggered later when the new shard elected a leader.
 			shard.SetPassive(true)
 		}
-		log.S().Infof("new shard %d:%d stage %s", shard.ID, shard.Ver, shard.GetSplitStage())
 		shard.memTbls = new(unsafe.Pointer)
 		atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{oldShard.loadSplittingMemTable(i)}}))
 		shard.l0s = new(unsafe.Pointer)
 		atomic.StorePointer(shard.l0s, unsafe.Pointer(new(l0Tables)))
 		newShards[i] = shard
-		if shard.ID == oldShard.ID {
-			// A derived shard usually has more write traffic.
-			shard.maxMemTableSize = oldShard.maxMemTableSize * 2 / 3
-		} else {
-			// Other shards share the remained 1/3 of the old shard's mem table size.
-			shard.maxMemTableSize = oldShard.maxMemTableSize / 3 / int64(len(oldShard.splittingMemTbls)-1)
-		}
+		shard.commitTS = commitTS
 	}
 	l0s := oldShard.loadL0Tables()
 	for _, l0 := range l0s.tables {
@@ -403,13 +397,11 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 			}
 		}
 	}
-	commitTS := sdb.orc.allocTs()
 	for _, nShard := range newShards {
 		sdb.shardMap.Store(nShard.ID, nShard)
-		mem := sdb.switchMemTable(nShard, commitTS)
+		mem := sdb.switchMemTable(nShard, nShard.allocCommitTS())
 		sdb.scheduleFlushTask(nShard, mem)
 	}
-	sdb.orc.doneCommit(commitTS)
 	log.S().Infof("shard %d split to %s", oldShard.ID, newShardsProps)
 	return
 }

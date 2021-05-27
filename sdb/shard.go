@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -54,6 +55,8 @@ type Shard struct {
 
 	skippedFlushes   []*flushTask
 	skippedFlushLock sync.Mutex
+
+	commitTS uint64
 }
 
 const (
@@ -119,6 +122,9 @@ func newShardForIngest(changeSet *sdbpb.ChangeSet, opt *Options, metrics *y.Metr
 	}
 	shard.setSplitStage(changeSet.Stage)
 	shard.setInitialFlushed()
+	shard.commitTS = shardSnap.CommitTS
+	log.S().Infof("ingest shard %d:%d maxMemTblSize %d, commitTS %d",
+		changeSet.ShardID, changeSet.ShardVer, shard.maxMemTableSize, shard.commitTS)
 	return shard
 }
 
@@ -385,6 +391,11 @@ func (s *Shard) nextMemTableSize(writableMemTableSize int64, lastSwitchTime time
 	return nextMemSize
 }
 
+func (s *Shard) allocCommitTS() uint64 {
+	s.commitTS += 1
+	return s.commitTS
+}
+
 type shardCF struct {
 	levels []unsafe.Pointer
 }
@@ -471,6 +482,14 @@ func (sp *properties) applyPB(pbProps *sdbpb.Properties) *properties {
 		}
 	}
 	return sp
+}
+
+func (sp *properties) String() string {
+	var strs []string
+	for k, v := range sp.m {
+		strs = append(strs, fmt.Sprintf("%s:%x", k, v))
+	}
+	return strings.Join(strs, ",")
 }
 
 func GetShardProperty(key string, props *sdbpb.Properties) ([]byte, bool) {

@@ -835,6 +835,9 @@ func (sdb *DB) ApplyChangeSet(changeSet *sdbpb.ChangeSet) error {
 	if shard.Ver != changeSet.ShardVer {
 		return errShardNotMatch
 	}
+	if sdb.manifest.isDuplicatedChange(changeSet) {
+		return nil
+	}
 	if changeSet.Flush != nil {
 		return sdb.applyFlush(shard, changeSet)
 	}
@@ -875,7 +878,7 @@ func (sdb *DB) applyFlush(shard *Shard, changeSet *sdbpb.ChangeSet) error {
 		}
 		shard.addEstimatedSize(tbl.Size())
 		atomicAddL0(shard, tbl)
-		atomicRemoveMemTable(shard.memTbls, 1)
+		atomicRemoveMemTable(shard)
 	}
 	shard.setSplitStage(changeSet.Stage)
 	shard.setInitialFlushed()

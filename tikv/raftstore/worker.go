@@ -450,7 +450,6 @@ func (r *regionTaskHandler) handleGen(task *regionTask) {
 	snapData := &snapData{
 		region:    task.region,
 		changeSet: changeSet,
-		maxReadTS: kv.GetReadTS(),
 	}
 	snap := &eraftpb.Snapshot{
 		Metadata: &eraftpb.SnapshotMetadata{},
@@ -469,7 +468,6 @@ func (r *regionTaskHandler) handleApply(task *regionTask) {
 	snapData := task.snapData
 	inTree := &sdb.IngestTree{
 		ChangeSet: snapData.changeSet,
-		MaxTS:     snapData.maxReadTS,
 		Passive:   true,
 	}
 	err := r.kv.Ingest(inTree)
@@ -512,7 +510,7 @@ func (r *regionTaskHandler) handle(t task) {
 		} else if changeSet.SplitFiles != nil {
 			changeSetTp = "split_files"
 		}
-		log.S().Infof("shard %d:%d apply change set %s split stage %s", changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage)
+		log.S().Infof("shard %d:%d apply change set %s stage %s seq %d", changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence)
 		err := kv.ApplyChangeSet(changeSet)
 		if err != nil {
 			log.Error("failed to apply passive change set", zap.Error(err), zap.String("changeSet", changeSet.String()))

@@ -931,7 +931,6 @@ func (p *PeerStorage) CheckApplyingSnap() bool {
 type snapData struct {
 	region    *metapb.Region
 	changeSet *sdbpb.ChangeSet
-	maxReadTS uint64
 }
 
 func (sd *snapData) Marshal() []byte {
@@ -940,7 +939,6 @@ func (sd *snapData) Marshal() []byte {
 	buf := make([]byte, 0, 4+len(regionData)+4+len(changeData))
 	buf = appendSlice(buf, regionData)
 	buf = appendSlice(buf, changeData)
-	buf = appendU64(buf, sd.maxReadTS)
 	return buf
 }
 
@@ -957,7 +955,6 @@ func (sd *snapData) Unmarshal(data []byte) error {
 	if err != nil {
 		return err
 	}
-	sd.maxReadTS = binary.LittleEndian.Uint64(data)
 	return nil
 }
 

@@ -33,7 +33,6 @@ type closers struct {
 type DB struct {
 	opt           Options
 	numCFs        int
-	orc           *oracle
 	dirLock       *directoryLockGuard
 	shardMap      sync.Map
 	blkCache      *cache.Cache
@@ -77,13 +76,6 @@ func OpenDB(opt Options) (db *DB, err error) {
 	if err != nil {
 		return nil, err
 	}
-
-	orc := &oracle{
-		curRead:    manifest.dataVersion,
-		nextCommit: manifest.dataVersion + 1,
-		commits:    make(map[uint64]uint64),
-	}
-	manifest.orc = orc
 	blkCache, err := createCache(opt)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create block cache")
@@ -92,7 +84,6 @@ func OpenDB(opt Options) (db *DB, err error) {
 	db = &DB{
 		opt:                opt,
 		numCFs:             len(opt.CFs),
-		orc:                orc,
 		dirLock:            dirLockGuard,
 		metrics:            metrics,
 		blkCache:           blkCache,
@@ -454,10 +445,6 @@ func (sdb *DB) Close() error {
 	return sdb.dirLock.release()
 }
 
-func (sdb *DB) GetSafeTS() (uint64, uint64, uint64) {
-	return sdb.orc.readTs(), sdb.orc.commitTs(), atomic.LoadUint64(&sdb.safeTsTracker.safeTs)
-}
-
 type WriteBatch struct {
 	shard         *Shard
 	cfConfs       []CFConfig
@@ -568,17 +555,16 @@ func (sdb *DB) RecoverWrite(wb *WriteBatch) error {
 }
 
 type Snapshot struct {
-	guard  *epoch.Guard
-	readTS uint64
-	shard  *Shard
-	cfs    []CFConfig
+	guard *epoch.Guard
+	shard *Shard
+	cfs   []CFConfig
 
 	managedReadTS uint64
 }
 
 func (s *Snapshot) Get(cf int, key []byte, version uint64) (*Item, error) {
 	if version == 0 {
-		version = s.getDefaultVersion(cf)
+		version = math.MaxUint64
 	}
 	vs := s.shard.Get(cf, key, version)
 	if !vs.Valid() {
@@ -596,16 +582,9 @@ func (s *Snapshot) Get(cf int, key []byte, version uint64) (*Item, error) {
 	return item, nil
 }
 
-func (s *Snapshot) getDefaultVersion(cf int) uint64 {
-	if s.cfs[cf].Managed {
-		return math.MaxUint64
-	}
-	return s.readTS
-}
-
 func (s *Snapshot) MultiGet(cf int, keys [][]byte, version uint64) ([]*Item, error) {
 	if version == 0 {
-		version = s.getDefaultVersion(cf)
+		version = math.MaxUint64
 	}
 	items := make([]*Item, len(keys))
 	for i, key := range keys {
@@ -626,23 +605,13 @@ func (s *Snapshot) SetManagedReadTS(ts uint64) {
 	s.managedReadTS = ts
 }
 
-func (s *Snapshot) GetReadTS() uint64 {
-	return s.readTS
-}
-
 func (sdb *DB) NewSnapshot(shard *Shard) *Snapshot {
-	readTS := sdb.orc.readTs()
-	guard := sdb.resourceMgr.AcquireWithPayload(readTS)
+	guard := sdb.resourceMgr.Acquire()
 	return &Snapshot{
-		guard:  guard,
-		shard:  shard,
-		readTS: readTS,
-		cfs:    sdb.opt.CFs,
+		guard: guard,
+		shard: shard,
+		cfs:   sdb.opt.CFs,
 	}
-}
-
-func (sdb *DB) GetReadTS() uint64 {
-	return sdb.orc.readTs()
 }
 
 func (sdb *DB) RemoveShard(shardID uint64, removeFile bool) error {

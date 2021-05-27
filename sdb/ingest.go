@@ -15,7 +15,6 @@ import (
 
 type IngestTree struct {
 	ChangeSet *sdbpb.ChangeSet
-	MaxTS     uint64
 	LocalPath string
 	Passive   bool
 }
@@ -24,12 +23,6 @@ func (sdb *DB) Ingest(ingestTree *IngestTree) error {
 	if shd := sdb.GetShard(ingestTree.ChangeSet.ShardID); shd != nil {
 		return errors.New("shard already exists")
 	}
-	sdb.orc.Lock()
-	if sdb.orc.nextCommit < ingestTree.MaxTS {
-		sdb.orc.nextCommit = ingestTree.MaxTS
-	}
-	sdb.orc.Unlock()
-	defer sdb.orc.doneCommit(ingestTree.MaxTS)
 	guard := sdb.resourceMgr.Acquire()
 	defer guard.Done()
 

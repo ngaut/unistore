@@ -15,6 +15,7 @@ package raftstore
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/sdbpb"
@@ -875,16 +876,12 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 			log.S().Warn("region %d:%d failed to execute pre-split, may be already pre-split by ingest.",
 				a.region.Id, a.region.RegionEpoch.Version)
 		}
-	case raftlog.TypeFlush:
+	case raftlog.TypeNextMemTableSize:
 		cs, err := cl.GetShardChangeSet()
 		y.Assert(err == nil)
-		if cs.Flush.L0Create != nil {
-			props := cs.Flush.L0Create.Properties
-			val, ok := sdb.GetShardProperty(sdb.MemTableSizeKey, props)
-			if ok {
-				aCtx.wb.SetMaxMemTableSize(a.region.Id, val)
-			}
-		}
+		bin := make([]byte, 8)
+		binary.LittleEndian.PutUint64(bin, uint64(cs.NextMemTableSize))
+		aCtx.wb.SetMaxMemTableSize(a.region.Id, bin)
 	}
 	return cnt
 }
