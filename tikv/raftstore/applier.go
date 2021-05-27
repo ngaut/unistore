@@ -690,11 +690,9 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 	y.Assert(!a.pendingRemove)
 
 	aCtx.execCtx = a.newCtx(index, term)
-	// aCtx.wb.SetSafePoint()
 	resp, applyResult, err := a.execRaftCmd(aCtx, rlog)
 	if err != nil {
 		// TODO: clear dirty values.
-		// aCtx.wb.RollbackToSafePoint()
 		if _, ok := err.(*ErrEpochNotMatch); ok {
 			log.S().Debugf("epoch not match region_id %d, peer_id %d, err %v", a.region.Id, a.id, err)
 		} else {
@@ -841,6 +839,7 @@ func (a *applier) isFollower(rlog raftlog.RaftLog) bool {
 }
 
 func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) int {
+	aCtx.commit(a)
 	var cnt int
 	switch cl.Type() {
 	case raftlog.TypePrewrite, raftlog.TypePessimisticLock:
@@ -884,8 +883,6 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 			val, ok := sdb.GetShardProperty(sdb.MemTableSizeKey, props)
 			if ok {
 				aCtx.wb.SetMaxMemTableSize(a.region.Id, val)
-				// We need to make sure the table size change happens at exact position, so we must write to engine here.
-				aCtx.commit(a)
 			}
 		}
 	}
@@ -1069,7 +1066,7 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 		return
 	}
 	newShard := aCtx.engines.kv.GetShard(a.region.Id)
-	aCtx.engines.kv.TriggerFlush(newShard)
+	aCtx.engines.kv.TriggerFlush(newShard, 0)
 	resp = &raft_cmdpb.AdminResponse{
 		Splits: &raft_cmdpb.BatchSplitResponse{
 			Regions: regions,

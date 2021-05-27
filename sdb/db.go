@@ -728,9 +728,8 @@ func (sdb *DB) GetProperties(shard *Shard, keys []string) (values [][]byte) {
 	return task.values
 }
 
-func (sdb *DB) TriggerFlush(shard *Shard) {
+func (sdb *DB) TriggerFlush(shard *Shard, skipCount int) {
 	notify := make(chan error, 1)
-	task := &triggerFlushTask{shard: shard}
+	task := &triggerFlushTask{shard: shard, skipCnt: skipCount}
 	sdb.writeCh <- engineTask{triggerFlush: task, notify: notify}
-	y.Assert(<-notify == nil)
 }

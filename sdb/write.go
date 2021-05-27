@@ -57,7 +57,8 @@ type getPropertyTask struct {
 }
 
 type triggerFlushTask struct {
-	shard *Shard
+	shard   *Shard
+	skipCnt int
 }
 
 func (sdb *DB) runWriteLoop(closer *y.Closer) {
@@ -108,13 +109,13 @@ func (sdb *DB) switchMemTable(shard *Shard, commitTS uint64) *memtable.Table {
 		writableMemTbl = memtable.NewCFTable(sdb.numCFs)
 		atomicAddMemTable(shard.memTbls, writableMemTbl)
 	}
-	empty := writableMemTbl.Empty()
-	if empty {
-		return nil
+	if writableMemTbl.Empty() {
+		writableMemTbl = memtable.NewCFTable(sdb.numCFs)
+	} else {
+		newMemTable := memtable.NewCFTable(sdb.numCFs)
+		atomicAddMemTable(shard.memTbls, newMemTable)
 	}
 	writableMemTbl.SetVersion(commitTS)
-	newMemTable := memtable.NewCFTable(sdb.numCFs)
-	atomicAddMemTable(shard.memTbls, newMemTable)
 	return writableMemTbl
 }
 
@@ -138,11 +139,9 @@ func (sdb *DB) executeWriteTask(eTask engineTask) {
 		return
 	}
 	memTbl := shard.loadWritableMemTable()
-	if memTbl == nil || (shard.IsInitialFlushed() && memTbl.Size()+task.estimatedSize > shard.maxMemTableSize) {
+	if memTbl == nil || memTbl.Size()+task.estimatedSize > shard.maxMemTableSize {
 		oldMemTbl := sdb.switchMemTable(shard, commitTS)
-		if oldMemTbl != nil {
-			sdb.scheduleFlushTask(shard, oldMemTbl, commitTS, false)
-		}
+		sdb.scheduleFlushTask(shard, oldMemTbl)
 		memTbl = shard.loadWritableMemTable()
 		// Update the commitTS so that the new memTable has a new commitTS, then
 		// the old commitTS can be used as a snapshot at the memTable-switching time.
@@ -201,31 +200,47 @@ func (sdb *DB) executeGetPropertiesTask(eTask engineTask) {
 func (sdb *DB) executeTriggerFlushTask(eTask engineTask) {
 	task := eTask.triggerFlush
 	shard := task.shard
-	commitTS := sdb.orc.allocTs()
-	memTbl := sdb.switchMemTable(shard, commitTS)
-	sdb.scheduleFlushTask(shard, memTbl, commitTS, shard.GetSplitStage() == sdbpb.SplitStage_PRE_SPLIT)
-	sdb.orc.doneCommit(commitTS)
+	mems := shard.loadMemTables()
+	for i := len(mems.tables) - task.skipCnt - 1; i > 0; i-- {
+		memTbl := mems.tables[i]
+		sdb.flushCh <- &flushTask{
+			shard: shard,
+			tbl:   memTbl,
+		}
+	}
+	if len(mems.tables) == 1 && mems.tables[0].Empty() {
+		if !shard.IsInitialFlushed() {
+			commitTS := sdb.orc.allocTs()
+			sdb.orc.doneCommit(commitTS)
+			sdb.flushCh <- &flushTask{
+				shard: shard,
+				tbl:   sdb.switchMemTable(shard, commitTS),
+			}
+		}
+	}
 	eTask.notify <- nil
 }
 
-func (sdb *DB) scheduleFlushTask(shard *Shard, memTbl *memtable.Table, commitTS uint64, preSplitFlush bool) {
+func (sdb *DB) scheduleFlushTask(shard *Shard, memTbl *memtable.Table) {
 	lastSwitchTime := shard.lastSwitchTime
 	shard.lastSwitchTime = time.Now()
+	props := shard.properties.toPB(shard.ID)
+	if !memTbl.Empty() && shard.IsInitialFlushed() {
+		memTblSize := shard.nextMemTableSize(memTbl.Size(), lastSwitchTime)
+		propVal := make([]byte, 8)
+		binary.LittleEndian.PutUint64(propVal, uint64(memTblSize))
+		SetShardProperty(MemTableSizeKey, propVal, props)
+	}
+	memTbl.SetProps(props)
+	stage := shard.GetSplitStage()
+	if stage == sdbpb.SplitStage_PRE_SPLIT {
+		stage = sdbpb.SplitStage_PRE_SPLIT_FLUSH_DONE
+	}
+	memTbl.SetSplitStage(stage)
 	if !shard.IsPassive() {
-		props := shard.properties.toPB(shard.ID)
-		var memTblSize int64
-		if memTbl != nil && !memTbl.Empty() && shard.IsInitialFlushed() {
-			memTblSize = shard.nextMemTableSize(memTbl.Size(), lastSwitchTime)
-			propVal := make([]byte, 8)
-			binary.LittleEndian.PutUint64(propVal, uint64(memTblSize))
-			SetShardProperty(MemTableSizeKey, propVal, props)
-		}
 		sdb.flushCh <- &flushTask{
-			shard:         shard,
-			tbl:           memTbl,
-			preSplitFlush: preSplitFlush,
-			properties:    props,
-			commitTS:      commitTS,
+			shard: shard,
+			tbl:   memTbl,
 		}
 	}
 }

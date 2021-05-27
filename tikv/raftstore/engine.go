@@ -140,7 +140,9 @@ func (kvWB *KVWriteBatch) WriteToEngine() error {
 }
 
 func (kvWB *KVWriteBatch) Reset() {
-	kvWB.batches = make(map[uint64]*sdb.WriteBatch, len(kvWB.batches))
+	for _, batch := range kvWB.batches {
+		batch.Reset()
+	}
 }
 
 type RaftWriteBatch struct {

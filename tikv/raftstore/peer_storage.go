@@ -889,13 +889,14 @@ func (p *PeerStorage) CancelApplyingSnap() bool {
 	return true
 }
 
-func (ps *PeerStorage) hasOnGoingFlush() bool {
+func (ps *PeerStorage) onGoingFlushCnt() int {
+	var count int
 	for _, change := range ps.applyingChanges {
 		if change.Flush != nil {
-			return true
+			count++
 		}
 	}
-	return false
+	return count
 }
 
 func (ps *PeerStorage) hasOnGoingPreSplitFlush() bool {
