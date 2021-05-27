@@ -877,6 +877,8 @@ func (p *Peer) scheduleApplyShardChangeSet(entry *eraftpb.Entry) {
 			p.regionId, p.Region().RegionEpoch.Version)
 		return
 	}
+	// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
+	change.Sequence = entry.Index
 	store.applyingChanges = append(store.applyingChanges, change)
 	p.Store().regionSched <- task{
 		tp: taskTypeRegionApplyChangeSet,

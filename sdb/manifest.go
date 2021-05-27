@@ -37,7 +37,6 @@ type Manifest struct {
 	shards      map[uint64]*ShardMeta
 	globalFiles map[uint64]fileMeta
 	lastID      uint64
-	dataVersion uint64
 	fd          *os.File
 	deletions   int
 	creations   int
@@ -46,7 +45,6 @@ type Manifest struct {
 	appendLock sync.Mutex
 	// We make this configurable so that unit tests can hit rewrite() code quickly
 	deletionsRewriteThreshold int
-	orc                       *oracle
 }
 
 type ShardMeta struct {
@@ -54,6 +52,7 @@ type ShardMeta struct {
 	Ver   uint64
 	Start []byte
 	End   []byte
+	Seq   uint64
 	// fid -> level
 	files map[uint64]int
 	// properties in ShardMeta is only updated on every mem-table flush, it's different than properties in the shard
@@ -72,7 +71,7 @@ func (si *ShardMeta) FileLevel(fid uint64) (int, bool) {
 	return level, ok
 }
 
-// ShardLevel is the struct that contains shard id and level id,
+// LevelCF is the struct that contains shard id and level id,
 type LevelCF struct {
 	Level uint16
 	CF    uint16
@@ -135,10 +134,10 @@ func (m *Manifest) toChangeSet(shardID uint64) (*sdbpb.ChangeSet, error) {
 		return nil, ErrHasParent
 	}
 	cs := &sdbpb.ChangeSet{
-		DataVer:  m.dataVersion,
 		ShardID:  shard.ID,
 		ShardVer: shard.Ver,
 		Stage:    shard.splitStage,
+		Sequence: shard.Seq,
 	}
 	if shard.preSplit != nil {
 		cs.PreSplit = shard.preSplit
@@ -274,9 +273,6 @@ func (m *Manifest) Close() error {
 }
 
 func (m *Manifest) ApplyChangeSet(cs *sdbpb.ChangeSet) error {
-	if m.dataVersion < cs.DataVer {
-		m.dataVersion = cs.DataVer
-	}
 	if cs.Snapshot != nil {
 		m.applySnapshot(cs)
 		return nil
@@ -286,6 +282,9 @@ func (m *Manifest) ApplyChangeSet(cs *sdbpb.ChangeSet) error {
 		return errors.WithStack(errShardNotFound)
 	}
 	y.Assert(shardInfo.Ver == cs.ShardVer)
+	if cs.Sequence != 0 {
+		shardInfo.Seq = cs.Sequence
+	}
 	if cs.Flush != nil {
 		m.applyFlush(cs, shardInfo)
 		if cs.Stage == sdbpb.SplitStage_PRE_SPLIT_FLUSH_DONE {
@@ -322,13 +321,14 @@ func (m *Manifest) ApplyChangeSet(cs *sdbpb.ChangeSet) error {
 }
 
 func (m *Manifest) applySnapshot(cs *sdbpb.ChangeSet) {
-	log.S().Infof("%d:%d apply snapshot", cs.ShardID, cs.ShardVer)
+	log.S().Infof("%d:%d apply snapshot seq:%d", cs.ShardID, cs.ShardVer, cs.Sequence)
 	snap := cs.Snapshot
 	shard := &ShardMeta{
 		ID:         cs.ShardID,
 		Ver:        cs.ShardVer,
 		Start:      snap.Start,
 		End:        snap.End,
+		Seq:        cs.Sequence,
 		files:      map[uint64]int{},
 		properties: newProperties().applyPB(snap.Properties),
 		splitStage: cs.Stage,
@@ -347,7 +347,6 @@ func (m *Manifest) applySnapshot(cs *sdbpb.ChangeSet) {
 }
 
 func (m *Manifest) applyFlush(cs *sdbpb.ChangeSet, shardInfo *ShardMeta) {
-	log.S().Infof("%d:%d apply flush", cs.ShardID, cs.ShardVer)
 	shardInfo.commitTS = cs.Flush.CommitTS
 	shardInfo.parent = nil
 	l0 := cs.Flush.L0Create
@@ -359,6 +358,7 @@ func (m *Manifest) applyFlush(cs *sdbpb.ChangeSet, shardInfo *ShardMeta) {
 		}
 		m.addFile(l0.ID, -1, 0, l0.Start, l0.End, shardInfo)
 	}
+	log.S().Infof("%d:%d apply flush props:%s", cs.ShardID, cs.ShardVer, shardInfo.properties)
 }
 
 func (m *Manifest) addFile(fid uint64, cf int32, level uint32, smallest, biggest []byte, shardInfo *ShardMeta) {
@@ -428,9 +428,6 @@ func (m *Manifest) applySplit(shardID uint64, split *sdbpb.Split) {
 	for i := 0; i < len(split.NewShards); i++ {
 		startKey, endKey := getSplittingStartEnd(old.Start, old.End, split.Keys, i)
 		id := split.NewShards[i].ShardID
-		if id == old.ID {
-			old.split = split
-		}
 		shardInfo := &ShardMeta{
 			ID:         id,
 			Ver:        newVer,
@@ -439,6 +436,10 @@ func (m *Manifest) applySplit(shardID uint64, split *sdbpb.Split) {
 			files:      map[uint64]int{},
 			properties: newProperties().applyPB(split.NewShards[i]),
 			parent:     old,
+		}
+		if id == old.ID {
+			old.split = split
+			shardInfo.Seq = old.Seq
 		}
 		m.shards[id] = shardInfo
 		newShards[i] = shardInfo
@@ -460,10 +461,6 @@ func (m *Manifest) writeChangeSet(changeSet *sdbpb.ChangeSet) error {
 	// Maybe we could use O_APPEND instead (on certain file systems)
 	m.appendLock.Lock()
 	defer m.appendLock.Unlock()
-	if m.isDuplicatedChange(changeSet) {
-		return errDupChange
-	}
-	changeSet.DataVer = m.orc.commitTs()
 	buf, err := changeSet.Marshal()
 	if err != nil {
 		return err
@@ -492,9 +489,14 @@ func (m *Manifest) writeChangeSet(changeSet *sdbpb.ChangeSet) error {
 }
 
 func (m *Manifest) isDuplicatedChange(change *sdbpb.ChangeSet) bool {
-	meta, ok := m.shards[change.ShardID]
-	if !ok {
+	m.appendLock.Lock()
+	defer m.appendLock.Unlock()
+	meta := m.shards[change.ShardID]
+	if meta == nil {
 		return false
+	}
+	if change.Sequence > 0 && meta.Seq >= change.Sequence {
+		return true
 	}
 	if flush := change.Flush; flush != nil {
 		if meta.parent != nil {
@@ -506,8 +508,6 @@ func (m *Manifest) isDuplicatedChange(change *sdbpb.ChangeSet) bool {
 		return meta.commitTS >= flush.CommitTS
 	}
 	if comp := change.Compaction; comp != nil {
-		// TODO: It is a temporary solution that can fail in very rare case.
-		// It is possible that a duplicated compaction's all new tables are removed by future compaction.
 		for _, tbl := range comp.TableCreates {
 			level, ok := meta.FileLevel(tbl.ID)
 			if ok && level > int(change.Compaction.Level) {

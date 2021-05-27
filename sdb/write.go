@@ -121,9 +121,8 @@ func (sdb *DB) switchMemTable(shard *Shard, commitTS uint64) *memtable.Table {
 
 func (sdb *DB) executeWriteTask(eTask engineTask) {
 	task := eTask.writeTask
-	commitTS := sdb.orc.allocTs()
+	commitTS := task.shard.allocCommitTS()
 	defer func() {
-		sdb.orc.doneCommit(commitTS)
 		if len(eTask.notify) == 0 {
 			eTask.notify <- nil
 		}
@@ -145,8 +144,7 @@ func (sdb *DB) executeWriteTask(eTask engineTask) {
 		memTbl = shard.loadWritableMemTable()
 		// Update the commitTS so that the new memTable has a new commitTS, then
 		// the old commitTS can be used as a snapshot at the memTable-switching time.
-		sdb.orc.doneCommit(commitTS)
-		commitTS = sdb.orc.allocTs()
+		commitTS = shard.allocCommitTS()
 	}
 	for cf, entries := range task.entries {
 		if !sdb.opt.CFs[cf].Managed {
@@ -210,11 +208,11 @@ func (sdb *DB) executeTriggerFlushTask(eTask engineTask) {
 	}
 	if len(mems.tables) == 1 && mems.tables[0].Empty() {
 		if !shard.IsInitialFlushed() {
-			commitTS := sdb.orc.allocTs()
-			sdb.orc.doneCommit(commitTS)
+			commitTS := shard.allocCommitTS()
+			memTbl := sdb.switchMemTable(shard, commitTS)
 			sdb.flushCh <- &flushTask{
 				shard: shard,
-				tbl:   sdb.switchMemTable(shard, commitTS),
+				tbl:   memTbl,
 			}
 		}
 	}
@@ -225,11 +223,9 @@ func (sdb *DB) scheduleFlushTask(shard *Shard, memTbl *memtable.Table) {
 	lastSwitchTime := shard.lastSwitchTime
 	shard.lastSwitchTime = time.Now()
 	props := shard.properties.toPB(shard.ID)
+	var nextMemTblSize int64
 	if !memTbl.Empty() && shard.IsInitialFlushed() {
-		memTblSize := shard.nextMemTableSize(memTbl.Size(), lastSwitchTime)
-		propVal := make([]byte, 8)
-		binary.LittleEndian.PutUint64(propVal, uint64(memTblSize))
-		SetShardProperty(MemTableSizeKey, propVal, props)
+		nextMemTblSize = shard.nextMemTableSize(memTbl.Size(), lastSwitchTime)
 	}
 	memTbl.SetProps(props)
 	stage := shard.GetSplitStage()
@@ -239,8 +235,9 @@ func (sdb *DB) scheduleFlushTask(shard *Shard, memTbl *memtable.Table) {
 	memTbl.SetSplitStage(stage)
 	if !shard.IsPassive() {
 		sdb.flushCh <- &flushTask{
-			shard: shard,
-			tbl:   memTbl,
+			shard:       shard,
+			tbl:         memTbl,
+			nextMemSize: nextMemTblSize,
 		}
 	}
 }

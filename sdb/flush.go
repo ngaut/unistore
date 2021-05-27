@@ -14,15 +14,15 @@ import (
 )
 
 type flushTask struct {
-	shard *Shard
-	tbl   *memtable.Table
+	shard       *Shard
+	tbl         *memtable.Table
+	nextMemSize int64
 }
 
 func (sdb *DB) runFlushMemTable(c *y.Closer) {
 	defer c.Done()
 	for task := range sdb.flushCh {
 		change := newChangeSet(task.shard)
-		change.DataVer = task.tbl.GetVersion()
 		change.Flush = &sdbpb.Flush{CommitTS: task.tbl.GetVersion()}
 		change.Stage = task.tbl.GetSplitStage()
 		if !task.tbl.Empty() {
@@ -73,7 +73,8 @@ func (sdb *DB) flushMemTable(shard *Shard, m *memtable.Table) (*sdbpb.L0Create, 
 		it.Close()
 	}
 	shardL0Data := builder.Finish()
-	log.S().Infof("%d:%d flush memtable id:%d, size:%d, l0 size: %d", shard.ID, shard.Ver, id, m.Size(), len(shardL0Data))
+	log.S().Infof("%d:%d flush memtable id:%d, size:%d, l0 size: %d, props:%s",
+		shard.ID, shard.Ver, id, m.Size(), len(shardL0Data), newProperties().applyPB(m.GetProps()))
 	_, err = writer.Write(shardL0Data)
 	if err != nil {
 		return nil, err
@@ -111,14 +112,12 @@ func atomicAddMemTable(pointer *unsafe.Pointer, memTbl *memtable.Table) {
 	}
 }
 
-func atomicRemoveMemTable(pointer *unsafe.Pointer, cnt int) {
-	if cnt == 0 {
-		return
-	}
+func atomicRemoveMemTable(shard *Shard) {
+	pointer := shard.memTbls
 	for {
 		oldMemTbls := (*memTables)(atomic.LoadPointer(pointer))
 		// When we recover flush, the mem-table is empty, newLen maybe negative.
-		newLen := len(oldMemTbls.tables) - cnt
+		newLen := len(oldMemTbls.tables) - 1
 		if newLen < 0 {
 			newLen = 0
 		}

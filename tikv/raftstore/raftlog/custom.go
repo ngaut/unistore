@@ -36,6 +36,7 @@ const (
 	TypeFlush               CustomRaftLogType = 7
 	TypeCompaction          CustomRaftLogType = 8
 	TypeSplitFiles          CustomRaftLogType = 9
+	TypeNextMemTableSize    CustomRaftLogType = 10
 )
 
 // CustomRaftLog is the raft log format for unistore to store Prewrite/Commit/PessimisticLock.
@@ -245,6 +246,8 @@ func (b *CustomBuilder) SetChangeSet(changeSet *sdbpb.ChangeSet) {
 		b.SetType(TypeCompaction)
 	} else if changeSet.SplitFiles != nil {
 		b.SetType(TypeSplitFiles)
+	} else if changeSet.NextMemTableSize > 0 {
+		b.SetType(TypeNextMemTableSize)
 	}
 }
 
