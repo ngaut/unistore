@@ -205,7 +205,7 @@ func (st *shardTester) runWriter() {
 			newShards, err := st.db.FinishSplit(x.shardID, x.ver, x.newProps)
 			if err == nil {
 				for _, nShard := range newShards {
-					st.db.TriggerFlush(nShard)
+					st.db.TriggerFlush(nShard, 0)
 				}
 				log.S().Info("tester finish split")
 				st.split(x.shardID, newShards)
@@ -237,8 +237,8 @@ func (st *shardTester) handleWriteRequest(req *testerWriteRequest) {
 	idxBin := make([]byte, 4)
 	binary.LittleEndian.PutUint32(idxBin, uint32(st.writeLogs.latestIndex(req.shard)))
 	wb.SetProperty(appliedIndex, idxBin)
-	err := st.db.Write(wb)
-	req.resp <- err
+	st.db.Write(wb)
+	req.resp <- nil
 }
 
 const appliedIndex = "applied_index"
@@ -417,10 +417,7 @@ func (st *shardTester) Recover(db *DB, shard *Shard, meta *ShardMeta, toState *s
 				return err
 			}
 		}
-		err := db.RecoverWrite(wb)
-		if err != nil {
-			return err
-		}
+		db.Write(wb)
 	}
 	return nil
 }

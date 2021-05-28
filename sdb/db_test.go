@@ -219,8 +219,7 @@ func TestShardingMetaChangeListener(t *testing.T) {
 			val := append(iToKey(j), iToKey(ver)...)
 			require.NoError(t, wb.Put(0, key, y.ValueStruct{Value: val}))
 		}
-		err := db.Write(wb)
-		require.NoError(t, err)
+		db.Write(wb)
 	}
 	allCommitTS := l.getAllCommitTS()
 	require.True(t, len(allCommitTS) > 0)
@@ -270,7 +269,7 @@ func TestMigration(t *testing.T) {
 	end := 5899
 	sc.loadData(5000, end)
 	time.Sleep(time.Millisecond * 100)
-	ingestTree := &IngestTree{MaxTS: db.orc.readTs(), LocalPath: dirA}
+	ingestTree := &IngestTree{LocalPath: dirA}
 	ingestTree.ChangeSet, err = db.manifest.toChangeSet(1)
 	opts = getTestOptions(dirB)
 	opts.IDAllocator = allocator
@@ -280,8 +279,6 @@ func TestMigration(t *testing.T) {
 	require.Nil(t, err)
 	err = dbB.Ingest(ingestTree)
 	require.Nil(t, err)
-	readTS := dbB.orc.readTs()
-	require.True(t, readTS == ingestTree.MaxTS)
 	scB := &shardingCase{
 		t:      t,
 		tester: newShardTester(dbB),
