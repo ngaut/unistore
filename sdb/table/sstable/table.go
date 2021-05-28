@@ -296,6 +296,14 @@ func (t *Table) HasOverlap(start, end []byte, includeEnd bool) bool {
 	return true
 }
 
+func (t *Table) SeekBlock(key []byte) int {
+	return t.idx.seekBlock(key)
+}
+
+func (t *Table) NumBlocks() int {
+	return t.idx.numBlocks()
+}
+
 type nIndex struct {
 	commonPrefix []byte
 	blockKeyOffs []uint32

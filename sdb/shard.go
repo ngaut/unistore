@@ -265,6 +265,9 @@ func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
 	if s.GetEstimatedSize() < targetSize {
 		return nil
 	}
+	if splitKey, ok := s.getSequentialWriteSplitKey(targetSize); ok {
+		return [][]byte{splitKey}
+	}
 	var maxLevel *levelHandler
 	s.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
 		if maxLevel == nil {
@@ -286,6 +289,28 @@ func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
 		}
 	}
 	return keys
+}
+
+func (s *Shard) getSequentialWriteSplitKey(targetSize int64) ([]byte, bool) {
+	l0s := s.loadL0Tables()
+	if l0s.totalSize() < targetSize/8 {
+		// If L0 table's size is not large enough, we don't consider it's a sequential write.
+		return nil, false
+	}
+	if len(l0s.tables) == 1 {
+		return nil, false
+	}
+	newTbl, oldTbl := l0s.tables[0].GetCF(0), l0s.tables[1].GetCF(0)
+	if newTbl == nil || oldTbl == nil {
+		return nil, false
+	}
+	blockIdx := newTbl.SeekBlock(oldTbl.Biggest())
+	if blockIdx > newTbl.NumBlocks()/2 {
+		return nil, false
+	}
+	// More than half of the new table's key is larger than the previous table's biggest key.
+	// We use the previous table's biggest key as the split key.
+	return append(y.Copy(oldTbl.Biggest()), 0), true
 }
 
 func (s *Shard) GetPreSplitKeys() [][]byte {
