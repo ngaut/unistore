@@ -259,7 +259,7 @@ func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, split
 		defer itr.Close()
 		itr.Rewind()
 		for _, relatedKey := range relatedKeys {
-			result, err := sdb.buildTableBeforeKey(itr, relatedKey, level, sdb.opt.TableBuilderOptions)
+			result, err := sdb.buildTableBeforeKey(itr, relatedKey, sdb.opt.TableBuilderOptions)
 			if err != nil {
 				return err
 			}
@@ -282,7 +282,7 @@ func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, split
 	return nil
 }
 
-func (sdb *DB) buildTableBeforeKey(itr table.Iterator, key []byte, level int, opt sstable.TableBuilderOptions) (*sstable.BuildResult, error) {
+func (sdb *DB) buildTableBeforeKey(itr table.Iterator, key []byte, opt sstable.TableBuilderOptions) (*sstable.BuildResult, error) {
 	id := sdb.idAlloc.AllocID()
 	filename := sstable.NewFilename(id, sdb.opt.Dir)
 	fd, err := y.OpenSyncedFile(filename, false)
@@ -352,6 +352,12 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 		atomic.StorePointer(shard.l0s, unsafe.Pointer(new(l0Tables)))
 		newShards[i] = shard
 		shard.commitTS = commitTS
+		if shard.ID == oldShard.ID {
+			// derived shard need larger mem-table size.
+			memSize := boundedMemSize(sdb.opt.BaseSize / 2)
+			shard.properties.set(MemTableSizeKey, sstable.AppendU64(nil, uint64(memSize)))
+			shard.maxMemTableSize = memSize
+		}
 	}
 	l0s := oldShard.loadL0Tables()
 	for _, l0 := range l0s.tables {
@@ -372,8 +378,8 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 		sdb.shardMap.Store(nShard.ID, nShard)
 		mem := sdb.switchMemTable(nShard, nShard.allocCommitTS())
 		sdb.scheduleFlushTask(nShard, mem)
+		log.S().Infof("new shard %d:%d mem-size %d props:%s", nShard.ID, nShard.Ver, mem.Size(), nShard.properties)
 	}
-	log.S().Infof("shard %d split to %s", oldShard.ID, newShardsProps)
 	return
 }
 

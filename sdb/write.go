@@ -6,6 +6,7 @@ import (
 	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/y"
+	"github.com/pingcap/log"
 	"os"
 	"time"
 )
@@ -54,7 +55,7 @@ func (sdb *DB) Write(wb *WriteBatch) {
 		return
 	}
 	memTbl := shard.loadWritableMemTable()
-	if memTbl == nil || memTbl.Size()+wb.estimatedSize > shard.maxMemTableSize {
+	if memTbl == nil || memTbl.Size()+wb.estimatedSize > shard.getMaxMemTableSize() {
 		oldMemTbl := sdb.switchMemTable(shard, commitTS)
 		sdb.scheduleFlushTask(shard, oldMemTbl)
 		memTbl = shard.loadWritableMemTable()
@@ -73,7 +74,9 @@ func (sdb *DB) Write(wb *WriteBatch) {
 	for key, val := range wb.properties {
 		shard.properties.set(key, val)
 		if key == MemTableSizeKey {
-			shard.maxMemTableSize = int64(binary.LittleEndian.Uint64(val))
+			maxMemTableSize := int64(binary.LittleEndian.Uint64(val))
+			shard.setMaxMemTableSize(maxMemTableSize)
+			log.S().Infof("shard %d:%d mem size changed to %d", shard.ID, shard.Ver, maxMemTableSize)
 		}
 	}
 }

@@ -154,7 +154,7 @@ func main() {
 		grpc.KeepaliveEnforcementPolicy(alivePolicy),
 		grpc.InitialWindowSize(grpcInitialWindowSize),
 		grpc.InitialConnWindowSize(grpcInitialConnWindowSize),
-		grpc.MaxRecvMsgSize(10*1024*1024),
+		grpc.MaxRecvMsgSize(20*1024*1024),
 	)
 	tikvpb.RegisterTikvServer(grpcServer, tikvServer)
 	listenAddr := conf.Server.StoreAddr[strings.IndexByte(conf.Server.StoreAddr, ':'):]

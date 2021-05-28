@@ -244,7 +244,7 @@ func (sdb *DB) DebugHandler() http.HandlerFunc {
 				memTables := shard.loadMemTables()
 				l0Tables := shard.loadL0Tables()
 				if r.FormValue("detail") == "" {
-					fmt.Fprintf(w, "\tShard\t%d:%d,\tSize % 13s,\tMem % 13s,\tL0 % 13s,\tCF0 % 13s,\tCF1 % 13s,\tStage % 20s\n\n",
+					fmt.Fprintf(w, "\tShard\t%d:%d,\tSize % 13s,\tMem % 13s,\tL0 % 13s,\tCF0 % 13s,\tCF1 % 13s,\tMaxMemTblSize % 13s,\tStage % 20s\n\n",
 						key,
 						shard.Ver,
 						formatInt(shardStat.ShardSize),
@@ -252,6 +252,7 @@ func (sdb *DB) DebugHandler() http.HandlerFunc {
 						formatInt(shardStat.L0TablesSize),
 						formatInt(shardStat.CFSize[0]),
 						formatInt(shardStat.CFSize[1]),
+						formatInt(int(shard.getMaxMemTableSize())),
 						sdbpb.SplitStage_name[shard.splitStage],
 					)
 					continue

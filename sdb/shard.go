@@ -77,7 +77,7 @@ func newShard(props *sdbpb.Properties, ver uint64, start, end []byte, opt *Optio
 	}
 	val, ok := shard.properties.get(MemTableSizeKey)
 	if ok {
-		shard.maxMemTableSize = int64(binary.LittleEndian.Uint64(val))
+		shard.setMaxMemTableSize(int64(binary.LittleEndian.Uint64(val)))
 	}
 	shard.memTbls = new(unsafe.Pointer)
 	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{}))
@@ -125,7 +125,7 @@ func newShardForIngest(changeSet *sdbpb.ChangeSet, opt *Options, metrics *y.Metr
 	shard.setInitialFlushed()
 	shard.commitTS = shardSnap.CommitTS
 	log.S().Infof("ingest shard %d:%d maxMemTblSize %d, commitTS %d",
-		changeSet.ShardID, changeSet.ShardVer, shard.maxMemTableSize, shard.commitTS)
+		changeSet.ShardID, changeSet.ShardVer, shard.getMaxMemTableSize(), shard.commitTS)
 	return shard
 }
 
@@ -166,6 +166,14 @@ func (s *Shard) GetEstimatedSize() int64 {
 
 func (s *Shard) addEstimatedSize(size int64) int64 {
 	return atomic.AddInt64(&s.estimatedSize, size)
+}
+
+func (s *Shard) getMaxMemTableSize() int64 {
+	return atomic.LoadInt64(&s.maxMemTableSize)
+}
+
+func (s *Shard) setMaxMemTableSize(size int64) {
+	atomic.StoreInt64(&s.maxMemTableSize, size)
 }
 
 func (s *Shard) setSplitKeys(keys [][]byte) bool {
@@ -403,18 +411,27 @@ func (s *Shard) setInitialFlushed() {
 	atomic.StoreInt32(&s.initialFlushed, 1)
 }
 
+const (
+	maxMemSizeUpperLimit = 128 * config.MB
+	maxMemSizeLowerLimit = 4 * config.MB
+)
+
 func (s *Shard) nextMemTableSize(writableMemTableSize int64, lastSwitchTime time.Time) int64 {
 	dur := time.Since(lastSwitchTime)
 	timeInMs := int64(dur/time.Millisecond) + 1 // + 1 to avoid divide by zero.
 	bytesPerSec := writableMemTableSize * 1000 / timeInMs
 	nextMemSize := bytesPerSec * int64(s.opt.MaxMemTableSizeFactor)
-	if nextMemSize > 256*config.MB {
-		nextMemSize = 256 * config.MB
+	return boundedMemSize(nextMemSize)
+}
+
+func boundedMemSize(size int64) int64 {
+	if size > maxMemSizeUpperLimit {
+		size = maxMemSizeUpperLimit
 	}
-	if nextMemSize < 2*config.MB {
-		nextMemSize = 2 * config.MB
+	if size < maxMemSizeLowerLimit {
+		size = maxMemSizeLowerLimit
 	}
-	return nextMemSize
+	return size
 }
 
 func (s *Shard) allocCommitTS() uint64 {

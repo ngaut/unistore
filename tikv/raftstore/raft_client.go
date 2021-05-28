@@ -60,7 +60,10 @@ func newRaftConn(storeID uint64, cfg *Config, pdCli pd.Client) *raftConn {
 	return rc
 }
 
-const maxBatchSize = 128
+const (
+	maxBatchCount = 128
+	maxBatchSize  = 10 * 1024 * 1024
+)
 
 func (c *raftConn) runSender() {
 	for {
@@ -77,10 +80,13 @@ func (c *raftConn) runSender() {
 func (c *raftConn) senderHandleMsg(msg *raft_serverpb.RaftMessage) {
 	c.resetBatchRaftMsg()
 	batch := c.batch
+	totalSize := c.getEstimatedSize(msg)
 	batch.Msgs = append(batch.Msgs, msg)
 	chLen := len(c.msgCh)
-	for i := 0; i < chLen && len(batch.Msgs) < maxBatchSize; i++ {
-		batch.Msgs = append(batch.Msgs, <-c.msgCh)
+	for i := 0; i < chLen && i < maxBatchCount && totalSize < maxBatchSize; i++ {
+		newMsg := <-c.msgCh
+		totalSize += c.getEstimatedSize(newMsg)
+		batch.Msgs = append(batch.Msgs, newMsg)
 	}
 	var err error
 	if c.stream == nil {
@@ -102,6 +108,15 @@ func (c *raftConn) senderHandleMsg(msg *raft_serverpb.RaftMessage) {
 		c.stream = nil
 		log.Warn("failed to send batch raft message", zap.Error(err))
 	}
+}
+
+// getEstimatedSize only count the entry data size for better performance.
+func (c *raftConn) getEstimatedSize(msg *raft_serverpb.RaftMessage) int {
+	var size int
+	for _, entry := range msg.GetMessage().GetEntries() {
+		size += len(entry.Data)
+	}
+	return size
 }
 
 func (c *raftConn) resetBatchRaftMsg() {
