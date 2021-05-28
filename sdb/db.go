@@ -352,12 +352,12 @@ func (sdb *DB) loadShards() error {
 func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 	shard := newShardForLoading(shardInfo, &sdb.opt, sdb.metrics)
 	for fid := range shardInfo.files {
-		cfLevel, ok := sdb.manifest.globalFiles[fid]
+		fileMeta, ok := sdb.manifest.globalFiles[fid]
 		y.AssertTruef(ok, "%d:%d global file %d not found", shardInfo.ID, shardInfo.Ver, fid)
-		cf := cfLevel.cf
+		cf := fileMeta.cf
 		if cf == -1 {
 			filename := sstable.NewFilename(fid, sdb.opt.Dir)
-			sl0Tbl, err := sstable.OpenL0Table(filename, fid)
+			sl0Tbl, err := sstable.OpenL0Table(filename, fid, fileMeta.smallest, fileMeta.biggest)
 			if err != nil {
 				return nil, err
 			}
@@ -366,7 +366,7 @@ func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 			l0Tbls.tables = append(l0Tbls.tables, sl0Tbl)
 			continue
 		}
-		level := cfLevel.level
+		level := fileMeta.level
 		scf := shard.cfs[cf]
 		handler := scf.getLevelHandler(int(level))
 		filename := sstable.NewFilename(fid, sdb.opt.Dir)

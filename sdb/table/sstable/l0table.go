@@ -39,6 +39,8 @@ type L0Table struct {
 	fid      uint64
 	filename string
 	cfOffs   []uint32
+	smallest []byte
+	biggest  []byte
 }
 
 func (st *L0Table) ID() uint64 {
@@ -58,11 +60,19 @@ func (st *L0Table) Size() int64 {
 	return st.file.Size()
 }
 
+func (st *L0Table) Smallest() []byte {
+	return st.smallest
+}
+
+func (st *L0Table) Biggest() []byte {
+	return st.biggest
+}
+
 func (st *L0Table) CommitTS() uint64 {
 	return st.commitTS
 }
 
-func OpenL0Table(filename string, fid uint64) (*L0Table, error) {
+func OpenL0Table(filename string, fid uint64, smallest, biggest []byte) (*L0Table, error) {
 	file, err := NewLocalFile(filename, true)
 	if err != nil {
 		return nil, err
@@ -71,6 +81,8 @@ func OpenL0Table(filename string, fid uint64) (*L0Table, error) {
 		fid:      fid,
 		file:     file,
 		filename: filename,
+		smallest: smallest,
+		biggest:  biggest,
 	}
 	footerOff := file.Size() - int64(l0FooterSize)
 	l0.l0Footer.unmarshal(l0.file.MMapRead(footerOff, l0FooterSize))
@@ -166,4 +178,21 @@ func (e *L0Builder) Finish() []byte {
 	buf = AppendU32(buf, uint32(len(e.builders)))
 	buf = AppendU32(buf, MagicNumber)
 	return buf
+}
+
+func (e *L0Builder) SmallestAndBiggest() (smallest, biggest []byte) {
+	for i := 0; i < len(e.builders); i++ {
+		builder := e.builders[i]
+		if len(builder.smallest) > 0 {
+			if len(smallest) == 0 || bytes.Compare(builder.smallest, smallest) < 0 {
+				smallest = builder.smallest
+			}
+		}
+		if bytes.Compare(builder.biggest, biggest) > 0 {
+			biggest = builder.biggest
+		}
+	}
+	y.Assert(len(smallest) > 0)
+	y.Assert(len(biggest) > 0)
+	return
 }

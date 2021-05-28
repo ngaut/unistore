@@ -932,8 +932,6 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	if err != nil {
 		return
 	}
-	newShard := aCtx.engines.kv.GetShard(a.region.Id)
-	aCtx.engines.kv.TriggerFlush(newShard, 0)
 	resp = &raft_cmdpb.AdminResponse{
 		Splits: &raft_cmdpb.BatchSplitResponse{
 			Regions: regions,
