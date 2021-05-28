@@ -747,8 +747,8 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		})
 		err := aCtx.engines.kv.PreSplit(a.region.Id, a.region.RegionEpoch.Version, splitKeys)
 		if err != nil {
-			log.S().Warnf("region %d:%d failed to execute pre-split, may be already pre-split by ingest.",
-				a.region.Id, a.region.RegionEpoch.Version)
+			log.S().Warnf("region %d:%d failed to execute pre-split, may be already pre-split by ingest. log idx:%d",
+				a.region.Id, a.region.RegionEpoch.Version, aCtx.execCtx.index)
 		}
 	case raftlog.TypeNextMemTableSize:
 		cs, err := cl.GetShardChangeSet()

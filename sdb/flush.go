@@ -35,6 +35,11 @@ func (sdb *DB) runFlushMemTable(c *y.Closer) {
 		}
 		if sdb.metaChangeListener != nil {
 			sdb.metaChangeListener.OnChange(change)
+			if task.nextMemSize > 0 {
+				changeSize := newChangeSet(task.shard)
+				changeSize.NextMemTableSize = task.nextMemSize
+				sdb.metaChangeListener.OnChange(changeSize)
+			}
 		} else {
 			err := sdb.applyFlush(task.shard, change)
 			if err != nil {
