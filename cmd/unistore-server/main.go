@@ -123,6 +123,18 @@ func main() {
 	log.S().Infof("gitHash: %s", gitHash)
 	log.S().Infof("conf %v", conf)
 
+	go func() {
+		log.S().Infof("listening on %v", conf.Server.StatusAddr)
+		http.HandleFunc("/status", func(writer http.ResponseWriter, request *http.Request) {
+			writer.WriteHeader(http.StatusOK)
+		})
+		statsviz.Register(http.DefaultServeMux)
+		err := http.ListenAndServe(conf.Server.StatusAddr, nil)
+		if err != nil {
+			log.S().Fatal(err)
+		}
+	}()
+
 	pdClient, err := pd.NewClient(strings.Split(conf.Server.PDAddr, ","), "")
 	if err != nil {
 		log.S().Fatal(err)
@@ -152,17 +164,6 @@ func main() {
 		log.S().Fatal(err)
 	}
 	handleSignal(grpcServer)
-	go func() {
-		log.S().Infof("listening on %v", conf.Server.StatusAddr)
-		http.HandleFunc("/status", func(writer http.ResponseWriter, request *http.Request) {
-			writer.WriteHeader(http.StatusOK)
-		})
-		statsviz.Register(http.DefaultServeMux)
-		err := http.ListenAndServe(conf.Server.StatusAddr, nil)
-		if err != nil {
-			log.S().Fatal(err)
-		}
-	}()
 	err = grpcServer.Serve(l)
 	if err != nil {
 		log.S().Fatal(err)
