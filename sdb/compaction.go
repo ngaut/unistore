@@ -305,7 +305,7 @@ func (sdb *DB) getCFSafeTS(cf int) uint64 {
 	if sdb.opt.CFs[cf].Managed {
 		return atomic.LoadUint64(&sdb.mangedSafeTS)
 	}
-	return atomic.LoadUint64(&sdb.safeTsTracker.safeTs)
+	return math.MaxUint64
 }
 
 type compactL0Helper struct {
@@ -365,7 +365,6 @@ func (h *compactL0Helper) buildOne() (*sstable.BuildResult, error) {
 	h.lastKey = h.lastKey[:0]
 	h.skipKey = h.skipKey[:0]
 	it := h.iter
-	rc := h.db.opt.CFs[h.cf].ReadCommitted
 	for ; it.Valid(); table.NextAllVersion(it) {
 		vs := it.Value()
 		key := it.Key()
@@ -387,7 +386,7 @@ func (h *compactL0Helper) buildOne() (*sstable.BuildResult, error) {
 
 		// Only consider the versions which are below the safeTS, otherwise, we might end up discarding the
 		// only valid version for a running transaction.
-		if rc || vs.Version <= h.safeTS {
+		if vs.Version <= h.safeTS {
 			// key is the latest readable version of this key, so we simply discard all the rest of the versions.
 			h.skipKey = append(h.skipKey[:0], key...)
 			if !isDeleted(vs.Meta) && h.filter != nil {
@@ -540,7 +539,7 @@ func (sdb *DB) GetCompactionPriorities(buf []CompactionPriority) []CompactionPri
 	results := buf[:0]
 	sdb.shardMap.Range(func(key, value interface{}) bool {
 		shard := value.(*Shard)
-		if !shard.IsPassive() && atomic.LoadInt32(&shard.compacting) == 0 {
+		if !shard.IsPassive() && !shard.isCompacting() {
 			pri := sdb.getCompactionPriority(shard)
 			if pri.Score > 1 {
 				results = append(results, pri)
@@ -635,22 +634,6 @@ func (sdb *DB) runCompactionDef(shard *Shard, cf int, cd *CompactDef, guard *epo
 		return nil
 	}
 	return sdb.applyCompaction(shard, change, guard)
-}
-
-func getTblIDs(tables []table.Table) []uint64 {
-	var ids []uint64
-	for _, tbl := range tables {
-		ids = append(ids, tbl.ID())
-	}
-	return ids
-}
-
-func getShardIDs(shards []*Shard) []uint64 {
-	var ids []uint64
-	for _, s := range shards {
-		ids = append(ids, s.ID)
-	}
-	return ids
 }
 
 func assertTablesOrder(level int, tables []table.Table, cd *CompactDef) {

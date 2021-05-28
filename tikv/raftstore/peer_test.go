@@ -25,7 +25,6 @@ func TestGetSyncLogFromRequest(t *testing.T) {
 	allTypes := map[raft_cmdpb.AdminCmdType]bool{
 		raft_cmdpb.AdminCmdType_InvalidAdmin:   false,
 		raft_cmdpb.AdminCmdType_ChangePeer:     true,
-		raft_cmdpb.AdminCmdType_Split:          true,
 		raft_cmdpb.AdminCmdType_CompactLog:     false,
 		raft_cmdpb.AdminCmdType_TransferLeader: false,
 		raft_cmdpb.AdminCmdType_ComputeHash:    false,
@@ -49,7 +48,6 @@ func TestIsUrgentRequest(t *testing.T) {
 	allTypes := map[raft_cmdpb.AdminCmdType]bool{
 		raft_cmdpb.AdminCmdType_InvalidAdmin:   false,
 		raft_cmdpb.AdminCmdType_ChangePeer:     true,
-		raft_cmdpb.AdminCmdType_Split:          true,
 		raft_cmdpb.AdminCmdType_CompactLog:     false,
 		raft_cmdpb.AdminCmdType_TransferLeader: false,
 		raft_cmdpb.AdminCmdType_ComputeHash:    true,

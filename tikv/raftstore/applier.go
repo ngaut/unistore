@@ -94,10 +94,8 @@ type apply struct {
 }
 
 type applyMetrics struct {
-	sizeDiffHint   uint64
-	deleteKeysHint uint64
-	writtenBytes   uint64
-	writtenKeys    uint64
+	writtenBytes uint64
+	writtenKeys  uint64
 }
 
 type applyTaskRes struct {
@@ -589,8 +587,6 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 			a.region = x.cp.region
 		case *execResultSplitRegion:
 			a.region = x.derived
-			a.metrics.sizeDiffHint = 0
-			a.metrics.deleteKeysHint = 0
 		case *execResultPrepareMerge:
 			a.region = x.region
 			a.isMerging = true
@@ -655,8 +651,6 @@ func (a *applier) execAdminCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdReques
 	switch cmdType {
 	case raft_cmdpb.AdminCmdType_ChangePeer:
 		adminResp, result, err = a.execChangePeer(adminReq)
-	case raft_cmdpb.AdminCmdType_Split:
-		adminResp, result, err = a.execSplit(aCtx, adminReq)
 	case raft_cmdpb.AdminCmdType_BatchSplit:
 		adminResp, result, err = a.execBatchSplit(aCtx, adminReq)
 	case raft_cmdpb.AdminCmdType_CompactLog:
@@ -709,17 +703,13 @@ func (a *applier) execWriteCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 	return
 }
 
-func (a *applier) isFollower(rlog raftlog.RaftLog) bool {
-	return a.id != rlog.PeerID()
-}
-
 func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) int {
 	wb := aCtx.wb.getEngineWriteBatch(a.region.Id)
 	var cnt int
 	switch cl.Type() {
 	case raftlog.TypePrewrite, raftlog.TypePessimisticLock:
 		cl.IterateLock(func(key, val []byte) {
-			y.Assert(wb.Put(mvcc.LockCF, key, y.ValueStruct{Value: val}) == nil)
+			SetLock(wb, key, val)
 			cnt++
 		})
 	case raftlog.TypeCommit:
@@ -765,16 +755,11 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 
 func (a *applier) commitLock(wb *sdb.WriteBatch, rawKey []byte, val []byte, commitTS uint64) {
 	lock := mvcc.DecodeLock(val)
-	var sizeDiff int64
 	userMeta := mvcc.NewDBUserMeta(lock.StartTS, commitTS)
 	if lock.Op != uint8(kvrpcpb.Op_Lock) {
 		SetWithUserMeta(wb, rawKey, lock.Value, userMeta, commitTS)
-		sizeDiff = int64(len(rawKey) + len(lock.Value))
 	} else if bytes.Equal(lock.Primary, rawKey) {
 		SetOpLock(wb, rawKey, userMeta, commitTS)
-	}
-	if sizeDiff > 0 {
-		a.metrics.sizeDiffHint += uint64(sizeDiff)
 	}
 	DeleteLock(wb, rawKey)
 }
@@ -887,21 +872,6 @@ func (a *applier) execChangePeer(req *raft_cmdpb.AdminRequest) (
 		},
 	}
 	return
-}
-
-func (a *applier) execSplit(aCtx *applyContext, req *raft_cmdpb.AdminRequest) (
-	resp *raft_cmdpb.AdminResponse, result applyResult, err error) {
-	split := req.Split
-	adminReq := &raft_cmdpb.AdminRequest{
-		Splits: &raft_cmdpb.BatchSplitRequest{
-			Requests:    []*raft_cmdpb.SplitRequest{split},
-			RightDerive: split.RightDerive,
-		},
-	}
-	// This method is executed only when there are unapplied entries after being restarted.
-	// So there will be no callback, it's OK to return a response that does not matched
-	// with its request.
-	return a.execBatchSplit(aCtx, adminReq)
 }
 
 func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminRequest) (
@@ -1178,7 +1148,7 @@ func (a *applier) catchUpLogsForMerge(aCtx *applyContext, logs *catchUpLogs) {
 	// TODO: merge
 }
 
-func (a *applier) handleTask(aCtx *applyContext, msg Msg) {
+func (a *applier) handleMsg(aCtx *applyContext, msg Msg) {
 	switch msg.Type {
 	case MsgTypeApply:
 		a.handleApply(aCtx, msg.Data.(*apply))

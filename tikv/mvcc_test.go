@@ -1508,7 +1508,7 @@ func (s *testMvccSuite) TestResolveCommit(c *C) {
 	// The error path
 	wb := db.NewWriteBatch(db.GetShard(1))
 	c.Assert(wb.Delete(mvcc.WriteCF, sk, 3), IsNil)
-	c.Assert(db.Write(wb), IsNil)
+	db.Write(wb)
 	MustCommitErr(sk, 1, 3, store)
 	MustAcquirePessimisticLock(sk, sk, 5, 5, store)
 	MustCommitErr(sk, 1, 3, store)

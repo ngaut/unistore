@@ -235,7 +235,6 @@ func TestCheckRegionEpoch(t *testing.T) {
 
 	// These admin commands requires epoch.version.
 	tys = []raft_cmdpb.AdminCmdType{
-		raft_cmdpb.AdminCmdType_Split,
 		raft_cmdpb.AdminCmdType_BatchSplit,
 		raft_cmdpb.AdminCmdType_PrepareMerge,
 		raft_cmdpb.AdminCmdType_CommitMerge,
@@ -274,7 +273,6 @@ func TestCheckRegionEpoch(t *testing.T) {
 
 	// These admin commands requires epoch.conf_version.
 	for _, ty := range []raft_cmdpb.AdminCmdType{
-		raft_cmdpb.AdminCmdType_Split,
 		raft_cmdpb.AdminCmdType_BatchSplit,
 		raft_cmdpb.AdminCmdType_ChangePeer,
 		raft_cmdpb.AdminCmdType_PrepareMerge,

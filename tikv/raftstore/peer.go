@@ -258,10 +258,6 @@ type Peer struct {
 	PeersStartPendingTime map[uint64]time.Time
 	RecentAddedPeer       *RecentAddedPeer
 
-	/// an inaccurate difference in region size since last reset.
-	SizeDiffHint uint64
-	/// delete keys' count since last reset.
-	deleteKeysHint uint64
 	/// approximate size of the region.
 	ApproximateSize *uint64
 	/// approximate keys of the region.
@@ -1197,14 +1193,6 @@ func (p *Peer) PostApply(kv *sdb.DB, applyState applyState, merged bool, applyMe
 
 	p.PeerStat.WrittenBytes += applyMetrics.writtenBytes
 	p.PeerStat.WrittenKeys += applyMetrics.writtenKeys
-	p.deleteKeysHint += applyMetrics.deleteKeysHint
-	diff := p.SizeDiffHint + applyMetrics.sizeDiffHint
-	if diff > 0 {
-		p.SizeDiffHint = diff
-	} else {
-		p.SizeDiffHint = 0
-	}
-
 	if p.HasPendingSnapshot() && p.ReadyToHandlePendingSnap() {
 		hasReady = true
 	}
@@ -1230,12 +1218,6 @@ func (p *Peer) PostApply(kv *sdb.DB, applyState applyState, merged bool, applyMe
 	}
 
 	return hasReady
-}
-
-func (p *Peer) PostSplit() {
-	// Reset delete_keys_hint and size_diff_hint.
-	p.deleteKeysHint = 0
-	p.SizeDiffHint = 0
 }
 
 // Propose a request.
@@ -1587,7 +1569,7 @@ func (p *Peer) PrePropose(cfg *Config, rlog raftlog.RaftLog) (*ProposalContext, 
 	}
 
 	switch req.AdminRequest.GetCmdType() {
-	case raft_cmdpb.AdminCmdType_Split, raft_cmdpb.AdminCmdType_BatchSplit:
+	case raft_cmdpb.AdminCmdType_BatchSplit:
 		ctx.insert(ProposalContext_Split)
 	default:
 	}
@@ -1852,7 +1834,7 @@ func getTransferLeaderCmd(req *raft_cmdpb.RaftCmdRequest) *raft_cmdpb.TransferLe
 func getSyncLogFromRequest(req *raft_cmdpb.RaftCmdRequest) bool {
 	if req.AdminRequest != nil {
 		switch req.AdminRequest.GetCmdType() {
-		case raft_cmdpb.AdminCmdType_ChangePeer, raft_cmdpb.AdminCmdType_Split,
+		case raft_cmdpb.AdminCmdType_ChangePeer,
 			raft_cmdpb.AdminCmdType_BatchSplit, raft_cmdpb.AdminCmdType_PrepareMerge,
 			raft_cmdpb.AdminCmdType_CommitMerge, raft_cmdpb.AdminCmdType_RollbackMerge:
 			return true
@@ -1873,8 +1855,7 @@ func IsUrgentRequest(rlog raftlog.RaftLog) bool {
 		return false
 	}
 	switch adminRequest.CmdType {
-	case raft_cmdpb.AdminCmdType_Split,
-		raft_cmdpb.AdminCmdType_BatchSplit,
+	case raft_cmdpb.AdminCmdType_BatchSplit,
 		raft_cmdpb.AdminCmdType_ChangePeer,
 		raft_cmdpb.AdminCmdType_ComputeHash,
 		raft_cmdpb.AdminCmdType_VerifyHash,

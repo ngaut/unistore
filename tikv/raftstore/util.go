@@ -318,7 +318,7 @@ func CheckRegionEpoch(req *raft_cmdpb.RaftCmdRequest, region *metapb.Region, inc
 			raft_cmdpb.AdminCmdType_ComputeHash, raft_cmdpb.AdminCmdType_VerifyHash:
 		case raft_cmdpb.AdminCmdType_ChangePeer:
 			checkConfVer = true
-		case raft_cmdpb.AdminCmdType_Split, raft_cmdpb.AdminCmdType_BatchSplit,
+		case raft_cmdpb.AdminCmdType_BatchSplit,
 			raft_cmdpb.AdminCmdType_PrepareMerge, raft_cmdpb.AdminCmdType_CommitMerge,
 			raft_cmdpb.AdminCmdType_RollbackMerge, raft_cmdpb.AdminCmdType_TransferLeader:
 			checkVer = true
@@ -420,7 +420,7 @@ func checkRegionEpoch(rlog raftlog.RaftLog, region *metapb.Region, includeRegion
 			raft_cmdpb.AdminCmdType_ComputeHash, raft_cmdpb.AdminCmdType_VerifyHash:
 		case raft_cmdpb.AdminCmdType_ChangePeer:
 			checkConfVer = true
-		case raft_cmdpb.AdminCmdType_Split, raft_cmdpb.AdminCmdType_BatchSplit,
+		case raft_cmdpb.AdminCmdType_BatchSplit,
 			raft_cmdpb.AdminCmdType_PrepareMerge, raft_cmdpb.AdminCmdType_CommitMerge,
 			raft_cmdpb.AdminCmdType_RollbackMerge, raft_cmdpb.AdminCmdType_TransferLeader:
 			checkVer = true

@@ -31,21 +31,20 @@ type closers struct {
 }
 
 type DB struct {
-	opt           Options
-	numCFs        int
-	dirLock       *directoryLockGuard
-	shardMap      sync.Map
-	blkCache      *cache.Cache
-	resourceMgr   *epoch.ResourceManager
-	safeTsTracker safeTsTracker
-	closers       closers
-	flushCh       chan *flushTask
-	metrics       *y.MetricsSet
-	manifest      *Manifest
-	mangedSafeTS  uint64
-	idAlloc       IDAllocator
-	s3c           *s3util.S3Client
-	closed        uint32
+	opt          Options
+	numCFs       int
+	dirLock      *directoryLockGuard
+	shardMap     sync.Map
+	blkCache     *cache.Cache
+	resourceMgr  *epoch.ResourceManager
+	closers      closers
+	flushCh      chan *flushTask
+	metrics      *y.MetricsSet
+	manifest     *Manifest
+	mangedSafeTS uint64
+	idAlloc      IDAllocator
+	s3c          *s3util.S3Client
+	closed       uint32
 
 	metaChangeListener MetaChangeListener
 }
@@ -96,7 +95,7 @@ func OpenDB(opt Options) (db *DB, err error) {
 		db.idAlloc = &localIDAllocator{latest: manifest.lastID}
 	}
 	db.closers.resourceManager = y.NewCloser(0)
-	db.resourceMgr = epoch.NewResourceManager(db.closers.resourceManager, &db.safeTsTracker)
+	db.resourceMgr = epoch.NewResourceManager(db.closers.resourceManager)
 	db.closers.s3Client = y.NewCloser(0)
 	if opt.S3Options.EndPoint != "" {
 		db.s3c = s3util.NewS3Client(db.closers.s3Client, opt.Dir, opt.S3Options)
@@ -629,12 +628,11 @@ func (sdb *DB) GetShard(shardID uint64) *Shard {
 
 func (sdb *DB) GetSplitSuggestion(shardID uint64, splitSize int64) [][]byte {
 	shard := sdb.GetShard(shardID)
-	var keys [][]byte
-	if atomic.LoadInt64(&shard.estimatedSize) > splitSize {
+	if shard.GetEstimatedSize() > splitSize {
 		log.S().Infof("shard(%x, %x) size %d", shard.Start, shard.End, shard.estimatedSize)
-		keys = append(keys, shard.getSuggestSplitKeys(splitSize)...)
+		return shard.getSuggestSplitKeys(splitSize)
 	}
-	return keys
+	return nil
 }
 
 func (sdb *DB) Size() int64 {
