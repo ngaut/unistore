@@ -233,7 +233,6 @@ func (aw *applyWorker) run(wg *sync.WaitGroup) {
 			}
 			ps.apply.handleTask(aw.ctx, msg)
 		}
-		aw.ctx.flush()
 	}
 }
 

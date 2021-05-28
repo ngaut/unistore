@@ -38,8 +38,7 @@ func TestBootstrapStore(t *testing.T) {
 	regionLocalState := new(rspb.RegionLocalState)
 	require.Nil(t, getMsg(engines.raft, RegionStateKey(region), regionLocalState))
 	raftApplyState := applyState{}
-	vals := engines.kv.GetProperties(engines.kv.GetShard(region.Id), []string{applyStateKey})
-	val := vals[0]
+	val, _ := engines.kv.GetProperty(engines.kv.GetShard(region.Id), applyStateKey)
 	raftApplyState.Unmarshal(val)
 	raftLocalState := raftState{}
 	val, err = getValue(engines.raft, RaftStateKey(region))

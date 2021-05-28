@@ -26,7 +26,6 @@ type closers struct {
 	resourceManager *y.Closer
 	blobManager     *y.Closer
 	memtable        *y.Closer
-	writes          *y.Closer
 	s3Client        *y.Closer
 }
 
@@ -39,7 +38,6 @@ type DB struct {
 	resourceMgr   *epoch.ResourceManager
 	safeTsTracker safeTsTracker
 	closers       closers
-	writeCh       chan engineTask
 	flushCh       chan *flushTask
 	metrics       *y.MetricsSet
 	manifest      *Manifest
@@ -88,7 +86,6 @@ func OpenDB(opt Options) (db *DB, err error) {
 		metrics:            metrics,
 		blkCache:           blkCache,
 		flushCh:            make(chan *flushTask, opt.NumMemtables),
-		writeCh:            make(chan engineTask, kvWriteChCapacity),
 		manifest:           manifest,
 		metaChangeListener: opt.MetaChangeListener,
 	}
@@ -108,8 +105,6 @@ func OpenDB(opt Options) (db *DB, err error) {
 	}
 	db.closers.memtable = y.NewCloser(1)
 	go db.runFlushMemTable(db.closers.memtable)
-	db.closers.writes = y.NewCloser(1)
-	go db.runWriteLoop(db.closers.writes)
 	if !db.opt.DoNotCompact {
 		db.closers.compactors = y.NewCloser(1)
 		go db.runCompactionLoop(db.closers.compactors)
@@ -165,7 +160,6 @@ func (sdb *DB) DebugHandler() http.HandlerFunc {
 		fmt.Fprintf(w, "Time %s\n", time.Now().Format(time.RFC3339Nano))
 		fmt.Fprintf(w, "Manifest.shards %s\n", formatInt(len(sdb.manifest.shards)))
 		fmt.Fprintf(w, "Manifest.globalFiles %s\n", formatInt(len(sdb.manifest.globalFiles)))
-		fmt.Fprintf(w, "WriteCh %s\n", formatInt(len(sdb.writeCh)))
 		fmt.Fprintf(w, "FlushCh %s\n", formatInt(len(sdb.flushCh)))
 		MemTables := 0
 		MemTablesSize := 0
@@ -432,7 +426,6 @@ func (l *localIDAllocator) AllocID() uint64 {
 func (sdb *DB) Close() error {
 	atomic.StoreUint32(&sdb.closed, 1)
 	log.S().Info("closing DB")
-	sdb.closers.writes.SignalAndWait()
 	close(sdb.flushCh)
 	sdb.closers.memtable.SignalAndWait()
 	if !sdb.opt.DoNotCompact {
@@ -530,28 +523,6 @@ func (wb *WriteBatch) Iterate(cf int, fn func(e *memtable.Entry) (more bool)) {
 			break
 		}
 	}
-}
-
-func (sdb *DB) Write(wbs ...*WriteBatch) error {
-	notifies := make([]chan error, len(wbs))
-	for i, wb := range wbs {
-		notify := make(chan error, 1)
-		notifies[i] = notify
-		sdb.writeCh <- engineTask{writeTask: wb, notify: notify}
-	}
-	for _, notify := range notifies {
-		err := <-notify
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (sdb *DB) RecoverWrite(wb *WriteBatch) error {
-	eTask := engineTask{writeTask: wb, notify: make(chan error, 1)}
-	sdb.executeWriteTask(eTask)
-	return <-eTask.notify
 }
 
 type Snapshot struct {
@@ -689,16 +660,24 @@ func (sdb *DB) GetShardChangeSet(shardID uint64) (*sdbpb.ChangeSet, error) {
 	return sdb.manifest.toChangeSet(shardID)
 }
 
-func (sdb *DB) GetProperties(shard *Shard, keys []string) (values [][]byte) {
-	notify := make(chan error, 1)
-	task := &getPropertyTask{shard: shard, keys: keys}
-	sdb.writeCh <- engineTask{getProperties: task, notify: notify}
-	y.Assert(<-notify == nil)
-	return task.values
-}
-
-func (sdb *DB) TriggerFlush(shard *Shard, skipCount int) {
-	notify := make(chan error, 1)
-	task := &triggerFlushTask{shard: shard, skipCnt: skipCount}
-	sdb.writeCh <- engineTask{triggerFlush: task, notify: notify}
+func (sdb *DB) TriggerFlush(shard *Shard, skipCnt int) {
+	mems := shard.loadMemTables()
+	for i := len(mems.tables) - skipCnt - 1; i > 0; i-- {
+		memTbl := mems.tables[i]
+		sdb.flushCh <- &flushTask{
+			shard: shard,
+			tbl:   memTbl,
+		}
+	}
+	if len(mems.tables) == 1 && mems.tables[0].Empty() {
+		if !shard.IsInitialFlushed() {
+			commitTS := shard.allocCommitTS()
+			memTbl := memtable.NewCFTable(sdb.numCFs)
+			memTbl.SetVersion(commitTS)
+			sdb.flushCh <- &flushTask{
+				shard: shard,
+				tbl:   memTbl,
+			}
+		}
+	}
 }
