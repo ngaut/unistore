@@ -392,8 +392,7 @@ func (s *Shard) nextMemTableSize(writableMemTableSize int64, lastSwitchTime time
 }
 
 func (s *Shard) allocCommitTS() uint64 {
-	s.commitTS += 1
-	return s.commitTS
+	return atomic.AddUint64(&s.commitTS, 1)
 }
 
 type shardCF struct {

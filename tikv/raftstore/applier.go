@@ -175,27 +175,6 @@ type applyExecContext struct {
 	applyState applyState
 }
 
-type applyCallback struct {
-	region *metapb.Region
-	cbs    []*Callback
-}
-
-func (c *applyCallback) invokeAll(doneApplyTime time.Time) {
-	for _, cb := range c.cbs {
-		if cb != nil {
-			cb.applyDoneTime = doneApplyTime
-			cb.wg.Done()
-		}
-	}
-}
-
-func (c *applyCallback) push(cb *Callback, resp *raft_cmdpb.RaftCmdResponse) {
-	if cb != nil {
-		cb.resp = resp
-	}
-	c.cbs = append(c.cbs, cb)
-}
-
 type proposal struct {
 	isConfChange bool
 	index        uint64
@@ -250,7 +229,6 @@ type applyContext struct {
 	applyResCh       chan<- Msg
 	engines          *Engines
 	applyBatch       *applyBatch
-	cbs              []applyCallback
 	applyTaskResList []*applyTaskRes
 	execCtx          *applyExecContext
 	wb               *KVWriteBatch
@@ -276,87 +254,17 @@ func newApplyContext(tag string, regionScheduler chan<- task, engines *Engines,
 	}
 }
 
-/// Prepares for applying entries for `applier`.
-///
-/// A general apply progress for an applier is:
-/// `prepare_for` -> `commit` [-> `commit` ...] -> `finish_for`.
-/// After all appliers are handled, `write_to_db` method should be called.
-func (ac *applyContext) prepareFor(d *applier) {
-	ac.cbs = append(ac.cbs, applyCallback{region: d.region})
-	ac.lastAppliedIndex = d.applyState.appliedIndex
-}
-
 const applyStateKey = "applyState"
-
-/// Commits all changes have done for applier. `persistent` indicates whether
-/// write the changes into rocksdb.
-///
-/// This call is valid only when it's between a `prepare_for` and `finish_for`.
-func (ac *applyContext) commit(d *applier) {
-	if ac.lastAppliedIndex < d.applyState.appliedIndex {
-		ac.wb.SetApplyState(d.region.Id, d.applyState)
-	}
-	// last_applied_index doesn't need to be updated, set persistent to true will
-	// force it call `prepare_for` automatically.
-	ac.commitOpt(d, true)
-}
-
-func (ac *applyContext) commitOpt(d *applier, persistent bool) {
-	d.updateMetrics(ac)
-	if persistent {
-		ac.writeToDB()
-		ac.prepareFor(d)
-	}
-}
-
-/// Writes all the changes into badger.
-func (ac *applyContext) writeToDB() {
-	err := ac.wb.WriteToEngine()
-	y.AssertTruef(err == nil, "%v", err)
-	ac.wb.Reset()
-	doneApply := time.Now()
-	for _, cb := range ac.cbs {
-		cb.invokeAll(doneApply)
-	}
-	ac.cbs = make([]applyCallback, 0, cap(ac.cbs))
-}
 
 /// Finishes `Apply`s for the applier.
 func (ac *applyContext) finishFor(d *applier, results []execResult) {
-	if !d.pendingRemove {
-		ac.wb.SetApplyState(d.region.Id, d.applyState)
-	}
-	ac.commitOpt(d, false)
 	res := &applyTaskRes{
 		regionID:    d.region.Id,
 		applyState:  d.applyState,
 		execResults: results,
 		metrics:     d.metrics,
 	}
-	ac.applyTaskResList = append(ac.applyTaskResList, res)
-}
-
-func (ac *applyContext) flush() {
-	// TODO: this check is too hacky, need to be more verbose and less buggy.
-	t := ac.timer
-	ac.timer = nil
-	if t == nil {
-		return
-	}
-	// Write to engine
-	// raftsotre.sync-log = true means we need prevent data loss when power failure.
-	// take raft log gc for example, we write kv WAL first, then write raft WAL,
-	// if power failure happen, raft WAL may synced to disk, but kv WAL may not.
-	// so we use sync-log flag here.
-	ac.writeToDB()
-	if len(ac.applyTaskResList) > 0 {
-		for i, res := range ac.applyTaskResList {
-			ac.applyResCh <- NewPeerMsg(MsgTypeApplyRes, res.regionID, res)
-			ac.applyTaskResList[i] = nil
-		}
-		ac.applyTaskResList = ac.applyTaskResList[:0]
-	}
-	ac.committedCount = 0
+	ac.applyResCh <- NewPeerMsg(MsgTypeApplyRes, res.regionID, res)
 }
 
 /// Calls the callback of `cmd` when the Region is removed.
@@ -378,34 +286,6 @@ func notifyStaleCommand(regionID, peerID, term uint64, cmd pendingCmd) {
 
 func notifyStaleReq(term uint64, cb *Callback) {
 	cb.Done(ErrRespStaleCommand(term))
-}
-
-/// Checks if a write is needed to be issued before handling the command.
-func shouldWriteToEngine(rlog raftlog.RaftLog) bool {
-	cmd := rlog.GetRaftCmdRequest()
-	if cmd == nil {
-		return false
-	}
-	if cmd.AdminRequest != nil {
-		switch cmd.AdminRequest.CmdType {
-		case raft_cmdpb.AdminCmdType_ComputeHash, // ComputeHash require an up to date snapshot.
-			raft_cmdpb.AdminCmdType_CommitMerge, // Merge needs to get the latest apply index.
-			raft_cmdpb.AdminCmdType_RollbackMerge:
-			return true
-		}
-	}
-
-	// Some commands may modify keys covered by the current write batch, so we
-	// must write the current write batch to the engine first.
-	for _, req := range cmd.Requests {
-		if req.DeleteRange != nil {
-			return true
-		}
-		if req.IngestSst != nil {
-			return true
-		}
-	}
-	return false
 }
 
 /// A struct that stores the state related to Merge.
@@ -517,7 +397,6 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 	if len(committedEntries) == 0 {
 		return
 	}
-	aCtx.prepareFor(a)
 	aCtx.committedCount += len(committedEntries)
 	// If we send multiple ConfChange commands, only first one will be proposed correctly,
 	// others will be saved as a normal entry with no data, so we must re-propose these
@@ -581,9 +460,6 @@ func (a *applier) handleRaftEntryNormal(aCtx *applyContext, entry *eraftpb.Entry
 	term := entry.Term
 	if len(entry.Data) > 0 {
 		rlog := raftlog.DecodeLog(entry)
-		if shouldWriteToEngine(rlog) {
-			aCtx.commit(a)
-		}
 		return a.processRaftCmd(aCtx, index, term, rlog)
 	}
 
@@ -597,9 +473,7 @@ func (a *applier) handleRaftEntryNormal(aCtx *applyContext, entry *eraftpb.Entry
 			break
 		}
 		// apparently, all the callbacks whose term is less than entry's term are stale.
-		cb := &aCtx.cbs[len(aCtx.cbs)-1]
-		cmd.cb.resp = ErrRespStaleCommand(term)
-		cb.cbs = append(cb.cbs, cmd.cb)
+		cmd.cb.Done(ErrRespStaleCommand(term))
 	}
 	return applyResult{}
 }
@@ -673,7 +547,7 @@ func (a *applier) processRaftCmd(aCtx *applyContext, index, term uint64, rlog ra
 	// store will call it after handing exec result.
 	BindRespTerm(resp, term)
 	cmdCB := a.findCallback(index, term, isConfChange)
-	aCtx.cbs[len(aCtx.cbs)-1].push(cmdCB, resp)
+	cmdCB.Done(resp)
 	return result
 }
 
@@ -840,30 +714,30 @@ func (a *applier) isFollower(rlog raftlog.RaftLog) bool {
 }
 
 func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) int {
-	aCtx.commit(a)
+	wb := aCtx.wb.getEngineWriteBatch(a.region.Id)
 	var cnt int
 	switch cl.Type() {
 	case raftlog.TypePrewrite, raftlog.TypePessimisticLock:
 		cl.IterateLock(func(key, val []byte) {
-			aCtx.wb.SetLock(cl.RegionID(), key, val)
+			y.Assert(wb.Put(mvcc.LockCF, key, y.ValueStruct{Value: val}) == nil)
 			cnt++
 		})
 	case raftlog.TypeCommit:
 		cl.IterateCommit(func(key, val []byte, commitTS uint64) {
-			a.commitLock(aCtx, cl.RegionID(), key, val, commitTS)
+			a.commitLock(wb, key, val, commitTS)
 			cnt++
 		})
 	case raftlog.TypeRollback:
 		cl.IterateRollback(func(key []byte, startTS uint64, deleteLock bool) {
-			aCtx.wb.Rollback(cl.RegionID(), key, startTS)
+			Rollback(wb, key, startTS)
 			if deleteLock {
-				aCtx.wb.DeleteLock(cl.RegionID(), key)
+				DeleteLock(wb, key)
 			}
 			cnt++
 		})
 	case raftlog.TypePessimisticRollback:
 		cl.IterateKeysOnly(func(key []byte) {
-			aCtx.wb.DeleteLock(cl.RegionID(), key)
+			DeleteLock(wb, key)
 			cnt++
 		})
 	case raftlog.TypePreSplit:
@@ -881,25 +755,28 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		y.Assert(err == nil)
 		bin := make([]byte, 8)
 		binary.LittleEndian.PutUint64(bin, uint64(cs.NextMemTableSize))
-		aCtx.wb.SetMaxMemTableSize(a.region.Id, bin)
+		SetMaxMemTableSize(wb, bin)
 	}
+	SetApplyState(wb, aCtx.execCtx.applyState)
+	aCtx.engines.kv.Write(wb)
+	wb.Reset()
 	return cnt
 }
 
-func (a *applier) commitLock(aCtx *applyContext, regionID uint64, rawKey []byte, val []byte, commitTS uint64) {
+func (a *applier) commitLock(wb *sdb.WriteBatch, rawKey []byte, val []byte, commitTS uint64) {
 	lock := mvcc.DecodeLock(val)
 	var sizeDiff int64
 	userMeta := mvcc.NewDBUserMeta(lock.StartTS, commitTS)
 	if lock.Op != uint8(kvrpcpb.Op_Lock) {
-		aCtx.wb.SetWithUserMeta(regionID, rawKey, lock.Value, userMeta, commitTS)
+		SetWithUserMeta(wb, rawKey, lock.Value, userMeta, commitTS)
 		sizeDiff = int64(len(rawKey) + len(lock.Value))
 	} else if bytes.Equal(lock.Primary, rawKey) {
-		aCtx.wb.SetOpLock(regionID, rawKey, userMeta, commitTS)
+		SetOpLock(wb, rawKey, userMeta, commitTS)
 	}
 	if sizeDiff > 0 {
 		a.metrics.sizeDiffHint += uint64(sizeDiff)
 	}
-	aCtx.wb.DeleteLock(regionID, rawKey)
+	DeleteLock(wb, rawKey)
 }
 
 func (a *applier) execDeleteRange(aCtx *applyContext, req *raft_cmdpb.DeleteRangeRequest) {
@@ -1031,14 +908,7 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	resp *raft_cmdpb.AdminResponse, result applyResult, err error) {
 
 	// Write the engine before run finish split, or we will get shard not match error.
-	oldBatch, ok := aCtx.wb.batches[a.region.Id]
-	if ok {
-		delete(aCtx.wb.batches, a.region.Id)
-		err = aCtx.engines.kv.Write(oldBatch)
-		if err != nil {
-			return
-		}
-	}
+	delete(aCtx.wb.batches, a.region.Id)
 	var derived *metapb.Region
 	var regions []*metapb.Region
 	derived, regions, err = a.splitGenNewRegionMetas(req.Splits)
@@ -1280,13 +1150,6 @@ func (a *applier) handleProposal(regionProposal *regionProposal) {
 }
 
 func (a *applier) destroy(aCtx *applyContext) {
-	regionID := a.region.Id
-	for _, res := range aCtx.applyTaskResList {
-		if res.regionID == regionID {
-			// Flush before destroying to avoid reordering messages.
-			aCtx.flush()
-		}
-	}
 	log.S().Infof("%s remove applier", a.tag)
 	a.stopped = true
 	for _, cmd := range a.pendingCmds.normals {

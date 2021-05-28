@@ -203,7 +203,6 @@ func (ic *InvokeContext) saveRaftStateTo(wb *RaftWriteBatch) {
 }
 
 func (ic *InvokeContext) saveApplyStateTo(wbs *KVWriteBatch) {
-	wbs.SetApplyState(ic.Region.Id, ic.ApplyState)
 }
 
 var _ raft.Storage = new(PeerStorage)
@@ -328,10 +327,10 @@ func initApplyState(kvEngine *sdb.DB, region *metapb.Region) (applyState, error)
 	shard := kvEngine.GetShard(region.Id)
 	applyState := applyState{}
 	if shard != nil {
-		props := kvEngine.GetProperties(shard, []string{applyStateKey})
-		y.Assert(len(props) == 1)
-		y.Assert(len(props[0]) == 32)
-		applyState.Unmarshal(props[0])
+		val, ok := kvEngine.GetProperty(shard, applyStateKey)
+		y.Assert(ok)
+		y.Assert(len(val) == 32)
+		applyState.Unmarshal(val)
 	} else {
 		if len(region.Peers) > 0 {
 			applyState = newInitialApplyState()

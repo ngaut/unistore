@@ -47,8 +47,10 @@ func NewEngines(kvEngine *sdb.DB, raftEngine *badger.DB, kvPath, raftPath string
 	}
 }
 
-func (en *Engines) WriteKV(wb *KVWriteBatch) error {
-	return wb.WriteToEngine()
+func (en *Engines) WriteKV(wb *KVWriteBatch) {
+	for _, batch := range wb.batches {
+		en.kv.Write(batch)
+	}
 }
 
 func (en *Engines) WriteRaft(wb *RaftWriteBatch) error {
@@ -86,18 +88,15 @@ func (kvWB *KVWriteBatch) getEngineWriteBatch(regionID uint64) *sdb.WriteBatch {
 	return wb
 }
 
-func (kvWB *KVWriteBatch) SetLock(regionID uint64, key, val []byte) {
-	wb := kvWB.getEngineWriteBatch(regionID)
+func SetLock(wb *sdb.WriteBatch, key, val []byte) {
 	y.Assert(wb.Put(mvcc.LockCF, key, y.ValueStruct{Value: val}) == nil)
 }
 
-func (kvWB *KVWriteBatch) DeleteLock(regionID uint64, key []byte) {
-	wb := kvWB.getEngineWriteBatch(regionID)
+func DeleteLock(wb *sdb.WriteBatch, key []byte) {
 	y.Assert(wb.Delete(mvcc.LockCF, key, 0) == nil)
 }
 
-func (kvWB *KVWriteBatch) Rollback(regionID uint64, key []byte, version uint64) {
-	wb := kvWB.getEngineWriteBatch(regionID)
+func Rollback(wb *sdb.WriteBatch, key []byte, version uint64) {
 	rollbackKey := mvcc.EncodeExtraTxnStatusKey(key, version)
 	y.Assert(wb.Put(mvcc.ExtraCF, rollbackKey, y.ValueStruct{
 		UserMeta: mvcc.NewDBUserMeta(version, 0),
@@ -105,8 +104,7 @@ func (kvWB *KVWriteBatch) Rollback(regionID uint64, key []byte, version uint64) 
 	}) == nil)
 }
 
-func (kvWB *KVWriteBatch) SetWithUserMeta(regionID uint64, key, val, userMeta []byte, version uint64) {
-	wb := kvWB.getEngineWriteBatch(regionID)
+func SetWithUserMeta(wb *sdb.WriteBatch, key, val, userMeta []byte, version uint64) {
 	y.Assert(wb.Put(mvcc.WriteCF, key, y.ValueStruct{
 		UserMeta: userMeta,
 		Value:    val,
@@ -114,35 +112,18 @@ func (kvWB *KVWriteBatch) SetWithUserMeta(regionID uint64, key, val, userMeta []
 	}) == nil)
 }
 
-func (kvWB *KVWriteBatch) SetOpLock(regionID uint64, key, userMeta []byte, version uint64) {
-	wb := kvWB.getEngineWriteBatch(regionID)
+func SetOpLock(wb *sdb.WriteBatch, key, userMeta []byte, version uint64) {
 	startTS := mvcc.DBUserMeta(userMeta).StartTS()
 	opLockKey := mvcc.EncodeExtraTxnStatusKey(key, startTS)
 	y.Assert(wb.Put(mvcc.ExtraCF, opLockKey, y.ValueStruct{UserMeta: userMeta, Version: version}) == nil)
 }
 
-func (kvWB *KVWriteBatch) SetApplyState(regionID uint64, state applyState) {
-	wb := kvWB.getEngineWriteBatch(regionID)
+func SetApplyState(wb *sdb.WriteBatch, state applyState) {
 	wb.SetProperty(applyStateKey, state.Marshal())
 }
 
-func (kvWB *KVWriteBatch) SetMaxMemTableSize(regionID uint64, val []byte) {
-	wb := kvWB.getEngineWriteBatch(regionID)
+func SetMaxMemTableSize(wb *sdb.WriteBatch, val []byte) {
 	wb.SetProperty(sdb.MemTableSizeKey, val)
-}
-
-func (kvWB *KVWriteBatch) WriteToEngine() error {
-	batches := make([]*sdb.WriteBatch, 0, len(kvWB.batches))
-	for _, wb := range kvWB.batches {
-		batches = append(batches, wb)
-	}
-	return kvWB.kv.Write(batches...)
-}
-
-func (kvWB *KVWriteBatch) Reset() {
-	for _, batch := range kvWB.batches {
-		batch.Reset()
-	}
 }
 
 type RaftWriteBatch struct {

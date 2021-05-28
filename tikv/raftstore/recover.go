@@ -39,7 +39,11 @@ func NewRecoverHandler(raftDB *badger.DB) (*RecoverHandler, error) {
 func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMeta, toState *sdbpb.Properties) error {
 	log.S().Infof("recover region:%d ver:%d", shard.ID, shard.Ver)
 	if h.ctx == nil {
-		h.ctx = &applyContext{wb: NewKVWriteBatch(db), engines: &Engines{kv: db, raft: h.raftDB}}
+		h.ctx = &applyContext{
+			wb:      NewKVWriteBatch(db),
+			engines: &Engines{kv: db, raft: h.raftDB},
+			execCtx: &applyExecContext{},
+		}
 	}
 	val, ok := shard.RecoverGetProperty(applyStateKey)
 	if !ok {
@@ -88,12 +92,14 @@ func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMe
 			// must be delete range request. TODO: handle it in the future.
 			continue
 		}
+		h.ctx.execCtx.applyState = applyState{appliedIndex: e.Index, appliedIndexTerm: e.Term}
 		if raftlog.IsChangeSetLog(cl.Data) {
 			// We don't have a background region worker now, should do it synchronously.
 			cs, err := cl.GetShardChangeSet()
 			if err != nil {
 				return err
 			}
+			cs.Sequence = e.Index
 			err = db.ApplyChangeSet(cs)
 			if err != nil {
 				return err
@@ -102,12 +108,6 @@ func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMe
 			// PreSplit is handled by engine.
 		} else {
 			applier.execCustomLog(h.ctx, cl)
-			wb := h.ctx.wb.getEngineWriteBatch(shard.ID)
-			err := db.RecoverWrite(wb)
-			if err != nil {
-				return err
-			}
-			wb.Reset()
 		}
 	}
 	newState := fromApplyState

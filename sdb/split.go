@@ -38,38 +38,23 @@ func (sdb *DB) PreSplit(shardID, ver uint64, keys [][]byte) error {
 		log.Info("shard not match", zap.Uint64("current", shard.Ver), zap.Uint64("request", ver))
 		return errShardNotMatch
 	}
-	notify := make(chan error, 1)
-	task := &preSplitTask{
-		shard: shard,
-		keys:  keys,
-	}
-	sdb.writeCh <- engineTask{preSplitTask: task, notify: notify}
-	return <-notify
-}
-
-// executePreSplitTask is executed in the write thread.
-func (sdb *DB) executePreSplitTask(eTask engineTask) {
-	task := eTask.preSplitTask
-	shard := task.shard
-	if !shard.setSplitKeys(task.keys) {
-		eTask.notify <- errors.New("failed to set split keys")
-		return
+	if !shard.setSplitKeys(keys) {
+		return errors.New("failed to set split keys")
 	}
 	change := newChangeSet(shard)
 	change.Stage = sdbpb.SplitStage_PRE_SPLIT
 	change.PreSplit = &sdbpb.PreSplit{
-		Keys:     task.keys,
+		Keys:     keys,
 		MemProps: shard.properties.toPB(shard.ID),
 	}
 	err := sdb.manifest.writeChangeSet(change)
 	if err != nil {
-		eTask.notify <- err
-		return
+		return err
 	}
-	commitTS := shard.commitTS
+	commitTS := shard.allocCommitTS()
 	memTbl := sdb.switchMemTable(shard, commitTS)
 	sdb.scheduleFlushTask(shard, memTbl)
-	eTask.notify <- nil
+	return nil
 }
 
 // SplitShardFiles splits the files that overlaps the split keys.
@@ -324,43 +309,17 @@ func (sdb *DB) FinishSplit(oldShardID, ver uint64, newShardsProps []*sdbpb.Prope
 	if len(newShardsProps) != len(oldShard.splittingMemTbls) {
 		return nil, fmt.Errorf("newShardsProps length %d is not equals to splittingMemTbls length %d", len(newShardsProps), len(oldShard.splittingMemTbls))
 	}
-	notify := make(chan error, 1)
-	task := &finishSplitTask{
-		shard:    oldShard,
-		newProps: newShardsProps,
-	}
-	sdb.writeCh <- engineTask{finishSplitTask: task, notify: notify}
-	err = <-notify
-	if err != nil {
-		return nil, err
-	}
-	return task.newShards, nil
-}
-
-// executeFinishSplitTask write the last entry and finish the WAL.
-// It is executed in the write thread.
-func (sdb *DB) executeFinishSplitTask(eTask engineTask) {
-	task := eTask.finishSplitTask
-	oldShard := task.shard
-	latest := sdb.GetShard(oldShard.ID)
-	if latest.Ver != oldShard.Ver {
-		eTask.notify <- errShardNotMatch
-		return
-	}
-	changeSet := newChangeSet(task.shard)
+	changeSet := newChangeSet(oldShard)
 	changeSet.Split = &sdbpb.Split{
-		NewShards: task.newProps,
+		NewShards: newShardsProps,
 		Keys:      oldShard.splitKeys,
 		MemProps:  oldShard.properties.toPB(oldShard.ID),
 	}
-	err := sdb.manifest.writeChangeSet(changeSet)
+	err = sdb.manifest.writeChangeSet(changeSet)
 	if err != nil {
-		eTask.notify <- err
-		return
+		return nil, err
 	}
-	newShards := sdb.buildSplitShards(oldShard, task.newProps)
-	task.newShards = newShards
-	eTask.notify <- nil
+	newShards = sdb.buildSplitShards(oldShard, newShardsProps)
 	return
 }
 
