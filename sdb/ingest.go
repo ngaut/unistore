@@ -3,6 +3,7 @@ package sdb
 import (
 	"bytes"
 	"github.com/ngaut/unistore/s3util"
+	"github.com/ngaut/unistore/sdb/table/memtable"
 	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/y"
@@ -40,7 +41,7 @@ func (sdb *DB) Ingest(ingestTree *IngestTree) error {
 		shard.addEstimatedSize(l0.Size())
 	}
 	shard.SetPassive(ingestTree.Passive)
-	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{}))
+	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{memtable.NewCFTable(sdb.numCFs)}}))
 	atomic.StorePointer(shard.l0s, unsafe.Pointer(l0s))
 	shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
 		shard.addEstimatedSize(level.totalSize)
