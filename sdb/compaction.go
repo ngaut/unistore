@@ -521,7 +521,6 @@ func (sdb *DB) getCompactionPriority(shard *Shard) CompactionPriority {
 		numTblsScore := float64(len(l0.tables)) / 5
 		maxPri.Score = sizeScore*0.7 + numTblsScore*0.3
 		maxPri.CF = -1
-		return maxPri
 	}
 	for i, scf := range shard.cfs {
 		for level := 1; level < ShardMaxLevel; level++ {
