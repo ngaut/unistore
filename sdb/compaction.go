@@ -282,8 +282,8 @@ func newL0CreateByResult(result *sstable.BuildResult, props *sdbpb.Properties) *
 	y.Assert(ok)
 	change := &sdbpb.L0Create{
 		ID:         id,
-		Start:      result.Smallest,
-		End:        result.Biggest,
+		Smallest:   result.Smallest,
+		Biggest:    result.Biggest,
 		Properties: props,
 	}
 	return change
@@ -871,7 +871,7 @@ func (sdb *DB) applyFlush(shard *Shard, changeSet *sdbpb.ChangeSet) error {
 	}
 	if newL0 != nil {
 		filename := sstable.NewFilename(newL0.ID, sdb.opt.Dir)
-		tbl, err := sstable.OpenL0Table(filename, newL0.ID)
+		tbl, err := sstable.OpenL0Table(filename, newL0.ID, newL0.Smallest, newL0.Biggest)
 		if err != nil {
 			return err
 		}
@@ -1038,7 +1038,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 	del := &deletions{resources: map[uint64]epoch.Resource{}}
 	for _, l0 := range splitFiles.L0Creates {
 		filename := sstable.NewFilename(l0.ID, sdb.opt.Dir)
-		tbl, err := sstable.OpenL0Table(filename, l0.ID)
+		tbl, err := sstable.OpenL0Table(filename, l0.ID, l0.Smallest, l0.Biggest)
 		if err != nil {
 			return err
 		}

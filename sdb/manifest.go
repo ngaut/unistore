@@ -154,6 +154,8 @@ func (m *Manifest) toChangeSet(shardID uint64) (*sdbpb.ChangeSet, error) {
 		if fileMeta.level == 0 {
 			shardSnap.L0Creates = append(shardSnap.L0Creates, &sdbpb.L0Create{
 				ID:         fid,
+				Smallest:   fileMeta.smallest,
+				Biggest:    fileMeta.biggest,
 				Properties: nil, // Store properties in ShardCreate.
 			})
 		} else {
@@ -338,7 +340,7 @@ func (m *Manifest) applySnapshot(cs *sdbpb.ChangeSet) {
 		shard.preSplit = &sdbpb.PreSplit{Keys: cs.Snapshot.SplitKeys}
 	}
 	for _, l0 := range snap.L0Creates {
-		m.addFile(l0.ID, -1, 0, l0.Start, l0.End, shard)
+		m.addFile(l0.ID, -1, 0, l0.Smallest, l0.Biggest, shard)
 	}
 	for _, tbl := range snap.TableCreates {
 		m.addFile(tbl.ID, tbl.CF, tbl.Level, tbl.Smallest, tbl.Biggest, shard)
@@ -356,7 +358,7 @@ func (m *Manifest) applyFlush(cs *sdbpb.ChangeSet, shardInfo *ShardMeta) {
 				shardInfo.properties.set(key, l0.Properties.Values[i])
 			}
 		}
-		m.addFile(l0.ID, -1, 0, l0.Start, l0.End, shardInfo)
+		m.addFile(l0.ID, -1, 0, l0.Smallest, l0.Biggest, shardInfo)
 	}
 	log.S().Infof("%d:%d apply flush props:%s", cs.ShardID, cs.ShardVer, shardInfo.properties)
 }
@@ -413,7 +415,7 @@ func (m *Manifest) applySplitFiles(cs *sdbpb.ChangeSet, shardInfo *ShardMeta) {
 		m.deleteFile(id, shardInfo)
 	}
 	for _, l0 := range cs.SplitFiles.L0Creates {
-		m.addFile(l0.ID, -1, 0, l0.Start, l0.End, shardInfo)
+		m.addFile(l0.ID, -1, 0, l0.Smallest, l0.Biggest, shardInfo)
 	}
 	for _, tbl := range cs.SplitFiles.TableCreates {
 		m.addFile(tbl.ID, tbl.CF, tbl.Level, tbl.Smallest, tbl.Biggest, shardInfo)

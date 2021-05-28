@@ -67,7 +67,8 @@ func (sdb *DB) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*l0Tables,
 	}
 	snap := ingestTree.ChangeSet.Snapshot
 	for _, l0Create := range snap.L0Creates {
-		l0Tbl, err := sstable.OpenL0Table(sstable.NewFilename(l0Create.ID, sdb.opt.Dir), l0Create.ID)
+		l0Tbl, err := sstable.OpenL0Table(sstable.NewFilename(l0Create.ID, sdb.opt.Dir),
+			l0Create.ID, l0Create.Smallest, l0Create.Biggest)
 		if err != nil {
 			return nil, nil, err
 		}

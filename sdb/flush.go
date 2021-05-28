@@ -73,6 +73,7 @@ func (sdb *DB) flushMemTable(shard *Shard, m *memtable.Table) (*sdbpb.L0Create, 
 		it.Close()
 	}
 	shardL0Data := builder.Finish()
+	smallest, biggest := builder.SmallestAndBiggest()
 	log.S().Infof("%d:%d flush memtable id:%d, size:%d, l0 size: %d, props:%s",
 		shard.ID, shard.Ver, id, m.Size(), len(shardL0Data), newProperties().applyPB(m.GetProps()))
 	_, err = writer.Write(shardL0Data)
@@ -87,8 +88,8 @@ func (sdb *DB) flushMemTable(shard *Shard, m *memtable.Table) (*sdbpb.L0Create, 
 	_ = fd.Close()
 	result := &sstable.BuildResult{
 		FileName: filename,
-		Smallest: shard.Start,
-		Biggest:  shard.End,
+		Smallest: smallest,
+		Biggest:  biggest,
 	}
 	if sdb.s3c != nil {
 		err = putSSTBuildResultToS3(sdb.s3c, result)

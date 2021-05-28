@@ -136,12 +136,8 @@ func (sdb *DB) splitShardL0Table(shard *Shard, l0 *sstable.L0Table) ([]*sdbpb.L0
 	if sdb.s3c != nil {
 		bt = s3util.NewBatchTasks()
 	}
-	for i, key := range shard.splitKeys {
-		startKey := shard.Start
-		if i != 0 {
-			startKey = shard.splitKeys[i-1]
-		}
-		result, err := sdb.buildShardL0BeforeKey(iters, startKey, key, l0.CommitTS())
+	for _, key := range shard.splitKeys {
+		result, err := sdb.buildShardL0BeforeKey(iters, key, l0.CommitTS())
 		if err != nil {
 			return nil, err
 		}
@@ -155,7 +151,7 @@ func (sdb *DB) splitShardL0Table(shard *Shard, l0 *sstable.L0Table) ([]*sdbpb.L0
 			newL0s = append(newL0s, newL0)
 		}
 	}
-	result, err := sdb.buildShardL0BeforeKey(iters, shard.splitKeys[len(shard.splitKeys)-1], shard.End, l0.CommitTS())
+	result, err := sdb.buildShardL0BeforeKey(iters, shard.End, l0.CommitTS())
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +186,7 @@ func (sdb *DB) needSplitL0(shard *Shard, l0 *sstable.L0Table) bool {
 	return false
 }
 
-func (sdb *DB) buildShardL0BeforeKey(iters []table.Iterator, startKey, endKey []byte, commitTS uint64) (*sstable.BuildResult, error) {
+func (sdb *DB) buildShardL0BeforeKey(iters []table.Iterator, endKey []byte, commitTS uint64) (*sstable.BuildResult, error) {
 	fid := sdb.idAlloc.AllocID()
 	builder := sstable.NewL0Builder(sdb.numCFs, fid, sdb.opt.TableBuilderOptions, commitTS)
 	var hasData bool
@@ -211,6 +207,7 @@ func (sdb *DB) buildShardL0BeforeKey(iters []table.Iterator, startKey, endKey []
 		return nil, nil
 	}
 	shardL0Data := builder.Finish()
+	smallset, biggest := builder.SmallestAndBiggest()
 	fd, err := sdb.createL0File(fid)
 	if err != nil {
 		panic(err)
@@ -228,8 +225,8 @@ func (sdb *DB) buildShardL0BeforeKey(iters []table.Iterator, startKey, endKey []
 	result := &sstable.BuildResult{
 		FileName: fd.Name(),
 		FileData: shardL0Data,
-		Smallest: startKey,
-		Biggest:  endKey,
+		Smallest: smallset,
+		Biggest:  biggest,
 	}
 	return result, nil
 }
@@ -358,7 +355,7 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 	}
 	l0s := oldShard.loadL0Tables()
 	for _, l0 := range l0s.tables {
-		idx := sdb.getL0SplitIndex(l0, oldShard.splitKeys)
+		idx := getSplitShardIndex(oldShard.splitKeys, l0.Smallest())
 		nShard := newShards[idx]
 		nL0s := nShard.loadL0Tables()
 		nL0s.tables = append(nL0s.tables, l0)
@@ -378,16 +375,6 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 	}
 	log.S().Infof("shard %d split to %s", oldShard.ID, newShardsProps)
 	return
-}
-
-func (sdb *DB) getL0SplitIndex(l0 *sstable.L0Table, splitKeys [][]byte) int {
-	for i := 0; i < sdb.numCFs; i++ {
-		cfTbl := l0.GetCF(i)
-		if cfTbl != nil {
-			return getSplitShardIndex(splitKeys, cfTbl.Smallest())
-		}
-	}
-	return 0
 }
 
 func (sdb *DB) insertTableToNewShard(t table.Table, cf, level int, shards []*Shard, splitKeys [][]byte) {

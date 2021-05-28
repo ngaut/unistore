@@ -58,8 +58,8 @@ message SplitFiles {
 
 message L0Create {
   uint64 ID = 1;
-  bytes start = 2;
-  bytes end = 3;
+  bytes smallest = 2;
+  bytes biggest = 3;
   Properties properties = 4;
 }
 
