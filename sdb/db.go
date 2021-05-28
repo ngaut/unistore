@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 type closers struct {
@@ -351,6 +352,7 @@ func (sdb *DB) loadShards() error {
 
 func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 	shard := newShardForLoading(shardInfo, &sdb.opt, sdb.metrics)
+	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{memtable.NewCFTable(sdb.numCFs)}}))
 	for fid := range shardInfo.files {
 		fileMeta, ok := sdb.manifest.globalFiles[fid]
 		y.AssertTruef(ok, "%d:%d global file %d not found", shardInfo.ID, shardInfo.Ver, fid)
