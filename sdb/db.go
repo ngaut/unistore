@@ -244,23 +244,23 @@ func (sdb *DB) DebugHandler() http.HandlerFunc {
 				memTables := shard.loadMemTables()
 				l0Tables := shard.loadL0Tables()
 				if r.FormValue("detail") == "" {
-					fmt.Fprintf(w, "\tShard ID % 10d,\tVersion %d,\tSplitStage % 20s,\tSize % 13s,\tMem % 13s,\tL0 % 13s,\tCF0 % 13s,\tCF1 % 13s\n",
+					fmt.Fprintf(w, "\tShard\t%d:%d,\tSize % 13s,\tMem % 13s,\tL0 % 13s,\tCF0 % 13s,\tCF1 % 13s,\tStage % 20s\n\n",
 						key,
 						shard.Ver,
-						sdbpb.SplitStage_name[shard.splitStage],
 						formatInt(shardStat.ShardSize),
 						formatInt(shardStat.MemTablesSize),
 						formatInt(shardStat.L0TablesSize),
 						formatInt(shardStat.CFSize[0]),
 						formatInt(shardStat.CFSize[1]),
+						sdbpb.SplitStage_name[shard.splitStage],
 					)
 					continue
 				}
-				fmt.Fprintf(w, "\tShard ID %d, Version %d, SplitStage %s, Size %s\n",
+				fmt.Fprintf(w, "\tShard %d:%d, Size %s, Stage %s\n",
 					key,
 					shard.Ver,
-					sdbpb.SplitStage_name[shard.splitStage],
 					formatInt(shardStat.ShardSize),
+					sdbpb.SplitStage_name[shard.splitStage],
 				)
 				fmt.Fprintf(w, "\t\tMemTables %d,  Size %s\n", len(memTables.tables), formatInt(shardStat.MemTablesSize))
 				for i, t := range memTables.tables {
