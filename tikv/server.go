@@ -76,7 +76,8 @@ func NewServer(conf *config.Config, pdClient pd.Client) (*Server, error) {
 	allocator := &idAllocator{
 		pdCli: pdClient,
 	}
-	raftDB, err := createRaftDB(subPathRaft, &conf.RaftEngine)
+	raftFilter := new(raftstore.RaftLogFilterBuilder)
+	raftDB, err := createRaftDB(subPathRaft, &conf.RaftEngine, raftFilter)
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
@@ -90,7 +91,7 @@ func NewServer(conf *config.Config, pdClient pd.Client) (*Server, error) {
 		return nil, errors.AddStack(err)
 	}
 	http.DefaultServeMux.HandleFunc("/debug/db", db.DebugHandler())
-	engines := raftstore.NewEngines(db, raftDB, kvPath, raftPath, listener)
+	engines := raftstore.NewEngines(db, raftDB, kvPath, raftPath, listener, raftFilter)
 	innerServer := raftstore.NewRaftInnerServer(conf, engines, raftConf)
 	innerServer.Setup(pdClient)
 	router := innerServer.GetRaftstoreRouter()
@@ -136,13 +137,15 @@ func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	raftConf.SplitCheck.RegionMaxSize = uint64(conf.Server.RegionSize)
 }
 
-func createRaftDB(subPath string, conf *config.Engine) (*badger.DB, error) {
+func createRaftDB(subPath string, conf *config.Engine, filter *raftstore.RaftLogFilterBuilder) (*badger.DB, error) {
 	opts := badger.DefaultOptions
 	opts.NumCompactors = conf.NumCompactors
 	opts.ValueThreshold = conf.ValueThreshold
 	// Do not need to write blob for raft engine because it will be deleted soon.
 	opts.ValueThreshold = 0
-	opts.CompactionFilterFactory = raftstore.CreateRaftLogCompactionFilter
+	opts.MaxBlockCacheSize = 0
+	opts.MaxIndexCacheSize = 0
+	opts.CompactionFilterFactory = filter.BuildFilter
 	opts.ValueLogWriteOptions.WriteBufferSize = 4 * 1024 * 1024
 	opts.Dir = filepath.Join(conf.DBPath, subPath)
 	opts.ValueDir = opts.Dir

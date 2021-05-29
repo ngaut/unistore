@@ -623,14 +623,28 @@ func (sdb *DB) RemoveShard(shardID uint64, removeFile bool) error {
 	if err != nil {
 		return err
 	}
-	shard.removeFilesOnDel = removeFile
 	sdb.shardMap.Delete(shardID)
+	sdb.removeShardFiles(shard, func(id uint64) bool {
+		return removeFile
+	})
+	return nil
+}
+
+func (sdb *DB) removeShardFiles(shard *Shard, removeFile func(id uint64) bool) {
 	guard := sdb.resourceMgr.Acquire()
 	defer guard.Done()
 	guard.Delete([]epoch.Resource{&deletion{res: shard, delete: func() {
+		l0s := shard.loadL0Tables()
+		for _, l0 := range l0s.tables {
+			if removeFile(l0.ID()) {
+				if sdb.s3c != nil {
+					sdb.s3c.SetExpired(l0.ID())
+				}
+			}
+		}
 		shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
 			for _, tbl := range level.tables {
-				if shard.removeFilesOnDel {
+				if removeFile(tbl.ID()) {
 					if sdb.s3c != nil {
 						sdb.s3c.SetExpired(tbl.ID())
 					}
@@ -639,7 +653,6 @@ func (sdb *DB) RemoveShard(shardID uint64, removeFile bool) error {
 			return false
 		})
 	}}})
-	return nil
 }
 
 func (sdb *DB) GetShard(shardID uint64) *Shard {
@@ -701,5 +714,13 @@ func (sdb *DB) TriggerFlush(shard *Shard, skipCnt int) {
 				tbl:   memTbl,
 			}
 		}
+	}
+}
+
+func (sdb *DB) IterateMeta(fn func(meta *ShardMeta)) {
+	sdb.manifest.appendLock.Lock()
+	defer sdb.manifest.appendLock.Unlock()
+	for _, meta := range sdb.manifest.shards {
+		fn(meta)
 	}
 }

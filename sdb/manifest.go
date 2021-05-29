@@ -100,6 +100,10 @@ func (si *ShardMeta) FileLevel(fid uint64) (int, bool) {
 	return level, ok
 }
 
+func (si *ShardMeta) GetProperty(key string) ([]byte, bool) {
+	return si.properties.get(key)
+}
+
 // LevelCF is the struct that contains shard id and level id,
 type LevelCF struct {
 	Level uint16

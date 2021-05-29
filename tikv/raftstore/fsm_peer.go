@@ -279,10 +279,6 @@ func (d *peerMsgHandler) HandleRaftReadyAppend(proposals []*regionProposal) []*r
 
 func (d *peerMsgHandler) HandleRaftReady(ready *raft.Ready, ic *InvokeContext) {
 	isMerging := d.peer.PendingMergeState != nil
-	if ic.hasSnapshot() {
-		// When apply snapshot, there is no log applied and not compacted yet.
-		d.peer.RaftLogSizeHint = 0
-	}
 	d.peer.Store().updateStates(ic)
 	readyApplySnapshot := d.peer.Store().maybeScheduleApplySnapshot(ic)
 	if readyApplySnapshot != nil && d.peer.Meta.GetRole() == metapb.PeerRole_Learner {
@@ -671,6 +667,7 @@ func (d *peerMsgHandler) destroyPeer(mergeByTarget bool) {
 		panic(d.tag() + " meta corruption detected")
 	}
 	delete(meta.regions, regionID)
+	d.ctx.engine.kv.RemoveShard(regionID, false)
 	d.ctx.peerEventObserver.OnPeerDestroy(d.peer.getEventContext())
 }
 
@@ -741,10 +738,6 @@ func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
 }
 
 func (d *peerMsgHandler) onReadyCompactLog(firstIndex uint64, truncatedIndex uint64) {
-	totalCnt := d.peer.LastApplyingIdx - firstIndex
-	// the size of current CompactLog command can be ignored.
-	remainCnt := d.peer.LastApplyingIdx - truncatedIndex - 1
-	d.peer.RaftLogSizeHint *= remainCnt / totalCnt
 	raftLogGCTask := &raftLogGCTask{
 		raftEngine: d.ctx.engine.raft,
 		regionID:   d.regionID(),
@@ -1426,6 +1419,7 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 			var applyState applyState
 			applyState.Unmarshal(val)
 			store.stableApplyState = applyState
+			d.ctx.engine.filter.SetStableIdx(d.regionID(), applyState.appliedIndex)
 		}
 	}
 	if change.Stage > store.splitStage {

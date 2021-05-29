@@ -62,8 +62,29 @@ func (sdb *DB) Ingest(ingestTree *IngestTree) error {
 	if err = sdb.manifest.writeChangeSet(ingestTree.ChangeSet); err != nil {
 		return err
 	}
+	oldVal, ok := sdb.shardMap.Load(shard.ID)
+	if ok {
+		oldShard := oldVal.(*Shard)
+		allFiles := sdb.getAllFiles(ingestTree)
+		sdb.removeShardFiles(oldShard, func(id uint64) bool {
+			_, contains := allFiles[id]
+			return !contains
+		})
+	}
 	sdb.shardMap.Store(shard.ID, shard)
 	return nil
+}
+
+func (sdb *DB) getAllFiles(tree *IngestTree) map[uint64]struct{} {
+	snap := tree.ChangeSet.Snapshot
+	files := map[uint64]struct{}{}
+	for _, l0 := range snap.L0Creates {
+		files[l0.ID] = struct{}{}
+	}
+	for _, t := range snap.TableCreates {
+		files[t.ID] = struct{}{}
+	}
+	return files
 }
 
 func (sdb *DB) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*l0Tables, [][]*levelHandler, error) {
