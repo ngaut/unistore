@@ -66,9 +66,6 @@ type Config struct {
 
 	// Interval (ms) to check region whether need to be split or not.
 	SplitRegionCheckTickInterval time.Duration
-	/// When size change of region exceed the diff since last check, it
-	/// will be checked again whether it should be split.
-	RegionSplitCheckDiff uint64
 	/// Interval (ms) to check whether start compaction for a region.
 	RegionCompactCheckInterval time.Duration
 	// delay time before deleting a stale peer
@@ -199,7 +196,6 @@ func NewDefaultConfig() *Config {
 		RaftEntryCacheLifeTime:           30 * time.Second,
 		RaftRejectTransferLeaderDuration: 3 * time.Second,
 		SplitRegionCheckTickInterval:     10 * time.Second,
-		RegionSplitCheckDiff:             splitSize / 8,
 		CleanStalePeerDelay:              10 * time.Minute,
 		RegionCompactCheckInterval:       5 * time.Minute,
 		RegionCompactCheckStep:           100,

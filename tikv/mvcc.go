@@ -16,7 +16,6 @@ package tikv
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"github.com/ngaut/unistore/sdb"
 	"math"
@@ -1022,11 +1021,6 @@ func (store *MVCCStore) checkCommitted(reader *dbreader.DBReader, key []byte, st
 	return 0, nil
 }
 
-func isVisibleKey(key []byte, startTS uint64) bool {
-	ts := ^(binary.BigEndian.Uint64(key[len(key)-8:]))
-	return startTS >= ts
-}
-
 func checkLock(lock mvcc.MvccLock, key []byte, startTS uint64, resolved []uint64) error {
 	if isResolved(lock.StartTS, resolved) {
 		return nil
@@ -1506,15 +1500,6 @@ type GCCompactionFilter struct {
 	safePoint   uint64
 }
 
-const (
-	metaPrefix byte = 'm'
-	// 'm' + 1 = 'n'
-	metaExtraPrefix byte = 'n'
-	tablePrefix     byte = 't'
-	// 't' + 1 = 'u
-	tableExtraPrefix byte = 'u'
-)
-
 // Filter implements the badger.CompactionFilter interface.
 // Since we use txn ts as badger version, we only need to filter Delete, Rollback and Op_Lock.
 // It is called for the first valid version before safe point, older versions are discarded automatically.
@@ -1533,27 +1518,4 @@ func (f *GCCompactionFilter) Filter(cf int, key, value, userMeta []byte) sdb.Dec
 	}
 	// Older version are discarded automatically, we need to keep the first valid version.
 	return sdb.DecisionKeep
-}
-
-var (
-	baseGuard       = badger.Guard{MatchLen: 64, MinSize: 64 * 1024}
-	raftGuard       = badger.Guard{Prefix: []byte{0}, MatchLen: 1, MinSize: 64 * 1024}
-	metaGuard       = badger.Guard{Prefix: []byte{'m'}, MatchLen: 1, MinSize: 64 * 1024}
-	metaExtraGuard  = badger.Guard{Prefix: []byte{'n'}, MatchLen: 1, MinSize: 1}
-	tableGuard      = badger.Guard{Prefix: []byte{'t'}, MatchLen: 9, MinSize: 1 * 1024 * 1024}
-	tableIndexGuard = badger.Guard{Prefix: []byte{'t'}, MatchLen: 11, MinSize: 1 * 1024 * 1024}
-	tableExtraGuard = badger.Guard{Prefix: []byte{'u'}, MatchLen: 1, MinSize: 1}
-)
-
-func (f *GCCompactionFilter) Guards() []badger.Guard {
-	if f.targetLevel < 4 {
-		// do not split index and row for top levels.
-		return []badger.Guard{
-			baseGuard, raftGuard, metaGuard, metaExtraGuard, tableGuard, tableExtraGuard,
-		}
-	}
-	// split index and row for bottom levels.
-	return []badger.Guard{
-		baseGuard, raftGuard, metaGuard, metaExtraGuard, tableIndexGuard, tableExtraGuard,
-	}
 }

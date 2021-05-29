@@ -216,8 +216,7 @@ type PeerStorage struct {
 	applyState applyState
 	lastTerm   uint64
 
-	snapState SnapState
-	//genSnapTask  *GenSnapTask
+	snapState    SnapState
 	regionSched  chan<- task
 	snapTriedCnt int
 
@@ -961,12 +960,6 @@ func appendSlice(buf []byte, element []byte) []byte {
 	buf = append(buf, make([]byte, 4)...)
 	binary.LittleEndian.PutUint32(buf[len(buf)-4:], uint32(len(element)))
 	return append(buf, element...)
-}
-
-func appendU64(buf []byte, v uint64) []byte {
-	tmp := make([]byte, 8)
-	binary.LittleEndian.PutUint64(tmp, v)
-	return append(buf, tmp...)
 }
 
 func cutSlices(data []byte) (element []byte, remain []byte) {

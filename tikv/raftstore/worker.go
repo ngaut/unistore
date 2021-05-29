@@ -15,7 +15,6 @@ package raftstore
 
 import (
 	"encoding/binary"
-	"encoding/hex"
 	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/sdbpb"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
@@ -31,8 +30,6 @@ import (
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
-	"github.com/pingcap/kvproto/pkg/raft_serverpb"
-	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/util/codec"
 	"go.uber.org/zap"
@@ -64,9 +61,6 @@ const (
 	taskTypeRegionApplyChangeSet taskType = 404
 	taskTypeRecoverSplit         taskType = 405
 	taskTypeFinishSplit          taskType = 406
-
-	taskTypeSnapSend taskType = 601
-	taskTypeSnapRecv taskType = 602
 )
 
 type task struct {
@@ -155,17 +149,6 @@ type flowStats struct {
 	readKeys  uint64
 }
 
-type sendSnapTask struct {
-	storeID  uint64
-	msg      *raft_serverpb.RaftMessage
-	callback func(error)
-}
-
-type recvSnapTask struct {
-	stream   tikvpb.Tikv_SnapshotServer
-	callback func(error)
-}
-
 type worker struct {
 	name     string
 	sender   chan<- task
@@ -235,27 +218,13 @@ func (r *splitCheckHandler) handle(t task) {
 	spCheckTask := t.data.(*splitCheckTask)
 	region := spCheckTask.region
 	regionId := region.Id
-	_, startKey, err := codec.DecodeBytes(region.StartKey, nil)
-	if err != nil {
-		log.S().Errorf("failed to decode region key %x, err:%v", region.StartKey, err)
-		return
-	}
-	_, endKey, err := codec.DecodeBytes(region.EndKey, nil)
-	if err != nil {
-		log.S().Errorf("failed to decode region key %x, err:%v", region.EndKey, err)
-		return
-	}
-	log.S().Debugf("executing split check task: [regionId: %d, startKey: %s, endKey: %s]", regionId,
-		hex.EncodeToString(startKey), hex.EncodeToString(endKey))
 	keys := r.engine.GetSplitSuggestion(regionId, int64(r.config.RegionMaxSize))
 	if len(keys) != 0 {
 		log.S().Infof("split %d:%d by checker size:%d", region.Id, region.RegionEpoch.Version, r.config.RegionMaxSize)
-		_, err = splitEngineAndRegion(r.router, r.engine, spCheckTask.peer, region, keys)
+		_, err := splitEngineAndRegion(r.router, r.engine, spCheckTask.peer, region, keys)
 		if err != nil {
 			log.Warn("failed to send check result", zap.Uint64("region id", regionId), zap.Error(err))
 		}
-	} else {
-		log.Debug("no need to send, split key not found", zap.Uint64("region id", regionId))
 	}
 }
 
@@ -639,14 +608,6 @@ func (r *raftLogGCTaskHandler) handle(t task) {
 		log.Debug("collected log entries", zap.Uint64("region id", logGcTask.regionID), zap.Uint64("count", collected))
 	}
 	r.reportCollected(collected)
-}
-
-type compactTaskHandler struct {
-	engine *sdb.DB
-}
-
-func (r *compactTaskHandler) handle(t task) {
-	// TODO: stub
 }
 
 type computeHashTaskHandler struct {

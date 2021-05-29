@@ -179,8 +179,6 @@ func (d *peerMsgHandler) HandleMsgs(msgs ...Msg) {
 				continue
 			}
 			d.onApplyResult(res)
-		case MsgTypeSignificantMsg:
-			d.onSignificantMsg(msg.Data.(*MsgSignificant))
 		case MsgTypeSplitRegion:
 			split := msg.Data.(*MsgSplitRegion)
 			log.S().Infof("%s on split with %v", d.peer.Tag, split.SplitKeys)
@@ -198,8 +196,6 @@ func (d *peerMsgHandler) HandleMsgs(msgs ...Msg) {
 		case MsgTypeMergeResult:
 			result := msg.Data.(*MsgMergeResult)
 			d.onMergeResult(result.TargetPeer, result.Stale)
-		case MsgTypeClearRegionSize:
-			d.onClearRegionSize()
 		case MsgTypeStart:
 			d.startTicker()
 		case MsgTypeNoop:
@@ -257,32 +253,6 @@ func (d *peerMsgHandler) notifyPrepareMerge() {
 
 func (d *peerMsgHandler) resumeHandlePendingApplyResult() bool {
 	return false // TODO: merge func
-}
-
-func (d *peerMsgHandler) onClearRegionSize() {
-	d.peer.ApproximateSize = nil
-	d.peer.ApproximateKeys = nil
-}
-
-func (d *peerMsgHandler) onSignificantMsg(msg *MsgSignificant) {
-	switch msg.Type {
-	case MsgSignificantTypeStatus:
-		// Report snapshot status to the corresponding peer.
-		d.reportSnapshotStatus(msg.ToPeerID, msg.SnapshotStatus)
-	case MsgSignificantTypeUnreachable:
-		d.peer.RaftGroup.ReportUnreachable(msg.ToPeerID)
-	}
-}
-
-func (d *peerMsgHandler) reportSnapshotStatus(toPeerID uint64, status raft.SnapshotStatus) {
-	toPeer := d.peer.getPeerFromCache(toPeerID)
-	if toPeer == nil {
-		// If to_peer is gone, ignore this snapshot status
-		log.S().Warnf("%s peer %d not found, ignore snapshot status %v", d.tag(), toPeerID, status)
-		return
-	}
-	log.S().Infof("%s report snapshot status %s %v", d.tag(), toPeer, status)
-	d.peer.RaftGroup.ReportSnapshot(toPeerID, status)
 }
 
 func (d *peerMsgHandler) HandleRaftReadyAppend(proposals []*regionProposal) []*regionProposal {
@@ -802,7 +772,6 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 	meta := d.ctx.storeMeta
 	regionID := derived.Id
 	meta.setRegion(derived, d.getPeer())
-	d.peer.PostSplit()
 	isLeader := d.peer.IsLeader()
 	if isLeader {
 		d.peer.HeartbeatPd(d.ctx.pdTaskSender)
@@ -822,7 +791,6 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 	}
 	// It's not correct anymore, so set it to None to let split checker update it.
 	d.peer.ApproximateSize = nil
-	lastRegionID := lastRegion.Id
 
 	newPeers := make([]*PeerEventContext, 0, len(regions))
 	for _, newRegion := range regions {
@@ -883,11 +851,6 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 
 		newPeer.peer.Activate(d.ctx.applyMsgs)
 		meta.regions[newRegionID] = newRegion
-		if lastRegionID == newRegionID {
-			// To prevent from big region, the right region needs run split
-			// check again after split.
-			newPeer.peer.SizeDiffHint = d.ctx.cfg.RegionSplitCheckDiff
-		}
 		d.ctx.router.register(newPeer)
 		_ = d.ctx.router.send(newRegionID, NewPeerMsg(MsgTypeStart, newRegionID, nil))
 		if !campaigned {
@@ -1137,9 +1100,6 @@ func (d *peerMsgHandler) onSplitRegionCheckTick() {
 	if !d.peer.IsLeader() {
 		return
 	}
-	if d.peer.SizeDiffHint < d.ctx.cfg.RegionSplitCheckDiff {
-		return
-	}
 	d.ctx.splitCheckTaskSender <- task{
 		tp: taskTypeSplitCheck,
 		data: &splitCheckTask{
@@ -1147,7 +1107,6 @@ func (d *peerMsgHandler) onSplitRegionCheckTick() {
 			peer:   d.peer.Meta,
 		},
 	}
-	d.peer.SizeDiffHint = 0
 }
 
 func isTableKey(key []byte) bool {

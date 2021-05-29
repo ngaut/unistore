@@ -7,18 +7,6 @@ import (
 	"github.com/pingcap/badger/y"
 )
 
-type GuardsInspector interface {
-	Begin()
-	Inspect(payload interface{}, active bool)
-	End()
-}
-
-type NoOpInspector struct{}
-
-func (i NoOpInspector) Begin()                                   {}
-func (i NoOpInspector) Inspect(payload interface{}, active bool) {}
-func (i NoOpInspector) End()                                     {}
-
 type Guard struct {
 	localEpoch atomicEpoch
 	mgr        *ResourceManager
@@ -65,15 +53,13 @@ type ResourceManager struct {
 
 	// TODO: cache line size for non x86
 	// cachePad make currentEpoch stay in a separate cache line.
-	cachePad  [64]byte
-	guards    guardList
-	inspector GuardsInspector
+	cachePad [64]byte
+	guards   guardList
 }
 
-func NewResourceManager(c *y.Closer, inspector GuardsInspector) *ResourceManager {
+func NewResourceManager(c *y.Closer) *ResourceManager {
 	rm := &ResourceManager{
 		currentEpoch: atomicEpoch{epoch: 1 << 1},
-		inspector:    inspector,
 	}
 	c.AddRunning(1)
 	go rm.collectLoop(c)
@@ -111,21 +97,16 @@ func (rm *ResourceManager) collect() {
 	canAdvance := true
 	globalEpoch := rm.currentEpoch.load()
 
-	rm.inspector.Begin()
 	rm.guards.iterate(func(guard *Guard) bool {
 		localEpoch := guard.localEpoch.load()
 
-		isActive := localEpoch.isActive()
-		rm.inspector.Inspect(guard.payload, isActive)
-
-		if isActive {
+		if localEpoch.isActive() {
 			canAdvance = canAdvance && localEpoch.sub(globalEpoch) == 0
 			return false
 		}
 
 		return guard.collect(globalEpoch)
 	})
-	rm.inspector.End()
 
 	if canAdvance {
 		rm.currentEpoch.store(globalEpoch.successor())

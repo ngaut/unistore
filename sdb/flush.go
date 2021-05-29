@@ -63,7 +63,8 @@ func (sdb *DB) flushMemTable(shard *Shard, m *memtable.Table) (*sdbpb.L0Create, 
 		if it == nil {
 			continue
 		}
-		rc := sdb.opt.CFs[cf].ReadCommitted
+		// If CF is not managed, we only need to keep the latest version.
+		rc := !sdb.opt.CFs[cf].Managed
 		var prevKey []byte
 		for it.Rewind(); it.Valid(); table.NextAllVersion(it) {
 			if rc && bytes.Equal(prevKey, it.Key()) {

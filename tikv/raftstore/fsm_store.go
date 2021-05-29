@@ -88,7 +88,6 @@ type GlobalContext struct {
 	computeHashTaskSender chan<- task
 	raftLogGCTaskSender   chan<- task
 	splitCheckTaskSender  chan<- task
-	compactTaskSender     chan<- task
 	pdClient              pd.Client
 	peerEventObserver     PeerEventObserver
 	globalStats           *storeStats
@@ -179,11 +178,6 @@ func (d *storeMsgHandler) handleMsg(msg Msg) {
 		if err := d.onRaftMessage(msg.Data.(*rspb.RaftMessage)); err != nil {
 			log.S().Errorf("handle raft message failed storeID %d, %v", d.id, err)
 		}
-	case MsgTypeStoreSnapshotStats:
-		d.storeHeartbeatPD()
-	case MsgTypeStoreClearRegionSizeInRange:
-		data := msg.Data.(*MsgStoreClearRegionSizeInRange)
-		d.clearRegionSizeInRange(data.StartKey, data.EndKey)
 	case MsgTypeStoreTick:
 		d.onTick(msg.Data.(StoreTick))
 	case MsgTypeStoreStart:
@@ -339,7 +333,6 @@ type workers struct {
 	computeHashWorker *worker
 	splitCheckWorker  *worker
 	regionWorker      *worker
-	compactWorker     *worker
 	wg                *sync.WaitGroup
 }
 
@@ -370,7 +363,6 @@ func (bs *raftBatchSystem) start(
 		splitCheckWorker:  newWorker("split-check", wg),
 		regionWorker:      newWorker("snapshot-worker", wg),
 		raftLogGCWorker:   newWorker("raft-gc-worker", wg),
-		compactWorker:     newWorker("compact-worker", wg),
 		pdWorker:          pdWorker,
 		computeHashWorker: newWorker("compute-hash", wg),
 		wg:                wg,
@@ -388,7 +380,6 @@ func (bs *raftBatchSystem) start(
 		computeHashTaskSender: bs.workers.computeHashWorker.sender,
 		splitCheckTaskSender:  bs.workers.splitCheckWorker.sender,
 		raftLogGCTaskSender:   bs.workers.raftLogGCWorker.sender,
-		compactTaskSender:     bs.workers.compactWorker.sender,
 		pdClient:              pdClient,
 		peerEventObserver:     observer,
 		globalStats:           new(storeStats),
@@ -429,7 +420,6 @@ func (bs *raftBatchSystem) startWorkers(peers []*peerFsm) {
 	workers.splitCheckWorker.start(newSplitCheckRunner(engines.kv, router, cfg.SplitCheck))
 	workers.regionWorker.start(newRegionTaskHandler(bs.globalCfg, engines, router))
 	workers.raftLogGCWorker.start(&raftLogGCTaskHandler{})
-	workers.compactWorker.start(&compactTaskHandler{engine: engines.kv})
 	workers.pdWorker.start(newPDTaskHandler(ctx.store.Id, ctx.pdClient, bs.router))
 	workers.computeHashWorker.start(&computeHashTaskHandler{router: bs.router})
 }
@@ -448,7 +438,6 @@ func (bs *raftBatchSystem) shutDown() {
 	workers.raftLogGCWorker.sender <- stopTask
 	workers.computeHashWorker.sender <- stopTask
 	workers.pdWorker.sender <- stopTask
-	workers.compactWorker.sender <- stopTask
 	workers.wg.Wait()
 }
 
@@ -712,13 +701,6 @@ func (d *storeMsgHandler) findTargetRegionForComputeHash() *metapb.Region {
 		}
 	}
 	return targetRegion
-}
-
-func (d *storeMsgHandler) clearRegionSizeInRange(startKey, endKey []byte) {
-	regions := d.findRegionsInRange(startKey, endKey)
-	for _, region := range regions {
-		_ = d.ctx.router.send(region.Id, NewPeerMsg(MsgTypeClearRegionSize, region.Id, nil))
-	}
 }
 
 func (d *storeMsgHandler) findRegionsInRange(startKey, endKey []byte) []*metapb.Region {

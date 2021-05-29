@@ -231,7 +231,7 @@ func (aw *applyWorker) run(wg *sync.WaitGroup) {
 				ps = aw.r.get(msg.RegionID)
 				batch.peers[msg.RegionID] = ps
 			}
-			ps.apply.handleTask(aw.ctx, msg)
+			ps.apply.handleMsg(aw.ctx, msg)
 		}
 	}
 }
