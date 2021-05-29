@@ -118,6 +118,7 @@ func (w *TestRaftWriter) Write(batch mvcc.WriteBatch) error {
 	raftLog := raftWriteBatch.builder.Build()
 	applier := new(applier)
 	applyCtx := newApplyContext("test", nil, w.engine, nil, NewDefaultConfig())
+	applyCtx.execCtx = &applyExecContext{index: RaftInitLogIndex, term: RaftInitLogTerm}
 	applier.execWriteCmd(applyCtx, raftLog)
 	return nil
 }

@@ -704,7 +704,7 @@ func (a *applier) execWriteCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 }
 
 func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) int {
-	wb := aCtx.wb.getEngineWriteBatch(a.region.Id)
+	wb := aCtx.wb.getEngineWriteBatch(cl.RegionID())
 	var cnt int
 	switch cl.Type() {
 	case raftlog.TypePrewrite, raftlog.TypePessimisticLock:
