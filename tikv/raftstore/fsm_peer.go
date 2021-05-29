@@ -597,21 +597,12 @@ func (d *peerMsgHandler) checkSnapshot(msg *rspb.RaftMessage) error {
 }
 
 func (d *peerMsgHandler) findOverlapRegions(storeMeta *storeMeta, id uint64, startKey, endKey []byte) (result []*metapb.Region) {
-	it := storeMeta.regionRanges.NewIterator()
-	it.Seek(startKey)
-	for it.Valid() {
-		regionID := regionIDFromBytes(it.Value())
-		if bytes.Equal(it.Key(), startKey) || regionID == id {
-			it.Next()
-			continue
-		}
-		region := storeMeta.regions[regionID]
-		if bytes.Compare(region.StartKey, endKey) < 0 {
+	storeMeta.regionTree.Iterate(startKey, endKey, func(region *metapb.Region) bool {
+		if region.Id != id {
 			result = append(result, region)
-		} else {
-			return
 		}
-	}
+		return true
+	})
 	return
 }
 
@@ -668,7 +659,12 @@ func (d *peerMsgHandler) destroyPeer(mergeByTarget bool) {
 	}
 	d.ctx.router.close(regionID)
 	d.stop()
-	if isInitialized && !mergeByTarget && !meta.regionRanges.Delete(d.region().EndKey) {
+	if isInitialized && !mergeByTarget && !meta.regionTree.Delete(d.region()) {
+		meta.regionTree.Iterate(nil, nil, func(region *metapb.Region) bool {
+			log.S().Infof("existing region %s", region)
+			return true
+		})
+
 		panic(d.tag() + " meta corruption detected")
 	}
 	if _, ok := meta.regions[regionID]; !ok && !mergeByTarget {
@@ -786,7 +782,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 	}
 
 	lastRegion := regions[len(regions)-1]
-	if !meta.regionRanges.Delete(lastRegion.EndKey) {
+	if !meta.regionTree.Delete(lastRegion) {
 		panic(d.tag() + " original region should exist")
 	}
 	// It's not correct anymore, so set it to None to let split checker update it.
@@ -795,7 +791,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 	newPeers := make([]*PeerEventContext, 0, len(regions))
 	for _, newRegion := range regions {
 		newRegionID := newRegion.Id
-		notExist := meta.regionRanges.Put(newRegion.EndKey, regionIDToBytes(newRegionID))
+		notExist := meta.regionTree.Put(newRegion)
 		y.Assert(notExist)
 		if newRegionID == regionID {
 			newPeers = append(newPeers, d.peer.getEventContext())
@@ -913,11 +909,11 @@ func (d *peerMsgHandler) onReadyApplySnapshot(applyResult *ReadyApplySnapshot) {
 	initialized := len(prevRegion.Peers) > 0
 	if initialized {
 		log.S().Infof("%s region changed from %s -> %s after applying snapshot", d.tag(), prevRegion, region)
-		meta.regionRanges.Delete(prevRegion.EndKey)
+		meta.regionTree.Delete(prevRegion)
 	}
-	if !meta.regionRanges.Put(region.EndKey, regionIDToBytes(region.Id)) {
-		oldRegionID := regionIDFromBytes(meta.regionRanges.Get(region.EndKey, nil))
-		panic(fmt.Sprintf("%s unexpected old region %d", d.tag(), oldRegionID))
+	if !meta.regionTree.Put(region) {
+		oldRegion := meta.regionTree.GetRegionByKey(region.StartKey)
+		panic(fmt.Sprintf("%s unexpected old region %d", d.tag(), oldRegion.Id))
 	}
 	meta.regions[region.Id] = region
 	d.ctx.peerEventObserver.OnPeerApplySnap(d.peer.getEventContext(), region)
@@ -988,19 +984,7 @@ func (d *peerMsgHandler) preProposeRaftCommand(rlog raftlog.RaftLog) (*raft_cmdp
 	if err := checkTerm(rlog, d.peer.Term()); err != nil {
 		return nil, err
 	}
-	err := checkRegionEpoch(rlog, d.region(), true)
-	if errEpochNotMatching, ok := err.(*ErrEpochNotMatch); ok {
-		// Attach the region which might be split from the current region. But it doesn't
-		// matter if the region is not split from the current region. If the region meta
-		// received by the TiKV driver is newer than the meta cached in the driver, the meta is
-		// updated.
-		siblingRegion := d.findSiblingRegion()
-		if siblingRegion != nil {
-			errEpochNotMatching.Regions = append(errEpochNotMatching.Regions, siblingRegion)
-		}
-		return nil, errEpochNotMatching
-	}
-	return nil, err
+	return nil, checkRegionEpoch(rlog, d.region(), true)
 }
 
 func (d *peerMsgHandler) proposeRaftCommand(rlog raftlog.RaftLog, cb *Callback) {
@@ -1038,32 +1022,6 @@ func (d *peerMsgHandler) proposeRaftCommand(rlog raftlog.RaftLog, cb *Callback) 
 
 	// TODO: add timeout, if the command is not applied after timeout,
 	// we will call the callback with timeout error.
-}
-
-func (d *peerMsgHandler) findSiblingRegion() *metapb.Region {
-	var start []byte
-	var skipFirst bool
-	if d.ctx.cfg.RightDeriveWhenSplit {
-		start = d.region().StartKey
-	} else {
-		start = d.region().EndKey
-		skipFirst = true
-	}
-	d.ctx.storeMetaLock.Lock()
-	defer d.ctx.storeMetaLock.Unlock()
-	meta := d.ctx.storeMeta
-	it := meta.regionRanges.NewIterator()
-	it.Seek(start)
-	valid := it.Valid()
-	if valid && skipFirst {
-		it.Next()
-		valid = it.Valid()
-	}
-	if !valid {
-		return nil
-	}
-	regionID := regionIDFromBytes(it.Value())
-	return meta.regions[regionID]
 }
 
 func (d *peerMsgHandler) onRaftGCLogTick() {
@@ -1133,7 +1091,7 @@ func (d *peerMsgHandler) onPrepareSplitRegion(regionEpoch *metapb.RegionEpoch, s
 			region:      region,
 			splitKeys:   splitKeys,
 			peer:        d.peer.Meta,
-			rightDerive: d.ctx.cfg.RightDeriveWhenSplit,
+			rightDerive: true,
 			callback:    cb,
 		},
 	}

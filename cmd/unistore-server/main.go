@@ -16,6 +16,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/ngaut/unistore/tikv"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -31,7 +32,6 @@ import (
 	"github.com/arl/statsviz"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
-	"github.com/ngaut/unistore/server"
 	"github.com/pingcap/kvproto/pkg/deadlock"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
@@ -140,7 +140,7 @@ func main() {
 		log.S().Fatal(err)
 	}
 
-	tikvServer, err := server.New(conf, pdClient)
+	tikvServer, err := tikv.NewServer(conf, pdClient)
 	if err != nil {
 		log.Fatal("new server failed", zap.Error(err))
 	}

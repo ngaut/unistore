@@ -16,6 +16,7 @@ package tikv
 import (
 	"context"
 	"errors"
+	lockwaiter2 "github.com/ngaut/unistore/tikv/lockwaiter"
 	"sync/atomic"
 	"time"
 
@@ -23,7 +24,6 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/ngaut/unistore/pd"
-	"github.com/ngaut/unistore/util/lockwaiter"
 	deadlockPb "github.com/pingcap/kvproto/pkg/deadlock"
 	"github.com/pingcap/log"
 )
@@ -59,7 +59,7 @@ func (ds *DetectorServer) Detect(req *deadlockPb.DeadlockRequest) *deadlockPb.De
 type DetectorClient struct {
 	pdClient     pd.Client
 	sendCh       chan *deadlockPb.DeadlockRequest
-	waitMgr      *lockwaiter.Manager
+	waitMgr      *lockwaiter2.Manager
 	streamCli    deadlockPb.Deadlock_DetectClient
 	streamCancel context.CancelFunc
 	streamConn   *grpc.ClientConn
@@ -118,7 +118,7 @@ func (dt *DetectorClient) rebuildStreamClient() error {
 // NewDeadlockDetector will create a new detector util, entryTTL is used for
 // recycling the lock wait edge in detector wait wap. chSize is the pending
 // detection sending task size(used on non leader node)
-func NewDetectorClient(waiterMgr *lockwaiter.Manager, pdClient pd.Client) *DetectorClient {
+func NewDetectorClient(waiterMgr *lockwaiter2.Manager, pdClient pd.Client) *DetectorClient {
 	chSize := 10000
 	newDetector := &DetectorClient{
 		sendCh:   make(chan *deadlockPb.DeadlockRequest, chSize),

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/gogo/protobuf/proto"
-	"github.com/google/btree"
+	"github.com/ngaut/unistore/tikv/regiontree"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/kvproto/pkg/errorpb"
@@ -25,48 +25,30 @@ import (
 type MockRegionManager struct {
 	regionManager
 
-	db            *badger.DB
-	sortedRegions *btree.BTree
-	stores        map[uint64]*metapb.Store
-	id            uint64
-	clusterID     uint64
-	regionSize    int64
-	closed        uint32
+	db         *badger.DB
+	regionTree *regiontree.RegionTree
+	stores     map[uint64]*metapb.Store
+	id         uint64
+	clusterID  uint64
+	regionSize int64
+	closed     uint32
 }
 
-func NewMockRegionManager(db *badger.DB, clusterID uint64, opts RegionOptions) (*MockRegionManager, error) {
+func NewMockRegionManager(db *badger.DB, clusterID uint64, opts RegionOptions) *MockRegionManager {
 	rm := &MockRegionManager{
-		db:            db,
-		clusterID:     clusterID,
-		regionSize:    opts.RegionSize,
-		sortedRegions: btree.New(32),
-		stores:        make(map[uint64]*metapb.Store),
+		db:         db,
+		id:         1,
+		clusterID:  clusterID,
+		regionSize: opts.RegionSize,
+		regionTree: regiontree.NewRegionTree(),
+		stores:     make(map[uint64]*metapb.Store),
 		regionManager: regionManager{
 			regions:   make(map[uint64]*regionCtx),
 			storeMeta: new(metapb.Store),
 			latches:   newLatches(),
 		},
 	}
-	var maxID uint64
-	err := rm.regionManager.loadFromLocal(db, func(r *regionCtx) {
-		if maxID < r.meta.Id {
-			maxID = r.meta.Id
-		}
-		for _, p := range r.meta.Peers {
-			if maxID < p.Id {
-				maxID = p.Id
-			}
-			if maxID < p.StoreId {
-				maxID = p.StoreId
-			}
-		}
-		rm.sortedRegions.ReplaceOrInsert(newBtreeItem(r))
-	})
-	rm.id = maxID
-	if rm.storeMeta.Id != 0 {
-		rm.stores[rm.storeMeta.Id] = rm.storeMeta
-	}
-	return rm, err
+	return rm
 }
 
 func (rm *MockRegionManager) Close() error {
@@ -88,38 +70,6 @@ func (rm *MockRegionManager) AllocIDs(n int) []uint64 {
 	return ids
 }
 
-// btreeItem is BTree's Item that uses []byte to compare.
-type btreeItem struct {
-	key    []byte
-	inf    bool
-	region *regionCtx
-}
-
-func newBtreeItem(r *regionCtx) *btreeItem {
-	return &btreeItem{
-		key:    r.meta.EndKey,
-		inf:    len(r.meta.EndKey) == 0,
-		region: r,
-	}
-}
-
-func newBtreeSearchItem(key []byte) *btreeItem {
-	return &btreeItem{
-		key: key,
-	}
-}
-
-func (item *btreeItem) Less(o btree.Item) bool {
-	other := o.(*btreeItem)
-	if item.inf {
-		return false
-	}
-	if other.inf {
-		return true
-	}
-	return bytes.Compare(item.key, other.key) < 0
-}
-
 func (rm *MockRegionManager) GetRegion(id uint64) *metapb.Region {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
@@ -129,28 +79,8 @@ func (rm *MockRegionManager) GetRegion(id uint64) *metapb.Region {
 func (rm *MockRegionManager) GetRegionByKey(key []byte) (region *metapb.Region, peer *metapb.Peer) {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
-	rm.sortedRegions.AscendGreaterOrEqual(newBtreeSearchItem(key), func(item btree.Item) bool {
-		region = item.(*btreeItem).region.meta
-		if bytes.Equal(region.EndKey, key) {
-			region = nil
-			return true
-		}
-		return false
-	})
+	region = rm.regionTree.GetRegionByKey(key)
 	if region == nil || !rm.regionContainsKey(region, key) {
-		return nil, nil
-	}
-	return proto.Clone(region).(*metapb.Region), proto.Clone(region.Peers[0]).(*metapb.Peer)
-}
-
-func (rm *MockRegionManager) GetRegionByEndKey(key []byte) (region *metapb.Region, peer *metapb.Peer) {
-	rm.mu.RLock()
-	defer rm.mu.RUnlock()
-	rm.sortedRegions.AscendGreaterOrEqual(newBtreeSearchItem(key), func(item btree.Item) bool {
-		region = item.(*btreeItem).region.meta
-		return false
-	})
-	if region == nil || !rm.regionContainsKeyByEnd(region, key) {
 		return nil, nil
 	}
 	return proto.Clone(region).(*metapb.Region), proto.Clone(region.Peers[0]).(*metapb.Peer)
@@ -189,7 +119,7 @@ func (rm *MockRegionManager) Bootstrap(stores []*metapb.Store, region *metapb.Re
 	region.RegionEpoch.Version = 1
 	root := newRegionCtx(region, rm.latches, nil)
 	rm.regions[region.Id] = root
-	rm.sortedRegions.ReplaceOrInsert(newBtreeItem(root))
+	rm.regionTree.Put(root.meta)
 	regions = append(regions, root)
 	rm.mu.Unlock()
 
@@ -328,12 +258,7 @@ func (rm *MockRegionManager) calculateSplitKeys(start, end []byte, count int) []
 func (rm *MockRegionManager) splitKeys(keys [][]byte) ([]*regionCtx, error) {
 	rm.mu.Lock()
 	newRegions := make([]*regionCtx, 0, len(keys))
-	rm.sortedRegions.AscendGreaterOrEqual(newBtreeSearchItem(keys[0]), func(item btree.Item) bool {
-		if len(keys) == 0 {
-			return false
-		}
-		region := item.(*btreeItem).region.meta
-
+	rm.regionTree.Iterate(keys[0], nil, func(region *metapb.Region) bool {
 		var i int
 		for i = 0; i < len(keys); i++ {
 			if len(region.EndKey) > 0 && bytes.Compare(keys[i], region.EndKey) >= 0 {
@@ -388,7 +313,7 @@ func (rm *MockRegionManager) splitKeys(keys [][]byte) ([]*regionCtx, error) {
 	})
 	for _, region := range newRegions {
 		rm.regions[region.meta.Id] = region
-		rm.sortedRegions.ReplaceOrInsert(newBtreeItem(region))
+		rm.regionTree.Put(region.meta)
 	}
 	rm.mu.Unlock()
 	return newRegions, rm.saveRegions(newRegions)
@@ -436,9 +361,9 @@ func (rm *MockRegionManager) split(regionID, newRegionID uint64, key []byte, pee
 
 	rm.mu.Lock()
 	rm.regions[left.meta.Id] = left
-	rm.sortedRegions.ReplaceOrInsert(newBtreeItem(left))
+	rm.regionTree.Put(left.meta)
 	rm.regions[right.meta.Id] = right
-	rm.sortedRegions.ReplaceOrInsert(newBtreeItem(right))
+	rm.regionTree.Put(right.meta)
 	rm.mu.Unlock()
 
 	return right.meta, nil
@@ -461,19 +386,14 @@ func (rm *MockRegionManager) ScanRegions(startKey, endKey []byte, limit int) []*
 	defer rm.mu.RUnlock()
 
 	regions := make([]*pdclient.Region, 0, len(rm.regions))
-	rm.sortedRegions.AscendGreaterOrEqual(newBtreeSearchItem(startKey), func(i btree.Item) bool {
-		r := i.(*btreeItem).region
-		if len(endKey) > 0 && bytes.Compare(r.meta.StartKey, endKey) >= 0 {
-			return false
-		}
-
-		if len(regions) == 0 && bytes.Equal(r.meta.EndKey, startKey) {
+	rm.regionTree.Iterate(startKey, endKey, func(region *metapb.Region) bool {
+		if len(regions) == 0 && bytes.Equal(region.EndKey, startKey) {
 			return true
 		}
 
 		regions = append(regions, &pdclient.Region{
-			Meta:   proto.Clone(r.meta).(*metapb.Region),
-			Leader: proto.Clone(r.meta.Peers[0]).(*metapb.Peer),
+			Meta:   proto.Clone(region).(*metapb.Region),
+			Leader: proto.Clone(region.Peers[0]).(*metapb.Peer),
 		})
 
 		return !(limit > 0 && len(regions) >= limit)
@@ -632,11 +552,6 @@ func GetTS() (int64, int64) {
 		tsMu.logicalTS = 0
 	}
 	return tsMu.physicalTS, tsMu.logicalTS
-}
-
-func (pd *MockPD) GetPrevRegion(ctx context.Context, key []byte) (*pdclient.Region, error) {
-	r, p := pd.rm.GetRegionByEndKey(key)
-	return &pdclient.Region{Meta: r, Leader: p}, nil
 }
 
 func (pd *MockPD) GetAllStores(ctx context.Context, opts ...pdclient.GetStoreOption) ([]*metapb.Store, error) {

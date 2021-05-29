@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/dgryski/go-farm"
-	"github.com/pingcap/badger/y"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 )
 
@@ -73,15 +72,6 @@ func keysToHashVals(keys ...[]byte) []uint64 {
 	hashVals := make([]uint64, len(keys))
 	for i, key := range keys {
 		hashVals[i] = farm.Fingerprint64(key)
-	}
-	hashVals = sortAndDedupHashVals(hashVals)
-	return hashVals
-}
-
-func userKeysToHashVals(keys ...y.Key) []uint64 {
-	hashVals := make([]uint64, len(keys))
-	for i, key := range keys {
-		hashVals[i] = farm.Fingerprint64(key.UserKey)
 	}
 	hashVals = sortAndDedupHashVals(hashVals)
 	return hashVals

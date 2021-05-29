@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/ngaut/unistore/sdb"
+	lockwaiter2 "github.com/ngaut/unistore/tikv/lockwaiter"
 	"math"
 	"sort"
 	"sync/atomic"
@@ -28,7 +29,6 @@ import (
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/mvcc"
-	"github.com/ngaut/unistore/util/lockwaiter"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -53,7 +53,7 @@ type MVCCStore struct {
 	conf *config.Config
 
 	latestTS          uint64
-	lockWaiterManager *lockwaiter.Manager
+	lockWaiterManager *lockwaiter2.Manager
 	DeadlockDetectCli *DetectorClient
 	DeadlockDetectSvr *DetectorServer
 }
@@ -76,7 +76,7 @@ func NewMVCCStore(conf *config.Config, db *sdb.DB, dataDir string, safePoint *Sa
 		closeCh:           make(chan bool),
 		dbWriter:          writer,
 		conf:              conf,
-		lockWaiterManager: lockwaiter.NewManager(conf),
+		lockWaiterManager: lockwaiter2.NewManager(conf),
 	}
 	store.DeadlockDetectSvr = NewDetectorServer()
 	store.DeadlockDetectCli = NewDetectorClient(store.lockWaiterManager, pdClient)
@@ -170,7 +170,7 @@ func sortKeys(keys [][]byte) [][]byte {
 	return keys
 }
 
-func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.PessimisticLockRequest, resp *kvrpcpb.PessimisticLockResponse) (*lockwaiter.Waiter, error) {
+func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.PessimisticLockRequest, resp *kvrpcpb.PessimisticLockResponse) (*lockwaiter2.Waiter, error) {
 	mutations := req.Mutations
 	if !req.ReturnValues {
 		mutations = sortMutations(req.Mutations)
@@ -474,9 +474,9 @@ func (store *MVCCStore) normalizeWaitTime(lockWaitTime int64) time.Duration {
 	return time.Duration(lockWaitTime) * time.Millisecond
 }
 
-func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isFirstLock bool, lockWaitTime int64) (*lockwaiter.Waiter, error) {
+func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isFirstLock bool, lockWaitTime int64) (*lockwaiter2.Waiter, error) {
 	if locked, ok := err.(*ErrLocked); ok {
-		if lockWaitTime != lockwaiter.LockNoWait {
+		if lockWaitTime != lockwaiter2.LockNoWait {
 			keyHash := farm.Fingerprint64(locked.Key)
 			waitTimeDuration := store.normalizeWaitTime(lockWaitTime)
 			lock := locked.Lock

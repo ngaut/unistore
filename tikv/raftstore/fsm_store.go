@@ -17,15 +17,14 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/ngaut/unistore/sdbpb"
+	"github.com/ngaut/unistore/tikv/regiontree"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ngaut/unistore/config"
-	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
-
-	"github.com/ngaut/unistore/lockstore"
 	"github.com/ngaut/unistore/pd"
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -38,7 +37,7 @@ import (
 
 type storeMeta struct {
 	/// region end key -> region ID
-	regionRanges *lockstore.MemStore
+	regionTree *regiontree.RegionTree
 	/// region_id -> region
 	regions map[uint64]*metapb.Region
 	/// `MsgRequestPreVote` or `MsgRequestVote` messages from newly split Regions shouldn't be dropped if there is no
@@ -59,7 +58,7 @@ type storeMeta struct {
 
 func newStoreMeta() *storeMeta {
 	return &storeMeta{
-		regionRanges:        lockstore.NewMemStore(32 * 1024),
+		regionTree:          regiontree.NewRegionTree(),
 		regions:             map[uint64]*metapb.Region{},
 		pendingMergeTargets: map[uint64]map[uint64]*metapb.RegionEpoch{},
 		targetsMap:          map[uint64]uint64{},
@@ -275,7 +274,7 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 				mergingCount++
 				peer.setPendingMergeState(localState.MergeState)
 			}
-			meta.regionRanges.Put(region.EndKey, regionIDToBytes(regionID))
+			meta.regionTree.Put(region)
 			meta.regions[regionID] = region
 			// No need to check duplicated here, because we use region id as the key
 			// in DB.
@@ -302,7 +301,7 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 			StateType: SnapState_ApplyAborted,
 			Status:    &status,
 		}
-		meta.regionRanges.Put(region.EndKey, regionIDToBytes(region.Id))
+		meta.regionTree.Put(region)
 		meta.regions[region.Id] = region
 		regionPeers = append(regionPeers, peer)
 	}
@@ -573,18 +572,7 @@ func (d *storeMsgHandler) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage
 		log.S().Debugf("target peer %s doesn't exist", msg.ToPeer)
 		return false, nil
 	}
-
-	it := meta.regionRanges.NewIterator()
-	it.Seek(msg.StartKey)
-	if it.Valid() && bytes.Equal(msg.StartKey, it.Key()) {
-		it.Next()
-	}
-	for ; it.Valid(); it.Next() {
-		regionID := regionIDFromBytes(it.Value())
-		existRegion := meta.regions[regionID]
-		if bytes.Compare(existRegion.StartKey, msg.EndKey) >= 0 {
-			break
-		}
+	meta.regionTree.Iterate(msg.StartKey, msg.EndKey, func(existRegion *metapb.Region) bool {
 		log.S().Debugf("msg %s is overlapped with exist region %s", msg, existRegion)
 		if isFirstVoteMessage(msg.Message) {
 			meta.pendingVotes = append(meta.pendingVotes, msg)
@@ -596,12 +584,12 @@ func (d *storeMsgHandler) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage
 		if !isRangeCovered(meta, msg.StartKey, msg.EndKey) {
 			if maybeDestroySource(meta, regionID, existRegion.Id, msg.RegionEpoch) {
 				regionsToDestroy = append(regionsToDestroy, existRegion.Id)
-				continue
+				return true
 			}
 		}
 		regionsToDestroy = nil
-		return false, nil
-	}
+		return false
+	})
 
 	// New created peers should know it's learner or not.
 	peer, err := replicatePeerFsm(
@@ -707,44 +695,29 @@ func (d *storeMsgHandler) findRegionsInRange(startKey, endKey []byte) []*metapb.
 	d.ctx.storeMetaLock.RLock()
 	defer d.ctx.storeMetaLock.RUnlock()
 	meta := d.ctx.storeMeta
-	it := meta.regionRanges.NewIterator()
-	it.Seek(startKey)
-	if it.Valid() && bytes.Equal(it.Key(), startKey) {
-		it.Next()
-	}
 	var regions []*metapb.Region
-	for ; it.Valid(); it.Next() {
-		if bytes.Compare(it.Key(), endKey) > 0 {
-			break
-		}
-		regionID := regionIDFromBytes(it.Value())
-		regions = append(regions, meta.regions[regionID])
-	}
+	meta.regionTree.Iterate(startKey, endKey, func(region *metapb.Region) bool {
+		regions = append(regions, region)
+		return true
+	})
 	return regions
 }
 
 func isRangeCovered(meta *storeMeta, start, end []byte) bool {
-	it := meta.regionRanges.NewIterator()
-	it.Seek(start)
-	if it.Valid() && bytes.Equal(it.Key(), start) {
-		it.Next()
-	}
-	for ; it.Valid(); it.Next() {
-		if bytes.Compare(it.Key(), end) > 0 {
-			break
-		}
-		regionID := regionIDFromBytes(it.Value())
-		region := meta.regions[regionID]
+	var covered bool
+	meta.regionTree.Iterate(start, end, func(region *metapb.Region) bool {
 		// find a missing range
 		if bytes.Compare(start, region.StartKey) < 0 {
 			return false
 		}
 		if bytes.Compare(region.EndKey, end) >= 0 {
-			return true
+			covered = true
+			return false
 		}
 		start = region.EndKey
-	}
-	return false
+		return true
+	})
+	return covered
 }
 
 func (d *storeMsgHandler) onGenerateEngineMetaChange(msg Msg) {

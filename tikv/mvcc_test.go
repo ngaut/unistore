@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/sdbpb"
+	lockwaiter2 "github.com/ngaut/unistore/tikv/lockwaiter"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger/y"
 	"io/ioutil"
@@ -28,7 +29,6 @@ import (
 
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/tikv/raftstore"
-	"github.com/ngaut/unistore/util/lockwaiter"
 	"github.com/pingcap/badger"
 	. "github.com/pingcap/check"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -136,24 +136,19 @@ func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
 	// Some raft store path problems could not be found using simple store in tests
 	// writer := NewDBWriter(dbBundle, safePoint)
 
-	snapPath := filepath.Join(dbPath, "snap")
 	os.MkdirAll(kvPath, os.ModePerm)
 	os.MkdirAll(raftPath, os.ModePerm)
-	os.Mkdir(snapPath, os.ModePerm)
 	engines := raftstore.NewEngines(kvDB, raftDB, kvPath, raftPath, nil)
 	writer := raftstore.NewTestRaftWriter(engines)
 
-	rm, err := NewMockRegionManager(raftDB, 1, RegionOptions{
+	rm := NewMockRegionManager(raftDB, 1, RegionOptions{
 		StoreAddr:  "127.0.0.1:10086",
 		PDAddr:     "127.0.0.1:2379",
 		RegionSize: 96 * 1024 * 1024,
 	})
-	if err != nil {
-		return nil, err
-	}
 	pdClient := NewMockPD(rm)
 	store := NewMVCCStore(&config.DefaultConf, kvDB, dbPath, safePoint, writer, pdClient)
-	svr := NewServer(nil, store, nil)
+	svr := &Server{mvccStore: store}
 	return &TestStore{
 		MvccStore: store,
 		Svr:       svr,
@@ -170,7 +165,7 @@ func CleanTestStore(store *TestStore) {
 
 // PessimisticLock will add pessimistic lock on key
 func PessimisticLock(pk []byte, key []byte, startTs uint64, lockTTL uint64, forUpdateTs uint64,
-	isFirstLock bool, forceLock bool, store *TestStore) (*lockwaiter.Waiter, error) {
+	isFirstLock bool, forceLock bool, store *TestStore) (*lockwaiter2.Waiter, error) {
 	req := &kvrpcpb.PessimisticLockRequest{
 		Mutations:    []*kvrpcpb.Mutation{newMutation(kvrpcpb.Op_PessimisticLock, key, nil)},
 		PrimaryLock:  pk,

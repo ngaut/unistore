@@ -25,7 +25,6 @@ import (
 
 	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/tikv/raftstore"
-	"github.com/pingcap/badger"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -271,43 +270,6 @@ func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *er
 
 func (rm *regionManager) isEpochStale(lhs, rhs *metapb.RegionEpoch) bool {
 	return lhs.GetConfVer() != rhs.GetConfVer() || lhs.GetVersion() != rhs.GetVersion()
-}
-
-func (rm *regionManager) loadFromLocal(db *badger.DB, f func(*regionCtx)) error {
-	return db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(InternalStoreMetaKey)
-		if err != nil && err != badger.ErrKeyNotFound {
-			return err
-		}
-		if err != nil {
-			return nil
-		}
-		val, _ := item.Value()
-		err = rm.storeMeta.Unmarshal(val)
-		if err != nil {
-			return err
-		}
-		// load region meta
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
-		prefix := InternalRegionMetaPrefix
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			val, err1 := item.Value()
-			if err1 != nil {
-				return err1
-			}
-			r := new(regionCtx)
-			err := r.unmarshal(val)
-			if err != nil {
-				return errors.Trace(err)
-			}
-			r.latches = rm.latches
-			rm.regions[r.meta.Id] = r
-			f(r)
-		}
-		return nil
-	})
 }
 
 type RaftRegionManager struct {
