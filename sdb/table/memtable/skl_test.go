@@ -54,7 +54,7 @@ func length(s *skiplist) int {
 
 func TestEmpty(t *testing.T) {
 	key := []byte("aaa")
-	l := newSkiplist(arenaSize)
+	l := newSkiplist()
 
 	v := l.Get(key, 1)
 	require.True(t, v.Value == nil) // Cannot use require.Nil for unsafe.Pointer nil.
@@ -83,7 +83,7 @@ func TestEmpty(t *testing.T) {
 
 // TestBasic tests single-threaded inserts and updates and gets.
 func TestBasic(t *testing.T) {
-	l := newSkiplist(arenaSize)
+	l := newSkiplist()
 	val1 := newValue(42)
 	val2 := newValue(52)
 	val3 := newValue(62)
@@ -122,7 +122,7 @@ func TestBasic(t *testing.T) {
 // The concurrent write operation is not supported.
 func testConcurrentBasic(t *testing.T) {
 	const n = 1000
-	l := newSkiplist(arenaSize)
+	l := newSkiplist()
 	var wg sync.WaitGroup
 	key := func(i int) []byte {
 		return []byte(fmt.Sprintf("%05d", i))
@@ -151,7 +151,7 @@ func testConcurrentBasic(t *testing.T) {
 }
 
 func TestFindNear(t *testing.T) {
-	l := newSkiplist(arenaSize)
+	l := newSkiplist()
 	defer l.Delete()
 	for i := 0; i < 1000; i++ {
 		key := fmt.Sprintf("%05d", i*10+5)
@@ -258,7 +258,7 @@ func TestFindNear(t *testing.T) {
 // TestIteratorNext tests a basic iteration over all nodes from the beginning.
 func TestIteratorNext(t *testing.T) {
 	const n = 100
-	l := newSkiplist(arenaSize)
+	l := newSkiplist()
 	defer l.Delete()
 	it := l.NewIterator()
 	defer it.Close()
@@ -282,7 +282,7 @@ func TestIteratorNext(t *testing.T) {
 // TestIteratorPrev tests a basic iteration over all nodes from the end.
 func TestIteratorPrev(t *testing.T) {
 	const n = 100
-	l := newSkiplist(arenaSize)
+	l := newSkiplist()
 	defer l.Delete()
 	it := l.NewIterator()
 	defer it.Close()
@@ -306,7 +306,7 @@ func TestIteratorPrev(t *testing.T) {
 // TestIteratorSeek tests Seek and SeekForPrev.
 func TestIteratorSeek(t *testing.T) {
 	const n = 100
-	l := newSkiplist(arenaSize)
+	l := newSkiplist()
 	defer l.Delete()
 
 	it := l.NewIterator()
@@ -370,7 +370,7 @@ func TestIteratorSeek(t *testing.T) {
 }
 
 func TestPutWithHint(t *testing.T) {
-	l := newSkiplist(arenaSize)
+	l := newSkiplist()
 	sp := new(hint)
 	cnt := 0
 	for {
@@ -396,7 +396,7 @@ func TestPutWithHint(t *testing.T) {
 
 func TestGetWithHint(t *testing.T) {
 	rand.Seed(time.Now().Unix())
-	l := newSkiplist(arenaSize)
+	l := newSkiplist()
 	var keys [][]byte
 	sp := new(hint)
 	for {
@@ -420,7 +420,7 @@ func TestGetWithHint(t *testing.T) {
 }
 
 func TestPutLargeValue(t *testing.T) {
-	l := newSkiplist(arenaSize)
+	l := newSkiplist()
 	key := randomKey()
 	val := make([]byte, 128*1024)
 	l.Put(key, y.ValueStruct{Value: val})
@@ -429,7 +429,7 @@ func TestPutLargeValue(t *testing.T) {
 }
 
 func TestMemoryGrow(t *testing.T) {
-	l := newSkiplist(arenaSize)
+	l := newSkiplist()
 	for size := 0; size < 2*blockSize; {
 		key := randomKey()
 		val := make([]byte, 128*1024)
@@ -461,7 +461,7 @@ func buildMultiVersionSkiopList(keyValues [][]string) *skiplist {
 	sort.Slice(keyValues, func(i, j int) bool {
 		return keyValues[i][0] < keyValues[j][0]
 	})
-	skl := newSkiplist(arenaSize)
+	skl := newSkiplist()
 	for _, kv := range keyValues {
 		y.Assert(len(kv) == 2)
 		val := fmt.Sprintf("%s_%d", kv[1], 9)
@@ -529,7 +529,7 @@ func TestIterateMultiVersion(t *testing.T) {
 }
 
 func TestDeleteKey(t *testing.T) {
-	skl := newSkiplist(arenaSize)
+	skl := newSkiplist()
 	for i := 0; i < 1000; i++ {
 		skl.Put(newKey(i), y.ValueStruct{Value: newKey(i)})
 	}
@@ -555,7 +555,7 @@ func BenchmarkReadWrite(b *testing.B) {
 	for i := 0; i <= 10; i++ {
 		readFrac := float32(i) / 10.0
 		b.Run(fmt.Sprintf("frac_%d", i), func(b *testing.B) {
-			l := newSkiplist(int64((b.N + 1) * MaxNodeSize))
+			l := newSkiplist()
 			defer l.Delete()
 			b.ResetTimer()
 			var count int
@@ -630,7 +630,7 @@ func BenchmarkGetWithHintSequential(b *testing.B) {
 }
 
 func buildKeysAndList(size int) ([][]byte, *skiplist, *hint) {
-	l := newSkiplist(32 * 1024 * 1024)
+	l := newSkiplist()
 	keys := make([][]byte, size)
 	h := new(hint)
 	for i := 0; i < size; i++ {
@@ -666,7 +666,7 @@ func BenchmarkGetWithHintRandom(b *testing.B) {
 }
 
 func BenchmarkPutWithHint(b *testing.B) {
-	l := newSkiplist(16 * 1024 * 1024)
+	l := newSkiplist()
 	size := 100000
 	keys := make([][]byte, size)
 	for i := 0; i < size; i++ {
@@ -675,7 +675,7 @@ func BenchmarkPutWithHint(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		h := new(hint)
-		l = newSkiplist(16 * 1024 * 1024)
+		l = newSkiplist()
 		for j := 0; j < size; j++ {
 			key := keys[j]
 			l.PutWithHint(key, y.ValueStruct{Value: []byte{byte(j)}}, h)
