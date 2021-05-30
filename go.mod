@@ -15,9 +15,12 @@ require (
 	github.com/pingcap/badger v1.5.1-0.20210331054718-0885bbfa8520
 	github.com/pingcap/check v0.0.0-20200212061837-5e12011dc712
 	github.com/pingcap/errors v0.11.5-0.20201021055732-210aacd3fd99
+	github.com/pingcap/failpoint v0.0.0-20200702092429-9f69995143ce // indirect
 	github.com/pingcap/kvproto v0.0.0-20201023092649-e6d6090277c9
 	github.com/pingcap/log v0.0.0-20200828042413-fce0951f1463
+	github.com/pingcap/parser v0.0.0-20201021061956-783a03250c77 // indirect
 	github.com/pingcap/tidb v1.1.0-beta.0.20200820085534-0d997f2b8b3c
+	github.com/pingcap/tipb v0.0.0-20200618092958-4fad48b4c8c3 // indirect
 	github.com/prometheus/client_golang v1.5.1
 	github.com/shirou/gopsutil v2.20.3+incompatible
 	github.com/stretchr/testify v1.5.1
