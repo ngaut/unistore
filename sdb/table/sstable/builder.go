@@ -381,6 +381,9 @@ func (b *blockBuilder) buildEntry(i, commonPrefixLen int) {
 	oldVersion := b.block.oldVers[i]
 	if oldVersion != 0 {
 		val.Meta |= metaHasOld
+	} else {
+		// The val meta from the old table may have `metaHasOld` flag, need to unset it.
+		val.Meta &= ^metaHasOld
 	}
 	b.buf = append(b.buf, val.Meta)
 	b.buf = AppendU64(b.buf, val.Version)
