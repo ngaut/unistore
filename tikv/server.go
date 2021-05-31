@@ -28,9 +28,11 @@ import (
 	"github.com/pingcap/kvproto/pkg/deadlock"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/mpp"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
+	"github.com/pingcap/tidb/util/codec"
 	"go.uber.org/zap"
 	"io"
 	"net/http"
@@ -240,17 +242,33 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCt
 		rpcCtx:    ctx,
 	}
 	req.regCtx, req.regErr = svr.regionManager.GetRegionFromCtx(ctx)
+	if req.regErr != nil {
+		return req, nil
+	}
+	shd := svr.mvccStore.db.GetShard(req.rpcCtx.RegionId)
+	if shd.Ver != ctx.RegionEpoch.Version {
+		meta := req.regCtx.meta
+		req.regErr = &errorpb.Error{
+			Message: "stale epoch",
+			EpochNotMatch: &errorpb.EpochNotMatch{
+				CurrentRegions: []*metapb.Region{{
+					Id:          meta.Id,
+					StartKey:    codec.EncodeBytes(nil, shd.Start),
+					EndKey:      codec.EncodeBytes(nil, shd.End),
+					RegionEpoch: &metapb.RegionEpoch{Version: shd.Ver, ConfVer: meta.RegionEpoch.ConfVer},
+					Peers:       meta.Peers,
+				}},
+			},
+		}
+	} else {
+		snap := svr.mvccStore.db.NewSnapshot(shd)
+		req.reader = dbreader.NewDBReader(req.regCtx.startKey, req.regCtx.endKey, snap)
+	}
 	return req, nil
 }
 
 // For read-only requests that doesn't acquire latches, this function must be called after all locks has been checked.
 func (req *requestCtx) getDBReader() *dbreader.DBReader {
-	if req.reader == nil {
-		mvccStore := req.svr.mvccStore
-		shd := mvccStore.db.GetShard(req.rpcCtx.RegionId)
-		snap := mvccStore.db.NewSnapshot(shd)
-		req.reader = dbreader.NewDBReader(req.regCtx.startKey, req.regCtx.endKey, snap)
-	}
 	return req.reader
 }
 
