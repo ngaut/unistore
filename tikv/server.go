@@ -160,6 +160,8 @@ func createRaftDB(subPath string, conf *config.Engine) (*badger.DB, error) {
 func createKVDB(subPath string, safePoint *SafePoint, listener *raftstore.MetaChangeListener,
 	allocator sdb.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*sdb.DB, error) {
 	opts := sdb.DefaultOpt
+	opts.BaseSize = conf.BaseSize
+	opts.TableBuilderOptions.MaxTableSize = conf.MaxTableSize
 	opts.MaxMemTableSizeFactor = conf.MaxMemTableSizeFactor
 	opts.RemoteCompactionAddr = conf.RemoteCompactionAddr
 	opts.MaxBlockCacheSize = conf.BlockCacheSize
