@@ -113,7 +113,7 @@ func initialIngestTree(regionID, version uint64) *sdb.IngestTree {
 			ShardVer: version,
 			Snapshot: &sdbpb.Snapshot{
 				Start: nil,
-				End:   []byte{255, 255, 255, 255, 255, 255, 255, 255},
+				End:   sdb.GlobalShardEndKey,
 				Properties: &sdbpb.Properties{
 					ShardID: regionID,
 					Keys:    []string{applyStateKey},

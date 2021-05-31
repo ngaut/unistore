@@ -14,6 +14,7 @@
 package tikv
 
 import (
+	"bytes"
 	"context"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
@@ -248,13 +249,20 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCt
 	shd := svr.mvccStore.db.GetShard(req.rpcCtx.RegionId)
 	if shd.Ver != ctx.RegionEpoch.Version {
 		meta := req.regCtx.meta
+		var startKey, endKey []byte
+		if len(shd.Start) != 0 {
+			startKey = codec.EncodeBytes(nil, shd.Start)
+		}
+		if bytes.Compare(shd.End, sdb.GlobalShardEndKey) != 0 {
+			endKey = codec.EncodeBytes(nil, shd.End)
+		}
 		req.regErr = &errorpb.Error{
 			Message: "stale epoch",
 			EpochNotMatch: &errorpb.EpochNotMatch{
 				CurrentRegions: []*metapb.Region{{
 					Id:          meta.Id,
-					StartKey:    codec.EncodeBytes(nil, shd.Start),
-					EndKey:      codec.EncodeBytes(nil, shd.End),
+					StartKey:    startKey,
+					EndKey:      endKey,
 					RegionEpoch: &metapb.RegionEpoch{Version: shd.Ver, ConfVer: meta.RegionEpoch.ConfVer},
 					Peers:       meta.Peers,
 				}},

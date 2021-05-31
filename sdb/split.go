@@ -267,7 +267,7 @@ func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, split
 		}
 		toDeleteIDs[tbl.ID()] = struct{}{}
 		// append an end key to build the last table.
-		relatedKeys = append(relatedKeys, globalShardEndKey)
+		relatedKeys = append(relatedKeys, GlobalShardEndKey)
 		itr := tbl.NewIterator(false)
 		defer itr.Close()
 		itr.Rewind()

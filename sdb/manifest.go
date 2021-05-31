@@ -106,7 +106,7 @@ type LevelCF struct {
 	CF    uint16
 }
 
-var globalShardEndKey = []byte{255, 255, 255, 255, 255, 255, 255, 255}
+var GlobalShardEndKey = []byte{255, 255, 255, 255, 255, 255, 255, 255}
 
 func OpenManifest(dir string) (*Manifest, error) {
 	path := filepath.Join(dir, ManifestFilename)
