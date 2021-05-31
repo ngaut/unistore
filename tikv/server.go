@@ -474,6 +474,12 @@ func (svr *Server) KvCommit(ctx context.Context, req *kvrpcpb.CommitRequest) (*k
 	return resp, nil
 }
 
+// RawGetKeyTTL implements implements the tikvpb.TikvServer interface.
+func (svr *Server) RawGetKeyTTL(ctx context.Context, req *kvrpcpb.RawGetKeyTTLRequest) (*kvrpcpb.RawGetKeyTTLResponse, error) {
+	// TODO
+	return &kvrpcpb.RawGetKeyTTLResponse{}, nil
+}
+
 func (svr *Server) KvImport(context.Context, *kvrpcpb.ImportRequest) (*kvrpcpb.ImportResponse, error) {
 	// TODO
 	return &kvrpcpb.ImportResponse{}, nil
@@ -794,6 +800,11 @@ func (svr *Server) RegisterLockObserver(context.Context, *kvrpcpb.RegisterLockOb
 func (svr *Server) RemoveLockObserver(context.Context, *kvrpcpb.RemoveLockObserverRequest) (*kvrpcpb.RemoveLockObserverResponse, error) {
 	// TODO: implement Observer
 	return &kvrpcpb.RemoveLockObserverResponse{}, nil
+}
+
+// CheckLeader implements implements the tikvpb.TikvServer interface.
+func (svr *Server) CheckLeader(context.Context, *kvrpcpb.CheckLeaderRequest) (*kvrpcpb.CheckLeaderResponse, error) {
+	panic("unimplemented")
 }
 
 func (svr *Server) VerGet(context.Context, *kvrpcpb.VerGetRequest) (*kvrpcpb.VerGetResponse, error) {
