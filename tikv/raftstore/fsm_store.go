@@ -572,6 +572,7 @@ func (d *storeMsgHandler) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage
 		log.S().Debugf("target peer %s doesn't exist", msg.ToPeer)
 		return false, nil
 	}
+	isReturned := false
 	meta.regionTree.Iterate(msg.StartKey, msg.EndKey, func(existRegion *metapb.Region) bool {
 		log.S().Debugf("msg %s is overlapped with exist region %s", msg, existRegion)
 		if isFirstVoteMessage(msg.Message) {
@@ -588,8 +589,12 @@ func (d *storeMsgHandler) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage
 			}
 		}
 		regionsToDestroy = nil
+		isReturned = true
 		return false
 	})
+	if isReturned {
+		return false, nil
+	}
 
 	// New created peers should know it's learner or not.
 	peer, err := replicatePeerFsm(
