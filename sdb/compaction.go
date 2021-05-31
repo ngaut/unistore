@@ -338,7 +338,7 @@ type compactL0Helper struct {
 func newCompactL0Helper(db *DB, shard *Shard, l0Tbls *l0Tables, cf int) *compactL0Helper {
 	helper := &compactL0Helper{db: db, shard: shard, cf: cf}
 	if db.opt.CompactionFilterFactory != nil {
-		helper.filter = db.opt.CompactionFilterFactory(1, nil, globalShardEndKey)
+		helper.filter = db.opt.CompactionFilterFactory(1, nil, GlobalShardEndKey)
 	}
 	helper.safeTS = db.getCFSafeTS(cf)
 	var iters []table.Iterator

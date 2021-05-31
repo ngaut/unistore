@@ -104,7 +104,7 @@ func initialIngest(t *testing.T, db *DB) {
 			ShardVer: 1,
 			Snapshot: &sdbpb.Snapshot{
 				Start:      nil,
-				End:        globalShardEndKey,
+				End:        GlobalShardEndKey,
 				Properties: &sdbpb.Properties{ShardID: 1},
 			},
 		},
