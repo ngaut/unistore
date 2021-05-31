@@ -924,17 +924,17 @@ func (sdb *DB) applyCompaction(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 		}
 		shard.addEstimatedSize(-atomicRemoveL0(shard, len(comp.TopDeletes)))
 	} else {
-		err := sdb.compactionUpdateLevelHandler(shard, int(comp.Cf), int(comp.Level), nil, comp.TopDeletes, del)
+		err := sdb.compactionUpdateLevelHandler(shard, int(comp.Cf), int(comp.Level+1), comp.TableCreates, comp.BottomDeletes, del)
+		if err != nil {
+			return err
+		}
+		err = sdb.compactionUpdateLevelHandler(shard, int(comp.Cf), int(comp.Level), nil, comp.TopDeletes, del)
 		if err != nil {
 			return err
 		}
 		// For move down operation, the TableCreates may contains TopDeletes, we don't want to delete them.
 		for _, create := range comp.TableCreates {
 			del.remove(create.ID)
-		}
-		err = sdb.compactionUpdateLevelHandler(shard, int(comp.Cf), int(comp.Level+1), comp.TableCreates, comp.BottomDeletes, del)
-		if err != nil {
-			return err
 		}
 	}
 	guard.Delete(del.collect())
