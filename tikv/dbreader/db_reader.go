@@ -278,4 +278,5 @@ func (r *DBReader) Close() {
 	if r.extraIter != nil {
 		r.extraIter.Close()
 	}
+	r.snap.Discard()
 }
