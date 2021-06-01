@@ -24,6 +24,7 @@ import (
 	"github.com/ngaut/unistore/tikv/lockwaiter"
 	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/pingcap/badger"
+	"github.com/pingcap/badger/options"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
 	"github.com/pingcap/kvproto/pkg/deadlock"
@@ -154,6 +155,8 @@ func createRaftDB(subPath string, conf *config.Engine) (*badger.DB, error) {
 	opts.LevelOneSize = conf.BaseSize
 	opts.SyncWrites = conf.SyncWrite
 	opts.CompactL0WhenClose = conf.CompactL0WhenClose
+	opts.TableBuilderOptions.CompressionPerLevel = []options.CompressionType{options.None,
+		options.None, options.None, options.None, options.None, options.None, options.None}
 	return badger.Open(opts)
 }
 
