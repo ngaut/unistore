@@ -369,11 +369,6 @@ func (h *compactL0Helper) setFID(fid uint64) {
 
 func (h *compactL0Helper) buildOne() (*sstable.BuildResult, error) {
 	id := h.db.idAlloc.AllocID()
-	filename := sstable.NewFilename(id, h.db.opt.Dir)
-	fd, err := y.OpenSyncedFile(filename, false)
-	if err != nil {
-		return nil, err
-	}
 	h.setFID(id)
 	h.lastKey = h.lastKey[:0]
 	h.skipKey = h.skipKey[:0]
@@ -418,6 +413,11 @@ func (h *compactL0Helper) buildOne() (*sstable.BuildResult, error) {
 	}
 	if h.builder.Empty() {
 		return nil, nil
+	}
+	filename := sstable.NewFilename(id, h.db.opt.Dir)
+	fd, err := y.OpenSyncedFile(filename, false)
+	if err != nil {
+		return nil, err
 	}
 	result, err := h.builder.Finish(fd.Name(), fd)
 	if err != nil {
