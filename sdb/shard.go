@@ -124,6 +124,7 @@ func newShardForLoading(shardInfo *ShardMeta, opt *Options, metrics *y.MetricsSe
 	shard.setSplitStage(shardInfo.splitStage)
 	shard.setInitialFlushed()
 	shard.SetPassive(true)
+	shard.commitTS = shardInfo.commitTS
 	return shard
 }
 

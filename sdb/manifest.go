@@ -389,7 +389,7 @@ func (m *Manifest) applyFlush(cs *sdbpb.ChangeSet, shardInfo *ShardMeta) {
 		}
 		m.addFile(l0.ID, -1, 0, l0.Smallest, l0.Biggest, shardInfo)
 	}
-	log.S().Infof("%d:%d apply flush props:%s", cs.ShardID, cs.ShardVer, shardInfo.properties)
+	log.S().Infof("%d:%d apply flush ver:%d props:%s", cs.ShardID, cs.ShardVer, cs.Flush.CommitTS, shardInfo.properties)
 }
 
 func (m *Manifest) addFile(fid uint64, cf int32, level uint32, smallest, biggest []byte, shardInfo *ShardMeta) {
@@ -527,6 +527,8 @@ func (m *Manifest) isDuplicatedChange(change *sdbpb.ChangeSet) bool {
 		return false
 	}
 	if change.Sequence > 0 && meta.Seq >= change.Sequence {
+		log.S().Infof("%d:%d skip duplicated change seq:%d, meta seq:%d",
+			meta.ID, meta.Ver, change.Sequence, meta.Seq)
 		return true
 	}
 	if flush := change.Flush; flush != nil {
@@ -536,12 +538,19 @@ func (m *Manifest) isDuplicatedChange(change *sdbpb.ChangeSet) bool {
 		if flush.L0Create == nil {
 			return meta.splitStage >= change.Stage
 		}
-		return meta.commitTS >= flush.CommitTS
+		dup := meta.commitTS >= flush.CommitTS
+		if dup {
+			log.S().Infof("%d:%d skip duplicated flush commitTS:%d, meta commitTS:%d",
+				meta.ID, meta.Ver, flush.CommitTS, meta.commitTS)
+		}
+		return dup
 	}
 	if comp := change.Compaction; comp != nil {
 		for _, tbl := range comp.TableCreates {
 			level, ok := meta.FileLevel(tbl.ID)
 			if ok && level > int(change.Compaction.Level) {
+				log.S().Infof("%d:%d skip duplicated compaction tbl:%d level:%d, meta level:%d",
+					meta.ID, meta.Ver, tbl.ID, change.Compaction.Level, level)
 				return true
 			}
 		}
