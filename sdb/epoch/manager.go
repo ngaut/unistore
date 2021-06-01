@@ -24,7 +24,6 @@ type Guard struct {
 	localEpoch atomicEpoch
 	mgr        *ResourceManager
 	deletions  []deletion
-	payload    interface{}
 
 	next unsafe.Pointer
 }
@@ -79,18 +78,13 @@ func NewResourceManager(c *y.Closer) *ResourceManager {
 	return rm
 }
 
-func (rm *ResourceManager) AcquireWithPayload(payload interface{}) *Guard {
+func (rm *ResourceManager) Acquire() *Guard {
 	g := &Guard{
-		mgr:     rm,
-		payload: payload,
+		mgr: rm,
 	}
 	g.localEpoch.store(rm.currentEpoch.load().activate())
 	rm.guards.add(g)
 	return g
-}
-
-func (rm *ResourceManager) Acquire() *Guard {
-	return rm.AcquireWithPayload(nil)
 }
 
 func (rm *ResourceManager) collectLoop(c *y.Closer) {
