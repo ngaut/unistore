@@ -417,7 +417,8 @@ func (h *compactL0Helper) buildOne() (*sstable.BuildResult, error) {
 		h.builder.Add(key, &vs)
 	}
 	if h.builder.Empty() {
-		return nil, nil
+		err := os.Remove(filename)
+		return nil, err
 	}
 	result, err := h.builder.Finish(fd.Name(), fd)
 	if err != nil {
