@@ -266,24 +266,28 @@ func (sdb *DB) DebugHandler() http.HandlerFunc {
 				memTables := shard.loadMemTables()
 				l0Tables := shard.loadL0Tables()
 				if r.FormValue("detail") == "" {
-					fmt.Fprintf(w, "\tShard\t%d:%d,\tSize % 13s,\tMem % 13s,\tL0 % 13s,\tCF0 % 13s,\tCF1 % 13s,\tMaxMemTblSize % 13s,\tStage % 20s\n\n",
+					fmt.Fprintf(w, "\tShard\t% 13d:%d,\tSize % 13s,\tMem % 13s(%d),\tL0 % 13s(%d),\tCF0 % 13s,\tCF1 % 13s,\tMaxMemTblSize % 13s,\tStage % 20s, Passive %v\n\n",
 						key,
 						shard.Ver,
 						formatInt(shardStat.ShardSize),
 						formatInt(shardStat.MemTablesSize),
+						len(memTables.tables),
 						formatInt(shardStat.L0TablesSize),
+						len(l0Tables.tables),
 						formatInt(shardStat.CFSize[0]),
 						formatInt(shardStat.CFSize[1]),
 						formatInt(int(shard.getMaxMemTableSize())),
 						sdbpb.SplitStage_name[shard.splitStage],
+						shard.IsPassive(),
 					)
 					continue
 				}
-				fmt.Fprintf(w, "\tShard %d:%d, Size %s, Stage %s\n",
+				fmt.Fprintf(w, "\tShard %d:%d, Size %s, Stage %s, Passive %v\n",
 					key,
 					shard.Ver,
 					formatInt(shardStat.ShardSize),
 					sdbpb.SplitStage_name[shard.splitStage],
+					shard.IsPassive(),
 				)
 				fmt.Fprintf(w, "\t\tMemTables %d,  Size %s\n", len(memTables.tables), formatInt(shardStat.MemTablesSize))
 				for i, t := range memTables.tables {
@@ -651,7 +655,7 @@ func (sdb *DB) GetShard(shardID uint64) *Shard {
 func (sdb *DB) GetSplitSuggestion(shardID uint64, splitSize int64) [][]byte {
 	shard := sdb.GetShard(shardID)
 	if shard.GetEstimatedSize() > splitSize {
-		log.S().Infof("shard(%x, %x) size %d", shard.Start, shard.End, shard.estimatedSize)
+		log.S().Infof("shard %d:%d (%x, %x) size %d", shard.ID, shard.Ver, shard.Start, shard.End, shard.estimatedSize)
 		return shard.getSuggestSplitKeys(splitSize)
 	}
 	return nil
@@ -687,6 +691,7 @@ func (sdb *DB) TriggerFlush(shard *Shard, skipCnt int) {
 	mems := shard.loadMemTables()
 	for i := len(mems.tables) - skipCnt - 1; i > 0; i-- {
 		memTbl := mems.tables[i]
+		log.S().Infof("%d:%d trigger flush mem table ver:%d", shard.ID, shard.Ver, memTbl.GetVersion())
 		sdb.flushCh <- &flushTask{
 			shard: shard,
 			tbl:   memTbl,
