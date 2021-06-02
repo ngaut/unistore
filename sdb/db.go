@@ -389,7 +389,6 @@ func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 			if err != nil {
 				return nil, err
 			}
-			shard.addEstimatedSize(sl0Tbl.Size())
 			l0Tbls := shard.loadL0Tables()
 			l0Tbls.tables = append(l0Tbls.tables, sl0Tbl)
 			continue
@@ -406,7 +405,6 @@ func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 		if err != nil {
 			return nil, err
 		}
-		shard.addEstimatedSize(tbl.Size())
 		handler.totalSize += tbl.Size()
 		handler.tables = append(handler.tables, tbl)
 	}
@@ -654,8 +652,9 @@ func (sdb *DB) GetShard(shardID uint64) *Shard {
 
 func (sdb *DB) GetSplitSuggestion(shardID uint64, splitSize int64) [][]byte {
 	shard := sdb.GetShard(shardID)
-	if shard.GetEstimatedSize() > splitSize {
-		log.S().Infof("shard %d:%d (%x, %x) size %d", shard.ID, shard.Ver, shard.Start, shard.End, shard.estimatedSize)
+	estimatedSize := shard.GetEstimatedSize()
+	if estimatedSize > splitSize {
+		log.S().Infof("shard %d:%d (%x, %x) size %d", shard.ID, shard.Ver, shard.Start, shard.End, estimatedSize)
 		return shard.getSuggestSplitKeys(splitSize)
 	}
 	return nil
@@ -666,7 +665,7 @@ func (sdb *DB) Size() int64 {
 	var shardCnt int64
 	sdb.shardMap.Range(func(key, value interface{}) bool {
 		shard := value.(*Shard)
-		size += atomic.LoadInt64(&shard.estimatedSize)
+		size += shard.GetEstimatedSize()
 		shardCnt++
 		return true
 	})

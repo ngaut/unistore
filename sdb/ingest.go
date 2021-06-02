@@ -50,14 +50,10 @@ func (sdb *DB) Ingest(ingestTree *IngestTree) error {
 	}
 
 	shard := newShardForIngest(ingestTree.ChangeSet, &sdb.opt, sdb.metrics)
-	for _, l0 := range l0s.tables {
-		shard.addEstimatedSize(l0.Size())
-	}
 	shard.SetPassive(ingestTree.Passive)
 	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{memtable.NewCFTable(sdb.numCFs)}}))
 	atomic.StorePointer(shard.l0s, unsafe.Pointer(l0s))
 	shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
-		shard.addEstimatedSize(level.totalSize)
 		scf := shard.cfs[cf]
 		y.Assert(scf.casLevelHandler(level.level, level, levelHandlers[cf][level.level-1]))
 		return false

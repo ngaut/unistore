@@ -54,7 +54,6 @@ type Shard struct {
 	splitStage       int32
 	splitKeys        [][]byte
 	splittingMemTbls []unsafe.Pointer
-	estimatedSize    int64
 	removeFilesOnDel bool
 
 	// If the shard is passive, flush mem table and do compaction will ignore this shard.
@@ -175,11 +174,19 @@ func (s *Shard) isSplitting() bool {
 }
 
 func (s *Shard) GetEstimatedSize() int64 {
-	return atomic.LoadInt64(&s.estimatedSize)
-}
-
-func (s *Shard) addEstimatedSize(size int64) int64 {
-	return atomic.AddInt64(&s.estimatedSize, size)
+	l0Tables := s.loadL0Tables()
+	L0TablesSize := int64(0)
+	for _, t := range l0Tables.tables {
+		L0TablesSize += t.Size()
+	}
+	CFsSize := int64(0)
+	for _, cf := range s.cfs {
+		for l := range cf.levels {
+			level := cf.getLevelHandler(l + 1)
+			CFsSize += level.totalSize
+		}
+	}
+	return L0TablesSize + CFsSize
 }
 
 func (s *Shard) getMaxMemTableSize() int64 {
