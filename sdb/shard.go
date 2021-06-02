@@ -292,7 +292,8 @@ func (s *Shard) loadL0Tables() *l0Tables {
 }
 
 func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
-	if s.GetEstimatedSize() < targetSize {
+	estimatedSize := s.GetEstimatedSize()
+	if estimatedSize < targetSize {
 		return nil
 	}
 	if splitKey, ok := s.getSequentialWriteSplitKey(targetSize); ok {
@@ -308,7 +309,7 @@ func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
 		}
 		return false
 	})
-	levelTargetSize := int64(float64(targetSize) * (float64(maxLevel.totalSize) / float64(s.GetEstimatedSize())))
+	levelTargetSize := int64(float64(targetSize) * (float64(maxLevel.totalSize) / float64(estimatedSize)))
 	var keys [][]byte
 	var currentSize int64
 	for i, tbl := range maxLevel.tables {
