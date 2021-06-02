@@ -149,7 +149,7 @@ func createRaftDB(subPath string, conf *config.Engine) (*badger.DB, error) {
 	opts.ValueLogFileSize = conf.VlogFileSize
 	opts.ValueLogMaxNumFiles = 3
 	opts.MaxMemTableSize = conf.BaseSize / 4
-	opts.TableBuilderOptions.MaxTableSize = conf.BaseSize / 4
+	opts.TableBuilderOptions.MaxTableSize = conf.MaxTableSize
 	opts.NumLevelZeroTables = conf.NumL0Tables
 	opts.NumLevelZeroTablesStall = conf.NumL0TablesStall
 	opts.LevelOneSize = conf.BaseSize
