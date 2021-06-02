@@ -180,12 +180,10 @@ func (s *Shard) GetEstimatedSize() int64 {
 		L0TablesSize += t.Size()
 	}
 	CFsSize := int64(0)
-	for _, cf := range s.cfs {
-		for l := range cf.levels {
-			level := cf.getLevelHandler(l + 1)
-			CFsSize += level.totalSize
-		}
-	}
+	s.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
+		CFsSize += level.totalSize
+		return false
+	})
 	return L0TablesSize + CFsSize
 }
 
