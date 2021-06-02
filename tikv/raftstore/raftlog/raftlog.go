@@ -14,7 +14,6 @@
 package raftlog
 
 import (
-	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 )
 
@@ -28,13 +27,13 @@ type RaftLog interface {
 	GetRaftCmdRequest() *raft_cmdpb.RaftCmdRequest
 }
 
-func DecodeLog(entry *eraftpb.Entry) RaftLog {
+func DecodeLog(entryData []byte) RaftLog {
 	var rlog RaftLog
-	if entry.Data[0] == CustomRaftLogFlag {
-		rlog = NewCustom(entry.Data)
+	if entryData[0] == CustomRaftLogFlag {
+		rlog = NewCustom(entryData)
 	} else {
 		cmd := new(raft_cmdpb.RaftCmdRequest)
-		err := cmd.Unmarshal(entry.Data)
+		err := cmd.Unmarshal(entryData)
 		if err != nil {
 			panic(err)
 		}

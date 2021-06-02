@@ -14,67 +14,36 @@
 package raftstore
 
 import (
-	"bytes"
+	"github.com/ngaut/unistore/raftengine"
 	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/sdbpb"
-	"github.com/pingcap/badger"
-	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
-	"math"
 )
 
 const (
 	InitEpochVer     uint64 = 1
 	InitEpochConfVer uint64 = 1
-	RaftTS           uint64 = 0
 )
-
-func isRaftRangeEmpty(engine *badger.DB, startKey, endKey []byte) (bool, error) {
-	var hasData bool
-	err := engine.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.IteratorOptions{
-			StartKey: y.Key{UserKey: startKey, Version: math.MaxUint64},
-			EndKey:   y.Key{UserKey: endKey, Version: 0},
-		})
-		defer it.Close()
-		it.Seek(startKey)
-		if it.Valid() {
-			item := it.Item()
-			if bytes.Compare(item.Key(), endKey) < 0 {
-				hasData = true
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return false, errors.WithStack(err)
-	}
-	return !hasData, nil
-}
 
 func BootstrapStore(engines *Engines, clussterID, storeID uint64) error {
 	ident := new(rspb.StoreIdent)
 	if engines.kv.Size() > 1 {
 		return errors.New("kv store is not empty and ahs alread had data.")
 	}
-	empty, err := isRaftRangeEmpty(engines.raft, MinKey, MaxDataKey)
-	if err != nil {
-		return err
-	}
-	if !empty {
+	if !engines.raft.IsEmpty() {
 		return errors.New("raft store is not empty and has already had data.")
 	}
 	ident.ClusterId = clussterID
 	ident.StoreId = storeID
-	wb := new(RaftWriteBatch)
+	wb := raftengine.NewWriteBatch()
 	val, err := ident.Marshal()
 	if err != nil {
 		return err
 	}
-	wb.Set(y.KeyWithTs(storeIdentKey, 0), val)
-	return wb.WriteToRaft(engines.raft)
+	wb.SetState(0, StoreIdentKey(), val)
+	return engines.raft.Write(wb)
 }
 
 var (
@@ -94,12 +63,12 @@ func PrepareBootstrap(engines *Engines, storeID, regionID, peerID uint64) (*meta
 func writePrepareBootstrap(engines *Engines, region *metapb.Region) error {
 	state := new(rspb.RegionLocalState)
 	state.Region = region
-	raftWB := new(RaftWriteBatch)
+	raftWB := raftengine.NewWriteBatch()
 	val, _ := state.Marshal()
-	raftWB.Set(y.KeyWithTs(prepareBootstrapKey, RaftTS), val)
-	raftWB.Set(y.KeyWithTs(RegionStateKey(region), RaftTS), val)
+	raftWB.SetState(0, PrepareBootstrapKey(), val)
+	raftWB.SetState(region.Id, RegionStateKey(region.RegionEpoch.Version, region.RegionEpoch.ConfVer), val)
 	writeInitialRaftState(raftWB, region)
-	err := engines.WriteRaft(raftWB)
+	err := engines.raft.Write(raftWB)
 	if err != nil {
 		return err
 	}
@@ -140,19 +109,19 @@ func newBootstrapRegion(regionID, peerID, storeID uint64) *metapb.Region {
 	}
 }
 
-func writeInitialRaftState(raftWB *RaftWriteBatch, region *metapb.Region) {
+func writeInitialRaftState(raftWB *raftengine.WriteBatch, region *metapb.Region) {
 	raftState := raftState{
 		lastIndex: RaftInitLogIndex,
 		term:      RaftInitLogTerm,
 		commit:    RaftInitLogIndex,
 	}
-	raftWB.Set(y.KeyWithTs(RaftStateKey(region), RaftTS), raftState.Marshal())
+	raftWB.SetState(region.Id, RaftStateKey(region.RegionEpoch.Version), raftState.Marshal())
 }
 
 func ClearPrepareBootstrap(engines *Engines, region *metapb.Region) error {
-	err := engines.raft.Update(func(txn *badger.Txn) error {
-		return txn.Delete(RaftStateKey(region))
-	})
+	wb := raftengine.NewWriteBatch()
+	wb.SetState(region.Id, RaftStateKey(region.RegionEpoch.Version), nil)
+	err := engines.raft.Write(wb)
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -160,8 +129,8 @@ func ClearPrepareBootstrap(engines *Engines, region *metapb.Region) error {
 }
 
 func ClearPrepareBootstrapState(engines *Engines) error {
-	wb := new(RaftWriteBatch)
-	wb.Delete(y.KeyWithTs(prepareBootstrapKey, RaftTS))
-	err := wb.WriteToRaft(engines.raft)
+	wb := raftengine.NewWriteBatch()
+	wb.SetState(0, PrepareBootstrapKey(), nil)
+	err := engines.raft.Write(wb)
 	return errors.WithStack(err)
 }

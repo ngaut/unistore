@@ -15,12 +15,12 @@ package raftstore
 
 import (
 	"context"
+	"github.com/ngaut/unistore/raftengine"
 	"sync"
 	"time"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/ngaut/unistore/pd"
-	"github.com/pingcap/badger"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
@@ -126,14 +126,8 @@ func (n *Node) checkStore(engines *Engines) (uint64, error) {
 	return ident.StoreId, nil
 }
 
-func loadStoreIdent(raft *badger.DB) (ident *raft_serverpb.StoreIdent, err error) {
-	val, err := getValue(raft, storeIdentKey)
-	if err != nil {
-		if err == badger.ErrKeyNotFound {
-			return nil, nil
-		}
-		return nil, err
-	}
+func loadStoreIdent(raft *raftengine.Engine) (ident *raft_serverpb.StoreIdent, err error) {
+	val := raft.GetState(0, StoreIdentKey())
 	if len(val) == 0 {
 		return nil, nil
 	}
@@ -160,7 +154,12 @@ func (n *Node) allocID(ctx context.Context) (uint64, error) {
 
 func (n *Node) checkOrPrepareBootstrapCluster(ctx context.Context, engines *Engines, storeID uint64) (*metapb.Region, error) {
 	var state raft_serverpb.RegionLocalState
-	if err := getMsg(engines.raft, prepareBootstrapKey, &state); err == nil {
+	val := engines.raft.GetState(0, PrepareBootstrapKey())
+	if len(val) > 0 {
+		err := state.Unmarshal(val)
+		if err != nil {
+			return nil, err
+		}
 		return state.Region, nil
 	}
 	bootstrapped, err := n.checkClusterBootstrapped(ctx)

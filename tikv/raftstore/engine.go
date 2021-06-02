@@ -14,35 +14,27 @@
 package raftstore
 
 import (
+	"github.com/ngaut/unistore/raftengine"
 	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/sdbpb"
-	"sync"
-	"time"
-
-	"github.com/golang/protobuf/proto"
-	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/tikv/mvcc"
-	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
-	"github.com/pingcap/errors"
-	"github.com/pingcap/kvproto/pkg/raft_serverpb"
+	"sync"
 )
 
 type Engines struct {
 	kv       *sdb.DB
 	kvPath   string
-	raft     *badger.DB
+	raft     *raftengine.Engine
 	raftPath string
 	listener *MetaChangeListener
-	filter   *RaftLogFilterBuilder
 }
 
-func NewEngines(kvEngine *sdb.DB, raftEngine *badger.DB, kvPath, raftPath string, listener *MetaChangeListener, raftFilter *RaftLogFilterBuilder) *Engines {
+func NewEngines(kvEngine *sdb.DB, raftEngine *raftengine.Engine, kvPath, raftPath string, listener *MetaChangeListener) *Engines {
 	kvEngine.IterateMeta(func(meta *sdb.ShardMeta) {
 		if val, ok := meta.GetProperty(applyStateKey); ok {
 			var applyState applyState
 			applyState.Unmarshal(val)
-			raftFilter.SetStableIdx(meta.ID, applyState.appliedIndex)
 		}
 	})
 	return &Engines{
@@ -51,7 +43,6 @@ func NewEngines(kvEngine *sdb.DB, raftEngine *badger.DB, kvPath, raftPath string
 		raft:     raftEngine,
 		raftPath: raftPath,
 		listener: listener,
-		filter:   raftFilter,
 	}
 }
 
@@ -59,20 +50,6 @@ func (en *Engines) WriteKV(wb *KVWriteBatch) {
 	for _, batch := range wb.batches {
 		en.kv.Write(batch)
 	}
-}
-
-func (en *Engines) WriteRaft(wb *RaftWriteBatch) error {
-	return wb.WriteToRaft(en.raft)
-}
-
-func (en *Engines) SyncKVWAL() error {
-	// TODO: implement
-	return nil
-}
-
-func (en *Engines) SyncRaftWAL() error {
-	// TODO: implement
-	return nil
 }
 
 type KVWriteBatch struct {
@@ -132,136 +109,6 @@ func SetApplyState(wb *sdb.WriteBatch, state applyState) {
 
 func SetMaxMemTableSize(wb *sdb.WriteBatch, val []byte) {
 	wb.SetProperty(sdb.MemTableSizeKey, val)
-}
-
-type RaftWriteBatch struct {
-	entries []*badger.Entry
-	size    int
-}
-
-func (wb *RaftWriteBatch) Len() int {
-	return len(wb.entries)
-}
-
-func (wb *RaftWriteBatch) Set(key y.Key, val []byte) {
-	wb.entries = append(wb.entries, &badger.Entry{
-		Key:   key,
-		Value: val,
-	})
-	wb.size += key.Len() + len(val)
-}
-
-func (wb *RaftWriteBatch) Delete(key y.Key) {
-	wb.entries = append(wb.entries, &badger.Entry{
-		Key: key,
-	})
-	wb.size += key.Len()
-}
-
-func (wb *RaftWriteBatch) SetMsg(key y.Key, msg proto.Message) error {
-	val, err := proto.Marshal(msg)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	wb.Set(key, val)
-	return nil
-}
-
-func (wb *RaftWriteBatch) SetRegionLocalState(key y.Key, state *raft_serverpb.RegionLocalState) error {
-	data, err := state.Marshal()
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	wb.Set(key, data)
-	return nil
-}
-
-func (wb *RaftWriteBatch) WriteToRaft(db *badger.DB) error {
-	if len(wb.entries) > 0 {
-		start := time.Now()
-		err := db.Update(func(txn *badger.Txn) error {
-			for _, entry := range wb.entries {
-				if len(entry.Value) == 0 {
-					entry.SetDelete()
-				}
-				err1 := txn.SetEntry(entry)
-				if err1 != nil {
-					return err1
-				}
-			}
-			return nil
-		})
-		metrics.RaftDBUpdate.Observe(time.Since(start).Seconds())
-		if err != nil {
-			return errors.WithStack(err)
-		}
-	}
-	return nil
-}
-
-func (wb *RaftWriteBatch) MustWriteToRaft(db *badger.DB) {
-	err := wb.WriteToRaft(db)
-	if err != nil {
-		panic(err)
-	}
-}
-
-func (wb *RaftWriteBatch) Reset() {
-	for i := range wb.entries {
-		wb.entries[i] = nil
-	}
-	wb.entries = wb.entries[:0]
-	wb.size = 0
-}
-
-type RaftLogFilterBuilder struct {
-	stableIdxMap sync.Map
-}
-
-func (fb *RaftLogFilterBuilder) SetStableIdx(regionID uint64, stableIdx uint64) {
-	fb.stableIdxMap.Store(regionID, stableIdx)
-}
-
-func (fb *RaftLogFilterBuilder) BuildFilter(targetLevel int, startKey, endKey []byte) badger.CompactionFilter {
-	return &raftLogFilter{stableIdxMap: &fb.stableIdxMap}
-}
-
-type raftLogFilter struct {
-	regionId     uint64
-	stableIdx    uint64
-	stableIdxMap *sync.Map
-}
-
-func (r *raftLogFilter) Filter(key, val, userMeta []byte) badger.Decision {
-	if !IsRaftLogKey(key) {
-		return badger.DecisionKeep
-	}
-	regionID, index := RaftLogRegionAndIndex(key)
-	if regionID != r.regionId {
-		r.regionId = regionID
-		val, ok := r.stableIdxMap.Load(regionID)
-		if ok {
-			r.stableIdx = val.(uint64)
-		} else {
-			r.stableIdx = 0
-		}
-	}
-	if index < r.stableIdx {
-		return badger.DecisionDrop
-	}
-	return badger.DecisionKeep
-}
-
-var raftLogGuard = badger.Guard{
-	Prefix:   []byte{LocalPrefix, RaftLogPrefix},
-	MatchLen: 10,
-	MinSize:  1024 * 1024,
-}
-
-func (r *raftLogFilter) Guards() []badger.Guard {
-	return []badger.Guard{
-		raftLogGuard,
-	}
 }
 
 // MetaChangeListener implements the badger.MetaChangeListener interface.

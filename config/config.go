@@ -22,7 +22,7 @@ import (
 type Config struct {
 	Server         Server         `toml:"server"` // Unistore server options
 	Engine         Engine         `toml:"engine"` // Engine options.
-	RaftEngine     Engine         `toml:"raft-engine"`
+	RaftEngine     RaftEngine     `toml:"raft-engine"`
 	RaftStore      RaftStore      `toml:"raftstore"`       // RaftStore configs
 	PessimisticTxn PessimisticTxn `toml:"pessimistic-txn"` // Pessimistic txn related
 }
@@ -47,25 +47,21 @@ type RaftStore struct {
 }
 
 type Engine struct {
-	// Used in both.
-	DBPath           string `toml:"db-path"`        // Directory to store the data in. Should exist and be writable.
-	MaxTableSize     int64  `toml:"max-table-size"` // Each table file is at most this size.
-	BaseSize         int64  `toml:"base-size"`
-	NumL0Tables      int    `toml:"num-L0-tables"`       // Maximum number of Level 0 tables before we start compacting.
-	NumL0TablesStall int    `toml:"num-L0-tables-stall"` // Maximum number of Level 0 tables before stalling.
-	NumCompactors    int    `toml:"num-compactors"`
-	BlockCacheSize   int64  `toml:"block-cache-size"`
-
-	// Only used in raft engine
-	ValueThreshold     int   `toml:"value-threshold"` // If value size >= this threshold, only store value offsets in tree.
-	VlogFileSize       int64 `toml:"vlog-file-size"`  // Value log file size.
-	CompactL0WhenClose bool  `toml:"compact-l0-when-close"`
-	SyncWrite          bool  `toml:"sync-write"`
-
-	// Only used in KV engine.
+	DBPath                string    `toml:"db-path"`        // Directory to store the data in. Should exist and be writable.
+	MaxTableSize          int64     `toml:"max-table-size"` // Each table file is at most this size.
+	BaseSize              int64     `toml:"base-size"`
+	NumL0Tables           int       `toml:"num-L0-tables"`       // Maximum number of Level 0 tables before we start compacting.
+	NumL0TablesStall      int       `toml:"num-L0-tables-stall"` // Maximum number of Level 0 tables before stalling.
+	NumCompactors         int       `toml:"num-compactors"`
+	BlockCacheSize        int64     `toml:"block-cache-size"`
 	MaxMemTableSizeFactor int       `toml:"max-mem-table-size-factor"` // Each mem table is at most this size.
 	RemoteCompactionAddr  string    `toml:"remote-compaction-addr"`
 	S3                    S3Options `toml:"s3"`
+}
+
+type RaftEngine struct {
+	DBPath  string `toml:"db-path"`
+	WALSize int64  `toml:"wal-size"`
 }
 
 type S3Options struct {
@@ -109,7 +105,6 @@ var DefaultConf = Config{
 	},
 	Engine: Engine{
 		DBPath:                "/tmp/badger",
-		ValueThreshold:        256,
 		MaxMemTableSizeFactor: 128,
 		MaxTableSize:          8 * MB,
 		NumL0Tables:           4,
@@ -118,18 +113,9 @@ var DefaultConf = Config{
 		BaseSize:              64 * MB,
 		BlockCacheSize:        0, // 0 means disable block cache, use mmap to access sst.
 	},
-	RaftEngine: Engine{
-		DBPath:                "/tmp/badger",
-		ValueThreshold:        256,
-		MaxMemTableSizeFactor: 256,
-		MaxTableSize:          16 * MB,
-		NumL0Tables:           4,
-		NumL0TablesStall:      10,
-		VlogFileSize:          256 * MB,
-		NumCompactors:         3,
-		BaseSize:              256 * MB,
-		BlockCacheSize:        0, // 0 means disable block cache, use mmap to access sst.
-		CompactL0WhenClose:    true,
+	RaftEngine: RaftEngine{
+		DBPath:  "/tmp/badger",
+		WALSize: 1024 * MB,
 	},
 	PessimisticTxn: PessimisticTxn{
 		WaitForLockTimeout:  1000, // 1000ms same with tikv default value

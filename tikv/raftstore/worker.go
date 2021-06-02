@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/ngaut/unistore/config"
-	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -81,13 +80,6 @@ type regionTask struct {
 	peer   *metapb.Peer
 
 	waitMsg *MsgWaitFollowerSplitFiles
-}
-
-type raftLogGCTask struct {
-	raftEngine *badger.DB
-	regionID   uint64
-	startIdx   uint64
-	endIdx     uint64
 }
 
 type splitCheckTask struct {
@@ -529,85 +521,6 @@ func (r *regionTaskHandler) handleRecoverSplit(region *metapb.Region, peer *meta
 		Callback:  cb,
 	}
 	return r.router.send(region.Id, NewPeerMsg(MsgTypeWaitFollowerSplitFiles, region.Id, msg))
-}
-
-type raftLogGcTaskRes uint64
-
-type raftLogGCTaskHandler struct {
-	taskResCh chan<- raftLogGcTaskRes
-}
-
-// In our tests, we found that if the batch size is too large, running deleteAllInRange will
-// reduce OLTP QPS by 30% ~ 60%. We found that 32K is a proper choice.
-const MaxDeleteBatchSize int = 32 * 1024
-
-// gcRaftLog does the GC job and returns the count of logs collected.
-func (r *raftLogGCTaskHandler) gcRaftLog(raftDb *badger.DB, regionId, startIdx, endIdx uint64) (uint64, error) {
-
-	// Find the raft log idx range needed to be gc.
-	firstIdx := startIdx
-	if firstIdx == 0 {
-		firstIdx = endIdx
-		err := raftDb.View(func(txn *badger.Txn) error {
-			startKey := RaftLogKey(regionId, 0)
-			ite := txn.NewIterator(badger.DefaultIteratorOptions)
-			defer ite.Close()
-			if ite.Seek(startKey); ite.Valid() {
-				var err error
-				if firstIdx, err = RaftLogIndex(ite.Item().Key()); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			return 0, err
-		}
-	}
-
-	if firstIdx >= endIdx {
-		log.Info("no need to gc", zap.Uint64("region id", regionId))
-		return 0, nil
-	}
-
-	raftWb := RaftWriteBatch{}
-	for idx := firstIdx; idx < endIdx; idx += 1 {
-		key := y.KeyWithTs(RaftLogKey(regionId, idx), RaftTS)
-		raftWb.Delete(key)
-		if raftWb.size >= MaxDeleteBatchSize {
-			// Avoid large write batch to reduce latency.
-			if err := raftWb.WriteToRaft(raftDb); err != nil {
-				return 0, err
-			}
-			raftWb.Reset()
-		}
-	}
-	// todo, disable WAL here.
-	if raftWb.Len() != 0 {
-		if err := raftWb.WriteToRaft(raftDb); err != nil {
-			return 0, err
-		}
-	}
-	return endIdx - firstIdx, nil
-}
-
-func (r *raftLogGCTaskHandler) reportCollected(collected uint64) {
-	if r.taskResCh == nil {
-		return
-	}
-	r.taskResCh <- raftLogGcTaskRes(collected)
-}
-
-func (r *raftLogGCTaskHandler) handle(t task) {
-	logGcTask := t.data.(*raftLogGCTask)
-	log.Debug("execute gc log", zap.Uint64("region id", logGcTask.regionID), zap.Uint64("end index", logGcTask.endIdx))
-	collected, err := r.gcRaftLog(logGcTask.raftEngine, logGcTask.regionID, logGcTask.startIdx, logGcTask.endIdx)
-	if err != nil {
-		log.Error("failed to gc", zap.Uint64("region id", logGcTask.regionID), zap.Uint64("collected", collected), zap.Error(err))
-	} else {
-		log.Debug("collected log entries", zap.Uint64("region id", logGcTask.regionID), zap.Uint64("count", collected))
-	}
-	r.reportCollected(collected)
 }
 
 type computeHashTaskHandler struct {

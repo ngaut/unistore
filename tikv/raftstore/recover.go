@@ -1,10 +1,10 @@
 package raftstore
 
 import (
+	"github.com/ngaut/unistore/raftengine"
 	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/sdbpb"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
-	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -12,17 +12,18 @@ import (
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
+	"io"
 	"math"
 )
 
 type RecoverHandler struct {
-	raftDB        *badger.DB
+	raftDB        *raftengine.Engine
 	storeID       uint64
 	ctx           *applyContext
 	regionHandler *regionTaskHandler
 }
 
-func NewRecoverHandler(raftDB *badger.DB) (*RecoverHandler, error) {
+func NewRecoverHandler(raftDB *raftengine.Engine) (*RecoverHandler, error) {
 	storeIdent, err := loadStoreIdent(raftDB)
 	if err != nil {
 		return nil, err
@@ -78,7 +79,7 @@ func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMe
 		if len(e.Data) == 0 || e.EntryType != eraftpb.EntryType_EntryNormal {
 			continue
 		}
-		rlog := raftlog.DecodeLog(e)
+		rlog := raftlog.DecodeLog(e.Data)
 		if cmdReq := rlog.GetRaftCmdRequest(); cmdReq != nil {
 			err := h.executeAdminRequest(applier, cmdReq)
 			if err != nil {
@@ -117,60 +118,47 @@ func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMe
 }
 
 func (h *RecoverHandler) loadRegionMeta(id, ver uint64) (region *metapb.Region, committedIdx uint64, err error) {
-	regionKey := RegionStateKeyByIDEpoch(id, &metapb.RegionEpoch{Version: ver, ConfVer: math.MaxUint64})
-	err = h.raftDB.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Reverse = true
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		it.Seek(regionKey)
-		y.Assert(it.Valid())
-		item := it.Item()
-		val, _ := item.Value()
+	err = h.raftDB.IterateRegionStates(id, true, func(key, val []byte) error {
+		if key[0] != RegionMetaKeyByte {
+			return nil
+		}
+		metaVer, _ := ParseRegionStateKey(key)
+		if metaVer != ver {
+			return nil
+		}
 		state := new(raft_serverpb.RegionLocalState)
 		err1 := state.Unmarshal(val)
 		if err1 != nil {
 			return err1
 		}
 		region = state.Region
-		raftKey := RaftStateKey(region)
-		item, err1 = txn.Get(raftKey)
-		if err1 != nil {
-			return err1
-		}
-		val, _ = item.Value()
-		var raftState raftState
-		raftState.Unmarshal(val)
-		committedIdx = raftState.commit
-		return nil
+		return io.EOF
 	})
-	if err != nil {
+	if err != io.EOF {
 		return nil, 0, err
 	}
+	val := h.raftDB.GetState(region.GetId(), RaftStateKey(region.RegionEpoch.Version))
+	log.S().Infof("get region %d:%d raft states %x",
+		region.Id, region.RegionEpoch.Version, val)
+	y.Assert(len(val) > 0)
+	var raftState raftState
+	raftState.Unmarshal(val)
+	committedIdx = raftState.commit
 	return region, committedIdx, nil
 }
 
 func (h *RecoverHandler) executeAdminRequest(a *applier, cmdReq *raft_cmdpb.RaftCmdRequest) error {
 	adminReq := cmdReq.AdminRequest
-	raftWB := new(RaftWriteBatch)
 	if adminReq.Splits != nil {
-		_, newRegions, err := a.splitGenNewRegionMetas(adminReq.Splits)
+		_, _, err := a.splitGenNewRegionMetas(adminReq.Splits)
 		if err != nil {
 			return err
-		}
-		for _, region := range newRegions {
-			WritePeerState(raftWB, region, raft_serverpb.PeerState_Normal, nil)
 		}
 	} else if adminReq.ChangePeer != nil {
-		resp, _, err := a.execChangePeer(adminReq)
+		_, _, err := a.execChangePeer(adminReq)
 		if err != nil {
 			return err
 		}
-		state := raft_serverpb.PeerState_Normal
-		if a.pendingRemove {
-			state = raft_serverpb.PeerState_Tombstone
-		}
-		WritePeerState(raftWB, resp.ChangePeer.Region, state, nil)
 	}
-	return raftWB.WriteToRaft(h.raftDB)
+	return nil
 }

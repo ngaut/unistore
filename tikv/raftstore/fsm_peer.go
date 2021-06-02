@@ -738,18 +738,9 @@ func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
 }
 
 func (d *peerMsgHandler) onReadyCompactLog(firstIndex uint64, truncatedIndex uint64) {
-	raftLogGCTask := &raftLogGCTask{
-		raftEngine: d.ctx.engine.raft,
-		regionID:   d.regionID(),
-		startIdx:   d.peer.LastCompactedIdx,
-		endIdx:     truncatedIndex + 1,
-	}
-	d.peer.LastCompactedIdx = raftLogGCTask.endIdx
-	d.peer.Store().CompactTo(raftLogGCTask.endIdx)
-	d.ctx.raftLogGCTaskSender <- task{
-		tp:   taskTypeRaftLogGC,
-		data: raftLogGCTask,
-	}
+	d.ctx.raftWB.TruncateRaftLog(d.regionID(), truncatedIndex)
+	d.peer.LastCompactedIdx = truncatedIndex
+	d.peer.Store().CompactTo(truncatedIndex)
 }
 
 func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*metapb.Region) {
@@ -790,7 +781,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 			newPeers = append(newPeers, d.peer.getEventContext())
 			store := d.peer.Store()
 			// The raft state key changed when region version change, we need to set it here.
-			d.ctx.raftWB.Set(y.KeyWithTs(RaftStateKey(newRegion), RaftTS), store.raftState.Marshal())
+			d.ctx.raftWB.SetState(regionID, RaftStateKey(d.region().RegionEpoch.Version), store.raftState.Marshal())
 			// Reset the flush state for derived region.
 			store.initialFlushed = false
 			store.splitStage = sdbpb.SplitStage_INITIAL
@@ -1419,7 +1410,6 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 			var applyState applyState
 			applyState.Unmarshal(val)
 			store.stableApplyState = applyState
-			d.ctx.engine.filter.SetStableIdx(d.regionID(), applyState.appliedIndex)
 		}
 	}
 	if change.Stage > store.splitStage {

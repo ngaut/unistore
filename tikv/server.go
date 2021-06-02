@@ -18,13 +18,12 @@ import (
 	"context"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
+	"github.com/ngaut/unistore/raftengine"
 	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/tikv/cophandler"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/lockwaiter"
 	"github.com/ngaut/unistore/tikv/raftstore"
-	"github.com/pingcap/badger"
-	"github.com/pingcap/badger/options"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
 	"github.com/pingcap/kvproto/pkg/deadlock"
@@ -76,8 +75,7 @@ func NewServer(conf *config.Config, pdClient pd.Client) (*Server, error) {
 	allocator := &idAllocator{
 		pdCli: pdClient,
 	}
-	raftFilter := new(raftstore.RaftLogFilterBuilder)
-	raftDB, err := createRaftDB(subPathRaft, &conf.RaftEngine, raftFilter)
+	raftDB, err := createRaftDB(subPathRaft, &conf.RaftEngine)
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
@@ -91,7 +89,7 @@ func NewServer(conf *config.Config, pdClient pd.Client) (*Server, error) {
 		return nil, errors.AddStack(err)
 	}
 	http.DefaultServeMux.HandleFunc("/debug/db", db.DebugHandler())
-	engines := raftstore.NewEngines(db, raftDB, kvPath, raftPath, listener, raftFilter)
+	engines := raftstore.NewEngines(db, raftDB, kvPath, raftPath, listener)
 	innerServer := raftstore.NewRaftInnerServer(conf, engines, raftConf)
 	innerServer.Setup(pdClient)
 	router := innerServer.GetRaftstoreRouter()
@@ -137,30 +135,8 @@ func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	raftConf.SplitCheck.RegionMaxSize = uint64(conf.Server.RegionSize)
 }
 
-func createRaftDB(subPath string, conf *config.Engine, filter *raftstore.RaftLogFilterBuilder) (*badger.DB, error) {
-	opts := badger.DefaultOptions
-	opts.NumCompactors = conf.NumCompactors
-	opts.ValueThreshold = conf.ValueThreshold
-	// Do not need to write blob for raft engine because it will be deleted soon.
-	opts.ValueThreshold = 0
-	opts.MaxBlockCacheSize = 0
-	opts.MaxIndexCacheSize = 0
-	opts.CompactionFilterFactory = filter.BuildFilter
-	opts.ValueLogWriteOptions.WriteBufferSize = 4 * 1024 * 1024
-	opts.Dir = filepath.Join(conf.DBPath, subPath)
-	opts.ValueDir = opts.Dir
-	opts.ValueLogFileSize = conf.VlogFileSize
-	opts.ValueLogMaxNumFiles = 3
-	opts.MaxMemTableSize = conf.BaseSize / 4
-	opts.TableBuilderOptions.MaxTableSize = conf.MaxTableSize
-	opts.NumLevelZeroTables = conf.NumL0Tables
-	opts.NumLevelZeroTablesStall = conf.NumL0TablesStall
-	opts.LevelOneSize = conf.BaseSize
-	opts.SyncWrites = conf.SyncWrite
-	opts.CompactL0WhenClose = conf.CompactL0WhenClose
-	opts.TableBuilderOptions.CompressionPerLevel = []options.CompressionType{options.None,
-		options.None, options.None, options.None, options.None, options.None, options.None}
-	return badger.Open(opts)
+func createRaftDB(subPath string, conf *config.RaftEngine) (*raftengine.Engine, error) {
+	return raftengine.Open(filepath.Join(conf.DBPath, subPath), conf.WALSize)
 }
 
 func createKVDB(subPath string, safePoint *SafePoint, listener *raftstore.MetaChangeListener,
