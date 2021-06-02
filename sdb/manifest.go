@@ -420,8 +420,7 @@ func (m *Manifest) deleteFile(fid uint64, shardInfo *ShardMeta) {
 
 func (m *Manifest) applyCompaction(cs *sdbpb.ChangeSet, shardInfo *ShardMeta) {
 	log.S().Infof("%d:%d apply compaction", cs.ShardID, cs.ShardVer)
-	if len(cs.Compaction.TopDeletes) == len(cs.Compaction.TableCreates) &&
-		cs.Compaction.TopDeletes[0] == cs.Compaction.TableCreates[0].ID {
+	if isMoveDown(cs.Compaction) {
 		for _, create := range cs.Compaction.TableCreates {
 			m.moveDownFile(create.ID, create.CF, create.Level, shardInfo)
 		}
@@ -436,6 +435,11 @@ func (m *Manifest) applyCompaction(cs *sdbpb.ChangeSet, shardInfo *ShardMeta) {
 	for _, create := range cs.Compaction.TableCreates {
 		m.addFile(create.ID, create.CF, create.Level, create.Smallest, create.Biggest, shardInfo)
 	}
+}
+
+func isMoveDown(compaction *sdbpb.Compaction) bool {
+	return len(compaction.TopDeletes) == len(compaction.TableCreates) &&
+		compaction.TopDeletes[0] == compaction.TableCreates[0].ID
 }
 
 func (m *Manifest) applySplitFiles(cs *sdbpb.ChangeSet, shardInfo *ShardMeta) {
@@ -546,14 +550,32 @@ func (m *Manifest) isDuplicatedChange(change *sdbpb.ChangeSet) bool {
 		return dup
 	}
 	if comp := change.Compaction; comp != nil {
-		for _, tbl := range comp.TableCreates {
-			level, ok := meta.FileLevel(tbl.ID)
+		if isMoveDown(comp) {
+			level, ok := meta.FileLevel(comp.TopDeletes[0])
 			if ok && level > int(change.Compaction.Level) {
-				log.S().Infof("%d:%d skip duplicated compaction tbl:%d level:%d, meta level:%d",
-					meta.ID, meta.Ver, tbl.ID, change.Compaction.Level, level)
+				log.S().Infof("%d:%d skip duplicated moveDown compaction level:%d",
+					meta.ID, meta.Ver, comp.Level)
+				return true
+			}
+			return false
+		}
+		for _, del := range comp.TopDeletes {
+			_, ok := meta.FileLevel(del)
+			if !ok {
+				log.S().Infof("%d:%d skip duplicated compaction file %d already deleted",
+					meta.ID, meta.Ver, del)
 				return true
 			}
 		}
+		for _, del := range comp.BottomDeletes {
+			_, ok := meta.FileLevel(del)
+			if !ok {
+				log.S().Infof("%d:%d skip duplicated compaction file %d already deleted",
+					meta.ID, meta.Ver, del)
+				return true
+			}
+		}
+		return false
 	}
 	if splitFiles := change.SplitFiles; splitFiles != nil {
 		return meta.splitStage == change.Stage
