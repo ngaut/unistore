@@ -921,6 +921,7 @@ func (sdb *DB) applyCompaction(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 				return err
 			}
 		}
+		atomicRemoveL0(shard, len(comp.TopDeletes))
 	} else {
 		err := sdb.compactionUpdateLevelHandler(shard, int(comp.Cf), int(comp.Level+1), comp.TableCreates, comp.BottomDeletes, del)
 		if err != nil {
