@@ -871,7 +871,6 @@ func (sdb *DB) applyFlush(shard *Shard, changeSet *sdbpb.ChangeSet) error {
 		if err != nil {
 			return err
 		}
-		shard.addEstimatedSize(tbl.Size())
 		atomicAddL0(shard, tbl)
 		atomicRemoveMemTable(shard)
 	}
@@ -922,7 +921,7 @@ func (sdb *DB) applyCompaction(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 				return err
 			}
 		}
-		shard.addEstimatedSize(-atomicRemoveL0(shard, len(comp.TopDeletes)))
+		atomicRemoveL0(shard, len(comp.TopDeletes))
 	} else {
 		err := sdb.compactionUpdateLevelHandler(shard, int(comp.Cf), int(comp.Level+1), comp.TableCreates, comp.BottomDeletes, del)
 		if err != nil {
@@ -989,7 +988,6 @@ func (sdb *DB) compactionUpdateLevelHandler(shard *Shard, cf, level int,
 	sortTables(newLevel.tables)
 	assertTablesOrder(level, newLevel.tables, nil)
 	shard.cfs[cf].casLevelHandler(level, oldLevel, newLevel)
-	shard.addEstimatedSize(newLevel.totalSize - oldLevel.totalSize)
 	return nil
 }
 
