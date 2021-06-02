@@ -240,7 +240,7 @@ func (r *raftLogFilter) Filter(key, val, userMeta []byte) badger.Decision {
 }
 
 var raftLogGuard = badger.Guard{
-	Prefix:   []byte{LocalPrefix, RaftStatePrefix},
+	Prefix:   []byte{LocalPrefix, RaftLogPrefix},
 	MatchLen: 10,
 	MinSize:  1024 * 1024,
 }
