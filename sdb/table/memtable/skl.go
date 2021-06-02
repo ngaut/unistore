@@ -315,18 +315,18 @@ func (s *skiplist) Put(key []byte, v y.ValueStruct) {
 }
 
 // Hint is used to speed up sequential write.
-type hint struct {
+type Hint struct {
 	height int32
 
 	// hitHeight is used to reduce cost of calculateRecomputeHeight.
-	// For random workload, comparing hint keys from bottom up is wasted work.
+	// For random workload, comparing Hint keys from bottom up is wasted work.
 	// So we record the hit height of the last operation, only grow recompute height from near that height.
 	hitHeight int32
 	prev      [maxHeight + 1]*node
 	next      [maxHeight + 1]*node
 }
 
-func (s *skiplist) calculateRecomputeHeight(key []byte, h *hint, listHeight int32) int32 {
+func (s *skiplist) calculateRecomputeHeight(key []byte, h *Hint, listHeight int32) int32 {
 	if h.height < listHeight {
 		// Either splice is never used or list height has grown, we recompute all.
 		h.prev[listHeight] = s.head
@@ -370,7 +370,7 @@ func (s *skiplist) calculateRecomputeHeight(key []byte, h *hint, listHeight int3
 }
 
 // PutWithHint inserts the key-value pair with Hint for better sequential write performance.
-func (s *skiplist) PutWithHint(key []byte, v y.ValueStruct, h *hint) {
+func (s *skiplist) PutWithHint(key []byte, v y.ValueStruct, h *Hint) {
 	// Since we allow overwrite, we may not need to create a new node. We might not even need to
 	// increase the height. Let's defer these actions.
 	listHeight := s.getHeight()
@@ -387,7 +387,7 @@ func (s *skiplist) PutWithHint(key []byte, v y.ValueStruct, h *hint) {
 	}
 	spliceIsValid := h != nil
 	if h == nil {
-		h = new(hint)
+		h = new(Hint)
 	}
 	recomputeHeight := s.calculateRecomputeHeight(key, h, listHeight)
 	if recomputeHeight > 0 {
@@ -445,9 +445,9 @@ func (s *skiplist) PutWithHint(key []byte, v y.ValueStruct, h *hint) {
 	}
 }
 
-func (s *skiplist) GetWithHint(key []byte, version uint64, h *hint) y.ValueStruct {
+func (s *skiplist) GetWithHint(key []byte, version uint64, h *Hint) y.ValueStruct {
 	if h == nil {
-		h = new(hint)
+		h = new(Hint)
 	}
 	listHeight := s.getHeight()
 	recomputeHeight := s.calculateRecomputeHeight(key, h, listHeight)
@@ -549,7 +549,7 @@ func (s *skiplist) Get(key []byte, version uint64) y.ValueStruct {
 
 // The DeleteKey operation is not thread safe, it can only be run on a single thread.
 func (s *skiplist) DeleteKey(key []byte) bool {
-	h := new(hint)
+	h := new(Hint)
 	listHeight := s.getHeight()
 	recomputeHeight := s.calculateRecomputeHeight(key, h, listHeight)
 	var n *node

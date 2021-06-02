@@ -15,6 +15,7 @@ package sdb
 
 import (
 	"fmt"
+	"github.com/dgryski/go-farm"
 	"github.com/ngaut/unistore/s3util"
 	"github.com/ngaut/unistore/sdb/cache"
 	"github.com/ngaut/unistore/sdb/epoch"
@@ -552,9 +553,13 @@ func (wb *WriteBatch) Iterate(cf int, fn func(e *memtable.Entry) (more bool)) {
 }
 
 type Snapshot struct {
-	guard *epoch.Guard
-	shard *Shard
-	cfs   []CFConfig
+	guard     *epoch.Guard
+	shard     *Shard
+	cfs       []CFConfig
+	hints     []memtable.Hint
+	memTables *memTables
+	splitting []*memtable.Table
+	l0Tables  *l0Tables
 
 	managedReadTS uint64
 }
@@ -563,7 +568,7 @@ func (s *Snapshot) Get(cf int, key []byte, version uint64) (*Item, error) {
 	if version == 0 {
 		version = math.MaxUint64
 	}
-	vs := s.shard.Get(cf, key, version)
+	vs := s.getValue(cf, key, version)
 	if !vs.Valid() {
 		return nil, ErrKeyNotFound
 	}
@@ -577,6 +582,46 @@ func (s *Snapshot) Get(cf int, key []byte, version uint64) (*Item, error) {
 	item.userMeta = vs.UserMeta
 	item.val = vs.Value
 	return item, nil
+}
+
+func (s *Snapshot) getValue(cf int, key []byte, version uint64) y.ValueStruct {
+	keyHash := farm.Fingerprint64(key)
+	if s.splitting != nil {
+		idx := s.shard.getSplittingIndex(key)
+		v := s.splitting[idx].Get(cf, key, version)
+		if v.Valid() {
+			return v
+		}
+	}
+	for i, memTbl := range s.memTables.tables {
+		var v y.ValueStruct
+		if i == 0 {
+			v = memTbl.GetWithHint(cf, key, version, &s.hints[cf])
+		} else {
+			v = memTbl.Get(cf, key, version)
+		}
+		if v.Valid() {
+			return v
+		}
+	}
+	for _, tbl := range s.l0Tables.tables {
+		v := tbl.Get(cf, key, version, keyHash)
+		if v.Valid() {
+			return v
+		}
+	}
+	scf := s.shard.cfs[cf]
+	for i := 1; i <= ShardMaxLevel; i++ {
+		level := scf.getLevelHandler(i)
+		if len(level.tables) == 0 {
+			continue
+		}
+		v := level.get(key, version, keyHash)
+		if v.Valid() {
+			return v
+		}
+	}
+	return y.ValueStruct{}
 }
 
 func (s *Snapshot) MultiGet(cf int, keys [][]byte, version uint64) ([]*Item, error) {
@@ -604,11 +649,21 @@ func (s *Snapshot) SetManagedReadTS(ts uint64) {
 
 func (sdb *DB) NewSnapshot(shard *Shard) *Snapshot {
 	guard := sdb.resourceMgr.Acquire()
-	return &Snapshot{
+	snap := &Snapshot{
 		guard: guard,
 		shard: shard,
 		cfs:   sdb.opt.CFs,
+		hints: make([]memtable.Hint, len(sdb.opt.CFs)),
 	}
+	if shard.isSplitting() {
+		snap.splitting = make([]*memtable.Table, len(shard.splittingMemTbls))
+		for i := 0; i < len(shard.splittingMemTbls); i++ {
+			snap.splitting[i] = shard.loadSplittingMemTable(i)
+		}
+	}
+	snap.memTables = shard.loadMemTables()
+	snap.l0Tables = shard.loadL0Tables()
+	return snap
 }
 
 func (sdb *DB) RemoveShard(shardID uint64, removeFile bool) error {
