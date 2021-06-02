@@ -652,9 +652,7 @@ func (sdb *DB) GetShard(shardID uint64) *Shard {
 
 func (sdb *DB) GetSplitSuggestion(shardID uint64, splitSize int64) [][]byte {
 	shard := sdb.GetShard(shardID)
-	estimatedSize := shard.GetEstimatedSize()
-	if estimatedSize > splitSize {
-		log.S().Infof("shard %d:%d (%x, %x) size %d", shard.ID, shard.Ver, shard.Start, shard.End, estimatedSize)
+	if shard.GetEstimatedSize() > splitSize {
 		return shard.getSuggestSplitKeys(splitSize)
 	}
 	return nil
