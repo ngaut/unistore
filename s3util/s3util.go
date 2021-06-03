@@ -33,7 +33,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	s3config "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/ngaut/unistore/config"
 	"github.com/pingcap/badger/y"
@@ -159,8 +158,12 @@ func (c *S3Client) GetToFile(key string, filePath string) error {
 	input := &s3.GetObjectInput{}
 	input.Bucket = &c.Bucket
 	input.Key = &key
-	downloader := manager.NewDownloader(c.cli)
-	_, err = downloader.Download(context.TODO(), fd, input)
+	out, err := c.cli.GetObject(context.TODO(), input)
+	if err != nil {
+		return err
+	}
+	defer out.Body.Close()
+	_, err = io.Copy(fd, out.Body)
 	return err
 }
 
@@ -175,8 +178,7 @@ func (c *S3Client) Put(key string, data []byte) error {
 	input.Bucket = &c.Bucket
 	input.Key = &key
 	input.Body = bytes.NewReader(data)
-	uploader := manager.NewUploader(c.cli)
-	_, err := uploader.Upload(context.TODO(), input)
+	_, err := c.cli.PutObject(context.TODO(), input)
 	return err
 }
 

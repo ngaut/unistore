@@ -74,8 +74,6 @@ github.com/aws/aws-sdk-go-v2/credentials v1.2.1 h1:AqQ8PzWll1wegNUOfIKcbp/JspTbJ
 github.com/aws/aws-sdk-go-v2/credentials v1.2.1/go.mod h1:Rfvim1eZTC9W5s8YJyYYtl1KMk6e8fHv+wMRQGO4Ru0=
 github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.1.1 h1:w1ocBIhQkLgupEB3d0uOuBddqVYl0xpubz7HSTzWG8A=
 github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.1.1/go.mod h1:GTXAhrxHQOj9N+J5tYVjwt+rpRyy/42qLjlgw9pz1a0=
-github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.2.2 h1:+S+Y1yI1U3PQxMF59+sh8ur/fkcmCE+0eUlbdPGACbw=
-github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.2.2/go.mod h1:058wRIkpC6XLLXLUIJ76QBY/CcurNXaXa4L57YV6e9A=
 github.com/aws/aws-sdk-go-v2/internal/ini v1.0.0 h1:k7I9E6tyVWBo7H9ffpnxDWudtjau6Qt9rnOYgV+ciEQ=
 github.com/aws/aws-sdk-go-v2/internal/ini v1.0.0/go.mod h1:g3XMXuxvqSMUjnsXXp/960152w0wFS4CXVYgQaSVOHE=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.1.0 h1:XwqxIO9LtNXznBbEMNGumtLN60k4nVqDpVwVWx3XU/o=
