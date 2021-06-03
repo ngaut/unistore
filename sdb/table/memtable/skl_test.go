@@ -371,7 +371,7 @@ func TestIteratorSeek(t *testing.T) {
 
 func TestPutWithHint(t *testing.T) {
 	l := newSkiplist()
-	sp := new(hint)
+	sp := new(Hint)
 	cnt := 0
 	for {
 		if l.arena.size() > arenaSize-256 {
@@ -398,7 +398,7 @@ func TestGetWithHint(t *testing.T) {
 	rand.Seed(time.Now().Unix())
 	l := newSkiplist()
 	var keys [][]byte
-	sp := new(hint)
+	sp := new(Hint)
 	for {
 		if l.arena.size() > arenaSize-256 {
 			break
@@ -407,7 +407,7 @@ func TestGetWithHint(t *testing.T) {
 		keys = append(keys, key)
 		l.PutWithHint(key, y.ValueStruct{Value: key}, sp)
 	}
-	h := new(hint)
+	h := new(Hint)
 	for _, key := range keys {
 		bytes.Equal(l.GetWithHint(key, 0, h).Value, key)
 	}
@@ -629,10 +629,10 @@ func BenchmarkGetWithHintSequential(b *testing.B) {
 	}
 }
 
-func buildKeysAndList(size int) ([][]byte, *skiplist, *hint) {
+func buildKeysAndList(size int) ([][]byte, *skiplist, *Hint) {
 	l := newSkiplist()
 	keys := make([][]byte, size)
-	h := new(hint)
+	h := new(Hint)
 	for i := 0; i < size; i++ {
 		keys[i] = []byte(fmt.Sprintf("%05d", i))
 	}
@@ -674,7 +674,7 @@ func BenchmarkPutWithHint(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		h := new(hint)
+		h := new(Hint)
 		l = newSkiplist()
 		for j := 0; j < size; j++ {
 			key := keys[j]

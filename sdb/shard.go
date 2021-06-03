@@ -17,7 +17,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/dgryski/go-farm"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/sdb/epoch"
 	"github.com/ngaut/unistore/sdb/table"
@@ -219,44 +218,6 @@ func (s *Shard) foreachLevel(f func(cf int, level *levelHandler) (stop bool)) {
 			}
 		}
 	}
-}
-
-func (s *Shard) Get(cf int, key []byte, version uint64) y.ValueStruct {
-	keyHash := farm.Fingerprint64(key)
-	if s.isSplitting() {
-		idx := s.getSplittingIndex(key)
-		memTbl := s.loadSplittingMemTable(idx)
-		v := memTbl.Get(cf, key, version)
-		if v.Valid() {
-			return v
-		}
-	}
-	memTbls := s.loadMemTables()
-	for _, tbl := range memTbls.tables {
-		v := tbl.Get(cf, key, version)
-		if v.Valid() {
-			return v
-		}
-	}
-	l0Tbls := s.loadL0Tables()
-	for _, tbl := range l0Tbls.tables {
-		v := tbl.Get(cf, key, version, keyHash)
-		if v.Valid() {
-			return v
-		}
-	}
-	scf := s.cfs[cf]
-	for i := 1; i <= ShardMaxLevel; i++ {
-		level := scf.getLevelHandler(i)
-		if len(level.tables) == 0 {
-			continue
-		}
-		v := level.get(key, version, keyHash)
-		if v.Valid() {
-			return v
-		}
-	}
-	return y.ValueStruct{}
 }
 
 func (s *Shard) getSplittingIndex(key []byte) int {

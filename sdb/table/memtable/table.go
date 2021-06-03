@@ -17,7 +17,7 @@ func (e *Entry) EstimateSize() int64 {
 
 type Table struct {
 	skls    []*skiplist
-	hints   []hint
+	hints   []Hint
 	arena   *arena
 	version uint64
 	props   *sdbpb.Properties
@@ -27,7 +27,7 @@ type Table struct {
 func NewCFTable(numCFs int) *Table {
 	t := &Table{
 		skls:  make([]*skiplist, numCFs),
-		hints: make([]hint, numCFs),
+		hints: make([]Hint, numCFs),
 		arena: newArena(),
 	}
 	for i := 0; i < numCFs; i++ {
@@ -59,6 +59,10 @@ func (cft *Table) Size() int64 {
 
 func (cft *Table) Get(cf int, key []byte, version uint64) y.ValueStruct {
 	return cft.skls[cf].Get(key, version)
+}
+
+func (cft *Table) GetWithHint(cf int, key []byte, version uint64, hint *Hint) y.ValueStruct {
+	return cft.skls[cf].GetWithHint(key, version, hint)
 }
 
 func (cft *Table) DeleteKey(cf byte, key []byte) bool {
