@@ -471,6 +471,8 @@ type WriteBatch struct {
 	entries       [][]*memtable.Entry
 	estimatedSize int64
 	properties    map[string][]byte
+	entryArena    []memtable.Entry
+	entryArenaIdx int
 }
 
 func (sdb *DB) NewWriteBatch(shard *Shard) *WriteBatch {
@@ -480,6 +482,18 @@ func (sdb *DB) NewWriteBatch(shard *Shard) *WriteBatch {
 		entries:    make([][]*memtable.Entry, sdb.numCFs),
 		properties: map[string][]byte{},
 	}
+}
+
+func (wb *WriteBatch) allocEntry(key []byte, val y.ValueStruct) *memtable.Entry {
+	if len(wb.entryArena) <= wb.entryArenaIdx {
+		wb.entryArena = append(wb.entryArena, memtable.Entry{})
+		wb.entryArena = wb.entryArena[:cap(wb.entryArena)]
+	}
+	e := &wb.entryArena[wb.entryArenaIdx]
+	e.Key = key
+	e.Value = val
+	wb.entryArenaIdx++
+	return e
 }
 
 func (wb *WriteBatch) Put(cf int, key []byte, val y.ValueStruct) error {
@@ -492,10 +506,7 @@ func (wb *WriteBatch) Put(cf int, key []byte, val y.ValueStruct) error {
 			return fmt.Errorf("version is not zero for non-managed CF")
 		}
 	}
-	wb.entries[cf] = append(wb.entries[cf], &memtable.Entry{
-		Key:   key,
-		Value: val,
-	})
+	wb.entries[cf] = append(wb.entries[cf], wb.allocEntry(key, val))
 	wb.estimatedSize += int64(len(key) + int(val.EncodedSize()) + memtable.EstimateNodeSize)
 	return nil
 }
@@ -510,10 +521,7 @@ func (wb *WriteBatch) Delete(cf byte, key []byte, version uint64) error {
 			return fmt.Errorf("version is not zero for non-managed CF")
 		}
 	}
-	wb.entries[cf] = append(wb.entries[cf], &memtable.Entry{
-		Key:   key,
-		Value: y.ValueStruct{Meta: bitDelete, Version: version},
-	})
+	wb.entries[cf] = append(wb.entries[cf], wb.allocEntry(key, y.ValueStruct{Meta: bitDelete, Version: version}))
 	wb.estimatedSize += int64(len(key) + memtable.EstimateNodeSize)
 	return nil
 }
@@ -542,6 +550,7 @@ func (wb *WriteBatch) Reset() {
 	for key := range wb.properties {
 		delete(wb.properties, key)
 	}
+	wb.entryArenaIdx = 0
 }
 
 func (wb *WriteBatch) Iterate(cf int, fn func(e *memtable.Entry) (more bool)) {
