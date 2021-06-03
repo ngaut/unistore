@@ -15,6 +15,7 @@ package s3util
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -29,10 +30,11 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	s3config "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/ngaut/unistore/config"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -57,7 +59,7 @@ type Options struct {
 type S3Client struct {
 	Options
 	*scheduler
-	cli               *s3.S3
+	cli               *s3.Client
 	expirationSeconds uint64
 	lock              sync.RWMutex
 	deletions         deletions
@@ -83,16 +85,27 @@ func NewS3Client(c *y.Closer, dirPath string, opts Options) *S3Client {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 	client := &http.Client{Transport: tr}
-	cred := credentials.NewStaticCredentials(opts.KeyID, opts.SecretKey, "")
-	sess := session.Must(session.NewSession(aws.NewConfig().
-		WithEndpoint(opts.EndPoint).
-		WithDisableSSL(true).
-		WithS3ForcePathStyle(true).
-		WithCredentials(cred).
-		WithHTTPClient(client).
-		WithRegion(opts.Region)))
-	s3c.cli = s3.New(sess)
-	if len(opts.ExpirationDuration) > 0 {
+	resolver := aws.EndpointResolverFunc(func(service, region string) (aws.Endpoint, error) {
+		return aws.Endpoint{
+			URL: "http://" + opts.EndPoint,
+		}, nil
+	})
+	cred := credentials.NewStaticCredentialsProvider(opts.KeyID, opts.SecretKey, "")
+	cfg, err := s3config.LoadDefaultConfig(
+		context.TODO(),
+		s3config.WithEndpointResolver(resolver),
+		s3config.WithCredentialsProvider(cred),
+		s3config.WithHTTPClient(client),
+		s3config.WithRegion(opts.Region),
+	)
+	if err != nil {
+		log.S().Errorf("load config error: %s", err.Error())
+		return nil
+	}
+	s3c.cli = s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
+	if len(opts.ExpirationDuration) > 0 && c != nil {
 		s3c.expirationSeconds = uint64(config.ParseDuration(opts.ExpirationDuration) / time.Second)
 		if s3c.expirationSeconds > 0 {
 			filePath := filepath.Join(dirPath, DeletionFileName)
@@ -114,7 +127,7 @@ func (c *S3Client) Get(key string, offset, length int64) ([]byte, error) {
 	if length > 0 {
 		input.Range = aws.String(fmt.Sprintf("bytes=%d-%d", offset, offset+length-1))
 	}
-	out, err := c.cli.GetObject(input)
+	out, err := c.cli.GetObject(context.TODO(), input)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +136,7 @@ func (c *S3Client) Get(key string, offset, length int64) ([]byte, error) {
 	if length > 0 {
 		result = make([]byte, length)
 	} else {
-		result = make([]byte, *out.ContentLength)
+		result = make([]byte, out.ContentLength)
 	}
 	_, err = io.ReadFull(out.Body, result)
 	if err != nil {
@@ -146,12 +159,8 @@ func (c *S3Client) GetToFile(key string, filePath string) error {
 	input := &s3.GetObjectInput{}
 	input.Bucket = &c.Bucket
 	input.Key = &key
-	out, err := c.cli.GetObject(input)
-	if err != nil {
-		return err
-	}
-	defer out.Body.Close()
-	_, err = io.Copy(fd, out.Body)
+	downloader := manager.NewDownloader(c.cli)
+	_, err = downloader.Download(context.TODO(), fd, input)
 	return err
 }
 
@@ -162,11 +171,12 @@ func (c *S3Client) Put(key string, data []byte) error {
 	}
 	log.S().Infof("put file to s3:%d", fid)
 	input := &s3.PutObjectInput{}
-	input.SetContentLength(int64(len(data)))
+	input.ContentLength = int64(len(data))
 	input.Bucket = &c.Bucket
 	input.Key = &key
 	input.Body = bytes.NewReader(data)
-	_, err := c.cli.PutObject(input)
+	uploader := manager.NewUploader(c.cli)
+	_, err := uploader.Upload(context.TODO(), input)
 	return err
 }
 
@@ -179,7 +189,7 @@ func (c *S3Client) Delete(key string) error {
 	input := &s3.DeleteObjectInput{}
 	input.Bucket = &c.Bucket
 	input.Key = &key
-	_, err := c.cli.DeleteObject(input)
+	_, err := c.cli.DeleteObject(context.TODO(), input)
 	return err
 }
 
@@ -191,7 +201,7 @@ func (c *S3Client) ListFiles() (map[uint64]struct{}, error) {
 		input.Bucket = &c.Bucket
 		input.Prefix = aws.String(fmt.Sprintf("bg%08x", c.InstanceID))
 		input.Marker = marker
-		output, err := c.cli.ListObjects(input)
+		output, err := c.cli.ListObjects(context.TODO(), input)
 		if err != nil {
 			return nil, err
 		}
@@ -203,7 +213,7 @@ func (c *S3Client) ListFiles() (map[uint64]struct{}, error) {
 			}
 			fileIDs[fid] = struct{}{}
 		}
-		if !*output.IsTruncated {
+		if !output.IsTruncated {
 			break
 		}
 		marker = output.NextMarker
