@@ -31,6 +31,7 @@ import (
 	"unsafe"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	s3config "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -178,7 +179,9 @@ func (c *S3Client) Put(key string, data []byte) error {
 	input.Bucket = &c.Bucket
 	input.Key = &key
 	input.Body = bytes.NewReader(data)
-	_, err := c.cli.PutObject(context.TODO(), input)
+	_, err := c.cli.PutObject(context.TODO(), input, s3.WithAPIOptions(
+		v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware,
+	))
 	return err
 }
 
