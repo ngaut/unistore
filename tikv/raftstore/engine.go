@@ -16,7 +16,6 @@ package raftstore
 import (
 	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/sdbpb"
-	"math"
 	"sync"
 	"time"
 
@@ -35,15 +34,24 @@ type Engines struct {
 	raft     *badger.DB
 	raftPath string
 	listener *MetaChangeListener
+	filter   *RaftLogFilterBuilder
 }
 
-func NewEngines(kvEngine *sdb.DB, raftEngine *badger.DB, kvPath, raftPath string, listener *MetaChangeListener) *Engines {
+func NewEngines(kvEngine *sdb.DB, raftEngine *badger.DB, kvPath, raftPath string, listener *MetaChangeListener, raftFilter *RaftLogFilterBuilder) *Engines {
+	kvEngine.IterateMeta(func(meta *sdb.ShardMeta) {
+		if val, ok := meta.GetProperty(applyStateKey); ok {
+			var applyState applyState
+			applyState.Unmarshal(val)
+			raftFilter.SetStableIdx(meta.ID, applyState.appliedIndex)
+		}
+	})
 	return &Engines{
 		kv:       kvEngine,
 		kvPath:   kvPath,
 		raft:     raftEngine,
 		raftPath: raftPath,
 		listener: listener,
+		filter:   raftFilter,
 	}
 }
 
@@ -230,12 +238,41 @@ func (wb *RaftWriteBatch) Reset() {
 	wb.safePointUndo = 0
 }
 
-const maxSystemTS = math.MaxUint64
+type RaftLogFilterBuilder struct {
+	stableIdxMap sync.Map
+}
+
+func (fb *RaftLogFilterBuilder) SetStableIdx(regionID uint64, stableIdx uint64) {
+	fb.stableIdxMap.Store(regionID, stableIdx)
+}
+
+func (fb *RaftLogFilterBuilder) BuildFilter(targetLevel int, startKey, endKey []byte) badger.CompactionFilter {
+	return &raftLogFilter{stableIdxMap: &fb.stableIdxMap}
+}
 
 type raftLogFilter struct {
+	regionId     uint64
+	stableIdx    uint64
+	stableIdxMap *sync.Map
 }
 
 func (r *raftLogFilter) Filter(key, val, userMeta []byte) badger.Decision {
+	if !IsRaftLogKey(key) {
+		return badger.DecisionKeep
+	}
+	regionID, index := RaftLogRegionAndIndex(key)
+	if regionID != r.regionId {
+		r.regionId = regionID
+		val, ok := r.stableIdxMap.Load(regionID)
+		if ok {
+			r.stableIdx = val.(uint64)
+		} else {
+			r.stableIdx = 0
+		}
+	}
+	if index < r.stableIdx {
+		return badger.DecisionDrop
+	}
 	return badger.DecisionKeep
 }
 
@@ -249,10 +286,6 @@ func (r *raftLogFilter) Guards() []badger.Guard {
 	return []badger.Guard{
 		raftLogGuard,
 	}
-}
-
-func CreateRaftLogCompactionFilter(targetLevel int, startKey, endKey []byte) badger.CompactionFilter {
-	return &raftLogFilter{}
 }
 
 // MetaChangeListener implements the badger.MetaChangeListener interface.

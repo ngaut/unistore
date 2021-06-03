@@ -274,8 +274,6 @@ type Peer struct {
 	lastUrgentProposalIdx uint64
 	// The index of the latest committed split command.
 	lastCommittedSplitIdx uint64
-	// Approximate size of logs that is applied but not compacted yet.
-	RaftLogSizeHint uint64
 
 	PendingRemove bool
 
@@ -886,10 +884,6 @@ func (p *Peer) scheduleApplyShardChangeSet(entry *eraftpb.Entry) {
 }
 
 func (p *Peer) PostRaftReadyPersistent(trans *RaftClient, applyMsgs *applyMsgs, ready *raft.Ready, invokeCtx *InvokeContext) *ReadyApplySnapshot {
-	if invokeCtx.hasSnapshot() {
-		// When apply snapshot, there is no log applied and not compacted yet.
-		p.RaftLogSizeHint = 0
-	}
 
 	applySnapResult := p.Store().maybeScheduleApplySnapshot(invokeCtx)
 	if applySnapResult != nil && p.Meta.GetRole() == metapb.PeerRole_Learner {
@@ -1068,7 +1062,6 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *sdb.DB, applyMsgs *applyMsgs, re
 		}
 		for _, entry := range committedEntries {
 			// raft meta is very small, can be ignored.
-			p.RaftLogSizeHint += uint64(len(entry.Data))
 			if leaseToBeUpdated {
 				proposeTime := p.findProposeTime(entry.Index, entry.Term)
 				if proposeTime != nil {
