@@ -407,7 +407,6 @@ func (m *Manifest) addFile(fid uint64, cf int32, level uint32, smallest, biggest
 }
 
 func (m *Manifest) moveDownFile(fid uint64, cf int32, level uint32, shardInfo *ShardMeta) {
-	log.S().Infof("manifest moveDown file %d l%d", fid, level)
 	old := m.globalFiles[fid]
 	y.Assert(old.level+1 == level)
 	y.Assert(old.cf == cf)
@@ -416,7 +415,6 @@ func (m *Manifest) moveDownFile(fid uint64, cf int32, level uint32, shardInfo *S
 }
 
 func (m *Manifest) deleteFile(fid uint64, shardInfo *ShardMeta) {
-	log.S().Infof("%d:%d manifest del file %d", shardInfo.ID, shardInfo.Ver, fid)
 	m.deletions++
 	delete(shardInfo.files, fid)
 	delete(m.globalFiles, fid)
@@ -425,11 +423,15 @@ func (m *Manifest) deleteFile(fid uint64, shardInfo *ShardMeta) {
 func (m *Manifest) applyCompaction(cs *sdbpb.ChangeSet, shardInfo *ShardMeta) {
 	log.S().Infof("%d:%d apply compaction", cs.ShardID, cs.ShardVer)
 	if isMoveDown(cs.Compaction) {
+		log.S().Infof("%d:%d move down files to l%d %v",
+			cs.ShardID, cs.ShardVer, cs.Compaction.Level+1, cs.Compaction.TopDeletes)
 		for _, create := range cs.Compaction.TableCreates {
 			m.moveDownFile(create.ID, create.CF, create.Level, shardInfo)
 		}
 		return
 	}
+	log.S().Infof("%d:%d manifest del files top:%v bot:%v ",
+		shardInfo.ID, shardInfo.Ver, cs.Compaction.TopDeletes, cs.Compaction.BottomDeletes)
 	for _, id := range cs.Compaction.TopDeletes {
 		m.deleteFile(id, shardInfo)
 	}
@@ -451,6 +453,7 @@ func (m *Manifest) applySplitFiles(cs *sdbpb.ChangeSet, shardInfo *ShardMeta) {
 	for _, id := range cs.SplitFiles.TableDeletes {
 		m.deleteFile(id, shardInfo)
 	}
+	log.S().Infof("%d:%d manifest split del files %v", shardInfo.ID, shardInfo.Ver, cs.SplitFiles.TableDeletes)
 	for _, l0 := range cs.SplitFiles.L0Creates {
 		m.addFile(l0.ID, -1, 0, l0.Smallest, l0.Biggest, shardInfo)
 	}

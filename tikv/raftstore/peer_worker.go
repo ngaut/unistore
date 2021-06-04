@@ -14,6 +14,8 @@
 package raftstore
 
 import (
+	"github.com/pingcap/log"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,6 +66,9 @@ type raftWorker struct {
 	msgCnt            uint64
 	movePeerCandidate uint64
 	closeCh           <-chan struct{}
+
+	topWriteDurations []time.Duration
+	writeDurTotal     time.Duration
 }
 
 func newRaftWorker(ctx *GlobalContext, ch chan Msg, pm *router) *raftWorker {
@@ -171,14 +176,8 @@ func (rw *raftWorker) handleRaftReady(peers map[uint64]*peerState, batch *applyB
 		msg := Msg{Type: MsgTypeApplyProposal, Data: proposal}
 		rw.raftCtx.applyMsgs.appendMsg(proposal.RegionId, msg)
 	}
-	raftWB := rw.raftCtx.raftWB
-	if len(raftWB.entries) > 0 {
-		err := raftWB.WriteToRaft(rw.raftCtx.engine.raft)
-		if err != nil {
-			panic(err)
-		}
-		raftWB.Reset()
-	}
+	var dur time.Duration
+	dur = rw.writeRaftWriteBatch()
 	readyRes := rw.raftCtx.ReadyRes
 	rw.raftCtx.ReadyRes = nil
 	if len(readyRes) > 0 {
@@ -187,7 +186,6 @@ func (rw *raftWorker) handleRaftReady(peers map[uint64]*peerState, batch *applyB
 			h.HandleRaftReady(&pair.Ready, pair.IC)
 		}
 	}
-	dur := time.Since(rw.raftStartTime)
 	if !rw.raftCtx.isBusy {
 		electionTimeout := rw.raftCtx.cfg.RaftBaseTickInterval * time.Duration(rw.raftCtx.cfg.RaftElectionTimeoutTicks)
 		if dur > electionTimeout {
@@ -196,10 +194,47 @@ func (rw *raftWorker) handleRaftReady(peers map[uint64]*peerState, batch *applyB
 	}
 }
 
+func (rw *raftWorker) appendWriteDuration(dur time.Duration) {
+	rw.writeDurTotal += dur
+	if dur > 10*time.Millisecond {
+		rw.topWriteDurations = append(rw.topWriteDurations, dur)
+	}
+	if rw.writeDurTotal > 10*time.Second {
+		sort.Slice(rw.topWriteDurations, func(i, j int) bool {
+			return rw.topWriteDurations[i] > rw.topWriteDurations[j]
+		})
+		if len(rw.topWriteDurations) > 10 {
+			rw.topWriteDurations = rw.topWriteDurations[:10]
+		}
+		log.S().Infof("raft store write duration %v top:%v", rw.writeDurTotal, rw.topWriteDurations)
+		rw.topWriteDurations = rw.topWriteDurations[:0]
+		rw.writeDurTotal = 0
+	}
+}
+
+func (rw *raftWorker) writeRaftWriteBatch() time.Duration {
+	raftWB := rw.raftCtx.raftWB
+	var dur time.Duration
+	if len(raftWB.entries) > 0 {
+		begin := time.Now()
+		err := raftWB.WriteToRaft(rw.raftCtx.engine.raft)
+		if err != nil {
+			panic(err)
+		}
+		raftWB.Reset()
+		dur = time.Since(begin)
+		rw.appendWriteDuration(dur)
+	}
+	return dur
+}
+
 type applyWorker struct {
 	r   *router
 	ch  chan *applyBatch
 	ctx *applyContext
+
+	total time.Duration
+	top   []time.Duration
 }
 
 func newApplyWorker(r *router, ch chan *applyBatch, ctx *applyContext) *applyWorker {
@@ -233,6 +268,25 @@ func (aw *applyWorker) run(wg *sync.WaitGroup) {
 			}
 			ps.apply.handleMsg(aw.ctx, msg)
 		}
+		aw.appendDuration(time.Since(begin))
+	}
+}
+
+func (aw *applyWorker) appendDuration(dur time.Duration) {
+	aw.total += dur
+	if dur > 5*time.Millisecond {
+		aw.top = append(aw.top, dur)
+	}
+	if aw.total > time.Second*10 {
+		sort.Slice(aw.top, func(i, j int) bool {
+			return aw.top[i] > aw.top[j]
+		})
+		if len(aw.top) > 10 {
+			aw.top = aw.top[:10]
+		}
+		log.S().Infof("apply duration %v top:%v", aw.total, aw.top)
+		aw.total = 0
+		aw.top = aw.top[:0]
 	}
 }
 

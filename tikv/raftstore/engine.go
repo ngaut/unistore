@@ -135,20 +135,12 @@ func SetMaxMemTableSize(wb *sdb.WriteBatch, val []byte) {
 }
 
 type RaftWriteBatch struct {
-	entries       []*badger.Entry
-	lockEntries   []*badger.Entry
-	extraEntries  []*badger.Entry
-	raftEntries   []*badger.Entry
-	applyState    applyState
-	size          int
-	safePoint     int
-	safePointLock int
-	safePointSize int
-	safePointUndo int
+	entries []*badger.Entry
+	size    int
 }
 
 func (wb *RaftWriteBatch) Len() int {
-	return len(wb.entries) + len(wb.lockEntries) + len(wb.extraEntries) + len(wb.raftEntries)
+	return len(wb.entries)
 }
 
 func (wb *RaftWriteBatch) Set(key y.Key, val []byte) {
@@ -219,23 +211,7 @@ func (wb *RaftWriteBatch) Reset() {
 		wb.entries[i] = nil
 	}
 	wb.entries = wb.entries[:0]
-	for i := range wb.lockEntries {
-		wb.lockEntries[i] = nil
-	}
-	wb.lockEntries = wb.lockEntries[:0]
-	for i := range wb.extraEntries {
-		wb.extraEntries[i] = nil
-	}
-	wb.extraEntries = wb.extraEntries[:0]
-	for i := range wb.raftEntries {
-		wb.raftEntries[i] = nil
-	}
-	wb.raftEntries = wb.raftEntries[:0]
 	wb.size = 0
-	wb.safePoint = 0
-	wb.safePointLock = 0
-	wb.safePointSize = 0
-	wb.safePointUndo = 0
 }
 
 type RaftLogFilterBuilder struct {
