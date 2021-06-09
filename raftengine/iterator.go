@@ -81,6 +81,9 @@ func (it *walIterator) readBatch(reader io.Reader) ([]byte, error) {
 	}
 	checksum := binary.LittleEndian.Uint32(it.batchHdrBuf[4:])
 	length := binary.LittleEndian.Uint32(it.batchHdrBuf[8:])
+	if length > 256 * 1024 * 1024 {
+		return nil, io.EOF
+	}
 	if cap(it.buf) >= int(length) {
 		it.buf = it.buf[:length]
 	} else {
