@@ -49,7 +49,7 @@ func (sdb *DB) Ingest(ingestTree *IngestTree) error {
 		return err
 	}
 
-	shard := newShardForIngest(ingestTree.ChangeSet, &sdb.opt, sdb.metrics)
+	shard := newShardForIngest(ingestTree.ChangeSet, &sdb.opt)
 	shard.SetPassive(ingestTree.Passive)
 	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{memtable.NewCFTable(sdb.numCFs)}}))
 	atomic.StorePointer(shard.l0s, unsafe.Pointer(l0s))
@@ -92,14 +92,17 @@ func (sdb *DB) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*l0Tables,
 	newHandlers := make([][]*levelHandler, sdb.numCFs)
 	for cf := 0; cf < sdb.numCFs; cf++ {
 		for l := 1; l <= ShardMaxLevel; l++ {
-			newHandler := newLevelHandler(sdb.opt.NumLevelZeroTablesStall, l, sdb.metrics)
+			newHandler := newLevelHandler(sdb.opt.NumLevelZeroTablesStall, l)
 			newHandlers[cf] = append(newHandlers[cf], newHandler)
 		}
 	}
 	snap := ingestTree.ChangeSet.Snapshot
 	for _, l0Create := range snap.L0Creates {
-		l0Tbl, err := sstable.OpenL0Table(sstable.NewFilename(l0Create.ID, sdb.opt.Dir),
-			l0Create.ID, l0Create.Smallest, l0Create.Biggest)
+		tFile, err := sstable.NewLocalFile(sstable.NewFilename(l0Create.ID, sdb.opt.Dir), true)
+		if err != nil {
+			return nil, nil, err
+		}
+		l0Tbl, err := sstable.OpenL0Table(tFile)
 		if err != nil {
 			return nil, nil, err
 		}

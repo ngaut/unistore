@@ -26,7 +26,6 @@ import (
 	"github.com/ngaut/unistore/sdb/table/memtable"
 	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
-	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
@@ -200,7 +199,10 @@ func (sdb *DB) needSplitL0(shard *Shard, l0 *sstable.L0Table) bool {
 }
 
 func (sdb *DB) buildShardL0BeforeKey(iters []table.Iterator, endKey []byte, commitTS uint64) (*sstable.BuildResult, error) {
-	fid := sdb.idAlloc.AllocID()
+	fid, err := sdb.idAlloc.AllocID()
+	if err != nil {
+		return nil, err
+	}
 	builder := sstable.NewL0Builder(sdb.numCFs, fid, sdb.opt.TableBuilderOptions, commitTS)
 	var hasData bool
 	for cf := 0; cf < sdb.numCFs; cf++ {
@@ -236,7 +238,7 @@ func (sdb *DB) buildShardL0BeforeKey(iters []table.Iterator, endKey []byte, comm
 		return nil, err
 	}
 	result := &sstable.BuildResult{
-		FileName: fd.Name(),
+		ID:       fid,
 		FileData: shardL0Data,
 		Smallest: smallset,
 		Biggest:  biggest,
@@ -296,9 +298,7 @@ func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, split
 }
 
 func (sdb *DB) buildTableBeforeKey(itr table.Iterator, key []byte, opt sstable.TableBuilderOptions) (*sstable.BuildResult, error) {
-	id := sdb.idAlloc.AllocID()
-	filename := sstable.NewFilename(id, sdb.opt.Dir)
-	fd, err := y.OpenSyncedFile(filename, false)
+	id, err := sdb.idAlloc.AllocID()
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +314,7 @@ func (sdb *DB) buildTableBeforeKey(itr table.Iterator, key []byte, opt sstable.T
 	if b.Empty() {
 		return nil, nil
 	}
-	result, err1 := b.Finish(fd.Name(), fd)
+	result, err1 := b.Finish(id, bytes.NewBuffer(make([]byte, 0, b.EstimateSize())))
 	if err1 != nil {
 		return nil, err1
 	}
@@ -354,7 +354,7 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 	commitTS := oldShard.allocCommitTS()
 	for i := range oldShard.splittingMemTbls {
 		startKey, endKey := getSplittingStartEnd(oldShard.Start, oldShard.End, oldShard.splitKeys, i)
-		shard := newShard(newShardsProps[i], newVer, startKey, endKey, &sdb.opt, sdb.metrics)
+		shard := newShard(newShardsProps[i], newVer, startKey, endKey, &sdb.opt)
 		if oldShard.IsPassive() || shard.ID != oldShard.ID {
 			// If the shard is not derived shard, the flush will be triggered later when the new shard elected a leader.
 			shard.SetPassive(true)

@@ -36,6 +36,11 @@ func newIterator(dir string, epochID uint32) *walIterator {
 	}
 }
 
+const (
+	readerBufSize = 256*1024
+	maxBatchSize  = 256*1024*1024
+)
+
 func (it *walIterator) iterate(fn func(tp uint32, entry []byte) (stop bool)) error {
 	filename := walFileName(it.dir, it.epochID)
 	fd, err := os.Open(filename)
@@ -43,7 +48,7 @@ func (it *walIterator) iterate(fn func(tp uint32, entry []byte) (stop bool)) err
 		return err
 	}
 	defer fd.Close()
-	bufReader := bufio.NewReaderSize(fd, 256*1024)
+	bufReader := bufio.NewReaderSize(fd, readerBufSize)
 	for {
 		batch, err1 := it.readBatch(bufReader)
 		if err1 != nil {
@@ -81,7 +86,7 @@ func (it *walIterator) readBatch(reader io.Reader) ([]byte, error) {
 	}
 	checksum := binary.LittleEndian.Uint32(it.batchHdrBuf[4:])
 	length := binary.LittleEndian.Uint32(it.batchHdrBuf[8:])
-	if length > 256 * 1024 * 1024 {
+	if length > maxBatchSize {
 		return nil, io.EOF
 	}
 	if cap(it.buf) >= int(length) {

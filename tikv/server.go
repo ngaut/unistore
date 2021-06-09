@@ -20,6 +20,7 @@ import (
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/raftengine"
 	"github.com/ngaut/unistore/sdb"
+	"github.com/ngaut/unistore/sdb/compaction"
 	"github.com/ngaut/unistore/tikv/cophandler"
 	"github.com/ngaut/unistore/tikv/dbreader"
 	"github.com/ngaut/unistore/tikv/lockwaiter"
@@ -83,8 +84,7 @@ func NewServer(conf *config.Config, pdClient pd.Client) (*Server, error) {
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
-	safePoint := &SafePoint{}
-	db, err := createKVDB(subPathKV, safePoint, listener, allocator, recoverHandler, &conf.Engine)
+	db, err := createKVDB(subPathKV, listener, allocator, recoverHandler, &conf.Engine)
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
@@ -94,7 +94,7 @@ func NewServer(conf *config.Config, pdClient pd.Client) (*Server, error) {
 	innerServer.Setup(pdClient)
 	router := innerServer.GetRaftstoreRouter()
 	storeMeta := innerServer.GetStoreMeta()
-	store := NewMVCCStore(conf, db, dbPath, safePoint, raftstore.NewDBWriter(conf, router), pdClient)
+	store := NewMVCCStore(conf, db, dbPath, raftstore.NewDBWriter(conf, router), pdClient)
 	rm := NewRaftRegionManager(storeMeta, router, store.DeadlockDetectSvr)
 	innerServer.SetPeerEventObserver(rm)
 
@@ -114,12 +114,12 @@ type idAllocator struct {
 	pdCli pd.Client
 }
 
-func (a *idAllocator) AllocID() uint64 {
+func (a *idAllocator) AllocID() (uint64, error) {
 	physical, logical, tsErr := a.pdCli.GetTS(context.Background())
 	if tsErr != nil {
-		panic(tsErr)
+		return 0, tsErr
 	}
-	return uint64(physical)<<18 + uint64(logical)
+	return uint64(physical)<<18 + uint64(logical), nil
 }
 
 func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
@@ -139,8 +139,8 @@ func createRaftDB(subPath string, conf *config.RaftEngine) (*raftengine.Engine, 
 	return raftengine.Open(filepath.Join(conf.DBPath, subPath), conf.WALSize)
 }
 
-func createKVDB(subPath string, safePoint *SafePoint, listener *raftstore.MetaChangeListener,
-	allocator sdb.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*sdb.DB, error) {
+func createKVDB(subPath string, listener *raftstore.MetaChangeListener,
+	allocator compaction.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*sdb.DB, error) {
 	opts := sdb.DefaultOpt
 	opts.BaseSize = conf.BaseSize
 	opts.TableBuilderOptions.MaxTableSize = conf.MaxTableSize
@@ -149,7 +149,7 @@ func createKVDB(subPath string, safePoint *SafePoint, listener *raftstore.MetaCh
 	opts.MaxBlockCacheSize = conf.BlockCacheSize
 	opts.NumCompactors = conf.NumCompactors
 	opts.CFs = []sdb.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}}
-	opts.S3Options.InstanceID = conf.S3.InstanceID
+	opts.InstanceID = conf.InstanceID
 	opts.S3Options.EndPoint = conf.S3.Endpoint
 	opts.S3Options.SecretKey = conf.S3.SecretKey
 	opts.S3Options.KeyID = conf.S3.KeyID
@@ -157,9 +157,6 @@ func createKVDB(subPath string, safePoint *SafePoint, listener *raftstore.MetaCh
 	opts.S3Options.Region = conf.S3.Region
 	opts.S3Options.ExpirationDuration = conf.S3.ExpirationDuration
 	opts.Dir = filepath.Join(conf.DBPath, subPath)
-	if safePoint != nil {
-		opts.CompactionFilterFactory = safePoint.CreateCompactionFilter
-	}
 	if allocator != nil {
 		opts.IDAllocator = allocator
 	}

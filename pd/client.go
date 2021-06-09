@@ -127,10 +127,12 @@ func NewClient(pdAddrs []string, tag string) (Client, error) {
 
 	c.clusterID = members.GetHeader().GetClusterId()
 	log.Info("[pd] init cluster id", zap.String("tag", tag), zap.Uint64("id", c.clusterID))
-	c.wg.Add(2)
+	c.wg.Add(1)
 	go c.checkLeaderLoop()
-	go c.heartbeatStreamLoop()
-
+	if tag != "compaction" {
+		c.wg.Add(1)
+		go c.heartbeatStreamLoop()
+	}
 	return c, nil
 }
 

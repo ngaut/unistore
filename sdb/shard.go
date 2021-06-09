@@ -74,7 +74,7 @@ const (
 	MemTableSizeKey = "_mem_table_size"
 )
 
-func newShard(props *sdbpb.Properties, ver uint64, start, end []byte, opt *Options, metrics *y.MetricsSet) *Shard {
+func newShard(props *sdbpb.Properties, ver uint64, start, end []byte, opt *Options) *Shard {
 	shard := &Shard{
 		ID:              props.ShardID,
 		Ver:             ver,
@@ -99,15 +99,15 @@ func newShard(props *sdbpb.Properties, ver uint64, start, end []byte, opt *Optio
 			levels: make([]unsafe.Pointer, ShardMaxLevel),
 		}
 		for j := 1; j <= ShardMaxLevel; j++ {
-			sCF.casLevelHandler(j, nil, newLevelHandler(opt.NumLevelZeroTablesStall, j, metrics))
+			sCF.casLevelHandler(j, nil, newLevelHandler(opt.NumLevelZeroTablesStall, j))
 		}
 		shard.cfs[i] = sCF
 	}
 	return shard
 }
 
-func newShardForLoading(shardInfo *ShardMeta, opt *Options, metrics *y.MetricsSet) *Shard {
-	shard := newShard(shardInfo.properties.toPB(shardInfo.ID), shardInfo.Ver, shardInfo.Start, shardInfo.End, opt, metrics)
+func newShardForLoading(shardInfo *ShardMeta, opt *Options) *Shard {
+	shard := newShard(shardInfo.properties.toPB(shardInfo.ID), shardInfo.Ver, shardInfo.Start, shardInfo.End, opt)
 	if shardInfo.preSplit != nil {
 		if shardInfo.preSplit.MemProps != nil {
 			// Don't set split keys for RecoverHandler to recover the data before pre-split.
@@ -126,9 +126,9 @@ func newShardForLoading(shardInfo *ShardMeta, opt *Options, metrics *y.MetricsSe
 	return shard
 }
 
-func newShardForIngest(changeSet *sdbpb.ChangeSet, opt *Options, metrics *y.MetricsSet) *Shard {
+func newShardForIngest(changeSet *sdbpb.ChangeSet, opt *Options) *Shard {
 	shardSnap := changeSet.Snapshot
-	shard := newShard(shardSnap.Properties, changeSet.ShardVer, shardSnap.Start, shardSnap.End, opt, metrics)
+	shard := newShard(shardSnap.Properties, changeSet.ShardVer, shardSnap.Start, shardSnap.End, opt)
 	if changeSet.PreSplit != nil {
 		log.S().Infof("shard %d:%d set pre-split keys by ingest", changeSet.ShardID, changeSet.ShardVer)
 		shard.setSplitKeys(changeSet.PreSplit.Keys)
@@ -436,7 +436,7 @@ func (scf *shardCF) setHasOverlapping(cd *CompactDef) {
 		return
 	}
 	kr := getKeyRange(cd.Top)
-	for lvl := cd.Level + 2; lvl < len(scf.levels); lvl++ {
+	for lvl := cd.Level + 2; lvl <= len(scf.levels); lvl++ {
 		lh := scf.getLevelHandler(lvl)
 		left, right := lh.overlappingTables(kr)
 		if right-left > 0 {
@@ -545,15 +545,12 @@ type levelHandler struct {
 	// The following are initialized once and const.
 	level      int
 	numL0Stall int
-	metrics    *y.LevelMetricsSet
 }
 
-func newLevelHandler(numL0Stall, level int, metrics *y.MetricsSet) *levelHandler {
-	label := fmt.Sprintf("L%d", level)
+func newLevelHandler(numL0Stall, level int) *levelHandler {
 	return &levelHandler{
 		level:      level,
 		numL0Stall: numL0Stall,
-		metrics:    metrics.NewLevelMetricsSet(label),
 	}
 }
 
@@ -583,14 +580,10 @@ func (s *levelHandler) getInTable(key []byte, version, keyHash uint64, table tab
 	if table == nil {
 		return y.ValueStruct{}
 	}
-	s.metrics.NumLSMGets.Inc()
 	// TODO: error handling here
 	result, err := table.Get(key, version, keyHash)
 	if err != nil {
 		log.Error("get data in table failed", zap.Error(err))
-	}
-	if !result.Valid() {
-		s.metrics.NumLSMBloomFalsePositive.Inc()
 	}
 	return result
 }

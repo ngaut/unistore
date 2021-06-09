@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"math/rand"
 	"sort"
 	"sync"
@@ -395,28 +396,88 @@ func TestPutWithHint(t *testing.T) {
 }
 
 func TestGetWithHint(t *testing.T) {
-	rand.Seed(time.Now().Unix())
-	l := newSkiplist()
-	var keys [][]byte
-	sp := new(Hint)
-	for {
-		if l.arena.size() > arenaSize-256 {
-			break
+	iteration := 100
+	concurrency := 64
+	operations := 1000
+	numKeys := 10
+
+	for i := 0; i < iteration; i++ {
+		l := newSkiplist()
+		entryCh := make(chan *req)
+		writerWG := new(sync.WaitGroup)
+		writerWG.Add(1)
+		go func() {
+			var ver uint64
+			hint := new(Hint)
+			for req := range entryCh {
+				entry := req.entry
+				entry.Value.Version = ver
+				ver++
+				l.PutWithHint(entry.Key, entry.Value, hint)
+				req.resp.Done()
+			}
+			writerWG.Done()
+		}()
+		latch := make([]sync.Mutex, numKeys)
+		readerWG := new(sync.WaitGroup)
+		readerWG.Add(concurrency)
+		for c := 0; c < concurrency; c++ {
+			go func() {
+				defer readerWG.Done()
+				hint := new(Hint)
+				for op := 0; op < operations; op++ {
+					x := rand.Intn(numKeys)
+					latch[x].Lock()
+					key := []byte(fmt.Sprintf("%x", x))
+					v := l.GetWithHint(key, math.MaxUint64, hint)
+					// pessimistic lock
+					if len(v.Value) == 0 && v.Meta == 0 {
+						req := newReq(key, nil, 1)
+						entryCh <- req
+						req.resp.Wait()
+					} else {
+						latch[x].Unlock()
+						continue
+					}
+					latch[x].Unlock()
+					time.Sleep(time.Microsecond)
+					// prewrite lock
+					latch[x].Lock()
+					v = l.GetWithHint(key, math.MaxUint64, hint)
+					require.Equal(t, v.Meta, byte(1))
+					require.Equal(t, len(v.Value), 0)
+					req := newReq(key, key, 1)
+					entryCh <- req
+					req.resp.Wait()
+					latch[x].Unlock()
+					time.Sleep(time.Microsecond)
+					// commit.
+					latch[x].Lock()
+					v = l.GetWithHint(key, math.MaxUint64, hint)
+					require.Equal(t, v.Meta, byte(1))
+					require.Equal(t, v.Value, key)
+					req = newReq(key, nil, 0)
+					entryCh <- req
+					req.resp.Wait()
+					latch[x].Unlock()
+				}
+			}()
 		}
-		key := randomKey()
-		keys = append(keys, key)
-		l.PutWithHint(key, y.ValueStruct{Value: key}, sp)
+		readerWG.Wait()
+		close(entryCh)
+		writerWG.Wait()
 	}
-	h := new(Hint)
-	for _, key := range keys {
-		bytes.Equal(l.GetWithHint(key, 0, h).Value, key)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		return bytes.Compare(keys[i], keys[j]) < 0
-	})
-	for _, key := range keys {
-		bytes.Equal(l.GetWithHint(key, 0, h).Value, key)
-	}
+}
+
+type req struct {
+	entry *Entry
+	resp  *sync.WaitGroup
+}
+
+func newReq(key, val []byte, meta byte) *req {
+	req := &req{entry: &Entry{Key: key, Value: y.ValueStruct{Value: val, Meta: meta}}, resp: new(sync.WaitGroup)}
+	req.resp.Add(1)
+	return req
 }
 
 func TestPutLargeValue(t *testing.T) {

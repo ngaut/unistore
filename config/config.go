@@ -56,6 +56,7 @@ type Engine struct {
 	BlockCacheSize        int64     `toml:"block-cache-size"`
 	MaxMemTableSizeFactor int       `toml:"max-mem-table-size-factor"` // Each mem table is at most this size.
 	RemoteCompactionAddr  string    `toml:"remote-compaction-addr"`
+	InstanceID            uint32    `toml:"instance-id"`
 	S3                    S3Options `toml:"s3"`
 }
 
@@ -69,7 +70,6 @@ type S3Options struct {
 	KeyID              string `toml:"key-id"`
 	SecretKey          string `toml:"secret-key"`
 	Bucket             string `toml:"bucket"`
-	InstanceID         uint32 `toml:"instance-id"`
 	Region             string `toml:"region"`
 	ExpirationDuration string `toml:"expiration-duration"`
 }

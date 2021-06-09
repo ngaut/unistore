@@ -24,10 +24,6 @@ import (
 	"time"
 )
 
-const (
-	bitDelete byte = 1 << 0 // Set if the key has been deleted.
-)
-
 type memTables struct {
 	tables []*memtable.Table // tables from new to old, the first one is mutable.
 }

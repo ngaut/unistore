@@ -31,6 +31,7 @@ package sdb
 
 import (
 	"github.com/ngaut/unistore/s3util"
+	"github.com/ngaut/unistore/sdb/compaction"
 	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
 )
@@ -70,15 +71,15 @@ type Options struct {
 
 	TableBuilderOptions sstable.TableBuilderOptions
 
-	CompactionFilterFactory func(targetLevel int, smallest, biggest []byte) CompactionFilter
-
 	RemoteCompactionAddr string
+
+	InstanceID uint32
 
 	S3Options s3util.Options
 
 	CFs []CFConfig
 
-	IDAllocator IDAllocator
+	IDAllocator compaction.IDAllocator
 
 	MetaChangeListener MetaChangeListener
 
@@ -92,30 +93,6 @@ type Options struct {
 
 type CFConfig struct {
 	Managed bool
-}
-
-// CompactionFilter is an interface that user can implement to remove certain keys.
-type CompactionFilter interface {
-	// Filter is the method the compaction process invokes for kv that is being compacted. The returned decision
-	// indicates that the kv should be preserved, deleted or dropped in the output of this compaction run.
-	Filter(cf int, key, val, userMeta []byte) Decision
-}
-
-// Decision is the type for compaction filter decision.
-type Decision int
-
-const (
-	// DecisionKeep indicates the entry should be reserved.
-	DecisionKeep Decision = 0
-	// DecisionMarkTombstone converts the entry to a delete tombstone.
-	DecisionMarkTombstone Decision = 1
-	// DecisionDrop simply drops the entry, doesn't leave a delete tombstone.
-	DecisionDrop Decision = 2
-)
-
-// IDAllocator is a function that allocated file ID.
-type IDAllocator interface {
-	AllocID() uint64
 }
 
 // MetaChangeListener is used to notify the engine user that engine meta has changed.
@@ -132,7 +109,6 @@ var DefaultOpt = Options{
 	TableBuilderOptions: sstable.TableBuilderOptions{
 		LevelSizeMultiplier: 10,
 		MaxTableSize:        8 << 20,
-		HashUtilRatio:       0.75,
 		WriteBufferSize:     2 * 1024 * 1024,
 		BytesPerSecond:      -1,
 		BlockSize:           64 * 1024,

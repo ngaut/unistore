@@ -48,28 +48,29 @@ const (
 )
 
 type Options struct {
-	InstanceID         uint32
-	EndPoint           string
-	KeyID              string
-	SecretKey          string
-	Bucket             string
-	Region             string
-	ExpirationDuration string
+	EndPoint           string `json:"end_point"`
+	KeyID              string `json:"key_id"`
+	SecretKey          string `json:"secret_key"`
+	Bucket             string `json:"bucket"`
+	Region             string `json:"region"`
+	ExpirationDuration string `json:"expiration_duration"`
 }
 
 type S3Client struct {
 	Options
 	*scheduler.Scheduler
+	instanceID        uint32
 	cli               *s3.Client
 	expirationSeconds uint64
 	lock              sync.RWMutex
 	deletions         deletions
 }
 
-func NewS3Client(c *y.Closer, dirPath string, opts Options) *S3Client {
+func NewS3Client(c *y.Closer, dirPath string, instanceID uint32, opts Options) *S3Client {
 	s3c := &S3Client{
-		Options:   opts,
-		Scheduler: scheduler.NewScheduler(256),
+		Options:    opts,
+		Scheduler:  scheduler.NewScheduler(256),
+		instanceID: instanceID,
 	}
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
@@ -205,7 +206,7 @@ func (c *S3Client) ListFiles() (map[uint64]struct{}, error) {
 	for {
 		input := &s3.ListObjectsInput{}
 		input.Bucket = &c.Bucket
-		input.Prefix = aws.String(fmt.Sprintf("bg%08x", c.InstanceID))
+		input.Prefix = aws.String(fmt.Sprintf("bg%08x", c.instanceID))
 		input.Marker = marker
 		output, err := c.cli.ListObjects(context.TODO(), input)
 		if err != nil {
@@ -228,7 +229,7 @@ func (c *S3Client) ListFiles() (map[uint64]struct{}, error) {
 }
 
 func (c *S3Client) BlockKey(fid uint64) string {
-	return fmt.Sprintf("bg%08x%016x.sst", c.InstanceID, fid)
+	return fmt.Sprintf("bg%08x%016x.sst", c.instanceID, fid)
 }
 
 func (c *S3Client) ParseFileID(key string) (uint64, bool) {

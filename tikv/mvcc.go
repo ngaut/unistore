@@ -43,12 +43,11 @@ import (
 
 // MVCCStore is a wrapper of badger.DB to provide MVCC functions.
 type MVCCStore struct {
-	dir       string
-	db        *sdb.DB
-	dbWriter  mvcc.DBWriter
-	safePoint *SafePoint
-	pdClient  pd.Client
-	closeCh   chan bool
+	dir      string
+	db       *sdb.DB
+	dbWriter mvcc.DBWriter
+	pdClient pd.Client
+	closeCh  chan bool
 
 	conf *config.Config
 
@@ -66,12 +65,11 @@ const (
 )
 
 // NewMVCCStore creates a new MVCCStore
-func NewMVCCStore(conf *config.Config, db *sdb.DB, dataDir string, safePoint *SafePoint,
+func NewMVCCStore(conf *config.Config, db *sdb.DB, dataDir string,
 	writer mvcc.DBWriter, pdClient pd.Client) *MVCCStore {
 	store := &MVCCStore{
 		db:                db,
 		dir:               dataDir,
-		safePoint:         safePoint,
 		pdClient:          pdClient,
 		closeCh:           make(chan bool),
 		dbWriter:          writer,
@@ -1190,7 +1188,6 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, lockKeys [][]byte, start
 func (store *MVCCStore) UpdateSafePoint(safePoint uint64) {
 	// We use the gcLock to make sure safePoint can only increase.
 	store.db.UpdateMangedSafeTs(safePoint)
-	store.safePoint.UpdateTS(safePoint)
 	log.Info("safePoint is updated to", zap.Uint64("ts", safePoint), zap.Time("time", tsToTime(safePoint)))
 }
 
@@ -1468,54 +1465,4 @@ func (store *MVCCStore) runUpdateSafePointLoop() {
 		case <-ticker.C:
 		}
 	}
-}
-
-type SafePoint struct {
-	timestamp uint64
-}
-
-func (sp *SafePoint) UpdateTS(ts uint64) {
-	for {
-		old := atomic.LoadUint64(&sp.timestamp)
-		if old < ts {
-			if !atomic.CompareAndSwapUint64(&sp.timestamp, old, ts) {
-				continue
-			}
-		}
-		break
-	}
-}
-
-// CreateCompactionFilter implements badger.CompactionFilterFactory function.
-func (sp *SafePoint) CreateCompactionFilter(targetLevel int, startKey, endKey []byte) sdb.CompactionFilter {
-	return &GCCompactionFilter{
-		targetLevel: targetLevel,
-		safePoint:   atomic.LoadUint64(&sp.timestamp),
-	}
-}
-
-// GCCompactionFilter implements the badger.CompactionFilter interface.
-type GCCompactionFilter struct {
-	targetLevel int
-	safePoint   uint64
-}
-
-// Filter implements the badger.CompactionFilter interface.
-// Since we use txn ts as badger version, we only need to filter Delete, Rollback and Op_Lock.
-// It is called for the first valid version before safe point, older versions are discarded automatically.
-func (f *GCCompactionFilter) Filter(cf int, key, value, userMeta []byte) sdb.Decision {
-	switch cf {
-	case writeCF:
-		if mvcc.DBUserMeta(userMeta).CommitTS() < f.safePoint && len(value) == 0 {
-			return sdb.DecisionMarkTombstone
-		}
-	case lockCF:
-		return sdb.DecisionKeep
-	case extraCF:
-		if mvcc.DBUserMeta(userMeta).StartTS() < f.safePoint {
-			return sdb.DecisionDrop
-		}
-	}
-	// Older version are discarded automatically, we need to keep the first valid version.
-	return sdb.DecisionKeep
 }

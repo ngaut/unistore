@@ -21,7 +21,6 @@ import (
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"hash/crc32"
-	"io"
 	"reflect"
 	"unsafe"
 )
@@ -42,7 +41,6 @@ const (
 )
 
 type TableBuilderOptions struct {
-	HashUtilRatio       float32
 	WriteBufferSize     int
 	BytesPerSecond      int
 	MaxLevels           int
@@ -165,7 +163,7 @@ type bytesWriter interface {
 	Bytes() []byte
 }
 
-func (b *Builder) Finish(filename string, w io.Writer) (*BuildResult, error) {
+func (b *Builder) Finish(fileID uint64, w *bytes.Buffer) (*BuildResult, error) {
 	if b.blockBuilder.block.size > 0 {
 		b.biggest = y.Copy(b.blockBuilder.block.tmpKeys.getLast())
 		b.blockBuilder.finishBlock(b.fid, b.checksumType)
@@ -211,15 +209,12 @@ func (b *Builder) Finish(filename string, w io.Writer) (*BuildResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := &BuildResult{
-		FileName: filename,
+	return &BuildResult{
+		ID:       fileID,
 		Smallest: b.smallest,
 		Biggest:  b.biggest,
-	}
-	if x, ok := w.(bytesWriter); ok {
-		result.FileData = x.Bytes()
-	}
-	return result, nil
+		FileData: w.Bytes(),
+	}, nil
 }
 
 func (b *Builder) buildProperties(buf []byte) []byte {
@@ -484,7 +479,7 @@ func newBlockAddress(fid uint64, offset uint32) blockAddress {
 // BuildResult contains the build result info, if it's file based compaction, fileName should be used to open Table.
 // If it's in memory compaction, FileData and IndexData contains the data.
 type BuildResult struct {
-	FileName string
+	ID       uint64
 	FileData []byte
 	Smallest []byte
 	Biggest  []byte

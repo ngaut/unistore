@@ -49,15 +49,13 @@ type L0Table struct {
 	l0Footer
 	file     TableFile
 	cfs      []*Table
-	fid      uint64
-	filename string
 	cfOffs   []uint32
 	smallest []byte
 	biggest  []byte
 }
 
 func (st *L0Table) ID() uint64 {
-	return st.fid
+	return st.file.ID()
 }
 
 func (st *L0Table) Delete() error {
@@ -85,17 +83,9 @@ func (st *L0Table) CommitTS() uint64 {
 	return st.commitTS
 }
 
-func OpenL0Table(filename string, fid uint64, smallest, biggest []byte) (*L0Table, error) {
-	file, err := NewLocalFile(filename, true)
-	if err != nil {
-		return nil, err
-	}
+func OpenL0Table(file TableFile) (*L0Table, error) {
 	l0 := &L0Table{
-		fid:      fid,
-		file:     file,
-		filename: filename,
-		smallest: smallest,
-		biggest:  biggest,
+		file: file,
 	}
 	footerOff := file.Size() - int64(l0FooterSize)
 	l0.l0Footer.unmarshal(l0.file.MMapRead(footerOff, l0FooterSize))
@@ -112,14 +102,35 @@ func OpenL0Table(filename string, fid uint64, smallest, biggest []byte) (*L0Tabl
 			l0.cfs = append(l0.cfs, nil)
 			continue
 		}
-		inMemFile := NewInMemFile(fid, data)
+		inMemFile := NewInMemFile(file.ID(), data)
 		tbl, err := OpenTable(inMemFile, nil)
 		if err != nil {
 			return nil, err
 		}
 		l0.cfs = append(l0.cfs, tbl)
 	}
+	l0.computeSmallestAndBiggest()
 	return l0, nil
+}
+
+func (st *L0Table) computeSmallestAndBiggest() {
+	for i := 0; i < len(st.cfs); i++ {
+		cfTbl := st.cfs[i]
+		if cfTbl == nil {
+			continue
+		}
+		if len(cfTbl.smallest) > 0 {
+			if len(st.smallest) == 0 || bytes.Compare(cfTbl.smallest, st.smallest) < 0 {
+				st.smallest = cfTbl.smallest
+			}
+		}
+		if bytes.Compare(cfTbl.biggest, st.biggest) > 0 {
+			st.biggest = cfTbl.biggest
+		}
+	}
+	y.Assert(len(st.smallest) > 0)
+	y.Assert(len(st.biggest) > 0)
+	return
 }
 
 func (sl0 *L0Table) Get(cf int, key []byte, version, keyHash uint64) y.ValueStruct {
@@ -181,7 +192,7 @@ func (e *L0Builder) Finish() []byte {
 		if builder.Empty() {
 			continue
 		}
-		result, _ := builder.Finish("", buffer)
+		result, _ := builder.Finish(0, buffer)
 		cfDatas = append(cfDatas, result.FileData)
 		fileSize += len(result.FileData)
 	}
