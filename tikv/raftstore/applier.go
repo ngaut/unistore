@@ -457,7 +457,7 @@ func (a *applier) handleRaftEntryNormal(aCtx *applyContext, entry *eraftpb.Entry
 	index := entry.Index
 	term := entry.Term
 	if len(entry.Data) > 0 {
-		rlog := raftlog.DecodeLog(entry)
+		rlog := raftlog.DecodeLog(entry.Data)
 		return a.processRaftCmd(aCtx, index, term, rlog)
 	}
 

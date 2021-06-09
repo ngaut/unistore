@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"github.com/ngaut/unistore/raftengine"
 	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/y"
@@ -440,16 +441,14 @@ func (p *Peer) Destroy(engine *Engines, keepData bool) error {
 	log.S().Infof("%v begin to destroy", p.Tag)
 
 	// Set Tombstone state explicitly
-	raftWB := new(RaftWriteBatch)
-	if err := p.Store().clearMeta(raftWB); err != nil {
-		return err
-	}
+	raftWB := raftengine.NewWriteBatch()
+	p.Store().clearMeta(raftWB)
 	var mergeState *rspb.MergeState
 	if p.PendingMergeState != nil {
 		mergeState = p.PendingMergeState
 	}
 	WritePeerState(raftWB, region, rspb.PeerState_Tombstone, mergeState)
-	if err := raftWB.WriteToRaft(engine.raft); err != nil {
+	if err := engine.raft.Write(raftWB); err != nil {
 		return err
 	}
 
@@ -795,7 +794,7 @@ func (p *Peer) TakeApplyProposals() *regionProposal {
 	return newRegionProposal(p.PeerId(), p.regionId, props)
 }
 
-func (p *Peer) HandleRaftReadyAppend(trans *RaftClient, raftWB *RaftWriteBatch, observer PeerEventObserver) *ReadyICPair {
+func (p *Peer) HandleRaftReadyAppend(trans *RaftClient, raftWB *raftengine.WriteBatch, observer PeerEventObserver) *ReadyICPair {
 	if p.PendingRemove {
 		return nil
 	}

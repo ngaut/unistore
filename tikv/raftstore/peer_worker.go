@@ -14,6 +14,7 @@
 package raftstore
 
 import (
+	"github.com/ngaut/unistore/raftengine"
 	"github.com/pingcap/log"
 	"sort"
 	"sync"
@@ -75,7 +76,7 @@ func newRaftWorker(ctx *GlobalContext, ch chan Msg, pm *router) *raftWorker {
 	raftCtx := &RaftContext{
 		GlobalContext: ctx,
 		applyMsgs:     new(applyMsgs),
-		raftWB:        new(RaftWriteBatch),
+		raftWB:        raftengine.NewWriteBatch(),
 		localStats:    new(storeStats),
 	}
 	applyResCh := make(chan Msg, cap(ch))
@@ -215,9 +216,9 @@ func (rw *raftWorker) appendWriteDuration(dur time.Duration) {
 func (rw *raftWorker) writeRaftWriteBatch() time.Duration {
 	raftWB := rw.raftCtx.raftWB
 	var dur time.Duration
-	if len(raftWB.entries) > 0 {
+	if !raftWB.IsEmpty() {
 		begin := time.Now()
-		err := raftWB.WriteToRaft(rw.raftCtx.engine.raft)
+		err := rw.raftCtx.engine.raft.Write(raftWB)
 		if err != nil {
 			panic(err)
 		}
