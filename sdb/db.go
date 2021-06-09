@@ -209,6 +209,13 @@ func (sdb *DB) DebugHandler() http.HandlerFunc {
 			l0Tables := shard.loadL0Tables()
 			MemTables += len(memTables.tables)
 			ShardMemTablesSize := 0
+			if shard.isSplitting() {
+				MemTables += len(shard.splittingMemTbls)
+				for i := 0; i < len(shard.splittingMemTbls); i++ {
+					memTbl := shard.loadSplittingMemTable(i)
+					ShardMemTablesSize += int(memTbl.Size())
+				}
+			}
 			for _, t := range memTables.tables {
 				ShardMemTablesSize += int(t.Size())
 			}
@@ -266,13 +273,17 @@ func (sdb *DB) DebugHandler() http.HandlerFunc {
 				shard := value.(*Shard)
 				memTables := shard.loadMemTables()
 				l0Tables := shard.loadL0Tables()
+				var splittings int
+				if shard.isSplitting() {
+					splittings = len(shard.splittingMemTbls)
+				}
 				if r.FormValue("detail") == "" {
 					fmt.Fprintf(w, "\tShard\t% 13d:%d,\tSize % 13s,\tMem % 13s(%d),\tL0 % 13s(%d),\tCF0 % 13s,\tCF1 % 13s,\tMaxMemTblSize % 13s,\tStage % 20s, Passive %v\n\n",
 						key,
 						shard.Ver,
 						formatInt(shardStat.ShardSize),
 						formatInt(shardStat.MemTablesSize),
-						len(memTables.tables),
+						len(memTables.tables)+splittings,
 						formatInt(shardStat.L0TablesSize),
 						len(l0Tables.tables),
 						formatInt(shardStat.CFSize[0]),
@@ -290,10 +301,18 @@ func (sdb *DB) DebugHandler() http.HandlerFunc {
 					sdbpb.SplitStage_name[shard.splitStage],
 					shard.IsPassive(),
 				)
-				fmt.Fprintf(w, "\t\tMemTables %d,  Size %s\n", len(memTables.tables), formatInt(shardStat.MemTablesSize))
+				fmt.Fprintf(w, "\t\tMemTables %d, Size %s\n", len(memTables.tables)+splittings, formatInt(shardStat.MemTablesSize))
+				if shard.isSplitting() {
+					for i := 0; i < len(shard.splittingMemTbls); i++ {
+						memTbl := shard.loadSplittingMemTable(i)
+						if !memTbl.Empty() {
+							fmt.Fprintf(w, "\t\t\tSplitting MemTable %d, Size %s\n", i, formatInt(int(memTbl.Size())))
+						}
+					}
+				}
 				for i, t := range memTables.tables {
 					if !t.Empty() {
-						fmt.Fprintf(w, "\t\t\tMemTable %d, Size %s\n", i, formatInt(int(t.Size())))
+						fmt.Fprintf(w, "\t\t\tMemTable %d, Size %s\n", splittings+i, formatInt(int(t.Size())))
 					}
 				}
 				fmt.Fprintf(w, "\t\tL0Tables %d,  Size %s\n", len(l0Tables.tables), formatInt(shardStat.L0TablesSize))
