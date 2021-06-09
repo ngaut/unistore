@@ -490,28 +490,42 @@ func (sdb *DB) compactL0(shard *Shard, guard *epoch.Guard) error {
 func (sdb *DB) runCompactionLoop(c *y.Closer) {
 	defer c.Done()
 	var priorities []CompactionPriority
+	wg := new(sync.WaitGroup)
+	workers := make(chan struct{}, sdb.opt.NumCompactors)
 	for {
+		workers <- struct{}{}
 		priorities = sdb.GetCompactionPriorities(priorities)
-		wg := new(sync.WaitGroup)
-		for i := 0; i < sdb.opt.NumCompactors && i < len(priorities); i++ {
-			pri := priorities[i]
-			pri.Shard.markCompacting(true)
-			wg.Add(1)
-			go func() {
-				err := sdb.Compact(pri)
-				if err != nil {
-					log.Error("compact shard failed", zap.Uint64("shard", pri.Shard.ID), zap.Error(err))
+		if len(priorities) > 0 {
+			for i := 0; i < sdb.opt.NumCompactors && i < len(priorities); i++ {
+				if i > 0 {
+					if len(workers) < sdb.opt.NumCompactors {
+						workers <- struct{}{}
+					} else {
+						break
+					}
 				}
-				if err != nil || sdb.metaChangeListener == nil {
-					// When meta change listener is not nil, the compaction will be finished later by applyCompaction.
-					pri.Shard.markCompacting(false)
-				}
-				wg.Done()
-			}()
+				pri := priorities[i]
+				pri.Shard.markCompacting(true)
+				wg.Add(1)
+				go func() {
+					err := sdb.Compact(pri)
+					if err != nil {
+						log.Error("compact shard failed", zap.Uint64("shard", pri.Shard.ID), zap.Error(err))
+					}
+					if err != nil || sdb.metaChangeListener == nil {
+						// When meta change listener is not nil, the compaction will be finished later by applyCompaction.
+						pri.Shard.markCompacting(false)
+					}
+					<-workers
+					wg.Done()
+				}()
+			}
+		} else {
+			<-workers
 		}
-		wg.Wait()
 		select {
 		case <-c.HasBeenClosed():
+			wg.Wait()
 			return
 		case <-time.After(time.Millisecond * 100):
 		}
