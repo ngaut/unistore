@@ -36,6 +36,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/ngaut/unistore/config"
+	"github.com/ngaut/unistore/scheduler"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
@@ -58,7 +59,7 @@ type Options struct {
 
 type S3Client struct {
 	Options
-	*scheduler
+	*scheduler.Scheduler
 	cli               *s3.Client
 	expirationSeconds uint64
 	lock              sync.RWMutex
@@ -68,7 +69,7 @@ type S3Client struct {
 func NewS3Client(c *y.Closer, dirPath string, opts Options) *S3Client {
 	s3c := &S3Client{
 		Options:   opts,
-		scheduler: newScheduler(256),
+		Scheduler: scheduler.NewScheduler(256),
 	}
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{

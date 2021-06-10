@@ -15,7 +15,7 @@ package sdb
 
 import (
 	"bytes"
-	"github.com/ngaut/unistore/s3util"
+	"github.com/ngaut/unistore/scheduler"
 	"github.com/ngaut/unistore/sdb/table/memtable"
 	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
@@ -135,7 +135,7 @@ func (sdb *DB) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*l0Tables,
 
 func (sdb *DB) loadFiles(ingestTree *IngestTree) error {
 	snap := ingestTree.ChangeSet.Snapshot
-	bt := s3util.NewBatchTasks()
+	bt := scheduler.NewBatchTasks()
 	for i := range snap.L0Creates {
 		l0 := snap.L0Creates[i]
 		bt.AppendTask(func() error {
@@ -150,7 +150,7 @@ func (sdb *DB) loadFiles(ingestTree *IngestTree) error {
 			return err
 		}
 	}
-	bt = s3util.NewBatchTasks()
+	bt = scheduler.NewBatchTasks()
 	for i := range snap.TableCreates {
 		tbl := snap.TableCreates[i]
 		bt.AppendTask(func() error {
