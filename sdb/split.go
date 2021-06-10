@@ -16,16 +16,16 @@ package sdb
 import (
 	"bytes"
 	"fmt"
-	"github.com/ngaut/unistore/sdb/table/memtable"
-	"github.com/ngaut/unistore/sdbpb"
 	"sync/atomic"
 	"time"
 	"unsafe"
 
-	"github.com/ngaut/unistore/s3util"
+	"github.com/ngaut/unistore/scheduler"
 	"github.com/ngaut/unistore/sdb/fileutil"
 	"github.com/ngaut/unistore/sdb/table"
+	"github.com/ngaut/unistore/sdb/table/memtable"
 	"github.com/ngaut/unistore/sdb/table/sstable"
+	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
@@ -145,9 +145,9 @@ func (sdb *DB) splitShardL0Table(shard *Shard, l0 *sstable.L0Table) ([]*sdbpb.L0
 		}
 	}
 	var newL0s []*sdbpb.L0Create
-	var bt *s3util.BatchTasks
+	var bt *scheduler.BatchTasks
 	if sdb.s3c != nil {
-		bt = s3util.NewBatchTasks()
+		bt = scheduler.NewBatchTasks()
 	}
 	for _, key := range shard.splitKeys {
 		result, err := sdb.buildShardL0BeforeKey(iters, key, l0.CommitTS())
@@ -250,9 +250,9 @@ func (sdb *DB) splitTables(shard *Shard, cf int, level int, keys [][]byte, split
 	oldTables := oldHandler.tables
 	toDeleteIDs := make(map[uint64]struct{})
 	var relatedKeys [][]byte
-	var bt *s3util.BatchTasks
+	var bt *scheduler.BatchTasks
 	if sdb.s3c != nil {
-		bt = s3util.NewBatchTasks()
+		bt = scheduler.NewBatchTasks()
 	}
 	for _, tbl := range oldTables {
 		relatedKeys = relatedKeys[:0]

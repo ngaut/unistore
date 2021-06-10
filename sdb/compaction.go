@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/ngaut/unistore/s3util"
+	"github.com/ngaut/unistore/scheduler"
 	"github.com/ngaut/unistore/sdb/epoch"
 	"github.com/ngaut/unistore/sdb/table"
 	"github.com/ngaut/unistore/sdb/table/sstable"
@@ -433,9 +434,9 @@ func (sdb *DB) compactL0(shard *Shard, guard *epoch.Guard) error {
 	comp := &sdbpb.Compaction{}
 	var toBeDelete []epoch.Resource
 	var shardSizeChange int64
-	var bt *s3util.BatchTasks
+	var bt *scheduler.BatchTasks
 	if sdb.s3c != nil {
-		bt = s3util.NewBatchTasks()
+		bt = scheduler.NewBatchTasks()
 	}
 	for cf := 0; cf < sdb.numCFs; cf++ {
 		helper := newCompactL0Helper(sdb, shard, l0Tbls, cf)
@@ -490,14 +491,15 @@ func (sdb *DB) compactL0(shard *Shard, guard *epoch.Guard) error {
 func (sdb *DB) runCompactionLoop(c *y.Closer) {
 	defer c.Done()
 	var priorities []CompactionPriority
+	s := scheduler.NewScheduler(sdb.opt.NumCompactors)
+	wg := new(sync.WaitGroup)
 	for {
 		priorities = sdb.GetCompactionPriorities(priorities)
-		wg := new(sync.WaitGroup)
 		for i := 0; i < sdb.opt.NumCompactors && i < len(priorities); i++ {
 			pri := priorities[i]
 			pri.Shard.markCompacting(true)
 			wg.Add(1)
-			go func() {
+			s.Schedule(func() {
 				err := sdb.Compact(pri)
 				if err != nil {
 					log.Error("compact shard failed", zap.Uint64("shard", pri.Shard.ID), zap.Error(err))
@@ -507,11 +509,11 @@ func (sdb *DB) runCompactionLoop(c *y.Closer) {
 					pri.Shard.markCompacting(false)
 				}
 				wg.Done()
-			}()
+			})
 		}
-		wg.Wait()
 		select {
 		case <-c.HasBeenClosed():
+			wg.Wait()
 			return
 		case <-time.After(time.Millisecond * 100):
 		}
@@ -847,7 +849,7 @@ func (sdb *DB) ApplyChangeSet(changeSet *sdbpb.ChangeSet) error {
 
 func (sdb *DB) applyFlush(shard *Shard, changeSet *sdbpb.ChangeSet) error {
 	flush := changeSet.Flush
-	bt := s3util.NewBatchTasks()
+	bt := scheduler.NewBatchTasks()
 	newL0 := flush.L0Create
 	if newL0 != nil {
 		bt.AppendTask(func() error {
@@ -883,7 +885,7 @@ func (sdb *DB) applyCompaction(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 	defer shard.markCompacting(false)
 	comp := changeSet.Compaction
 	if sdb.s3c != nil {
-		bt := s3util.NewBatchTasks()
+		bt := scheduler.NewBatchTasks()
 		for i := range comp.TableCreates {
 			tbl := comp.TableCreates[i]
 			bt.AppendTask(func() error {
@@ -997,7 +999,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 		return errShardWrongSplittingStage
 	}
 	splitFiles := changeSet.SplitFiles
-	bt := s3util.NewBatchTasks()
+	bt := scheduler.NewBatchTasks()
 	for i := range splitFiles.L0Creates {
 		l0 := splitFiles.L0Creates[i]
 		bt.AppendTask(func() error {
@@ -1009,7 +1011,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 			return err
 		}
 	}
-	bt = s3util.NewBatchTasks()
+	bt = scheduler.NewBatchTasks()
 	for i := range splitFiles.TableCreates {
 		tbl := splitFiles.TableCreates[i]
 		bt.AppendTask(func() error {
@@ -1140,9 +1142,9 @@ func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *Disca
 
 	var lastKey, skipKey []byte
 	var builder *sstable.Builder
-	var bt *s3util.BatchTasks
+	var bt *scheduler.BatchTasks
 	if s3c != nil {
-		bt = s3util.NewBatchTasks()
+		bt = scheduler.NewBatchTasks()
 	}
 	for it.Valid() {
 		var fd *os.File
