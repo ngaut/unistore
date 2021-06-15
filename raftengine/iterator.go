@@ -37,8 +37,8 @@ func newIterator(dir string, epochID uint32) *walIterator {
 }
 
 const (
-	readerBufSize = 256*1024
-	maxBatchSize  = 256*1024*1024
+	readerBufSize = 256 * 1024
+	maxBatchSize  = 256 * 1024 * 1024
 )
 
 func (it *walIterator) iterate(fn func(tp uint32, entry []byte) (stop bool)) error {

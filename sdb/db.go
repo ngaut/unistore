@@ -73,7 +73,7 @@ type DB struct {
 }
 
 const (
-	lockFile          = "LOCK"
+	lockFile = "LOCK"
 )
 
 func OpenDB(opt Options) (db *DB, err error) {

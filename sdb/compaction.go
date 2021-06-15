@@ -366,8 +366,23 @@ func (sdb *DB) Compact(pri CompactionPriority) error {
 	y.Assert(ok)
 	scf.setHasOverlapping(cd)
 	log.Info("running compaction", zap.Stringer("def", cd))
-	resp := sdb.compClient.Compact(sdb.buildCompactLnRequest(cd))
-	return sdb.handleCompactionResponse(shard, resp, guard)
+	req := sdb.buildCompactLnRequest(cd)
+	if req.Level > 0 && len(req.Bottoms) == 0 {
+		// Move Down
+		respComp := &sdbpb.Compaction{Cf: int32(req.CF), Level: uint32(req.Level), TopDeletes: req.Tops}
+		for _, topTbl := range cd.Top {
+			tableCreate := &sdbpb.TableCreate{
+				ID:       topTbl.ID(),
+				Level:    uint32(req.Level + 1),
+				CF:       int32(req.CF),
+				Smallest: topTbl.Smallest(),
+				Biggest:  topTbl.Biggest(),
+			}
+			respComp.TableCreates = append(respComp.TableCreates, tableCreate)
+		}
+		return sdb.handleCompactionResponse(shard, &compaction.Response{Compaction: respComp}, guard)
+	}
+	return sdb.handleCompactionResponse(shard, sdb.compClient.Compact(req), guard)
 }
 
 func (sdb *DB) newCompactionRequest(cf, level int) *compaction.Request {
