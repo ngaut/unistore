@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"github.com/ngaut/unistore/s3util"
 	"github.com/ngaut/unistore/scheduler"
+	"github.com/ngaut/unistore/sdb/compaction"
 	"github.com/ngaut/unistore/sdb/epoch"
 	"github.com/ngaut/unistore/sdb/table"
 	"github.com/ngaut/unistore/sdb/table/sstable"
@@ -27,10 +28,7 @@ import (
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
-	"io"
-	"io/ioutil"
 	"math"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -46,16 +44,13 @@ type CompactDef struct {
 	Top []table.Table
 	Bot []table.Table
 
-	SkippedTbls []table.Table
-	SafeTS      uint64
-	Filter      CompactionFilter
-	HasOverlap  bool
-	Opt         sstable.TableBuilderOptions
-	Dir         string
-	AllocIDFunc func() uint64
-	Limiter     *rate.Limiter
-	InMemory    bool
-	S3          s3util.Options
+	SafeTS     uint64
+	HasOverlap bool
+	Opt        sstable.TableBuilderOptions
+	Dir        string
+	Limiter    *rate.Limiter
+	InMemory   bool
+	S3         s3util.Options
 
 	thisRange keyRange
 	nextRange keyRange
@@ -69,9 +64,9 @@ type CompactDef struct {
 }
 
 func (cd *CompactDef) String() string {
-	return fmt.Sprintf("%d top:[%d:%d](%d), bot:[%d:%d](%d), skip:%d, write_amp:%.2f",
+	return fmt.Sprintf("%d top:[%d:%d](%d), bot:[%d:%d](%d), write_amp:%.2f",
 		cd.Level, cd.topLeftIdx, cd.topRightIdx, cd.topSize,
-		cd.botLeftIdx, cd.botRightIdx, cd.botSize, len(cd.SkippedTbls), float64(cd.topSize+cd.botSize)/float64(cd.topSize))
+		cd.botLeftIdx, cd.botRightIdx, cd.botSize, float64(cd.topSize+cd.botSize)/float64(cd.topSize))
 }
 
 func (cd *CompactDef) smallest() []byte {
@@ -160,38 +155,8 @@ func (cd *CompactDef) fillTables(thisLevel, nextLevel *levelHandler) bool {
 	} else {
 		cd.nextRange = cd.thisRange
 	}
-	cd.fillBottomTables(bots)
-	for _, t := range cd.SkippedTbls {
-		cd.botSize -= t.Size()
-	}
+	cd.Bot = append(cd.Bot, bots...)
 	return true
-}
-
-const minSkippedTableSize = 1024 * 1024
-
-func (cd *CompactDef) fillBottomTables(overlappingTables []table.Table) {
-	for _, t := range overlappingTables {
-		// If none of the Top tables contains the range in an overlapping bottom table,
-		// we can skip it during compaction to reduce write amplification.
-		var added bool
-		for _, topTbl := range cd.Top {
-			if topTbl.HasOverlap(t.Smallest(), t.Biggest(), true) {
-				cd.Bot = append(cd.Bot, t)
-				added = true
-				break
-			}
-		}
-		if !added {
-			if t.Size() >= minSkippedTableSize {
-				// We need to limit the minimum size of the table to be skipped,
-				// otherwise the number of tables in a level will keep growing
-				// until we meet too many open files error.
-				cd.SkippedTbls = append(cd.SkippedTbls, t)
-			} else {
-				cd.Bot = append(cd.Bot, t)
-			}
-		}
-	}
 }
 
 func sumTableSize(tables []table.Table) int64 {
@@ -210,24 +175,7 @@ func calcRatio(topSize, botSize int64) float64 {
 }
 
 func (cd *CompactDef) moveDown() bool {
-	return cd.Level > 0 && len(cd.Bot) == 0 && len(cd.SkippedTbls) == 0
-}
-
-func (cd *CompactDef) buildIterator() table.Iterator {
-	// Create iterators across all the tables involved first.
-	var iters []table.Iterator
-	if cd.Level == 0 {
-		iters = appendIteratorsReversed(iters, cd.Top, false)
-	} else {
-		iters = []table.Iterator{table.NewConcatIterator(cd.Top, false)}
-	}
-
-	// Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
-	iters = append(iters, table.NewConcatIterator(cd.Bot, false))
-	it := table.NewMergeIterator(iters, false)
-
-	it.Rewind()
-	return it
+	return cd.Level > 0 && len(cd.Bot) == 0
 }
 
 type keyRange struct {
@@ -257,33 +205,9 @@ func getKeyRange(tables []table.Table) keyRange {
 	}
 }
 
-type compactor interface {
-	compact(cd *CompactDef, stats *y.CompactionStats, discardStats *DiscardStats) ([]*sstable.BuildResult, error)
-}
-
-type localCompactor struct {
-	s3c *s3util.S3Client
-}
-
-func (c *localCompactor) compact(cd *CompactDef, stats *y.CompactionStats, discardStats *DiscardStats) ([]*sstable.BuildResult, error) {
-	return CompactTables(cd, stats, discardStats, c.s3c)
-}
-
-func newTableCreate(tbl table.Table, cf int, level int) *sdbpb.TableCreate {
-	return &sdbpb.TableCreate{
-		ID:       tbl.ID(),
-		Level:    uint32(level),
-		CF:       int32(cf),
-		Smallest: tbl.Smallest(),
-		Biggest:  tbl.Biggest(),
-	}
-}
-
 func newTableCreateByResult(result *sstable.BuildResult, cf int, level int) *sdbpb.TableCreate {
-	id, ok := sstable.ParseFileID(result.FileName)
-	y.Assert(ok)
 	return &sdbpb.TableCreate{
-		ID:       id,
+		ID:       result.ID,
 		Level:    uint32(level),
 		CF:       int32(cf),
 		Smallest: result.Smallest,
@@ -292,10 +216,8 @@ func newTableCreateByResult(result *sstable.BuildResult, cf int, level int) *sdb
 }
 
 func newL0CreateByResult(result *sstable.BuildResult, props *sdbpb.Properties) *sdbpb.L0Create {
-	id, ok := sstable.ParseFileID(result.FileName)
-	y.Assert(ok)
 	change := &sdbpb.L0Create{
-		ID:         id,
+		ID:         result.ID,
 		Smallest:   result.Smallest,
 		Biggest:    result.Biggest,
 		Properties: props,
@@ -320,172 +242,6 @@ func (sdb *DB) getCFSafeTS(cf int) uint64 {
 		return atomic.LoadUint64(&sdb.mangedSafeTS)
 	}
 	return math.MaxUint64
-}
-
-type compactL0Helper struct {
-	cf         int
-	db         *DB
-	builder    *sstable.Builder
-	shard      *Shard
-	l0Tbls     *l0Tables
-	lastKey    []byte
-	skipKey    []byte
-	safeTS     uint64
-	filter     CompactionFilter
-	iter       table.Iterator
-	oldHandler *levelHandler
-}
-
-func newCompactL0Helper(db *DB, shard *Shard, l0Tbls *l0Tables, cf int) *compactL0Helper {
-	helper := &compactL0Helper{db: db, shard: shard, cf: cf}
-	if db.opt.CompactionFilterFactory != nil {
-		helper.filter = db.opt.CompactionFilterFactory(1, nil, GlobalShardEndKey)
-	}
-	helper.safeTS = db.getCFSafeTS(cf)
-	var iters []table.Iterator
-	if l0Tbls != nil {
-		for _, tbl := range l0Tbls.tables {
-			it := tbl.NewIterator(cf, false)
-			if it != nil {
-				iters = append(iters, it)
-			}
-		}
-	}
-	helper.oldHandler = shard.cfs[cf].getLevelHandler(1)
-	if len(helper.oldHandler.tables) > 0 {
-		iters = append(iters, table.NewConcatIterator(helper.oldHandler.tables, false))
-	}
-	helper.iter = table.NewMergeIterator(iters, false)
-	helper.iter.Rewind()
-	return helper
-}
-
-func (h *compactL0Helper) setFID(fid uint64) {
-	if h.builder == nil {
-		h.builder = sstable.NewTableBuilder(fid, h.db.opt.TableBuilderOptions)
-	} else {
-		h.builder.Reset(fid)
-	}
-}
-
-func (h *compactL0Helper) buildOne() (*sstable.BuildResult, error) {
-	id := h.db.idAlloc.AllocID()
-	h.setFID(id)
-	h.lastKey = h.lastKey[:0]
-	h.skipKey = h.skipKey[:0]
-	it := h.iter
-	for ; it.Valid(); table.NextAllVersion(it) {
-		vs := it.Value()
-		key := it.Key()
-		// See if we need to skip this key.
-		if len(h.skipKey) > 0 {
-			if bytes.Equal(key, h.skipKey) {
-				continue
-			} else {
-				h.skipKey = h.skipKey[:0]
-			}
-		}
-		if !bytes.Equal(key, h.lastKey) {
-			// We only break on table size.
-			if h.builder.EstimateSize() > int(h.db.opt.TableBuilderOptions.MaxTableSize) {
-				break
-			}
-			h.lastKey = append(h.lastKey[:0], key...)
-		}
-
-		// Only consider the versions which are below the safeTS, otherwise, we might end up discarding the
-		// only valid version for a running transaction.
-		if vs.Version <= h.safeTS {
-			// key is the latest readable version of this key, so we simply discard all the rest of the versions.
-			h.skipKey = append(h.skipKey[:0], key...)
-			if !isDeleted(vs.Meta) && h.filter != nil {
-				switch h.filter.Filter(h.cf, key, vs.Value, vs.UserMeta) {
-				case DecisionMarkTombstone:
-					// There may have ole versions for this key, so convert to delete tombstone.
-					h.builder.Add(key, &y.ValueStruct{Meta: bitDelete, Version: vs.Version})
-					continue
-				case DecisionDrop:
-					continue
-				case DecisionKeep:
-				}
-			}
-		}
-		h.builder.Add(key, &vs)
-	}
-	if h.builder.Empty() {
-		return nil, nil
-	}
-	filename := sstable.NewFilename(id, h.db.opt.Dir)
-	fd, err := y.OpenSyncedFile(filename, false)
-	if err != nil {
-		return nil, err
-	}
-	result, err := h.builder.Finish(fd.Name(), fd)
-	if err != nil {
-		return nil, err
-	}
-	fd.Sync()
-	fd.Close()
-	return result, nil
-}
-
-func (sdb *DB) compactL0(shard *Shard, guard *epoch.Guard) error {
-	l0Tbls := shard.loadL0Tables()
-	comp := &sdbpb.Compaction{}
-	var toBeDelete []epoch.Resource
-	var shardSizeChange int64
-	var bt *scheduler.BatchTasks
-	if sdb.s3c != nil {
-		bt = scheduler.NewBatchTasks()
-	}
-	for cf := 0; cf < sdb.numCFs; cf++ {
-		helper := newCompactL0Helper(sdb, shard, l0Tbls, cf)
-		defer helper.iter.Close()
-		var results []*sstable.BuildResult
-		for {
-			result, err := helper.buildOne()
-			if err != nil {
-				return err
-			}
-			if result == nil {
-				break
-			}
-			if sdb.s3c != nil {
-				bt.AppendTask(func() error {
-					return putSSTBuildResultToS3(sdb.s3c, result)
-				})
-			}
-			results = append(results, result)
-		}
-		for _, result := range results {
-			comp.TableCreates = append(comp.TableCreates, newTableCreateByResult(result, cf, 1))
-		}
-		for _, oldTbl := range helper.oldHandler.tables {
-			comp.BottomDeletes = append(comp.BottomDeletes, oldTbl.ID())
-			toBeDelete = append(toBeDelete, oldTbl)
-		}
-	}
-	if sdb.s3c != nil {
-		if err := sdb.s3c.BatchSchedule(bt); err != nil {
-			return err
-		}
-	}
-	if l0Tbls != nil {
-		// A splitting shard does not run compaction.
-		for _, tbl := range l0Tbls.tables {
-			comp.TopDeletes = append(comp.TopDeletes, tbl.ID())
-			toBeDelete = append(toBeDelete, tbl)
-			shardSizeChange -= tbl.Size()
-		}
-	}
-	change := newChangeSet(shard)
-	change.Compaction = comp
-	log.S().Infof("shard %d:%d compact L0 top deletes %v", shard.ID, shard.Ver, comp.TopDeletes)
-	if sdb.metaChangeListener != nil {
-		sdb.metaChangeListener.OnChange(change)
-		return nil
-	}
-	return sdb.applyCompaction(shard, change, guard)
 }
 
 func (sdb *DB) runCompactionLoop(c *y.Closer) {
@@ -589,9 +345,9 @@ func (sdb *DB) Compact(pri CompactionPriority) error {
 	}
 	if pri.CF == -1 {
 		log.Info("compact shard multi cf", zap.Uint64("shard", shard.ID), zap.Float64("score", pri.Score))
-		err := sdb.compactL0(shard, guard)
-		log.Info("compact shard multi cf done", zap.Uint64("shard", shard.ID), zap.Error(err))
-		return err
+		req := sdb.buildCompactL0Request(shard)
+		resp := sdb.compClient.Compact(req)
+		return sdb.handleCompactionResponse(shard, resp, guard)
 	}
 	log.Info("start compaction", zap.Uint64("shard", shard.ID), zap.Int("cf", pri.CF), zap.Int("level", pri.Level), zap.Float64("score", pri.Score))
 	scf := shard.cfs[pri.CF]
@@ -610,45 +366,72 @@ func (sdb *DB) Compact(pri CompactionPriority) error {
 	y.Assert(ok)
 	scf.setHasOverlapping(cd)
 	log.Info("running compaction", zap.Stringer("def", cd))
-	if err := sdb.runCompactionDef(shard, pri.CF, cd, guard); err != nil {
-		// This compaction couldn't be done successfully.
-		log.Error("compact failed", zap.Stringer("def", cd), zap.Error(err))
-		return err
-	}
-	log.Info("compaction done", zap.Int("level", cd.Level))
-	return nil
+	resp := sdb.compClient.Compact(sdb.buildCompactLnRequest(cd))
+	return sdb.handleCompactionResponse(shard, resp, guard)
 }
 
-func (sdb *DB) runCompactionDef(shard *Shard, cf int, cd *CompactDef, guard *epoch.Guard) error {
-	var newTables []table.Table
-	comp := &sdbpb.Compaction{Cf: int32(cf), Level: uint32(cd.Level)}
-	if cd.moveDown() {
-		// skip level 0, since it may has many table overlap with each other
-		newTables = cd.Top
-		for _, t := range newTables {
-			comp.TopDeletes = append(comp.TopDeletes, t.ID())
-			comp.TableCreates = append(comp.TableCreates, newTableCreate(t, cf, cd.Level+1))
-		}
-	} else {
-		var err error
-		comp.TableCreates, err = sdb.compactBuildTables(cf, cd)
-		if err != nil {
-			return errors.WithStack(err)
-		}
-		for _, t := range cd.Top {
-			comp.TopDeletes = append(comp.TopDeletes, t.ID())
-		}
-		for _, t := range cd.Bot {
-			comp.BottomDeletes = append(comp.BottomDeletes, t.ID())
-		}
+func (sdb *DB) newCompactionRequest(cf, level int) *compaction.Request {
+	req := &compaction.Request{
+		CF:           cf,
+		Level:        level,
+		InstanceID:   sdb.opt.InstanceID,
+		S3:           sdb.opt.S3Options,
+		SafeTS:       atomic.LoadUint64(&sdb.mangedSafeTS),
+		BlockSize:    sdb.opt.TableBuilderOptions.BlockSize,
+		MaxTableSize: sdb.opt.TableBuilderOptions.MaxTableSize,
+		BloomFPR:     sdb.opt.TableBuilderOptions.LogicalBloomFPR,
 	}
-	change := newChangeSet(shard)
-	change.Compaction = comp
+	if level == 0 {
+		req.Overlap = true
+	}
+	return req
+}
+
+func (sdb *DB) buildCompactL0Request(shard *Shard) *compaction.Request {
+	l0s := shard.loadL0Tables()
+	req := sdb.newCompactionRequest(-1, 0)
+	for _, l0 := range l0s.tables {
+		req.Tops = append(req.Tops, l0.ID())
+	}
+	req.MultiCFBottoms = make([][]uint64, sdb.numCFs)
+	for cf := 0; cf < sdb.numCFs; cf++ {
+		levelHandler := shard.cfs[cf].getLevelHandler(1)
+		bottoms := make([]uint64, len(levelHandler.tables))
+		for i, tbl := range levelHandler.tables {
+			bottoms[i] = tbl.ID()
+		}
+		req.MultiCFBottoms[cf] = bottoms
+	}
+	return req
+}
+
+func (sdb *DB) buildCompactLnRequest(cd *CompactDef) *compaction.Request {
+	req := sdb.newCompactionRequest(cd.CF, cd.Level)
+	req.Overlap = cd.HasOverlap
+	for _, tbl := range cd.Top {
+		req.Tops = append(req.Tops, tbl.ID())
+	}
+	for _, tbl := range cd.Bot {
+		req.Bottoms = append(req.Bottoms, tbl.ID())
+	}
+	return req
+}
+
+func (sdb *DB) handleCompactionResponse(shard *Shard, resp *compaction.Response, guard *epoch.Guard) error {
+	if resp.Error != "" {
+		err := errors.New(resp.Error)
+		log.Error("failed compact L0", zap.Error(err))
+		return err
+	}
+	log.S().Infof("compact shard %d:%d level %d cf %d done",
+		shard.ID, shard.Ver, resp.Compaction.Level, resp.Compaction.Cf)
+	cs := newChangeSet(shard)
+	cs.Compaction = resp.Compaction
 	if sdb.metaChangeListener != nil {
-		sdb.metaChangeListener.OnChange(change)
+		sdb.metaChangeListener.OnChange(cs)
 		return nil
 	}
-	return sdb.applyCompaction(shard, change, guard)
+	return sdb.applyCompaction(shard, cs, guard)
 }
 
 func assertTablesOrder(level int, tables []table.Table, cd *CompactDef) {
@@ -679,7 +462,7 @@ func assertTablesOrder(level int, tables []table.Table, cd *CompactDef) {
 }
 
 func (sdb *DB) replaceTables(old *levelHandler, newTables []table.Table, cd *CompactDef, guard *epoch.Guard) *levelHandler {
-	newHandler := newLevelHandler(sdb.opt.NumLevelZeroTablesStall, old.level, sdb.metrics)
+	newHandler := newLevelHandler(sdb.opt.NumLevelZeroTablesStall, old.level)
 	newHandler.totalSize = old.totalSize
 	// Increase totalSize first.
 	for _, tbl := range newTables {
@@ -699,10 +482,9 @@ func (sdb *DB) replaceTables(old *levelHandler, newTables []table.Table, cd *Com
 			}})
 		}
 	}
-	tables := make([]table.Table, 0, left+len(newTables)+len(cd.SkippedTbls)+(len(old.tables)-right))
+	tables := make([]table.Table, 0, left+len(newTables)+(len(old.tables)-right))
 	tables = append(tables, old.tables[:left]...)
 	tables = append(tables, newTables...)
-	tables = append(tables, cd.SkippedTbls...)
 	tables = append(tables, old.tables[right:]...)
 	sortTables(tables)
 	assertTablesOrder(old.level, tables, cd)
@@ -721,7 +503,7 @@ func containsTable(tables []table.Table, tbl table.Table) bool {
 }
 
 func (sdb *DB) deleteTables(old *levelHandler, toDel []table.Table) *levelHandler {
-	newHandler := newLevelHandler(sdb.opt.NumLevelZeroTablesStall, old.level, sdb.metrics)
+	newHandler := newLevelHandler(sdb.opt.NumLevelZeroTablesStall, old.level)
 	newHandler.totalSize = old.totalSize
 	toDelMap := make(map[uint64]struct{})
 	for _, t := range toDel {
@@ -742,82 +524,6 @@ func (sdb *DB) deleteTables(old *levelHandler, toDel []table.Table) *levelHandle
 
 	assertTablesOrder(newHandler.level, newTables, nil)
 	return newHandler
-}
-
-func (sdb *DB) compactBuildTables(cf int, cd *CompactDef) (newTables []*sdbpb.TableCreate, err error) {
-	err = sdb.prepareCompactionDef(cf, cd)
-	if err != nil {
-		return nil, err
-	}
-	stats := &y.CompactionStats{}
-	discardStats := &DiscardStats{}
-	comp := &localCompactor{s3c: sdb.s3c}
-	buildResults, err := comp.compact(cd, stats, discardStats)
-	if err != nil {
-		return nil, err
-	}
-	newTables = make([]*sdbpb.TableCreate, len(buildResults))
-	for i, buildResult := range buildResults {
-		newTables[i] = newTableCreateByResult(buildResult, cf, cd.Level+1)
-	}
-	return newTables, nil
-}
-
-func (sdb *DB) prepareCompactionDef(cf int, cd *CompactDef) error {
-	// Pick up the currently pending transactions' min readTs, so we can discard versions below this
-	// readTs. We should never discard any versions starting from above this timestamp, because that
-	// would affect the snapshot view guarantee provided by transactions.
-	cd.SafeTS = sdb.getCFSafeTS(cf)
-	if sdb.opt.CompactionFilterFactory != nil {
-		cd.Filter = sdb.opt.CompactionFilterFactory(cd.Level+1, cd.smallest(), cd.biggest())
-	}
-	cd.Opt = sdb.opt.TableBuilderOptions
-	cd.Dir = sdb.opt.Dir
-	cd.AllocIDFunc = sdb.idAlloc.AllocID
-	cd.S3 = sdb.opt.S3Options
-	for _, t := range cd.Top {
-		if sst, ok := t.(*sstable.Table); ok {
-			err := sst.PrepareForCompaction()
-			if err != nil {
-				return err
-			}
-		}
-	}
-	for _, t := range cd.Bot {
-		if sst, ok := t.(*sstable.Table); ok {
-			err := sst.PrepareForCompaction()
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (sdb *DB) openTables(buildResults []*sstable.BuildResult) (newTables []table.Table, err error) {
-	for _, result := range buildResults {
-		var tbl table.Table
-		filename := result.FileName
-		reader, err := newTableFile(filename, sdb)
-		if err != nil {
-			return nil, err
-		}
-		tbl, err = sstable.OpenTable(reader, sdb.blkCache)
-		if err != nil {
-			return nil, err
-		}
-		newTables = append(newTables, tbl)
-	}
-	// Ensure created files' directory entries are visible.  We don't mind the extra latency
-	// from not doing this ASAP after all file creation has finished because this is a
-	// background operation.
-	err = syncDir(sdb.opt.Dir)
-	if err != nil {
-		log.Error("compact sync dir error", zap.Error(err))
-		return
-	}
-	sortTables(newTables)
-	return
 }
 
 // ApplyChangeSet applies long running shard file change.
@@ -869,7 +575,11 @@ func (sdb *DB) applyFlush(shard *Shard, changeSet *sdbpb.ChangeSet) error {
 	}
 	if newL0 != nil {
 		filename := sstable.NewFilename(newL0.ID, sdb.opt.Dir)
-		tbl, err := sstable.OpenL0Table(filename, newL0.ID, newL0.Smallest, newL0.Biggest)
+		localFile, err := sstable.NewLocalFile(filename, true)
+		if err != nil {
+			return err
+		}
+		tbl, err := sstable.OpenL0Table(localFile)
 		if err != nil {
 			return err
 		}
@@ -957,7 +667,7 @@ func (d *deletion) Delete() error {
 func (sdb *DB) compactionUpdateLevelHandler(shard *Shard, cf, level int,
 	creates []*sdbpb.TableCreate, delIDs []uint64, del *deletions) error {
 	oldLevel := shard.cfs[cf].getLevelHandler(level)
-	newLevel := newLevelHandler(sdb.opt.NumLevelZeroTablesStall, level, sdb.metrics)
+	newLevel := newLevelHandler(sdb.opt.NumLevelZeroTablesStall, level)
 	for _, tbl := range creates {
 		if int(tbl.CF) != cf {
 			continue
@@ -1034,7 +744,8 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 	del := &deletions{resources: map[uint64]epoch.Resource{}}
 	for _, l0 := range splitFiles.L0Creates {
 		filename := sstable.NewFilename(l0.ID, sdb.opt.Dir)
-		tbl, err := sstable.OpenL0Table(filename, l0.ID, l0.Smallest, l0.Biggest)
+		localFile, err := sstable.NewLocalFile(filename, true)
+		tbl, err := sstable.OpenL0Table(localFile)
 		if err != nil {
 			return err
 		}
@@ -1063,7 +774,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 	for _, tbl := range splitFiles.TableCreates {
 		newHandler := newHandlers[tbl.CF][tbl.Level-1]
 		if newHandler == nil {
-			newHandler = newLevelHandler(sdb.opt.NumLevelZeroTablesStall, int(tbl.Level), sdb.metrics)
+			newHandler = newLevelHandler(sdb.opt.NumLevelZeroTablesStall, int(tbl.Level))
 			newHandlers[tbl.CF][tbl.Level-1] = newHandler
 		}
 		filename := sstable.NewFilename(tbl.ID, sdb.opt.Dir)
@@ -1132,159 +843,8 @@ func (ds *DiscardStats) String() string {
 	return fmt.Sprintf("numSkips:%d, skippedBytes:%d", ds.numSkips, ds.skippedBytes)
 }
 
-// CompactTables compacts tables in CompactDef and returns the file names.
-func CompactTables(cd *CompactDef, stats *y.CompactionStats, discardStats *DiscardStats, s3c *s3util.S3Client) ([]*sstable.BuildResult, error) {
-	var buildResults []*sstable.BuildResult
-	it := cd.buildIterator()
-	defer it.Close()
-
-	skippedTbls := cd.SkippedTbls
-
-	var lastKey, skipKey []byte
-	var builder *sstable.Builder
-	var bt *scheduler.BatchTasks
-	if s3c != nil {
-		bt = scheduler.NewBatchTasks()
-	}
-	for it.Valid() {
-		var fd *os.File
-		var filename string
-		var id uint64
-		if cd.AllocIDFunc != nil {
-			id = cd.AllocIDFunc()
-			filename = sstable.NewFilename(id, cd.Dir)
-		}
-		if !cd.InMemory {
-			var err error
-			fd, err = y.OpenSyncedFile(filename, false)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if builder == nil {
-			builder = sstable.NewTableBuilder(id, cd.Opt)
-		} else {
-			builder.Reset(id)
-		}
-		lastKey = lastKey[:0]
-		for ; it.Valid(); table.NextAllVersion(it) {
-			stats.KeysRead++
-			vs := it.Value()
-			key := it.Key()
-			kvSize := int(vs.EncodedSize()) + len(key)
-			stats.BytesRead += kvSize
-			// See if we need to skip this key.
-			if len(skipKey) > 0 {
-				if bytes.Equal(key, skipKey) {
-					discardStats.collect(vs)
-					continue
-				} else {
-					skipKey = skipKey[:0]
-				}
-			}
-			if !bytes.Equal(key, lastKey) {
-				// Only break if we are on a different key, and have reached capacity. We want
-				// to ensure that all versions of the key are stored in the same sstable, and
-				// not divided across multiple tables at the same level.
-				if len(skippedTbls) > 0 {
-					var over bool
-					skippedTbls, over = overSkipTables(key, skippedTbls)
-					if over && !builder.Empty() {
-						break
-					}
-				}
-				if shouldFinishFile(lastKey, int64(builder.EstimateSize()+kvSize), cd.Opt.MaxTableSize) {
-					break
-				}
-				lastKey = append(lastKey[:0], key...)
-			}
-
-			// Only consider the versions which are below the minReadTs, otherwise, we might end up discarding the
-			// only valid version for a running transaction.
-			if vs.Version <= cd.SafeTS {
-				// key is the latest readable version of this key, so we simply discard all the rest of the versions.
-				skipKey = append(skipKey[:0], key...)
-
-				if isDeleted(vs.Meta) {
-					// If this key range has overlap with lower levels, then keep the deletion
-					// marker with the latest version, discarding the rest. We have set skipKey,
-					// so the following key versions would be skipped. Otherwise discard the deletion marker.
-					if !cd.HasOverlap {
-						continue
-					}
-				} else if cd.Filter != nil {
-					switch cd.Filter.Filter(cd.CF, key, vs.Value, vs.UserMeta) {
-					case DecisionMarkTombstone:
-						discardStats.collect(vs)
-						if cd.HasOverlap {
-							// There may have ole versions for this key, so convert to delete tombstone.
-							builder.Add(key, &y.ValueStruct{Meta: bitDelete, Version: vs.Version})
-						}
-						continue
-					case DecisionDrop:
-						discardStats.collect(vs)
-						continue
-					case DecisionKeep:
-					}
-				}
-			}
-			builder.Add(key, &vs)
-			stats.KeysWrite++
-			stats.BytesWrite += kvSize
-		}
-		if builder.Empty() {
-			continue
-		}
-		var w io.Writer = fd
-		if fd == nil {
-			w = bytes.NewBuffer(make([]byte, 0, builder.EstimateSize()))
-		}
-		result, err := builder.Finish(filename, w)
-		if err != nil {
-			return nil, err
-		}
-		if s3c != nil {
-			bt.AppendTask(func() error {
-				return putSSTBuildResultToS3(s3c, result)
-			})
-		}
-		fd.Close()
-		buildResults = append(buildResults, result)
-	}
-	if s3c != nil {
-		if err := s3c.BatchSchedule(bt); err != nil {
-			return nil, err
-		}
-	}
-	return buildResults, nil
-}
-
-func shouldFinishFile(lastKey []byte, currentSize, maxSize int64) bool {
-	return len(lastKey) > 0 && currentSize > maxSize
-}
-
-func overSkipTables(key []byte, skippedTables []table.Table) (newSkippedTables []table.Table, over bool) {
-	var i int
-	for i < len(skippedTables) {
-		t := skippedTables[i]
-		if bytes.Compare(key, t.Biggest()) > 0 {
-			i++
-		} else {
-			break
-		}
-	}
-	return skippedTables[i:], i > 0
-}
-
 func putSSTBuildResultToS3(s3c *s3util.S3Client, result *sstable.BuildResult) (err error) {
-	fileID, _ := sstable.ParseFileID(result.FileName)
-	if len(result.FileData) == 0 {
-		result.FileData, err = ioutil.ReadFile(result.FileName)
-		if err != nil {
-			return
-		}
-	}
-	return s3c.Put(s3c.BlockKey(fileID), result.FileData)
+	return s3c.Put(s3c.BlockKey(result.ID), result.FileData)
 }
 
 func sortTables(tables []table.Table) {

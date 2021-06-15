@@ -104,7 +104,7 @@ func (item *Item) hasValue() bool {
 
 // IsDeleted returns true if item contains deleted or expired value.
 func (item *Item) IsDeleted() bool {
-	return isDeleted(item.meta)
+	return table.IsDeleted(item.meta)
 }
 
 // EstimatedSize returns approximate size of the key-value pair.
@@ -197,7 +197,7 @@ func (it *Iterator) parseItem() {
 			}
 		}
 		it.updateItem()
-		if !it.allVersions && isDeleted(it.vs.Meta) {
+		if !it.allVersions && table.IsDeleted(it.vs.Meta) {
 			if it.reversed {
 				if bytes.Compare(key, it.bound) < 0 {
 					break
@@ -213,10 +213,6 @@ func (it *Iterator) parseItem() {
 		return
 	}
 	it.item = nil
-}
-
-func isDeleted(meta byte) bool {
-	return meta&bitDelete > 0
 }
 
 // Seek would seek to the provided key if present. If absent, it would seek to the next smallest key
@@ -305,12 +301,4 @@ func (s *Snapshot) appendL0Iters(iters []table.Iterator, l0s *l0Tables, cf int, 
 		}
 	}
 	return iters
-}
-
-func appendIteratorsReversed(out []table.Iterator, th []table.Table, reversed bool) []table.Iterator {
-	for i := len(th) - 1; i >= 0; i-- {
-		// This will increment the reference of the table handler.
-		out = append(out, table.NewConcatIterator(th[i:i+1], reversed))
-	}
-	return out
 }

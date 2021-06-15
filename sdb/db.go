@@ -18,7 +18,9 @@ import (
 	"github.com/dgryski/go-farm"
 	"github.com/ngaut/unistore/s3util"
 	"github.com/ngaut/unistore/sdb/cache"
+	"github.com/ngaut/unistore/sdb/compaction"
 	"github.com/ngaut/unistore/sdb/epoch"
+	"github.com/ngaut/unistore/sdb/table"
 	"github.com/ngaut/unistore/sdb/table/memtable"
 	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
@@ -45,10 +47,8 @@ var (
 )
 
 type closers struct {
-	updateSize      *y.Closer
 	compactors      *y.Closer
 	resourceManager *y.Closer
-	blobManager     *y.Closer
 	memtable        *y.Closer
 	s3Client        *y.Closer
 }
@@ -62,10 +62,10 @@ type DB struct {
 	resourceMgr  *epoch.ResourceManager
 	closers      closers
 	flushCh      chan *flushTask
-	metrics      *y.MetricsSet
 	manifest     *Manifest
 	mangedSafeTS uint64
-	idAlloc      IDAllocator
+	idAlloc      compaction.IDAllocator
+	compClient   *compaction.Client
 	s3c          *s3util.S3Client
 	closed       uint32
 
@@ -73,7 +73,6 @@ type DB struct {
 }
 
 const (
-	kvWriteChCapacity = 1000
 	lockFile          = "LOCK"
 )
 
@@ -101,12 +100,10 @@ func OpenDB(opt Options) (db *DB, err error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create block cache")
 	}
-	metrics := y.NewMetricSet(opt.Dir)
 	db = &DB{
 		opt:                opt,
 		numCFs:             len(opt.CFs),
 		dirLock:            dirLockGuard,
-		metrics:            metrics,
 		blkCache:           blkCache,
 		flushCh:            make(chan *flushTask, opt.NumMemtables),
 		manifest:           manifest,
@@ -121,8 +118,9 @@ func OpenDB(opt Options) (db *DB, err error) {
 	db.resourceMgr = epoch.NewResourceManager(db.closers.resourceManager)
 	db.closers.s3Client = y.NewCloser(0)
 	if opt.S3Options.EndPoint != "" {
-		db.s3c = s3util.NewS3Client(db.closers.s3Client, opt.Dir, opt.S3Options)
+		db.s3c = s3util.NewS3Client(db.closers.s3Client, opt.Dir, opt.InstanceID, opt.S3Options)
 	}
+	db.compClient = compaction.NewClient(opt.RemoteCompactionAddr, db.idAlloc, db.s3c)
 	if err = db.loadShards(); err != nil {
 		return nil, errors.AddStack(err)
 	}
@@ -397,7 +395,7 @@ func (sdb *DB) loadShards() error {
 }
 
 func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
-	shard := newShardForLoading(shardInfo, &sdb.opt, sdb.metrics)
+	shard := newShardForLoading(shardInfo, &sdb.opt)
 	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{memtable.NewCFTable(sdb.numCFs)}}))
 	for fid := range shardInfo.files {
 		fileMeta, ok := sdb.manifest.globalFiles[fid]
@@ -405,7 +403,11 @@ func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 		cf := fileMeta.cf
 		if cf == -1 {
 			filename := sstable.NewFilename(fid, sdb.opt.Dir)
-			sl0Tbl, err := sstable.OpenL0Table(filename, fid, fileMeta.smallest, fileMeta.biggest)
+			file, err := sstable.NewLocalFile(filename, true)
+			if err != nil {
+				return nil, err
+			}
+			sl0Tbl, err := sstable.OpenL0Table(file)
 			if err != nil {
 				return nil, err
 			}
@@ -465,8 +467,8 @@ type localIDAllocator struct {
 	latest uint64
 }
 
-func (l *localIDAllocator) AllocID() uint64 {
-	return atomic.AddUint64(&l.latest, 1)
+func (l *localIDAllocator) AllocID() (uint64, error) {
+	return atomic.AddUint64(&l.latest, 1), nil
 }
 
 func (sdb *DB) Close() error {
@@ -540,7 +542,7 @@ func (wb *WriteBatch) Delete(cf byte, key []byte, version uint64) error {
 			return fmt.Errorf("version is not zero for non-managed CF")
 		}
 	}
-	wb.entries[cf] = append(wb.entries[cf], wb.allocEntry(key, y.ValueStruct{Meta: bitDelete, Version: version}))
+	wb.entries[cf] = append(wb.entries[cf], wb.allocEntry(key, y.ValueStruct{Meta: table.BitDelete, Version: version}))
 	wb.estimatedSize += int64(len(key) + memtable.EstimateNodeSize)
 	return nil
 }
@@ -600,7 +602,7 @@ func (s *Snapshot) Get(cf int, key []byte, version uint64) (*Item, error) {
 	if !vs.Valid() {
 		return nil, ErrKeyNotFound
 	}
-	if isDeleted(vs.Meta) {
+	if table.IsDeleted(vs.Meta) {
 		return nil, ErrKeyNotFound
 	}
 	item := new(Item)

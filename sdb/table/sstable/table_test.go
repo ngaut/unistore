@@ -56,7 +56,6 @@ func key(prefix string, i int) string {
 
 var defaultBuilderOpt = TableBuilderOptions{
 	BlockSize:           4 * 1024,
-	HashUtilRatio:       0.75,
 	WriteBufferSize:     1024 * 1024,
 	MaxLevels:           1,
 	LevelSizeMultiplier: 10,

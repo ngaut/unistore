@@ -66,3 +66,11 @@ func NextAllVersion(it Iterator) {
 		it.Next()
 	}
 }
+
+const (
+	BitDelete byte = 1 << 0 // Set if the key has been deleted.
+)
+
+func IsDeleted(meta byte) bool {
+	return meta&BitDelete > 0
+}

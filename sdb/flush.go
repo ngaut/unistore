@@ -64,7 +64,10 @@ func (sdb *DB) runFlushMemTable(c *y.Closer) {
 
 func (sdb *DB) flushMemTable(shard *Shard, m *memtable.Table) (*sdbpb.L0Create, error) {
 	y.Assert(sdb.idAlloc != nil)
-	id := sdb.idAlloc.AllocID()
+	id, err := sdb.idAlloc.AllocID()
+	if err != nil {
+		return nil, err
+	}
 	fd, err := sdb.createL0File(id)
 	if err != nil {
 		return nil, err
@@ -103,10 +106,10 @@ func (sdb *DB) flushMemTable(shard *Shard, m *memtable.Table) (*sdbpb.L0Create, 
 	if err != nil {
 		return nil, err
 	}
-	filename := fd.Name()
 	_ = fd.Close()
 	result := &sstable.BuildResult{
-		FileName: filename,
+		ID:       id,
+		FileData: shardL0Data,
 		Smallest: smallest,
 		Biggest:  biggest,
 	}

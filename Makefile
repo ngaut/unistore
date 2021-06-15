@@ -38,3 +38,6 @@ go-build-linux:
 build: go-build
 
 linux: go-build-linux
+
+compaction:
+	$(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/compaction-server cmd/compaction-server/main.go
