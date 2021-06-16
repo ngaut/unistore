@@ -20,6 +20,7 @@ import (
 	"github.com/ngaut/unistore/sdb"
 	"github.com/ngaut/unistore/sdbpb"
 	"go.uber.org/zap"
+	"math"
 	"time"
 
 	"github.com/ngaut/unistore/tikv/mvcc"
@@ -374,6 +375,9 @@ type applier struct {
 
 	/// The local metrics, and it will be flushed periodically.
 	metrics applyMetrics
+
+	lockCache map[string][]byte
+	dbSnap    *sdb.Snapshot
 }
 
 func newApplier(reg *registration) *applier {
@@ -383,6 +387,7 @@ func newApplier(reg *registration) *applier {
 		region:     reg.region,
 		applyState: reg.applyState,
 		term:       reg.term,
+		lockCache:  map[string][]byte{},
 	}
 }
 
@@ -395,6 +400,12 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 	if len(committedEntries) == 0 {
 		return
 	}
+	defer func() {
+		if a.dbSnap != nil {
+			a.dbSnap.Discard()
+			a.dbSnap = nil
+		}
+	}()
 	aCtx.committedCount += len(committedEntries)
 	// If we send multiple ConfChange commands, only first one will be proposed correctly,
 	// others will be saved as a normal entry with no data, so we must re-propose these
@@ -707,14 +718,20 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 	wb := aCtx.wb.getEngineWriteBatch(cl.RegionID())
 	var cnt int
 	switch cl.Type() {
-	case raftlog.TypePrewrite, raftlog.TypePessimisticLock:
+	case raftlog.TypePrewrite:
+		cl.IterateLock(func(key, val []byte) {
+			SetLock(wb, key, val)
+			a.lockCache[string(key)] = val
+			cnt++
+		})
+	case raftlog.TypePessimisticLock:
 		cl.IterateLock(func(key, val []byte) {
 			SetLock(wb, key, val)
 			cnt++
 		})
 	case raftlog.TypeCommit:
 		cl.IterateCommit(func(key, val []byte, commitTS uint64) {
-			a.commitLock(wb, key, val, commitTS)
+			a.commitLock(aCtx, wb, key, val, commitTS)
 			cnt++
 		})
 	case raftlog.TypeRollback:
@@ -722,6 +739,7 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 			Rollback(wb, key, startTS)
 			if deleteLock {
 				DeleteLock(wb, key)
+				delete(a.lockCache, string(key))
 			}
 			cnt++
 		})
@@ -747,21 +765,47 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		binary.LittleEndian.PutUint64(bin, uint64(cs.NextMemTableSize))
 		SetMaxMemTableSize(wb, bin)
 	}
-	SetApplyState(wb, aCtx.execCtx.applyState)
+	applyState := aCtx.execCtx.applyState
+	applyState.appliedIndex = aCtx.execCtx.index
+	applyState.appliedIndexTerm = aCtx.execCtx.term
+	SetApplyState(wb, applyState)
 	aCtx.engines.kv.Write(wb)
 	wb.Reset()
 	return cnt
 }
 
-func (a *applier) commitLock(wb *sdb.WriteBatch, rawKey []byte, val []byte, commitTS uint64) {
+func (a *applier) commitLock(aCtx *applyContext, wb *sdb.WriteBatch, key, val []byte, commitTS uint64) {
+	if len(val) == 0 {
+		val = a.getLockForCommit(aCtx, key)
+	}
 	lock := mvcc.DecodeLock(val)
+	if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
+		lock.Op = uint8(kvrpcpb.Op_Lock)
+	}
 	userMeta := mvcc.NewDBUserMeta(lock.StartTS, commitTS)
 	if lock.Op != uint8(kvrpcpb.Op_Lock) {
-		SetWithUserMeta(wb, rawKey, lock.Value, userMeta, commitTS)
-	} else if bytes.Equal(lock.Primary, rawKey) {
-		SetOpLock(wb, rawKey, userMeta, commitTS)
+		SetWithUserMeta(wb, key, lock.Value, userMeta, commitTS)
+	} else if bytes.Equal(lock.Primary, key) {
+		SetOpLock(wb, key, userMeta, commitTS)
 	}
-	DeleteLock(wb, rawKey)
+	DeleteLock(wb, key)
+}
+
+func (a *applier) getLockForCommit(aCtx *applyContext, key []byte) []byte {
+	val, ok := a.lockCache[string(key)]
+	if ok {
+		delete(a.lockCache, string(key))
+		return val
+	}
+	regionID := a.region.Id
+	if a.dbSnap == nil {
+		a.dbSnap = aCtx.engines.kv.NewSnapshot(aCtx.engines.kv.GetShard(regionID))
+	}
+	item, err := a.dbSnap.Get(mvcc.LockCF, key, math.MaxUint64)
+	y.AssertTruef(err == nil, "key %v index %d", key, aCtx.execCtx.index)
+	val, err = item.Value()
+	y.Assert(err == nil)
+	return val
 }
 
 func (a *applier) execDeleteRange(aCtx *applyContext, req *raft_cmdpb.DeleteRangeRequest) {
@@ -902,6 +946,8 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	if err != nil {
 		return
 	}
+	// clear the cache here or the locks doesn't belong to the new range would never have chance to delete.
+	a.lockCache = map[string][]byte{}
 	resp = &raft_cmdpb.AdminResponse{
 		Splits: &raft_cmdpb.BatchSplitResponse{
 			Regions: regions,

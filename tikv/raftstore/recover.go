@@ -73,7 +73,14 @@ func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMe
 	}
 	peer := findPeer(regionMeta, h.storeID)
 	peerID := peer.Id
-	applier := &applier{id: peerID, region: regionMeta, applyState: fromApplyState}
+	applier := &applier{
+		id:         peerID,
+		region:     regionMeta,
+		applyState: fromApplyState,
+		lockCache:  map[string][]byte{},
+		dbSnap:     db.NewSnapshot(shard),
+	}
+	defer applier.dbSnap.Discard()
 	for i := range entries {
 		e := &entries[i]
 		if len(e.Data) == 0 || e.EntryType != eraftpb.EntryType_EntryNormal {
@@ -87,13 +94,18 @@ func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMe
 			}
 			continue
 		}
+		if rlog.Epoch().Ver() != shard.Ver {
+			continue
+		}
 		var cl *raftlog.CustomRaftLog
 		cl, ok = rlog.(*raftlog.CustomRaftLog)
 		if !ok {
 			// must be delete range request. TODO: handle it in the future.
 			continue
 		}
-		h.ctx.execCtx.applyState = applyState{appliedIndex: e.Index, appliedIndexTerm: e.Term}
+		h.ctx.execCtx.applyState = applier.applyState
+		h.ctx.execCtx.index = e.Index
+		h.ctx.execCtx.term = e.Term
 		if raftlog.IsChangeSetLog(cl.Data) {
 			// We don't have a background region worker now, should do it synchronously.
 			cs, err := cl.GetShardChangeSet()
@@ -110,6 +122,8 @@ func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMe
 		} else {
 			applier.execCustomLog(h.ctx, cl)
 		}
+		applier.applyState.appliedIndex = e.Index
+		applier.applyState.appliedIndexTerm = e.Term
 	}
 	newState := fromApplyState
 	newState.appliedIndex = highIdx
