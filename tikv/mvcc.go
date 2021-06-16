@@ -881,7 +881,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 		}
 		isPessimisticTxn = lock.ForUpdateTS > 0
 		tmpDiff += len(key) + len(lock.Value)
-		batch.Commit(key, &lock)
+		batch.Commit(key, nil)
 	}
 	atomic.AddInt64(&regCtx.diff, int64(tmpDiff))
 	err := store.dbWriter.Write(batch)

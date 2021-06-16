@@ -160,7 +160,11 @@ func (wb *customWriteBatch) Prewrite(key []byte, lock *mvcc.MvccLock) {
 
 func (wb *customWriteBatch) Commit(key []byte, lock *mvcc.MvccLock) {
 	wb.setType(raftlog.TypeCommit)
-	wb.builder.AppendCommit(key, lock.MarshalBinary(), wb.commitTS)
+	var val []byte
+	if lock != nil {
+		val = lock.MarshalBinary()
+	}
+	wb.builder.AppendCommit(key, val, wb.commitTS)
 }
 
 func (wb *customWriteBatch) Rollback(key []byte, deleleLock bool) {
