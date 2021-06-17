@@ -63,12 +63,6 @@ func (writer *raftDBWriter) Write(batch mvcc.WriteBatch) error {
 	waitDoneTime := time.Now()
 	metrics.RaftWriterWait.Observe(waitDoneTime.Sub(start).Seconds())
 	cb := cmd.Callback
-	if !cb.raftBeginTime.IsZero() {
-		metrics.WriteWaiteStepOne.Observe(cb.raftBeginTime.Sub(start).Seconds())
-		metrics.WriteWaiteStepTwo.Observe(cb.raftDoneTime.Sub(cb.raftBeginTime).Seconds())
-		metrics.WriteWaiteStepThree.Observe(cb.applyBeginTime.Sub(cb.raftDoneTime).Seconds())
-		metrics.WriteWaiteStepFour.Observe(cb.applyDoneTime.Sub(cb.applyBeginTime).Seconds())
-	}
 	return writer.checkResponse(cb.resp, reqLen)
 }
 

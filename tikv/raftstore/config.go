@@ -138,6 +138,8 @@ type Config struct {
 	AdvertiseAddr string
 	Labels        []StoreLabel
 
+	ApplyWorkerCnt int
+
 	SplitCheck *splitCheckConfig
 }
 
@@ -231,6 +233,7 @@ func NewDefaultConfig() *Config {
 		GrpcRaftConnNum:          1,
 		Addr:                     "127.0.0.1:20160",
 		SplitCheck:               newDefaultSplitCheckConfig(),
+		ApplyWorkerCnt:           4,
 	}
 }
 

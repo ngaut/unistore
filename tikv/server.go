@@ -133,6 +133,7 @@ func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	raftConf.RaftElectionTimeoutTicks = conf.RaftStore.RaftElectionTimeoutTicks
 
 	raftConf.SplitCheck.RegionMaxSize = uint64(conf.Server.RegionSize)
+	raftConf.ApplyWorkerCnt = conf.RaftStore.ApplyWorkerCount
 }
 
 func createRaftDB(subPath string, conf *config.RaftEngine) (*raftengine.Engine, error) {

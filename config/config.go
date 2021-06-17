@@ -44,6 +44,7 @@ type RaftStore struct {
 	RaftBaseTickInterval     string `toml:"raft-base-tick-interval"`     // raft-base-tick-interval in milliseconds
 	RaftHeartbeatTicks       int    `toml:"raft-heartbeat-ticks"`        // raft-heartbeat-ticks times
 	RaftElectionTimeoutTicks int    `toml:"raft-election-timeout-ticks"` // raft-election-timeout-ticks times
+	ApplyWorkerCount         int    `toml:"apply-worker-count"`
 }
 
 type Engine struct {
@@ -102,6 +103,7 @@ var DefaultConf = Config{
 		RaftBaseTickInterval:     "1s",
 		RaftHeartbeatTicks:       2,
 		RaftElectionTimeoutTicks: 10,
+		ApplyWorkerCount:         4,
 	},
 	Engine: Engine{
 		DBPath:                "/tmp/badger",
