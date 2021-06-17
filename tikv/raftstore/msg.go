@@ -75,12 +75,8 @@ func NewMsg(tp MsgType, data interface{}) Msg {
 }
 
 type Callback struct {
-	resp           *raft_cmdpb.RaftCmdResponse
-	wg             sync.WaitGroup
-	raftBeginTime  time.Time
-	raftDoneTime   time.Time
-	applyBeginTime time.Time
-	applyDoneTime  time.Time
+	resp *raft_cmdpb.RaftCmdResponse
+	wg   sync.WaitGroup
 }
 
 func (cb *Callback) Done(resp *raft_cmdpb.RaftCmdResponse) {

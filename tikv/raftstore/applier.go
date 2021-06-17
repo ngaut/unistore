@@ -370,9 +370,6 @@ type applier struct {
 	/// to file, but KV data may not synced to file, so we will lose data.
 	applyState applyState
 
-	// redoIdx is the raft log index starts redo for lockStore.
-	redoIndex uint64
-
 	/// The local metrics, and it will be flushed periodically.
 	metrics applyMetrics
 

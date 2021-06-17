@@ -367,11 +367,15 @@ func (bs *raftBatchSystem) startWorkers(peers []*peerFsm) {
 	workers := bs.workers
 	router := bs.router
 
-	bs.wg.Add(3) // raftWorker, applyWorker, storeWorker
-	rw := newRaftWorker(ctx, router.peerSender, router)
+	bs.wg.Add(1 + ctx.cfg.ApplyWorkerCnt + 1) // raftWorker, applyWorker, storeWorker
+	rw := newRaftWorker(ctx, router.peerSender, router, ctx.cfg.ApplyWorkerCnt)
 	go rw.run(bs.closeCh, bs.wg)
-	aw := newApplyWorker(router, rw.applyCh, rw.applyCtx)
-	go aw.run(bs.wg)
+	log.S().Infof("apply worker cnt %d", ctx.cfg.ApplyWorkerCnt)
+	for i := 0; i < ctx.cfg.ApplyWorkerCnt; i++ {
+		aw := newApplyWorker(router, i, rw.applyChs[i], rw.applyCtxes[i])
+		go aw.run(bs.wg)
+	}
+
 	sw := newStoreWorker(ctx, router)
 	go sw.run(bs.closeCh, bs.wg)
 
