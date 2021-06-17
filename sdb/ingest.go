@@ -20,7 +20,6 @@ import (
 	"github.com/ngaut/unistore/sdb/table/sstable"
 	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/y"
-	"github.com/pingcap/errors"
 	"os"
 	"sort"
 	"sync/atomic"
@@ -34,9 +33,6 @@ type IngestTree struct {
 }
 
 func (sdb *DB) Ingest(ingestTree *IngestTree) error {
-	if shd := sdb.GetShard(ingestTree.ChangeSet.ShardID); shd != nil {
-		return errors.New("shard already exists")
-	}
 	guard := sdb.resourceMgr.Acquire()
 	defer guard.Done()
 
