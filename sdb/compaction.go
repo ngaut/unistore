@@ -582,6 +582,11 @@ func (sdb *DB) applyFlush(shard *Shard, changeSet *sdbpb.ChangeSet) error {
 			return err
 		}
 	}
+	if changeSet.Stage == sdbpb.SplitStage_PRE_SPLIT_FLUSH_DONE {
+		for !shard.isSplitting() {
+			time.Sleep(time.Millisecond)
+		}
+	}
 	if err := sdb.manifest.writeChangeSet(changeSet); err != nil {
 		if err == errDupChange {
 			return nil
