@@ -21,9 +21,7 @@ import (
 )
 
 const (
-	KB          uint64 = 1024
-	MB          uint64 = 1024 * 1024
-	SplitSizeMb uint64 = 96
+	MB uint64 = 1024 * 1024
 )
 
 type Config struct {
@@ -50,13 +48,6 @@ type Config struct {
 
 	// Interval to gc unnecessary raft log (ms).
 	RaftLogGCTickInterval time.Duration
-	// A threshold to gc stale raft log, must >= 1.
-	RaftLogGcThreshold uint64
-	// When entry count exceed this value, gc will be forced trigger.
-	RaftLogGcCountLimit uint64
-	// When the approximate size of raft log entries exceed this value,
-	// gc will be forced trigger.
-	RaftLogGcSizeLimit uint64
 	// When a peer is not responding for this time, leader will not keep entry cache for it.
 	RaftEntryCacheLifeTime time.Duration
 	// When a peer is newly added, reject transferring leader to the peer for a while.
@@ -77,8 +68,6 @@ type Config struct {
 	RegionCompactTombstonesPencent uint64
 	PdHeartbeatTickInterval        time.Duration
 	PdStoreHeartbeatTickInterval   time.Duration
-	SnapMgrGcTickInterval          time.Duration
-	SnapGcTimeout                  time.Duration
 
 	NotifyCapacity  uint64
 	MessagesPerTick uint64
@@ -97,8 +86,6 @@ type Config struct {
 	PeerStaleStateCheckInterval   time.Duration
 
 	LeaderTransferMaxLogLag uint64
-
-	SnapApplyBatchSize uint64
 
 	// Interval (ms) to check region whether the data is consistent.
 	ConsistencyCheckInterval time.Duration
@@ -173,25 +160,20 @@ type StoreLabel struct {
 }
 
 func NewDefaultConfig() *Config {
-	splitSize := SplitSizeMb * MB
 	return &Config{
-		SyncLog:                     true,
-		Prevote:                     true,
-		RaftdbPath:                  "",
-		Capacity:                    0,
-		RaftBaseTickInterval:        1 * time.Second,
-		RaftHeartbeatTicks:          2,
-		RaftElectionTimeoutTicks:    10,
-		RaftMinElectionTimeoutTicks: 0,
-		RaftMaxElectionTimeoutTicks: 0,
-		RaftMaxSizePerMsg:           1 * MB,
-		RaftMaxInflightMsgs:         256,
-		RaftEntryMaxSize:            8 * MB,
-		RaftLogGCTickInterval:       10 * time.Second,
-		RaftLogGcThreshold:          50,
-		// Assume the average size of entries is 1k.
-		RaftLogGcCountLimit:              splitSize * 3 / 4 / KB,
-		RaftLogGcSizeLimit:               splitSize * 3 / 4,
+		SyncLog:                          true,
+		Prevote:                          true,
+		RaftdbPath:                       "",
+		Capacity:                         0,
+		RaftBaseTickInterval:             1 * time.Second,
+		RaftHeartbeatTicks:               2,
+		RaftElectionTimeoutTicks:         10,
+		RaftMinElectionTimeoutTicks:      0,
+		RaftMaxElectionTimeoutTicks:      0,
+		RaftMaxSizePerMsg:                1 * MB,
+		RaftMaxInflightMsgs:              256,
+		RaftEntryMaxSize:                 8 * MB,
+		RaftLogGCTickInterval:            10 * time.Second,
 		RaftEntryCacheLifeTime:           30 * time.Second,
 		RaftRejectTransferLeaderDuration: 3 * time.Second,
 		SplitRegionCheckTickInterval:     10 * time.Second,
@@ -203,15 +185,12 @@ func NewDefaultConfig() *Config {
 		PdHeartbeatTickInterval:          20 * time.Second,
 		PdStoreHeartbeatTickInterval:     10 * time.Second,
 		NotifyCapacity:                   40960,
-		SnapMgrGcTickInterval:            1 * time.Minute,
-		SnapGcTimeout:                    4 * time.Hour,
 		MessagesPerTick:                  4096,
 		MaxPeerDownDuration:              5 * time.Minute,
 		MaxLeaderMissingDuration:         2 * time.Hour,
 		AbnormalLeaderMissingDuration:    10 * time.Minute,
 		PeerStaleStateCheckInterval:      5 * time.Minute,
 		LeaderTransferMaxLogLag:          10,
-		SnapApplyBatchSize:               10 * MB,
 		// Disable consistency check by default as it will hurt performance.
 		// We should turn on this only in our tests.
 		ConsistencyCheckInterval: 0,
@@ -285,21 +264,9 @@ func (c *Config) Validate() error {
 			c.RaftMinElectionTimeoutTicks, c.RaftMaxElectionTimeoutTicks, c.RaftElectionTimeoutTicks)
 	}
 
-	if c.RaftLogGcThreshold < 1 {
-		return fmt.Errorf("raft log gc threshold must >= 1, not %v", c.RaftLogGcThreshold)
-	}
-
-	if c.RaftLogGcSizeLimit == 0 {
-		return fmt.Errorf("raft log gc size limit should large than 0.")
-	}
-
 	electionTimeout := c.RaftBaseTickInterval * time.Duration(c.RaftElectionTimeoutTicks)
 	if electionTimeout < c.RaftStoreMaxLeaderLease {
 		return fmt.Errorf("election timeout %v ns is less than % v ns", electionTimeout, c.RaftStoreMaxLeaderLease)
-	}
-
-	if c.MergeMaxLogGap >= c.RaftLogGcCountLimit {
-		return fmt.Errorf("Merge log gap %v should be less than log gc limit %v", c.MergeMaxLogGap, c.RaftLogGcCountLimit)
 	}
 
 	if c.MergeCheckTickInterval == 0 {
