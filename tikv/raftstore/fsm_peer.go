@@ -1419,7 +1419,7 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 		d.hasReady = true
 	}
 	for i, applying := range store.applyingChanges {
-		if applying == change {
+		if applying.Sequence == change.Sequence {
 			store.applyingChanges = append(store.applyingChanges[:i], store.applyingChanges[i+1:]...)
 			break
 		}
