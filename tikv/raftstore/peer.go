@@ -843,9 +843,6 @@ func (p *Peer) HandleRaftReadyAppend(trans *RaftClient, raftWB *raftengine.Write
 			change, err := clog.GetShardChangeSet()
 			y.Assert(err == nil)
 			store := p.Store()
-			if store.splitStage >= sdbpb.SplitStage_PRE_SPLIT && change != nil && change.Compaction != nil {
-				continue
-			}
 			// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
 			change.Sequence = e.Index
 			store.applyingChanges = append(store.applyingChanges, change)

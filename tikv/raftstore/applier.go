@@ -577,22 +577,19 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 			change, err := cl.GetShardChangeSet()
 			y.Assert(err == nil)
 			shard := aCtx.engines.kv.GetShard(a.region.Id)
-			var rejected bool
 			if shard.GetSplitStage() >= sdbpb.SplitStage_PRE_SPLIT && change != nil && change.Compaction != nil {
 				log.S().Warnf("region %d:%d reject compaction for splitting state",
 					shard.ID, shard.Ver)
-				rejected=true
+				change.Compaction.Rejected=true
 			}
-			if !rejected{
-				// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
-				change.Sequence = aCtx.execCtx.index
-				aCtx.regionScheduler <- task{
-					tp: taskTypeRegionApplyChangeSet,
-					data: &regionTask{
-						region: a.region,
-						change: change,
-					},
-				}
+			// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
+			change.Sequence = aCtx.execCtx.index
+			aCtx.regionScheduler <- task{
+				tp: taskTypeRegionApplyChangeSet,
+				data: &regionTask{
+					region: a.region,
+					change: change,
+				},
 			}
 		}
 	}
