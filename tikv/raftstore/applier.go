@@ -594,7 +594,6 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 					},
 				}
 			}
-		default:
 		}
 	}
 	resp, applyResult, err := a.execRaftCmd(aCtx, rlog)
