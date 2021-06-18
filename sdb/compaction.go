@@ -29,6 +29,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -609,6 +610,22 @@ func (sdb *DB) applyFlush(shard *Shard, changeSet *sdbpb.ChangeSet) error {
 func (sdb *DB) applyCompaction(shard *Shard, changeSet *sdbpb.ChangeSet, guard *epoch.Guard) error {
 	defer shard.markCompacting(false)
 	comp := changeSet.Compaction
+	if comp.Rejected {
+		var resources []epoch.Resource
+		for i := range comp.TableCreates {
+			tbl := comp.TableCreates[i]
+			resources = append(resources, &deletion{
+				delete: func() {
+					os.Remove(sstable.NewFilename(tbl.ID, sdb.opt.Dir))
+					if sdb.s3c != nil {
+						sdb.s3c.SetExpired(tbl.ID)
+					}
+				},
+			})
+		}
+		guard.Delete(resources)
+		return nil
+	}
 	if sdb.s3c != nil {
 		bt := scheduler.NewBatchTasks()
 		for i := range comp.TableCreates {
