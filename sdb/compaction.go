@@ -245,6 +245,10 @@ func (sdb *DB) getCFSafeTS(cf int) uint64 {
 	return math.MaxUint64
 }
 
+func (sdb *DB) getCFMaxLevel(cf int) int {
+	return sdb.opt.CFs[cf].MaxLevels
+}
+
 func (sdb *DB) runCompactionLoop(c *y.Closer) {
 	defer c.Done()
 	var priorities []CompactionPriority
@@ -294,7 +298,7 @@ func (sdb *DB) getCompactionPriority(shard *Shard) CompactionPriority {
 		maxPri.CF = -1
 	}
 	for i, scf := range shard.cfs {
-		for level := 1; level < ShardMaxLevel; level++ {
+		for level := 1; level < len(scf.levels); level++ {
 			h := scf.getLevelHandler(level)
 			score := float64(h.totalSize) / (float64(sdb.opt.BaseSize) * math.Pow(10, float64(level-1)))
 			if score > maxPri.Score {
@@ -368,8 +372,8 @@ func (sdb *DB) Compact(pri CompactionPriority) error {
 	scf.setHasOverlapping(cd)
 	log.Info("running compaction", zap.Stringer("def", cd))
 	req := sdb.buildCompactLnRequest(cd)
-	if req.Level > 0 && len(req.Bottoms) == 0 {
-		// Move Down
+	if req.Level > 0 && len(req.Bottoms) == 0 && req.CF == compaction.WriteCF {
+		// Move down. only write CF benefits from this optimization.
 		respComp := &sdbpb.Compaction{Cf: int32(req.CF), Level: uint32(req.Level), TopDeletes: req.Tops}
 		for _, topTbl := range cd.Top {
 			tableCreate := &sdbpb.TableCreate{
@@ -804,7 +808,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 	y.Assert(atomic.CompareAndSwapPointer(shard.l0s, unsafe.Pointer(oldL0s), unsafe.Pointer(newL0Tbls)))
 	newHandlers := make([][]*levelHandler, sdb.numCFs)
 	for cf := 0; cf < sdb.numCFs; cf++ {
-		newHandlers[cf] = make([]*levelHandler, ShardMaxLevel)
+		newHandlers[cf] = make([]*levelHandler, sdb.getCFMaxLevel(cf))
 	}
 	for _, tbl := range splitFiles.TableCreates {
 		newHandler := newHandlers[tbl.CF][tbl.Level-1]
@@ -825,7 +829,7 @@ func (sdb *DB) applySplitFiles(shard *Shard, changeSet *sdbpb.ChangeSet, guard *
 		newHandler.tables = append(newHandler.tables, tbl)
 	}
 	for cf := 0; cf < sdb.numCFs; cf++ {
-		for level := 1; level <= ShardMaxLevel; level++ {
+		for level := 1; level <= sdb.getCFMaxLevel(cf); level++ {
 			newHandler := newHandlers[cf][level-1]
 			if newHandler == nil {
 				continue

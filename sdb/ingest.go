@@ -87,7 +87,7 @@ func (sdb *DB) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*l0Tables,
 	l0s := &l0Tables{}
 	newHandlers := make([][]*levelHandler, sdb.numCFs)
 	for cf := 0; cf < sdb.numCFs; cf++ {
-		for l := 1; l <= ShardMaxLevel; l++ {
+		for l := 1; l <= sdb.getCFMaxLevel(cf); l++ {
 			newHandler := newLevelHandler(sdb.opt.NumLevelZeroTablesStall, l)
 			newHandlers[cf] = append(newHandlers[cf], newHandler)
 		}
@@ -122,7 +122,7 @@ func (sdb *DB) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*l0Tables,
 		return l0s.tables[i].CommitTS() > l0s.tables[j].CommitTS()
 	})
 	for cf := 0; cf < sdb.numCFs; cf++ {
-		for l := 1; l <= ShardMaxLevel; l++ {
+		for l := 1; l <= sdb.getCFMaxLevel(cf); l++ {
 			handler := newHandlers[cf][l-1]
 			sort.Slice(handler.tables, func(i, j int) bool {
 				return bytes.Compare(handler.tables[i].Smallest(), handler.tables[j].Smallest()) < 0

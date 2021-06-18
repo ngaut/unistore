@@ -437,7 +437,7 @@ func (sdb *DB) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 	})
 	for cf := 0; cf < len(sdb.opt.CFs); cf++ {
 		scf := shard.cfs[cf]
-		for level := 1; level <= ShardMaxLevel; level++ {
+		for level := 1; level <= len(scf.levels); level++ {
 			handler := scf.getLevelHandler(level)
 			sortTables(handler.tables)
 		}
@@ -641,7 +641,7 @@ func (s *Snapshot) getValue(cf int, key []byte, version uint64) y.ValueStruct {
 		}
 	}
 	scf := s.shard.cfs[cf]
-	for i := 1; i <= ShardMaxLevel; i++ {
+	for i := 1; i <= len(scf.levels); i++ {
 		level := scf.getLevelHandler(i)
 		if len(level.tables) == 0 {
 			continue

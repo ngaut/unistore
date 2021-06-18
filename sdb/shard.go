@@ -34,8 +34,6 @@ import (
 	"unsafe"
 )
 
-const ShardMaxLevel = 3
-
 type Shard struct {
 	ID    uint64
 	Ver   uint64
@@ -96,9 +94,9 @@ func newShard(props *sdbpb.Properties, ver uint64, start, end []byte, opt *Optio
 	atomic.StorePointer(shard.l0s, unsafe.Pointer(&l0Tables{}))
 	for i := 0; i < len(opt.CFs); i++ {
 		sCF := &shardCF{
-			levels: make([]unsafe.Pointer, ShardMaxLevel),
+			levels: make([]unsafe.Pointer, opt.CFs[i].MaxLevels),
 		}
-		for j := 1; j <= ShardMaxLevel; j++ {
+		for j := 1; j <= len(sCF.levels); j++ {
 			sCF.casLevelHandler(j, nil, newLevelHandler(opt.NumLevelZeroTablesStall, j))
 		}
 		shard.cfs[i] = sCF
@@ -211,7 +209,7 @@ func (s *Shard) setSplitKeys(keys [][]byte) bool {
 
 func (s *Shard) foreachLevel(f func(cf int, level *levelHandler) (stop bool)) {
 	for cf, scf := range s.cfs {
-		for i := 1; i <= ShardMaxLevel; i++ {
+		for i := 1; i <= len(scf.levels); i++ {
 			l := scf.getLevelHandler(i)
 			if stop := f(cf, l); stop {
 				return

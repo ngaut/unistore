@@ -149,7 +149,6 @@ func createKVDB(subPath string, listener *raftstore.MetaChangeListener,
 	opts.RemoteCompactionAddr = conf.RemoteCompactionAddr
 	opts.MaxBlockCacheSize = conf.BlockCacheSize
 	opts.NumCompactors = conf.NumCompactors
-	opts.CFs = []sdb.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}}
 	opts.InstanceID = conf.InstanceID
 	opts.S3Options.EndPoint = conf.S3.Endpoint
 	opts.S3Options.SecretKey = conf.S3.SecretKey

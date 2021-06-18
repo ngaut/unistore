@@ -97,7 +97,7 @@ func (sdb *DB) SplitShardFiles(shardID, ver uint64) (*sdbpb.ChangeSet, error) {
 		return nil, err
 	}
 	for cf := 0; cf < sdb.numCFs; cf++ {
-		for lvl := 1; lvl <= ShardMaxLevel; lvl++ {
+		for lvl := 1; lvl <= sdb.getCFMaxLevel(cf); lvl++ {
 			if err = sdb.splitTables(shard, cf, lvl, keys, change.SplitFiles); err != nil {
 				return nil, err
 			}
@@ -380,7 +380,7 @@ func (sdb *DB) buildSplitShards(oldShard *Shard, newShardsProps []*sdbpb.Propert
 		nL0s.tables = append(nL0s.tables, l0)
 	}
 	for cf, scf := range oldShard.cfs {
-		for l := 1; l <= ShardMaxLevel; l++ {
+		for l := 1; l <= len(scf.levels); l++ {
 			level := scf.getLevelHandler(l)
 			for _, t := range level.tables {
 				sdb.insertTableToNewShard(t, cf, level.level, newShards, oldShard.splitKeys)

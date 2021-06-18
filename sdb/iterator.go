@@ -273,7 +273,7 @@ func (s *Snapshot) newIterator(cf int, reverse bool) table.Iterator {
 	l0s := s.shard.loadL0Tables()
 	iters = s.appendL0Iters(iters, l0s, cf, reverse)
 	scf := s.shard.cfs[cf]
-	for i := 1; i <= ShardMaxLevel; i++ {
+	for i := 1; i <= len(scf.levels); i++ {
 		h := scf.getLevelHandler(i)
 		if len(h.tables) == 0 {
 			continue
