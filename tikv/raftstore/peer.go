@@ -839,7 +839,16 @@ func (p *Peer) HandleRaftReadyAppend(trans *RaftClient, raftWB *raftengine.Write
 			p.Store().splitStage = sdbpb.SplitStage_PRE_SPLIT
 		}
 		if raftlog.IsChangeSetLog(e.Data) {
-			p.scheduleApplyShardChangeSet(e)
+			clog := raftlog.NewCustom(e.Data)
+			change, err := clog.GetShardChangeSet()
+			y.Assert(err == nil)
+			store := p.Store()
+			if store.splitStage >= sdbpb.SplitStage_PRE_SPLIT && change != nil && change.Compaction != nil {
+				continue
+			}
+			// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
+			change.Sequence = e.Index
+			store.applyingChanges = append(store.applyingChanges, change)
 		}
 	}
 	p.OnRoleChanged(observer, &ready)
@@ -858,28 +867,6 @@ func (p *Peer) HandleRaftReadyAppend(trans *RaftClient, raftWB *raftengine.Write
 		panic(fmt.Sprintf("failed to handle raft ready, error: %v", err))
 	}
 	return &ReadyICPair{Ready: ready, IC: invokeCtx}
-}
-
-func (p *Peer) scheduleApplyShardChangeSet(entry *eraftpb.Entry) {
-	clog := raftlog.NewCustom(entry.Data)
-	change, err := clog.GetShardChangeSet()
-	y.Assert(err == nil)
-	store := p.Store()
-	if store.splitStage >= sdbpb.SplitStage_PRE_SPLIT && change != nil && change.Compaction != nil {
-		log.S().Warnf("region %d:%d reject compaction for splitting state",
-			p.regionId, p.Region().RegionEpoch.Version)
-		return
-	}
-	// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
-	change.Sequence = entry.Index
-	store.applyingChanges = append(store.applyingChanges, change)
-	p.Store().regionSched <- task{
-		tp: taskTypeRegionApplyChangeSet,
-		data: &regionTask{
-			region: p.Region(),
-			change: change,
-		},
-	}
 }
 
 func (p *Peer) PostRaftReadyPersistent(trans *RaftClient, applyMsgs *applyMsgs, ready *raft.Ready, invokeCtx *InvokeContext) *ReadyApplySnapshot {
@@ -1461,7 +1448,7 @@ func (p *Peer) readIndex(cfg *Config, req *raft_cmdpb.RaftCmdRequest, errResp *r
 		return false
 	}
 
-	cmds := []*ReqCbPair{&ReqCbPair{req, cb}}
+	cmds := []*ReqCbPair{{req, cb}}
 	p.pendingReads.reads = append(p.pendingReads.reads, NewReadIndexRequest(id, cmds, renewLeaseTime))
 
 	// TimeoutNow has been sent out, so we need to propose explicitly to
