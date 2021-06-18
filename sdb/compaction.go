@@ -587,6 +587,10 @@ func (sdb *DB) applyFlush(shard *Shard, changeSet *sdbpb.ChangeSet) error {
 			time.Sleep(time.Millisecond)
 		}
 	}
+	for changeSet.ShardVer > shard.Ver {
+		time.Sleep(time.Millisecond)
+		shard = sdb.GetShard(shard.Ver)
+	}
 	if err := sdb.manifest.writeChangeSet(changeSet); err != nil {
 		if err == errDupChange {
 			return nil
