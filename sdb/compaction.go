@@ -693,7 +693,10 @@ func (d *deletion) Delete() error {
 	if d.delete != nil {
 		d.delete()
 	}
-	return d.res.Delete()
+	if d.res != nil {
+		return d.res.Delete()
+	}
+	return nil
 }
 
 func (sdb *DB) compactionUpdateLevelHandler(shard *Shard, cf, level int,
