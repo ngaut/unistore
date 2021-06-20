@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/ngaut/unistore/tikv/dbreader"
+	"github.com/ngaut/unistore/tikv/enginereader"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
@@ -41,21 +41,21 @@ import (
 )
 
 // HandleCopRequest handles coprocessor request.
-func HandleCopRequest(dbReader *dbreader.DBReader, req *coprocessor.Request) *coprocessor.Response {
+func HandleCopRequest(reader *enginereader.Reader, req *coprocessor.Request) *coprocessor.Response {
 	switch req.Tp {
 	case kv.ReqTypeDAG:
-		return handleCopDAGRequest(dbReader, req)
+		return handleCopDAGRequest(reader, req)
 	case kv.ReqTypeAnalyze:
-		return handleCopAnalyzeRequest(dbReader, req)
+		return handleCopAnalyzeRequest(reader, req)
 	case kv.ReqTypeChecksum:
-		return handleCopChecksumRequest(dbReader, req)
+		return handleCopChecksumRequest(reader, req)
 	}
 	return &coprocessor.Response{OtherError: fmt.Sprintf("unsupported request type %d", req.GetTp())}
 }
 
 type dagContext struct {
 	*evalContext
-	dbReader      *dbreader.DBReader
+	reader        *enginereader.Reader
 	resolvedLocks []uint64
 	dagReq        *tipb.DAGRequest
 	keyRanges     []*coprocessor.KeyRange
@@ -63,7 +63,7 @@ type dagContext struct {
 }
 
 // handleCopDAGRequest handles coprocessor DAG request.
-func handleCopDAGRequest(dbReader *dbreader.DBReader, req *coprocessor.Request) (resp *coprocessor.Response) {
+func handleCopDAGRequest(reader *enginereader.Reader, req *coprocessor.Request) (resp *coprocessor.Response) {
 	startTime := time.Now()
 	resp = &coprocessor.Response{}
 	failpoint.Inject("mockCopCacheInUnistore", func(cacheVersion failpoint.Value) {
@@ -85,7 +85,7 @@ func handleCopDAGRequest(dbReader *dbreader.DBReader, req *coprocessor.Request) 
 			}
 		}
 	})
-	dagCtx, dagReq, err := buildDAG(dbReader, req)
+	dagCtx, dagReq, err := buildDAG(reader, req)
 	if err != nil {
 		resp.OtherError = err.Error()
 		return resp
@@ -98,7 +98,7 @@ func handleCopDAGRequest(dbReader *dbreader.DBReader, req *coprocessor.Request) 
 	return buildResp(chunks, closureExec.counts, dagReq, err, dagCtx.sc.GetWarnings(), time.Since(startTime))
 }
 
-func buildDAG(reader *dbreader.DBReader, req *coprocessor.Request) (*dagContext, *tipb.DAGRequest, error) {
+func buildDAG(reader *enginereader.Reader, req *coprocessor.Request) (*dagContext, *tipb.DAGRequest, error) {
 	if len(req.Ranges) == 0 {
 		return nil, nil, errors.New("request range is null")
 	}
@@ -115,7 +115,7 @@ func buildDAG(reader *dbreader.DBReader, req *coprocessor.Request) (*dagContext,
 	sc.TimeZone = time.FixedZone("UTC", int(dagReq.TimeZoneOffset))
 	ctx := &dagContext{
 		evalContext:   &evalContext{sc: sc},
-		dbReader:      reader,
+		reader:        reader,
 		dagReq:        dagReq,
 		keyRanges:     req.Ranges,
 		startTS:       req.StartTs,
@@ -421,7 +421,7 @@ func fieldTypeFromPBColumn(col *tipb.ColumnInfo) *types.FieldType {
 }
 
 // handleCopChecksumRequest handles coprocessor check sum request.
-func handleCopChecksumRequest(dbReader *dbreader.DBReader, req *coprocessor.Request) *coprocessor.Response {
+func handleCopChecksumRequest(reader *enginereader.Reader, req *coprocessor.Request) *coprocessor.Response {
 	resp := &tipb.ChecksumResponse{
 		Checksum:   1,
 		TotalKvs:   1,

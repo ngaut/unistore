@@ -38,8 +38,8 @@ raft-workers = 2
 
 
 [engine]
-## Path for db storage
-db-path = "/tmp/badger"
+## Path for storage
+path = "/tmp/unistore"
 
 ## Value threshold for value or offset
 value-threshold = 256

@@ -1,9 +1,9 @@
 package raftstore
 
 import (
+	"github.com/ngaut/unistore/engine"
+	"github.com/ngaut/unistore/enginepb"
 	"github.com/ngaut/unistore/raftengine"
-	"github.com/ngaut/unistore/sdb"
-	"github.com/ngaut/unistore/sdbpb"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -17,14 +17,14 @@ import (
 )
 
 type RecoverHandler struct {
-	raftDB        *raftengine.Engine
+	raftEngine    *raftengine.Engine
 	storeID       uint64
 	ctx           *applyContext
 	regionHandler *regionTaskHandler
 }
 
-func NewRecoverHandler(raftDB *raftengine.Engine) (*RecoverHandler, error) {
-	storeIdent, err := loadStoreIdent(raftDB)
+func NewRecoverHandler(raftEngine *raftengine.Engine) (*RecoverHandler, error) {
+	storeIdent, err := loadStoreIdent(raftEngine)
 	if err != nil {
 		return nil, err
 	}
@@ -32,17 +32,17 @@ func NewRecoverHandler(raftDB *raftengine.Engine) (*RecoverHandler, error) {
 		return nil, nil
 	}
 	return &RecoverHandler{
-		raftDB:  raftDB,
-		storeID: storeIdent.StoreId,
+		raftEngine: raftEngine,
+		storeID:    storeIdent.StoreId,
 	}, nil
 }
 
-func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMeta, toState *sdbpb.Properties) error {
+func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *engine.ShardMeta, toState *enginepb.Properties) error {
 	log.S().Infof("recover region:%d ver:%d", shard.ID, shard.Ver)
 	if h.ctx == nil {
 		h.ctx = &applyContext{
-			wb:      NewKVWriteBatch(db),
-			engines: &Engines{kv: db, raft: h.raftDB},
+			wb:      NewKVWriteBatch(kv),
+			engines: &Engines{kv: kv, raft: h.raftEngine},
 			execCtx: &applyExecContext{},
 		}
 	}
@@ -59,7 +59,7 @@ func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMe
 	lowIdx := fromApplyState.appliedIndex + 1
 	highIdx := committedIdx
 	if toState != nil {
-		val, ok = sdb.GetShardProperty(applyStateKey, toState)
+		val, ok = engine.GetShardProperty(applyStateKey, toState)
 		if !ok {
 			return errors.New("no applyState")
 		}
@@ -67,7 +67,7 @@ func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMe
 		toApplyState.Unmarshal(val)
 		highIdx = toApplyState.appliedIndex
 	}
-	entries, _, err1 := fetchEntriesTo(h.raftDB, shard.ID, lowIdx, highIdx+1, math.MaxUint64, nil)
+	entries, _, err1 := fetchEntriesTo(h.raftEngine, shard.ID, lowIdx, highIdx+1, math.MaxUint64, nil)
 	if err1 != nil {
 		return errors.AddStack(err1)
 	}
@@ -78,9 +78,9 @@ func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMe
 		region:     regionMeta,
 		applyState: fromApplyState,
 		lockCache:  map[string][]byte{},
-		dbSnap:     db.NewSnapshot(shard),
+		snap:       kv.NewSnapAccess(shard),
 	}
-	defer applier.dbSnap.Discard()
+	defer applier.snap.Discard()
 	for i := range entries {
 		e := &entries[i]
 		if len(e.Data) == 0 || e.EntryType != eraftpb.EntryType_EntryNormal {
@@ -113,12 +113,12 @@ func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMe
 				return err
 			}
 			cs.Sequence = e.Index
-			err = db.ApplyChangeSet(cs)
+			err = kv.ApplyChangeSet(cs)
 			if err != nil {
 				return err
 			}
 		} else if cl.Type() == raftlog.TypePreSplit {
-			// PreSplit is handled by engine.
+			// PreSplit is handled by kv.
 		} else {
 			applier.execCustomLog(h.ctx, cl)
 		}
@@ -132,7 +132,7 @@ func (h *RecoverHandler) Recover(db *sdb.DB, shard *sdb.Shard, meta *sdb.ShardMe
 }
 
 func (h *RecoverHandler) loadRegionMeta(id, ver uint64) (region *metapb.Region, committedIdx uint64, err error) {
-	err = h.raftDB.IterateRegionStates(id, true, func(key, val []byte) error {
+	err = h.raftEngine.IterateRegionStates(id, true, func(key, val []byte) error {
 		if key[0] != RegionMetaKeyByte {
 			return nil
 		}
@@ -151,7 +151,7 @@ func (h *RecoverHandler) loadRegionMeta(id, ver uint64) (region *metapb.Region, 
 	if err != io.EOF {
 		return nil, 0, err
 	}
-	val := h.raftDB.GetState(region.GetId(), RaftStateKey(region.RegionEpoch.Version))
+	val := h.raftEngine.GetState(region.GetId(), RaftStateKey(region.RegionEpoch.Version))
 	log.S().Infof("get region %d:%d raft states %x",
 		region.Id, region.RegionEpoch.Version, val)
 	y.Assert(len(val) > 0)

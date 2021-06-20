@@ -16,8 +16,8 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
-	"github.com/ngaut/unistore/sdb"
-	"github.com/ngaut/unistore/sdbpb"
+	"github.com/ngaut/unistore/engine"
+	"github.com/ngaut/unistore/enginepb"
 	"time"
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
@@ -200,7 +200,7 @@ func (d *peerMsgHandler) HandleMsgs(msgs ...Msg) {
 			d.startTicker()
 		case MsgTypeNoop:
 		case MsgTypeGenerateEngineChangeSet:
-			d.onGenerateMetaChangeEvent(msg.Data.(*sdbpb.ChangeSet))
+			d.onGenerateMetaChangeEvent(msg.Data.(*enginepb.ChangeSet))
 		case MsgTypeWaitFollowerSplitFiles:
 			d.peer.waitFollowerSplitFiles = msg.Data.(*MsgWaitFollowerSplitFiles)
 		case MsgTypeApplyChangeSetResult:
@@ -304,7 +304,7 @@ func (d *peerMsgHandler) HandleRaftReady(ready *raft.Ready, ic *InvokeContext) {
 		d.onReadyRollbackMerge(0, nil)
 	}
 	if d.peer.waitFollowerSplitFiles != nil {
-		if d.peer.Store().splitStage == sdbpb.SplitStage_SPLIT_FILE_DONE {
+		if d.peer.Store().splitStage == enginepb.SplitStage_SPLIT_FILE_DONE {
 			epochVer := d.region().RegionEpoch.Version
 			matchCnt := 0
 			for _, followerVer := range d.peer.followersSplitFilesDone {
@@ -784,7 +784,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 			d.ctx.raftWB.SetState(regionID, RaftStateKey(d.region().RegionEpoch.Version), store.raftState.Marshal())
 			// Reset the flush state for derived region.
 			store.initialFlushed = false
-			store.splitStage = sdbpb.SplitStage_INITIAL
+			store.splitStage = enginepb.SplitStage_INITIAL
 			continue
 		}
 
@@ -1202,7 +1202,7 @@ func (d *peerMsgHandler) onCheckPeerStaleStateTick() {
 	}
 }
 
-func (d *peerMsgHandler) onReadyComputeHash(region *metapb.Region, index uint64, snap *sdb.Snapshot) {
+func (d *peerMsgHandler) onReadyComputeHash(region *metapb.Region, index uint64, snap *engine.SnapAccess) {
 	d.peer.ConsistencyState.LastCheckTime = time.Now()
 	log.S().Infof("%s schedule compute hash task", d.tag())
 	d.ctx.computeHashTaskSender <- task{
@@ -1367,7 +1367,7 @@ func (d *peerMsgHandler) executeRegionDetail(request *raft_cmdpb.RaftCmdRequest)
 	return resp, nil
 }
 
-func (d *peerMsgHandler) onGenerateMetaChangeEvent(e *sdbpb.ChangeSet) {
+func (d *peerMsgHandler) onGenerateMetaChangeEvent(e *enginepb.ChangeSet) {
 	log.S().Infof("region %d:%d generate meta change event", e.ShardID, e.ShardVer)
 	region := d.region()
 	header := raftlog.CustomHeader{
@@ -1405,7 +1405,7 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 		store.initialFlushed = true
 		l0 := change.Flush.L0Create
 		if l0 != nil && l0.Properties != nil {
-			val, ok := sdb.GetShardProperty(applyStateKey, l0.Properties)
+			val, ok := engine.GetShardProperty(applyStateKey, l0.Properties)
 			y.Assert(ok)
 			var applyState applyState
 			applyState.Unmarshal(val)

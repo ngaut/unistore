@@ -24,10 +24,10 @@ import (
 
 var defaultEndian = binary.LittleEndian
 
-// DBUserMeta is the user meta used in DB.
-type DBUserMeta []byte
+// UserMeta is the user meta used in Engine.
+type UserMeta []byte
 
-const dbUserMetaLen = 16
+const userMetaLen = 16
 
 // DecodeLock decodes data to lock, the primary and value is copied, the secondaries are copied if async commit is enabled.
 func DecodeLock(data []byte) (l MvccLock) {
@@ -126,21 +126,21 @@ func DecodeKeyTS(buf []byte) uint64 {
 	return ts
 }
 
-// NewDBUserMeta creates a new DBUserMeta.
-func NewDBUserMeta(startTS, commitTS uint64) DBUserMeta {
-	m := make(DBUserMeta, 16)
+// NewDBUserMeta creates a new UserMeta.
+func NewDBUserMeta(startTS, commitTS uint64) UserMeta {
+	m := make(UserMeta, 16)
 	defaultEndian.PutUint64(m, startTS)
 	defaultEndian.PutUint64(m[8:], commitTS)
 	return m
 }
 
-// CommitTS reads the commitTS from the DBUserMeta.
-func (m DBUserMeta) CommitTS() uint64 {
+// CommitTS reads the commitTS from the UserMeta.
+func (m UserMeta) CommitTS() uint64 {
 	return defaultEndian.Uint64(m[8:])
 }
 
-// StartTS reads the startTS from the DBUserMeta.
-func (m DBUserMeta) StartTS() uint64 {
+// StartTS reads the startTS from the UserMeta.
+func (m UserMeta) StartTS() uint64 {
 	return defaultEndian.Uint64(m[:8])
 }
 

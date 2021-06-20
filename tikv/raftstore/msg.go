@@ -14,7 +14,7 @@
 package raftstore
 
 import (
-	"github.com/ngaut/unistore/sdbpb"
+	"github.com/ngaut/unistore/enginepb"
 	"sync"
 	"time"
 
@@ -144,7 +144,7 @@ type MsgWaitFollowerSplitFiles struct {
 }
 
 type MsgApplyChangeSetResult struct {
-	change *sdbpb.ChangeSet
+	change *enginepb.ChangeSet
 	err    error
 }
 

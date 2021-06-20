@@ -16,7 +16,7 @@ package raftengine
 import (
 	"fmt"
 	"github.com/google/btree"
-	"github.com/ngaut/unistore/sdb/table/sstable"
+	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"

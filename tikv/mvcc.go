@@ -17,7 +17,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/ngaut/unistore/sdb"
+	"github.com/ngaut/unistore/engine"
 	lockwaiter2 "github.com/ngaut/unistore/tikv/lockwaiter"
 	"math"
 	"sort"
@@ -27,7 +27,7 @@ import (
 	"github.com/dgryski/go-farm"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
-	"github.com/ngaut/unistore/tikv/dbreader"
+	"github.com/ngaut/unistore/tikv/enginereader"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/errors"
@@ -44,8 +44,8 @@ import (
 // MVCCStore is a wrapper of badger.DB to provide MVCC functions.
 type MVCCStore struct {
 	dir      string
-	db       *sdb.DB
-	dbWriter mvcc.DBWriter
+	eng      *engine.Engine
+	writer   mvcc.EngineWriter
 	pdClient pd.Client
 	closeCh  chan bool
 
@@ -65,14 +65,14 @@ const (
 )
 
 // NewMVCCStore creates a new MVCCStore
-func NewMVCCStore(conf *config.Config, db *sdb.DB, dataDir string,
-	writer mvcc.DBWriter, pdClient pd.Client) *MVCCStore {
+func NewMVCCStore(conf *config.Config, eng *engine.Engine, dataDir string,
+	writer mvcc.EngineWriter, pdClient pd.Client) *MVCCStore {
 	store := &MVCCStore{
-		db:                db,
+		eng:               eng,
 		dir:               dataDir,
 		pdClient:          pdClient,
 		closeCh:           make(chan bool),
-		dbWriter:          writer,
+		writer:            writer,
 		conf:              conf,
 		lockWaiterManager: lockwaiter2.NewManager(conf),
 	}
@@ -103,13 +103,13 @@ func (store *MVCCStore) getLatestTS() uint64 {
 }
 
 func (store *MVCCStore) Close() error {
-	store.dbWriter.Close()
+	store.writer.Close()
 	close(store.closeCh)
 	return nil
 }
 
-func (store *MVCCStore) getDBItems(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation) (items []*sdb.Item, err error) {
-	snap := reqCtx.getDBReader().GetSnapshot()
+func (store *MVCCStore) getWriteCFItems(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation) (items []*engine.Item, err error) {
+	snap := reqCtx.getKVReader().GetSnapshot()
 	keys := make([][]byte, len(mutations))
 	for i, m := range mutations {
 		keys[i] = m.Key
@@ -179,7 +179,7 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 	regCtx.AcquireLatches(hashVals)
 	defer regCtx.ReleaseLatches(hashVals)
 
-	batch := store.dbWriter.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
+	batch := store.writer.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
 	var dup bool
 	for _, m := range mutations {
 		lock, err := store.checkConflictInLockStore(reqCtx, m, startTS)
@@ -207,7 +207,7 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 			}
 		}
 	}
-	items, err := store.getDBItems(reqCtx, mutations)
+	items, err := store.getWriteCFItems(reqCtx, mutations)
 	if err != nil {
 		return nil, err
 	}
@@ -219,13 +219,13 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 			}
 			batch.PessimisticLock(m.Key, lock)
 		}
-		err = store.dbWriter.Write(batch)
+		err = store.writer.Write(batch)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if req.Force {
-		dbMeta := mvcc.DBUserMeta(items[0].UserMeta())
+		dbMeta := mvcc.UserMeta(items[0].UserMeta())
 		val, err1 := items[0].ValueCopy(nil)
 		if err1 != nil {
 			return nil, err1
@@ -260,13 +260,13 @@ func (s extraTxnStatus) isOpLockCommitted() bool {
 }
 
 func (store *MVCCStore) checkExtraTxnStatus(reqCtx *requestCtx, key []byte, startTS uint64) extraTxnStatus {
-	snap := reqCtx.getDBReader().GetSnapshot()
+	snap := reqCtx.getKVReader().GetSnapshot()
 	txnStatusKey := mvcc.EncodeExtraTxnStatusKey(key, startTS)
 	item, err := snap.Get(extraCF, txnStatusKey, 0)
 	if err != nil {
 		return extraTxnStatus{}
 	}
-	userMeta := mvcc.DBUserMeta(item.UserMeta())
+	userMeta := mvcc.UserMeta(item.UserMeta())
 	if userMeta.CommitTS() == 0 {
 		return extraTxnStatus{isRollback: true}
 	}
@@ -288,14 +288,14 @@ func (store *MVCCStore) PessimisticRollback(reqCtx *requestCtx, req *kvrpcpb.Pes
 			lock.StartTS == startTS &&
 			lock.ForUpdateTS <= req.ForUpdateTs {
 			if batch == nil {
-				batch = store.dbWriter.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
+				batch = store.writer.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
 			}
 			batch.PessimisticRollback(k)
 		}
 	}
 	var err error
 	if batch != nil {
-		err = store.dbWriter.Write(batch)
+		err = store.writer.Write(batch)
 	}
 	store.lockWaiterManager.WakeUp(startTS, 0, hashVals)
 	store.DeadlockDetectCli.CleanUp(startTS)
@@ -314,9 +314,9 @@ func (store *MVCCStore) TxnHeartBeat(reqCtx *requestCtx, req *kvrpcpb.TxnHeartBe
 		}
 		if lock.TTL < uint32(req.AdviseLockTtl) {
 			lock.TTL = uint32(req.AdviseLockTtl)
-			batch := store.dbWriter.NewWriteBatch(req.StartVersion, 0, reqCtx.rpcCtx)
+			batch := store.writer.NewWriteBatch(req.StartVersion, 0, reqCtx.rpcCtx)
 			batch.PessimisticLock(req.PrimaryLock, lock)
-			err = store.dbWriter.Write(batch)
+			err = store.writer.Write(batch)
 			if err != nil {
 				return 0, err
 			}
@@ -340,7 +340,7 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	regCtx.AcquireLatches(hashVals)
 	defer regCtx.ReleaseLatches(hashVals)
 	lock := store.getLock(reqCtx, req.PrimaryKey)
-	batch := store.dbWriter.NewWriteBatch(req.LockTs, 0, reqCtx.rpcCtx)
+	batch := store.writer.NewWriteBatch(req.LockTs, 0, reqCtx.rpcCtx)
 	if lock != nil && lock.StartTS == req.LockTs {
 		// For an async-commit lock, never roll it back or push forward it MinCommitTS.
 		if lock.UseAsyncCommit {
@@ -352,7 +352,7 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 		if uint64(oracle.ExtractPhysical(lock.StartTS))+uint64(lock.TTL) < uint64(oracle.ExtractPhysical(req.CurrentTs)) {
 			batch.Rollback(req.PrimaryKey, true)
 			log.S().Info("resolve already outdated")
-			return TxnStatus{0, kvrpcpb.Action_TTLExpireRollback, nil}, store.dbWriter.Write(batch)
+			return TxnStatus{0, kvrpcpb.Action_TTLExpireRollback, nil}, store.writer.Write(batch)
 		}
 		// If this is a large transaction and the lock is active, push forward the minCommitTS.
 		// lock.minCommitTS == 0 may be a secondary lock, or not a large transaction.
@@ -373,7 +373,7 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 					lock.MinCommitTS = req.CurrentTs
 				}
 				batch.PessimisticLock(req.PrimaryKey, lock)
-				if err = store.dbWriter.Write(batch); err != nil {
+				if err = store.writer.Write(batch); err != nil {
 					return TxnStatus{0, action, nil}, err
 				}
 			}
@@ -382,7 +382,7 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	}
 
 	// The current transaction lock not exists, check the transaction commit info
-	commitTS, err := store.checkCommitted(reqCtx.getDBReader(), req.PrimaryKey, req.LockTs)
+	commitTS, err := store.checkCommitted(reqCtx.getKVReader(), req.PrimaryKey, req.LockTs)
 	if commitTS > 0 {
 		return TxnStatus{commitTS, kvrpcpb.Action_NoAction, nil}, nil
 	}
@@ -403,7 +403,7 @@ func (store *MVCCStore) CheckTxnStatus(reqCtx *requestCtx,
 	// Currently client will always set this flag to true when resolving locks
 	if req.RollbackIfNotExist {
 		batch.Rollback(req.PrimaryKey, false)
-		err = store.dbWriter.Write(batch)
+		err = store.writer.Write(batch)
 		return TxnStatus{0, kvrpcpb.Action_LockNotExistRollback, nil}, nil
 	}
 	return TxnStatus{0, kvrpcpb.Action_NoAction, nil}, &ErrTxnNotFound{
@@ -426,14 +426,14 @@ func (store *MVCCStore) CheckSecondaryLocks(reqCtx *requestCtx, keys [][]byte, s
 	regCtx.AcquireLatches(hashVals)
 	defer regCtx.ReleaseLatches(hashVals)
 
-	batch := store.dbWriter.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
+	batch := store.writer.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
 	locks := make([]*kvrpcpb.LockInfo, 0, len(keys))
 	for i, key := range keys {
 		lock := store.getLock(reqCtx, key)
 		if lock != nil && lock.StartTS == startTS {
 			if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
 				batch.Rollback(key, true)
-				err := store.dbWriter.Write(batch)
+				err := store.writer.Write(batch)
 				if err != nil {
 					return SecondaryLocksStatus{}, err
 				}
@@ -444,7 +444,7 @@ func (store *MVCCStore) CheckSecondaryLocks(reqCtx *requestCtx, keys [][]byte, s
 				locks = append(locks, lock.ToLockInfo(key))
 			}
 		} else {
-			commitTS, err := store.checkCommitted(reqCtx.getDBReader(), key, startTS)
+			commitTS, err := store.checkCommitted(reqCtx.getKVReader(), key, startTS)
 			if err != nil {
 				return SecondaryLocksStatus{}, err
 			}
@@ -457,7 +457,7 @@ func (store *MVCCStore) CheckSecondaryLocks(reqCtx *requestCtx, keys [][]byte, s
 			}
 			if !status.isRollback {
 				batch.Rollback(key, false)
-				err = store.dbWriter.Write(batch)
+				err = store.writer.Write(batch)
 			}
 			return SecondaryLocksStatus{commitTS: 0}, err
 		}
@@ -489,10 +489,10 @@ func (store *MVCCStore) handleCheckPessimisticErr(startTS uint64, err error, isF
 	return nil, err
 }
 
-func (store *MVCCStore) buildPessimisticLock(m *kvrpcpb.Mutation, item *sdb.Item,
+func (store *MVCCStore) buildPessimisticLock(m *kvrpcpb.Mutation, item *engine.Item,
 	req *kvrpcpb.PessimisticLockRequest) (*mvcc.MvccLock, error) {
 	if item != nil {
-		userMeta := mvcc.DBUserMeta(item.UserMeta())
+		userMeta := mvcc.UserMeta(item.UserMeta())
 		if !req.Force {
 			if userMeta.CommitTS() > req.ForUpdateTs {
 				return nil, &ErrConflict{
@@ -573,14 +573,14 @@ func (store *MVCCStore) prewriteOptimistic(reqCtx *requestCtx, mutations []*kvrp
 			}
 		}
 	}
-	items, err := store.getDBItems(reqCtx, mutations)
+	items, err := store.getWriteCFItems(reqCtx, mutations)
 	if err != nil {
 		return err
 	}
 	for i, m := range mutations {
 		item := items[i]
 		if item != nil {
-			userMeta := mvcc.DBUserMeta(item.UserMeta())
+			userMeta := mvcc.UserMeta(item.UserMeta())
 			if userMeta.CommitTS() > startTS {
 				return &ErrConflict{
 					StartTS:          startTS,
@@ -647,7 +647,7 @@ func (store *MVCCStore) prewritePessimistic(reqCtx *requestCtx, mutations []*kvr
 		}
 		// TODO add memory lock for async commit protocol.
 	}
-	items, err := store.getDBItems(reqCtx, mutations)
+	items, err := store.getWriteCFItems(reqCtx, mutations)
 	if err != nil {
 		return err
 	}
@@ -655,7 +655,7 @@ func (store *MVCCStore) prewritePessimistic(reqCtx *requestCtx, mutations []*kvr
 }
 
 func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation,
-	req *kvrpcpb.PrewriteRequest, items []*sdb.Item) error {
+	req *kvrpcpb.PrewriteRequest, items []*engine.Item) error {
 	var minCommitTS uint64
 	if req.UseAsyncCommit || req.TryOnePc {
 		// Get minCommitTS for async commit protocol. After all keys are locked in memory lock.
@@ -684,7 +684,7 @@ func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpc
 		}
 	}
 
-	batch := store.dbWriter.NewWriteBatch(req.StartVersion, 0, reqCtx.rpcCtx)
+	batch := store.writer.NewWriteBatch(req.StartVersion, 0, reqCtx.rpcCtx)
 
 	for i, m := range mutations {
 		if m.Op == kvrpcpb.Op_CheckNotExists {
@@ -697,11 +697,11 @@ func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpc
 		batch.Prewrite(m.Key, lock)
 	}
 
-	return store.dbWriter.Write(batch)
+	return store.writer.Write(batch)
 }
 
 func (store *MVCCStore) tryOnePC(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation,
-	req *kvrpcpb.PrewriteRequest, items []*sdb.Item, minCommitTS uint64, maxCommitTS uint64) (bool, error) {
+	req *kvrpcpb.PrewriteRequest, items []*engine.Item, minCommitTS uint64, maxCommitTS uint64) (bool, error) {
 	if maxCommitTS != 0 && minCommitTS > maxCommitTS {
 		log.Debug("1pc transaction fallbacks due to minCommitTS exceeds maxCommitTS",
 			zap.Uint64("startTS", req.StartVersion),
@@ -715,7 +715,7 @@ func (store *MVCCStore) tryOnePC(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 
 	reqCtx.onePCCommitTS = minCommitTS
 	store.updateLatestTS(minCommitTS)
-	batch := store.dbWriter.NewWriteBatch(req.StartVersion, minCommitTS, reqCtx.rpcCtx)
+	batch := store.writer.NewWriteBatch(req.StartVersion, minCommitTS, reqCtx.rpcCtx)
 
 	for i, m := range mutations {
 		if m.Op == kvrpcpb.Op_CheckNotExists {
@@ -730,7 +730,7 @@ func (store *MVCCStore) tryOnePC(reqCtx *requestCtx, mutations []*kvrpcpb.Mutati
 		batch.Commit(m.Key, lock)
 	}
 
-	if err := store.dbWriter.Write(batch); err != nil {
+	if err := store.writer.Write(batch); err != nil {
 		return false, err
 	}
 
@@ -761,7 +761,7 @@ func encodeFromOldRow(oldRow, buf []byte) ([]byte, error) {
 	return encoder.Encode(&stmtctx.StatementContext{}, colIDs, datums, buf)
 }
 
-func (store *MVCCStore) buildPrewriteLock(reqCtx *requestCtx, m *kvrpcpb.Mutation, item *sdb.Item,
+func (store *MVCCStore) buildPrewriteLock(reqCtx *requestCtx, m *kvrpcpb.Mutation, item *engine.Item,
 	req *kvrpcpb.PrewriteRequest) (*mvcc.MvccLock, error) {
 	lock := &mvcc.MvccLock{
 		MvccLockHdr: mvcc.MvccLockHdr{
@@ -802,7 +802,7 @@ func (store *MVCCStore) buildPrewriteLock(reqCtx *requestCtx, m *kvrpcpb.Mutatio
 }
 
 func (store *MVCCStore) getLock(req *requestCtx, key []byte) *mvcc.MvccLock {
-	req.buf = req.getDBReader().GetLock(key, req.buf)
+	req.buf = req.getKVReader().GetLock(key, req.buf)
 	if len(req.buf) == 0 {
 		return nil
 	}
@@ -812,7 +812,7 @@ func (store *MVCCStore) getLock(req *requestCtx, key []byte) *mvcc.MvccLock {
 
 func (store *MVCCStore) checkConflictInLockStore(
 	req *requestCtx, mutation *kvrpcpb.Mutation, startTS uint64) (*mvcc.MvccLock, error) {
-	req.buf = req.getDBReader().GetLock(mutation.Key, req.buf)
+	req.buf = req.getKVReader().GetLock(mutation.Key, req.buf)
 	if len(req.buf) == 0 {
 		return nil, nil
 	}
@@ -832,7 +832,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 	store.updateLatestTS(commitTS)
 	regCtx := req.regCtx
 	hashVals := keysToHashVals(keys...)
-	batch := store.dbWriter.NewWriteBatch(startTS, commitTS, req.rpcCtx)
+	batch := store.writer.NewWriteBatch(startTS, commitTS, req.rpcCtx)
 	regCtx.AcquireLatches(hashVals)
 	defer regCtx.ReleaseLatches(hashVals)
 
@@ -843,7 +843,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 		var lockErr error
 		var checkErr error
 		var lock mvcc.MvccLock
-		buf = req.getDBReader().GetLock(key, buf)
+		buf = req.getKVReader().GetLock(key, buf)
 		if len(buf) == 0 {
 			// We never commit partial keys in Commit request, so if one lock is not found,
 			// the others keys must not be found too.
@@ -884,7 +884,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 		batch.Commit(key, nil)
 	}
 	atomic.AddInt64(&regCtx.diff, int64(tmpDiff))
-	err := store.dbWriter.Write(batch)
+	err := store.writer.Write(batch)
 	store.lockWaiterManager.WakeUp(startTS, commitTS, hashVals)
 	if isPessimisticTxn {
 		store.DeadlockDetectCli.CleanUp(startTS)
@@ -893,7 +893,7 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 }
 
 func (store *MVCCStore) handleLockNotFound(reqCtx *requestCtx, key []byte, startTS, commitTS uint64) error {
-	snap := reqCtx.getDBReader().GetSnapshot()
+	snap := reqCtx.getKVReader().GetSnapshot()
 	item, err := snap.Get(mvcc.WriteCF, key, commitTS)
 	if err != nil && err != badger.ErrKeyNotFound {
 		return errors.Trace(err)
@@ -901,7 +901,7 @@ func (store *MVCCStore) handleLockNotFound(reqCtx *requestCtx, key []byte, start
 	if item == nil {
 		return ErrLockNotFound
 	}
-	userMeta := mvcc.DBUserMeta(item.UserMeta())
+	userMeta := mvcc.UserMeta(item.UserMeta())
 	if userMeta.StartTS() == startTS {
 		// Already committed.
 		return nil
@@ -922,7 +922,7 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 	hashVals := keysToHashVals(keys...)
 	log.S().Debugf("%d rollback %v", startTS, hashVals)
 	regCtx := reqCtx.regCtx
-	batch := store.dbWriter.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
+	batch := store.writer.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
 
 	regCtx.AcquireLatches(hashVals)
 	defer regCtx.ReleaseLatches(hashVals)
@@ -938,22 +938,22 @@ func (store *MVCCStore) Rollback(reqCtx *requestCtx, keys [][]byte, startTS uint
 	for i, key := range keys {
 		status := statuses[i]
 		if status == rollbackStatusDone || status == rollbackPessimistic {
-			// rollback pessimistic lock doesn't need to read db.
+			// rollback pessimistic lock doesn't need to read WriteCF.
 			continue
 		}
-		err := store.rollbackKeyReadDB(reqCtx, batch, key, startTS, statuses[i] == rollbackStatusNewLock)
+		err := store.rollbackKeyReadWriteCF(reqCtx, batch, key, startTS, statuses[i] == rollbackStatusNewLock)
 		if err != nil {
 			return err
 		}
 	}
 	store.DeadlockDetectCli.CleanUp(startTS)
-	err := store.dbWriter.Write(batch)
+	err := store.writer.Write(batch)
 	return errors.Trace(err)
 }
 
 func (store *MVCCStore) rollbackKeyReadLock(reqCtx *requestCtx, batch mvcc.WriteBatch, key []byte,
 	startTS, currentTs uint64) (int, error) {
-	reqCtx.buf = reqCtx.getDBReader().GetLock(key, reqCtx.buf)
+	reqCtx.buf = reqCtx.getKVReader().GetLock(key, reqCtx.buf)
 	hasLock := len(reqCtx.buf) > 0
 	if hasLock {
 		lock := mvcc.DecodeLock(reqCtx.buf)
@@ -972,14 +972,14 @@ func (store *MVCCStore) rollbackKeyReadLock(reqCtx *requestCtx, batch mvcc.Write
 			batch.Rollback(key, true)
 			return rollbackStatusDone, nil
 		}
-		// lock.startTS > startTS, go to DB to check if the key is committed.
+		// lock.startTS > startTS, go to Engine to check if the key is committed.
 		return rollbackStatusNewLock, nil
 	}
 	return rollbackStatusNoLock, nil
 }
 
-func (store *MVCCStore) rollbackKeyReadDB(req *requestCtx, batch mvcc.WriteBatch, key []byte, startTS uint64, hasLock bool) error {
-	commitTS, err := store.checkCommitted(req.getDBReader(), key, startTS)
+func (store *MVCCStore) rollbackKeyReadWriteCF(req *requestCtx, batch mvcc.WriteBatch, key []byte, startTS uint64, hasLock bool) error {
+	commitTS, err := store.checkCommitted(req.getKVReader(), key, startTS)
 	if err != nil {
 		return err
 	}
@@ -991,16 +991,16 @@ func (store *MVCCStore) rollbackKeyReadDB(req *requestCtx, batch mvcc.WriteBatch
 	return nil
 }
 
-func (store *MVCCStore) checkCommitted(reader *dbreader.DBReader, key []byte, startTS uint64) (uint64, error) {
+func (store *MVCCStore) checkCommitted(reader *enginereader.Reader, key []byte, startTS uint64) (uint64, error) {
 	snap := reader.GetSnapshot()
 	item, err := snap.Get(mvcc.WriteCF, key, 0)
-	if err != nil && err != sdb.ErrKeyNotFound {
+	if err != nil && err != engine.ErrKeyNotFound {
 		return 0, errors.Trace(err)
 	}
 	if item == nil {
 		return 0, nil
 	}
-	userMeta := mvcc.DBUserMeta(item.UserMeta())
+	userMeta := mvcc.UserMeta(item.UserMeta())
 	if userMeta.StartTS() == startTS {
 		return userMeta.CommitTS(), nil
 	}
@@ -1011,7 +1011,7 @@ func (store *MVCCStore) checkCommitted(reader *dbreader.DBReader, key []byte, st
 		if !bytes.Equal(item.Key(), key) {
 			break
 		}
-		userMeta = mvcc.DBUserMeta(item.UserMeta())
+		userMeta = mvcc.UserMeta(item.UserMeta())
 		if userMeta.StartTS() == startTS {
 			return userMeta.CommitTS(), nil
 		}
@@ -1035,7 +1035,7 @@ func checkLock(lock mvcc.MvccLock, key []byte, startTS uint64, resolved []uint64
 func (store *MVCCStore) CheckKeysLock(reqCtx *requestCtx, startTS uint64, resolved []uint64, keys ...[]byte) error {
 	var buf []byte
 	for _, key := range keys {
-		buf = reqCtx.getDBReader().GetLock(key, buf)
+		buf = reqCtx.getKVReader().GetLock(key, buf)
 		if len(buf) == 0 {
 			continue
 		}
@@ -1049,7 +1049,7 @@ func (store *MVCCStore) CheckKeysLock(reqCtx *requestCtx, startTS uint64, resolv
 }
 
 func (store *MVCCStore) CheckRangeLock(reqCtx *requestCtx, startTS uint64, startKey, endKey []byte, resolved []uint64) error {
-	it := reqCtx.getDBReader().GetLockIter()
+	it := reqCtx.getKVReader().GetLockIter()
 	for it.Seek(startKey); it.Valid(); it.Next() {
 		item := it.Item()
 		if exceedEndKey(item.Key(), endKey) {
@@ -1068,7 +1068,7 @@ func (store *MVCCStore) CheckRangeLock(reqCtx *requestCtx, startTS uint64, start
 func (store *MVCCStore) Cleanup(reqCtx *requestCtx, key []byte, startTS, currentTs uint64) error {
 	hashVals := keysToHashVals(key)
 	regCtx := reqCtx.regCtx
-	batch := store.dbWriter.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
+	batch := store.writer.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
 
 	regCtx.AcquireLatches(hashVals)
 	defer regCtx.ReleaseLatches(hashVals)
@@ -1078,7 +1078,7 @@ func (store *MVCCStore) Cleanup(reqCtx *requestCtx, key []byte, startTS, current
 		return err
 	}
 	if status != rollbackStatusDone {
-		err := store.rollbackKeyReadDB(reqCtx, batch, key, startTS, status == rollbackStatusNewLock)
+		err := store.rollbackKeyReadWriteCF(reqCtx, batch, key, startTS, status == rollbackStatusNewLock)
 		if err != nil {
 			return err
 		}
@@ -1087,12 +1087,12 @@ func (store *MVCCStore) Cleanup(reqCtx *requestCtx, key []byte, startTS, current
 			return ErrAlreadyCommitted(rbStatus.commitTS)
 		}
 	}
-	err = store.dbWriter.Write(batch)
+	err = store.writer.Write(batch)
 	store.lockWaiterManager.WakeUp(startTS, 0, hashVals)
 	return err
 }
 
-func (store *MVCCStore) appendScannedLock(locks []*kvrpcpb.LockInfo, it *sdb.Iterator, maxTS uint64) []*kvrpcpb.LockInfo {
+func (store *MVCCStore) appendScannedLock(locks []*kvrpcpb.LockInfo, it *engine.Iterator, maxTS uint64) []*kvrpcpb.LockInfo {
 	val, _ := it.Item().Value()
 	lock := mvcc.DecodeLock(val)
 	if lock.StartTS < maxTS {
@@ -1108,7 +1108,7 @@ func (store *MVCCStore) appendScannedLock(locks []*kvrpcpb.LockInfo, it *sdb.Ite
 
 func (store *MVCCStore) ScanLock(reqCtx *requestCtx, maxTS uint64, limit int) ([]*kvrpcpb.LockInfo, error) {
 	var locks []*kvrpcpb.LockInfo
-	it := reqCtx.getDBReader().GetLockIter()
+	it := reqCtx.getKVReader().GetLockIter()
 	for it.Seek(reqCtx.regCtx.startKey); it.Valid(); it.Next() {
 		if exceedEndKey(it.Item().Key(), reqCtx.regCtx.endKey) {
 			return locks, nil
@@ -1124,7 +1124,7 @@ func (store *MVCCStore) ScanLock(reqCtx *requestCtx, maxTS uint64, limit int) ([
 func (store *MVCCStore) PhysicalScanLock(startKey []byte, maxTS uint64, limit int) []*kvrpcpb.LockInfo {
 	var locks []*kvrpcpb.LockInfo
 	// TODO: support physicalScan
-	snap := store.db.NewSnapshot(nil)
+	snap := store.eng.NewSnapAccess(nil)
 	defer snap.Discard()
 	it := snap.NewIterator(1, false, false)
 	for it.Seek(startKey); it.Valid(); it.Next() {
@@ -1139,7 +1139,7 @@ func (store *MVCCStore) PhysicalScanLock(startKey []byte, maxTS uint64, limit in
 func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, lockKeys [][]byte, startTS, commitTS uint64) error {
 	regCtx := reqCtx.regCtx
 	if len(lockKeys) == 0 {
-		it := reqCtx.getDBReader().GetLockIter()
+		it := reqCtx.getKVReader().GetLockIter()
 		for it.Seek(regCtx.startKey); it.Valid(); it.Next() {
 			item := it.Item()
 			if exceedEndKey(item.Key(), regCtx.endKey) {
@@ -1157,7 +1157,7 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, lockKeys [][]byte, start
 		}
 	}
 	hashVals := keysToHashVals(lockKeys...)
-	batch := store.dbWriter.NewWriteBatch(startTS, commitTS, reqCtx.rpcCtx)
+	batch := store.writer.NewWriteBatch(startTS, commitTS, reqCtx.rpcCtx)
 
 	regCtx.AcquireLatches(hashVals)
 	defer regCtx.ReleaseLatches(hashVals)
@@ -1165,7 +1165,7 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, lockKeys [][]byte, start
 	var buf []byte
 	var tmpDiff int
 	for _, lockKey := range lockKeys {
-		buf = reqCtx.getDBReader().GetLock(lockKey, buf)
+		buf = reqCtx.getKVReader().GetLock(lockKey, buf)
 		if len(buf) == 0 {
 			continue
 		}
@@ -1181,13 +1181,13 @@ func (store *MVCCStore) ResolveLock(reqCtx *requestCtx, lockKeys [][]byte, start
 		}
 	}
 	atomic.AddInt64(&regCtx.diff, int64(tmpDiff))
-	err := store.dbWriter.Write(batch)
+	err := store.writer.Write(batch)
 	return err
 }
 
 func (store *MVCCStore) UpdateSafePoint(safePoint uint64) {
 	// We use the gcLock to make sure safePoint can only increase.
-	store.db.UpdateMangedSafeTs(safePoint)
+	store.eng.UpdateMangedSafeTs(safePoint)
 	log.Info("safePoint is updated to", zap.Uint64("ts", safePoint), zap.Time("time", tsToTime(safePoint)))
 }
 
@@ -1228,7 +1228,7 @@ func (store *MVCCStore) MvccGetByKey(reqCtx *requestCtx, key []byte) (*kvrpcpb.M
 			ShortValue: lock.Value,
 		}
 	}
-	reader := reqCtx.getDBReader()
+	reader := reqCtx.getKVReader()
 	isRowKey := rowcodec.IsRowKey(key)
 	// Get commit writes from db
 	err := reader.GetMvccInfoByKey(key, isRowKey, mvccInfo)
@@ -1256,7 +1256,7 @@ func (store *MVCCStore) MvccGetByKey(reqCtx *requestCtx, key []byte) (*kvrpcpb.M
 
 func (store *MVCCStore) getExtraMvccInfo(rawkey []byte,
 	reqCtx *requestCtx, mvccInfo *kvrpcpb.MvccInfo) error {
-	it := reqCtx.getDBReader().GetExtraIter()
+	it := reqCtx.getKVReader().GetExtraIter()
 	rbStartKey := mvcc.EncodeExtraTxnStatusKey(rawkey, math.MaxUint64)
 	rbEndKey := mvcc.EncodeExtraTxnStatusKey(rawkey, 0)
 	for it.Seek(rbStartKey); it.Valid(); it.Next() {
@@ -1277,7 +1277,7 @@ func (store *MVCCStore) getExtraMvccInfo(rawkey []byte,
 }
 
 func (store *MVCCStore) MvccGetByStartTs(reqCtx *requestCtx, startTs uint64) (*kvrpcpb.MvccInfo, []byte, error) {
-	reader := reqCtx.getDBReader()
+	reader := reqCtx.getKVReader()
 	startKey := reqCtx.regCtx.startKey
 	endKey := reqCtx.regCtx.endKey
 	rawKey, err := reader.GetKeyByStartTs(startKey, endKey, startTs)
@@ -1314,13 +1314,13 @@ func (store *MVCCStore) BatchGet(reqCtx *requestCtx, keys [][]byte, version uint
 			})
 		}
 	}
-	reqCtx.getDBReader().BatchGet(remain, version, batchGetFunc)
+	reqCtx.getKVReader().BatchGet(remain, version, batchGetFunc)
 	return pairs
 }
 
 func (store *MVCCStore) collectRangeLock(reqCtx *requestCtx, startTS uint64, startKey, endKey []byte, resolved []uint64) []*kvrpcpb.KvPair {
 	var pairs []*kvrpcpb.KvPair
-	it := reqCtx.getDBReader().GetLockIter()
+	it := reqCtx.getKVReader().GetLockIter()
 	for it.Seek(startKey); it.Valid(); it.Next() {
 		item := it.Item()
 		if exceedEndKey(item.Key(), endKey) {
@@ -1405,7 +1405,7 @@ func (store *MVCCStore) Scan(reqCtx *requestCtx, req *kvrpcpb.ScanRequest) []*kv
 	var scanProc = &kvScanProcessor{
 		sampleStep: req.SampleStep,
 	}
-	reader := reqCtx.getDBReader()
+	reader := reqCtx.getKVReader()
 	var err error
 	if req.Reverse {
 		err = reader.ReverseScan(startKey, endKey, int(limit), req.GetVersion(), scanProc)

@@ -17,9 +17,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"github.com/ngaut/unistore/engine"
+	"github.com/ngaut/unistore/enginepb"
 	"github.com/ngaut/unistore/raftengine"
-	"github.com/ngaut/unistore/sdb"
-	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/y"
 	"math"
 	"sync/atomic"
@@ -733,7 +733,7 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 			}
 			store := p.Store()
 			p.Store().Engines.kv.TriggerFlush(shard, store.onGoingFlushCnt())
-			if shard.GetSplitStage() != sdbpb.SplitStage_INITIAL {
+			if shard.GetSplitStage() != enginepb.SplitStage_INITIAL {
 				p.Store().regionSched <- task{
 					tp: taskTypeRecoverSplit,
 					data: &regionTask{
@@ -836,7 +836,7 @@ func (p *Peer) HandleRaftReadyAppend(trans *RaftClient, raftWB *raftengine.Write
 		e := &ready.CommittedEntries[i]
 		if raftlog.IsPreSplitLog(e.Data) {
 			// Set the PreSplit state so we can reject any future compaction.
-			p.Store().splitStage = sdbpb.SplitStage_PRE_SPLIT
+			p.Store().splitStage = enginepb.SplitStage_PRE_SPLIT
 		}
 		if raftlog.IsChangeSetLog(e.Data) {
 			clog := raftlog.NewCustom(e.Data)
@@ -989,7 +989,7 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans *RaftClient) error {
 		ConfVer: p.Region().RegionEpoch.ConfVer,
 		Version: p.Region().RegionEpoch.Version,
 	}
-	if !p.IsLeader() && p.Store().splitStage == sdbpb.SplitStage_SPLIT_FILE_DONE {
+	if !p.IsLeader() && p.Store().splitStage == enginepb.SplitStage_SPLIT_FILE_DONE {
 		sendMsg.ExtraMsg = &rspb.ExtraMessage{Type: ExtraMessageTypeSplitFilesDone}
 		log.S().Infof("follower %d:%d add extra message split file done", p.regionId, sendMsg.RegionEpoch.Version)
 	}
@@ -1021,7 +1021,7 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans *RaftClient) error {
 	return nil
 }
 
-func (p *Peer) HandleRaftReadyApplyMessages(kv *sdb.DB, applyMsgs *applyMsgs, ready *raft.Ready) {
+func (p *Peer) HandleRaftReadyApplyMessages(kv *engine.Engine, applyMsgs *applyMsgs, ready *raft.Ready) {
 	// Call `HandleRaftCommittedEntries` directly here may lead to inconsistency.
 	// In some cases, there will be some pending committed entries when applying a
 	// snapshot. If we call `HandleRaftCommittedEntries` directly, these updates
@@ -1107,7 +1107,7 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *sdb.DB, applyMsgs *applyMsgs, re
 	}
 }
 
-func (p *Peer) ApplyReads(kv *sdb.DB, ready *raft.Ready) {
+func (p *Peer) ApplyReads(kv *engine.Engine, ready *raft.Ready) {
 	var proposeTime *time.Time
 	if p.readyToHandleRead() {
 		for _, state := range ready.ReadStates {
@@ -1153,7 +1153,7 @@ func (p *Peer) ApplyReads(kv *sdb.DB, ready *raft.Ready) {
 	}
 }
 
-func (p *Peer) PostApply(kv *sdb.DB, applyState applyState, merged bool, applyMetrics applyMetrics) bool {
+func (p *Peer) PostApply(kv *engine.Engine, applyState applyState, merged bool, applyMetrics applyMetrics) bool {
 	hasReady := false
 	if p.IsApplyingSnapshot() {
 		panic("should not applying snapshot")
@@ -1199,7 +1199,7 @@ func (p *Peer) PostApply(kv *sdb.DB, applyState applyState, merged bool, applyMe
 // Propose a request.
 //
 // Return true means the request has been proposed successfully.
-func (p *Peer) Propose(kv *sdb.DB, cfg *Config, cb *Callback, rlog raftlog.RaftLog, errResp *raft_cmdpb.RaftCmdResponse) bool {
+func (p *Peer) Propose(kv *engine.Engine, cfg *Config, cb *Callback, rlog raftlog.RaftLog, errResp *raft_cmdpb.RaftCmdResponse) bool {
 	if p.PendingRemove {
 		return false
 	}
@@ -1387,7 +1387,7 @@ func (p *Peer) readyToTransferLeader(cfg *Config, peer *metapb.Peer) bool {
 	return lastIndex <= status.Progress[peerId].Match+cfg.LeaderTransferMaxLogLag
 }
 
-func (p *Peer) readLocal(kv *sdb.DB, req *raft_cmdpb.RaftCmdRequest, cb *Callback) {
+func (p *Peer) readLocal(kv *engine.Engine, req *raft_cmdpb.RaftCmdRequest, cb *Callback) {
 	resp := p.handleRead(kv, req, false)
 	cb.Done(resp)
 }
@@ -1660,7 +1660,7 @@ func (p *Peer) ProposeConfChange(cfg *Config, req *raft_cmdpb.RaftCmdRequest) (u
 	return proposeIndex, nil
 }
 
-func (p *Peer) handleRead(kv *sdb.DB, req *raft_cmdpb.RaftCmdRequest, checkEpoch bool) *raft_cmdpb.RaftCmdResponse {
+func (p *Peer) handleRead(kv *engine.Engine, req *raft_cmdpb.RaftCmdRequest, checkEpoch bool) *raft_cmdpb.RaftCmdResponse {
 	readExecutor := NewReadExecutor(checkEpoch)
 	resp := readExecutor.Execute(req, p.Region())
 	BindRespTerm(resp, p.Term())

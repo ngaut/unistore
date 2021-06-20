@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ngaut/unistore/tikv/dbreader"
+	"github.com/ngaut/unistore/tikv/enginereader"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger"
 	"github.com/pingcap/badger/y"
@@ -190,7 +190,7 @@ func newDagContext(store *testStore, keyRanges []kv.KeyRange, dagReq *tipb.DAGRe
 	txn := store.db.NewSnapshot(nil, nil)
 	dagCtx := &dagContext{
 		evalContext: &evalContext{sc: sc},
-		dbReader:    dbreader.NewDBReader(nil, []byte{255}, txn),
+		reader:      enginereader.NewReader(nil, []byte{255}, txn),
 		dagReq:      dagReq,
 		startTS:     startTs,
 	}

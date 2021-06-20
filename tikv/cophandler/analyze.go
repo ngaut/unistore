@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/ngaut/unistore/tikv/dbreader"
+	"github.com/ngaut/unistore/tikv/enginereader"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/coprocessor"
@@ -41,7 +41,7 @@ import (
 )
 
 // handleCopAnalyzeRequest handles coprocessor analyze request.
-func handleCopAnalyzeRequest(dbReader *dbreader.DBReader, req *coprocessor.Request) *coprocessor.Response {
+func handleCopAnalyzeRequest(reader *enginereader.Reader, req *coprocessor.Request) *coprocessor.Response {
 	resp := &coprocessor.Response{}
 	if len(req.Ranges) == 0 {
 		return resp
@@ -55,18 +55,18 @@ func handleCopAnalyzeRequest(dbReader *dbreader.DBReader, req *coprocessor.Reque
 		resp.OtherError = err.Error()
 		return resp
 	}
-	ranges, err := extractKVRanges(dbReader.StartKey, dbReader.EndKey, req.Ranges, false)
+	ranges, err := extractKVRanges(reader.StartKey, reader.EndKey, req.Ranges, false)
 	if err != nil {
 		resp.OtherError = err.Error()
 		return resp
 	}
 	y.Assert(len(ranges) >= 1)
 	if analyzeReq.Tp == tipb.AnalyzeType_TypeIndex {
-		resp, err = handleAnalyzeIndexReq(dbReader, ranges, analyzeReq, req.StartTs)
+		resp, err = handleAnalyzeIndexReq(reader, ranges, analyzeReq, req.StartTs)
 	} else if analyzeReq.Tp == tipb.AnalyzeType_TypeCommonHandle {
-		resp, err = handleAnalyzeCommonHandleReq(dbReader, ranges, analyzeReq, req.StartTs)
+		resp, err = handleAnalyzeCommonHandleReq(reader, ranges, analyzeReq, req.StartTs)
 	} else {
-		resp, err = handleAnalyzeColumnsReq(dbReader, ranges, analyzeReq, req.StartTs)
+		resp, err = handleAnalyzeColumnsReq(reader, ranges, analyzeReq, req.StartTs)
 	}
 	if err != nil {
 		resp = &coprocessor.Response{
@@ -76,7 +76,7 @@ func handleCopAnalyzeRequest(dbReader *dbreader.DBReader, req *coprocessor.Reque
 	return resp
 }
 
-func handleAnalyzeIndexReq(dbReader *dbreader.DBReader, rans []kv.KeyRange, analyzeReq *tipb.AnalyzeReq, startTS uint64) (*coprocessor.Response, error) {
+func handleAnalyzeIndexReq(reader *enginereader.Reader, rans []kv.KeyRange, analyzeReq *tipb.AnalyzeReq, startTS uint64) (*coprocessor.Response, error) {
 	statsVer := int32(statistics.Version1)
 	if analyzeReq.IdxReq.Version != nil {
 		statsVer = *analyzeReq.IdxReq.Version
@@ -93,7 +93,7 @@ func handleAnalyzeIndexReq(dbReader *dbreader.DBReader, rans []kv.KeyRange, anal
 		processor.cms = statistics.NewCMSketch(*analyzeReq.IdxReq.CmsketchDepth, *analyzeReq.IdxReq.CmsketchWidth)
 	}
 	for _, ran := range rans {
-		err := dbReader.Scan(ran.StartKey, ran.EndKey, math.MaxInt64, startTS, processor)
+		err := reader.Scan(ran.StartKey, ran.EndKey, math.MaxInt64, startTS, processor)
 		if err != nil {
 			return nil, err
 		}
@@ -132,7 +132,7 @@ func handleAnalyzeIndexReq(dbReader *dbreader.DBReader, rans []kv.KeyRange, anal
 	return &coprocessor.Response{Data: data}, nil
 }
 
-func handleAnalyzeCommonHandleReq(dbReader *dbreader.DBReader, rans []kv.KeyRange, analyzeReq *tipb.AnalyzeReq, startTS uint64) (*coprocessor.Response, error) {
+func handleAnalyzeCommonHandleReq(reader *enginereader.Reader, rans []kv.KeyRange, analyzeReq *tipb.AnalyzeReq, startTS uint64) (*coprocessor.Response, error) {
 	statsVer := int32(statistics.Version1)
 	if analyzeReq.IdxReq.Version != nil {
 		statsVer = *analyzeReq.IdxReq.Version
@@ -145,7 +145,7 @@ func handleAnalyzeCommonHandleReq(dbReader *dbreader.DBReader, rans []kv.KeyRang
 		processor.cms = statistics.NewCMSketch(*analyzeReq.IdxReq.CmsketchDepth, *analyzeReq.IdxReq.CmsketchWidth)
 	}
 	for _, ran := range rans {
-		err := dbReader.Scan(ran.StartKey, ran.EndKey, math.MaxInt64, startTS, processor)
+		err := reader.Scan(ran.StartKey, ran.EndKey, math.MaxInt64, startTS, processor)
 		if err != nil {
 			return nil, err
 		}
@@ -238,7 +238,7 @@ func (p *analyzeCommonHandleProcessor) Process(key, value []byte) error {
 
 type analyzeColumnsExec struct {
 	skipVal
-	reader  *dbreader.DBReader
+	reader  *enginereader.Reader
 	ranges  []kv.KeyRange
 	curRan  int
 	seekKey []byte
@@ -252,7 +252,7 @@ type analyzeColumnsExec struct {
 	fields  []*ast.ResultField
 }
 
-func handleAnalyzeColumnsReq(dbReader *dbreader.DBReader, rans []kv.KeyRange, analyzeReq *tipb.AnalyzeReq, startTS uint64) (*coprocessor.Response, error) {
+func handleAnalyzeColumnsReq(reader *enginereader.Reader, rans []kv.KeyRange, analyzeReq *tipb.AnalyzeReq, startTS uint64) (*coprocessor.Response, error) {
 	sc := flagsToStatementContext(analyzeReq.Flags)
 	sc.TimeZone = time.FixedZone("UTC", int(analyzeReq.TimeZoneOffset))
 	evalCtx := &evalContext{sc: sc}
@@ -266,7 +266,7 @@ func handleAnalyzeColumnsReq(dbReader *dbreader.DBReader, rans []kv.KeyRange, an
 		return nil, err
 	}
 	e := &analyzeColumnsExec{
-		reader:  dbReader,
+		reader:  reader,
 		seekKey: rans[0].StartKey,
 		endKey:  rans[0].EndKey,
 		ranges:  rans,
@@ -390,7 +390,7 @@ func (e *analyzeColumnsExec) Process(key, value []byte) error {
 	e.chk.Reset()
 	if e.req.NumRows() == e.req.Capacity() {
 		e.seekKey = kv.Key(key).PrefixNext()
-		return dbreader.ScanBreak
+		return enginereader.ScanBreak
 	}
 	return nil
 }

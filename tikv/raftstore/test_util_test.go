@@ -14,7 +14,7 @@
 package raftstore
 
 import (
-	"github.com/ngaut/unistore/sdb"
+	"github.com/ngaut/unistore/engine"
 	"github.com/pingcap/log"
 	"io/ioutil"
 	"os"
@@ -89,11 +89,11 @@ func newTestEntry(index, term uint64) eraftpb.Entry {
 	}
 }
 
-func openKVDB(t *testing.T, path string) *sdb.DB {
-	opts := sdb.DefaultOpt
+func openKVDB(t *testing.T, path string) *engine.Engine {
+	opts := engine.DefaultOpt
 	opts.Dir = path
 	log.S().Info("kvdb path ", path)
-	kvdb, err := sdb.OpenDB(opts)
+	kvdb, err := engine.OpenEngine(opts)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,7 +16,7 @@ package raftengine
 import (
 	"encoding/binary"
 	"github.com/ncw/directio"
-	"github.com/ngaut/unistore/sdb/table/sstable"
+	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/pingcap/errors"
 	"hash/crc32"
 	"io/fs"

@@ -14,33 +14,33 @@
 package raftstore
 
 import (
+	"github.com/ngaut/unistore/engine"
+	"github.com/ngaut/unistore/enginepb"
 	"github.com/ngaut/unistore/raftengine"
-	"github.com/ngaut/unistore/sdb"
-	"github.com/ngaut/unistore/sdbpb"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger/y"
 	"sync"
 )
 
 type Engines struct {
-	kv       *sdb.DB
+	kv       *engine.Engine
 	kvPath   string
 	raft     *raftengine.Engine
 	raftPath string
 	listener *MetaChangeListener
 }
 
-func NewEngines(kvEngine *sdb.DB, raftEngine *raftengine.Engine, kvPath, raftPath string, listener *MetaChangeListener) *Engines {
-	kvEngine.IterateMeta(func(meta *sdb.ShardMeta) {
+func NewEngines(kv *engine.Engine, raft *raftengine.Engine, kvPath, raftPath string, listener *MetaChangeListener) *Engines {
+	kv.IterateMeta(func(meta *engine.ShardMeta) {
 		if val, ok := meta.GetProperty(applyStateKey); ok {
 			var applyState applyState
 			applyState.Unmarshal(val)
 		}
 	})
 	return &Engines{
-		kv:       kvEngine,
+		kv:       kv,
 		kvPath:   kvPath,
-		raft:     raftEngine,
+		raft:     raft,
 		raftPath: raftPath,
 		listener: listener,
 	}
@@ -53,18 +53,18 @@ func (en *Engines) WriteKV(wb *KVWriteBatch) {
 }
 
 type KVWriteBatch struct {
-	kv      *sdb.DB
-	batches map[uint64]*sdb.WriteBatch
+	kv      *engine.Engine
+	batches map[uint64]*engine.WriteBatch
 }
 
-func NewKVWriteBatch(kv *sdb.DB) *KVWriteBatch {
+func NewKVWriteBatch(kv *engine.Engine) *KVWriteBatch {
 	return &KVWriteBatch{
 		kv:      kv,
-		batches: map[uint64]*sdb.WriteBatch{},
+		batches: map[uint64]*engine.WriteBatch{},
 	}
 }
 
-func (kvWB *KVWriteBatch) getEngineWriteBatch(regionID uint64) *sdb.WriteBatch {
+func (kvWB *KVWriteBatch) getEngineWriteBatch(regionID uint64) *engine.WriteBatch {
 	wb, ok := kvWB.batches[regionID]
 	if !ok {
 		wb = kvWB.kv.NewWriteBatch(kvWB.kv.GetShard(regionID))
@@ -73,15 +73,15 @@ func (kvWB *KVWriteBatch) getEngineWriteBatch(regionID uint64) *sdb.WriteBatch {
 	return wb
 }
 
-func SetLock(wb *sdb.WriteBatch, key, val []byte) {
+func SetLock(wb *engine.WriteBatch, key, val []byte) {
 	y.Assert(wb.Put(mvcc.LockCF, key, y.ValueStruct{Value: val}) == nil)
 }
 
-func DeleteLock(wb *sdb.WriteBatch, key []byte) {
+func DeleteLock(wb *engine.WriteBatch, key []byte) {
 	y.Assert(wb.Delete(mvcc.LockCF, key, 0) == nil)
 }
 
-func Rollback(wb *sdb.WriteBatch, key []byte, version uint64) {
+func Rollback(wb *engine.WriteBatch, key []byte, version uint64) {
 	rollbackKey := mvcc.EncodeExtraTxnStatusKey(key, version)
 	y.Assert(wb.Put(mvcc.ExtraCF, rollbackKey, y.ValueStruct{
 		UserMeta: mvcc.NewDBUserMeta(version, 0),
@@ -89,7 +89,7 @@ func Rollback(wb *sdb.WriteBatch, key []byte, version uint64) {
 	}) == nil)
 }
 
-func SetWithUserMeta(wb *sdb.WriteBatch, key, val, userMeta []byte, version uint64) {
+func SetWithUserMeta(wb *engine.WriteBatch, key, val, userMeta []byte, version uint64) {
 	y.Assert(wb.Put(mvcc.WriteCF, key, y.ValueStruct{
 		UserMeta: userMeta,
 		Value:    val,
@@ -97,18 +97,18 @@ func SetWithUserMeta(wb *sdb.WriteBatch, key, val, userMeta []byte, version uint
 	}) == nil)
 }
 
-func SetOpLock(wb *sdb.WriteBatch, key, userMeta []byte, version uint64) {
-	startTS := mvcc.DBUserMeta(userMeta).StartTS()
+func SetOpLock(wb *engine.WriteBatch, key, userMeta []byte, version uint64) {
+	startTS := mvcc.UserMeta(userMeta).StartTS()
 	opLockKey := mvcc.EncodeExtraTxnStatusKey(key, startTS)
 	y.Assert(wb.Put(mvcc.ExtraCF, opLockKey, y.ValueStruct{UserMeta: userMeta, Version: version}) == nil)
 }
 
-func SetApplyState(wb *sdb.WriteBatch, state applyState) {
+func SetApplyState(wb *engine.WriteBatch, state applyState) {
 	wb.SetProperty(applyStateKey, state.Marshal())
 }
 
-func SetMaxMemTableSize(wb *sdb.WriteBatch, val []byte) {
-	wb.SetProperty(sdb.MemTableSizeKey, val)
+func SetMaxMemTableSize(wb *engine.WriteBatch, val []byte) {
+	wb.SetProperty(engine.MemTableSizeKey, val)
 }
 
 // MetaChangeListener implements the badger.MetaChangeListener interface.
@@ -123,7 +123,7 @@ func NewMetaChangeListener() *MetaChangeListener {
 }
 
 // OnChange implements the badger.MetaChangeListener interface.
-func (l *MetaChangeListener) OnChange(e *sdbpb.ChangeSet) {
+func (l *MetaChangeListener) OnChange(e *enginepb.ChangeSet) {
 	y.Assert(e.ShardID != 0)
 	msg := NewPeerMsg(MsgTypeGenerateEngineChangeSet, e.ShardID, e)
 	l.mu.Lock()

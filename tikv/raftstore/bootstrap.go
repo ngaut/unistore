@@ -14,9 +14,9 @@
 package raftstore
 
 import (
+	"github.com/ngaut/unistore/engine"
+	"github.com/ngaut/unistore/enginepb"
 	"github.com/ngaut/unistore/raftengine"
-	"github.com/ngaut/unistore/sdb"
-	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
@@ -75,15 +75,15 @@ func writePrepareBootstrap(engines *Engines, region *metapb.Region) error {
 	return engines.kv.Ingest(initialIngestTree(region.Id, region.RegionEpoch.Version))
 }
 
-func initialIngestTree(regionID, version uint64) *sdb.IngestTree {
-	return &sdb.IngestTree{
-		ChangeSet: &sdbpb.ChangeSet{
+func initialIngestTree(regionID, version uint64) *engine.IngestTree {
+	return &engine.IngestTree{
+		ChangeSet: &enginepb.ChangeSet{
 			ShardID:  regionID,
 			ShardVer: version,
-			Snapshot: &sdbpb.Snapshot{
+			Snapshot: &enginepb.Snapshot{
 				Start: nil,
-				End:   sdb.GlobalShardEndKey,
-				Properties: &sdbpb.Properties{
+				End:   engine.GlobalShardEndKey,
+				Properties: &enginepb.Properties{
 					ShardID: regionID,
 					Keys:    []string{applyStateKey},
 					Values:  [][]byte{newInitialApplyState().Marshal()},

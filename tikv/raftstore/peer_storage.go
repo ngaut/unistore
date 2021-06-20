@@ -17,9 +17,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/cznic/mathutil"
+	"github.com/ngaut/unistore/engine"
+	"github.com/ngaut/unistore/enginepb"
 	"github.com/ngaut/unistore/raftengine"
-	"github.com/ngaut/unistore/sdb"
-	"github.com/ngaut/unistore/sdbpb"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -221,8 +221,8 @@ type PeerStorage struct {
 	// stableApplyState is the applyState that is persisted to L0 file.
 	stableApplyState applyState
 
-	applyingChanges []*sdbpb.ChangeSet
-	splitStage      sdbpb.SplitStage
+	applyingChanges []*enginepb.ChangeSet
+	splitStage      enginepb.SplitStage
 	initialFlushed  bool
 
 	Tag string
@@ -247,7 +247,7 @@ func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- 
 		return nil, err
 	}
 	var initialFlushed bool
-	splitStage := sdbpb.SplitStage_INITIAL
+	splitStage := enginepb.SplitStage_INITIAL
 	if shard := engines.kv.GetShard(region.Id); shard != nil {
 		initialFlushed = shard.IsInitialFlushed()
 		splitStage = shard.GetSplitStage()
@@ -292,11 +292,11 @@ func initRaftState(raftEngine *raftengine.Engine, region *metapb.Region) (raftSt
 	return raftState, nil
 }
 
-func initApplyState(kvEngine *sdb.DB, region *metapb.Region) (applyState, error) {
-	shard := kvEngine.GetShard(region.Id)
+func initApplyState(kv *engine.Engine, region *metapb.Region) (applyState, error) {
+	shard := kv.GetShard(region.Id)
 	applyState := applyState{}
 	if shard != nil {
-		val, ok := kvEngine.GetProperty(shard, applyStateKey)
+		val, ok := kv.GetProperty(shard, applyStateKey)
 		y.Assert(ok)
 		y.Assert(len(val) == 32)
 		applyState.Unmarshal(val)
@@ -531,7 +531,7 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 }
 
 // Append the given entries to the raft log using previous last index or self.last_index.
-// Return the new last index for later update. After we commit in engine, we can set last_index
+// Return the new last index for later update. After we commit in the kv engine, we can set last_index
 // to the return one.
 func (ps *PeerStorage) Append(invokeCtx *InvokeContext, entries []eraftpb.Entry, raftWB *raftengine.WriteBatch) error {
 	log.S().Debugf("%s append %d entries", ps.Tag, len(entries))
@@ -826,7 +826,7 @@ func (ps *PeerStorage) onGoingFlushCnt() int {
 func (ps *PeerStorage) hasOnGoingPreSplitFlush() bool {
 	for _, change := range ps.applyingChanges {
 		if change.Flush != nil {
-			if change.Stage == sdbpb.SplitStage_PRE_SPLIT_FLUSH_DONE {
+			if change.Stage == enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE {
 				return true
 			}
 		}
@@ -854,7 +854,7 @@ func (p *PeerStorage) CheckApplyingSnap() bool {
 
 type snapData struct {
 	region    *metapb.Region
-	changeSet *sdbpb.ChangeSet
+	changeSet *enginepb.ChangeSet
 }
 
 func (sd *snapData) Marshal() []byte {
@@ -873,7 +873,7 @@ func (sd *snapData) Unmarshal(data []byte) error {
 	if err != nil {
 		return err
 	}
-	sd.changeSet = new(sdbpb.ChangeSet)
+	sd.changeSet = new(enginepb.ChangeSet)
 	element, data = cutSlices(data)
 	err = sd.changeSet.Unmarshal(element)
 	if err != nil {

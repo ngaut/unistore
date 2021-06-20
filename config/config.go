@@ -48,7 +48,7 @@ type RaftStore struct {
 }
 
 type Engine struct {
-	DBPath                string    `toml:"db-path"`        // Directory to store the data in. Should exist and be writable.
+	Path                  string    `toml:"path"`           // Directory to store the data in. Should exist and be writable.
 	MaxTableSize          int64     `toml:"max-table-size"` // Each table file is at most this size.
 	BaseSize              int64     `toml:"base-size"`
 	NumL0Tables           int       `toml:"num-L0-tables"`       // Maximum number of Level 0 tables before we start compacting.
@@ -62,7 +62,7 @@ type Engine struct {
 }
 
 type RaftEngine struct {
-	DBPath  string `toml:"db-path"`
+	Path    string `toml:"path"`
 	WALSize int64  `toml:"wal-size"`
 }
 
@@ -106,7 +106,7 @@ var DefaultConf = Config{
 		ApplyWorkerCount:         4,
 	},
 	Engine: Engine{
-		DBPath:                "/tmp/badger",
+		Path:                  "/tmp/badger",
 		MaxMemTableSizeFactor: 128,
 		MaxTableSize:          8 * MB,
 		NumL0Tables:           4,
@@ -116,7 +116,7 @@ var DefaultConf = Config{
 		BlockCacheSize:        0, // 0 means disable block cache, use mmap to access sst.
 	},
 	RaftEngine: RaftEngine{
-		DBPath:  "/tmp/badger",
+		Path:    "/tmp/badger",
 		WALSize: 1024 * MB,
 	},
 	PessimisticTxn: PessimisticTxn{
