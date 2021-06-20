@@ -432,7 +432,7 @@ func (rm *RaftRegionManager) SplitRegion(req *kvrpcpb.SplitRegionRequest, ctx *r
 	if splitting {
 		return &kvrpcpb.SplitRegionResponse{RegionError: &errorpb.Error{Message: "splitting"}}
 	}
-	regions, err := rm.router.SplitRegion(req.GetContext(), ctx.svr.mvccStore.db, ctx.regCtx.meta, req.SplitKeys)
+	regions, err := rm.router.SplitRegion(req.GetContext(), ctx.svr.mvccStore.eng, ctx.regCtx.meta, req.SplitKeys)
 	rm.splitMu.Lock()
 	delete(rm.splits, req.Context.RegionId)
 	rm.splitMu.Unlock()

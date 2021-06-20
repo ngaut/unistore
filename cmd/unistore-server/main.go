@@ -84,7 +84,7 @@ func loadCmdConf(conf *config.Config) {
 		conf.Server.StatusAddr = *statusAddr
 	}
 	if *dataDir != "" {
-		conf.Engine.DBPath = *dataDir
+		conf.Engine.Path = *dataDir
 	}
 	if *logFile != "" {
 		conf.Server.LogfilePath = *logFile

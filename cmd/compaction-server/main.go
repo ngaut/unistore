@@ -15,8 +15,8 @@ package main
 
 import (
 	"flag"
+	"github.com/ngaut/unistore/engine/compaction"
 	"github.com/ngaut/unistore/pd"
-	"github.com/ngaut/unistore/sdb/compaction"
 	"github.com/pingcap/log"
 	"net/http"
 	"runtime"

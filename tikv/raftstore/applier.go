@@ -17,8 +17,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"github.com/ngaut/unistore/sdb"
-	"github.com/ngaut/unistore/sdbpb"
+	"github.com/ngaut/unistore/engine"
+	"github.com/ngaut/unistore/enginepb"
 	"go.uber.org/zap"
 	"math"
 	"time"
@@ -141,7 +141,7 @@ type execResultRollbackMerge struct {
 type execResultComputeHash struct {
 	region *metapb.Region
 	index  uint64
-	snap   *sdb.Snapshot
+	snap   *engine.SnapAccess
 }
 
 type execResultVerifyHash struct {
@@ -234,8 +234,6 @@ type applyContext struct {
 	lastAppliedIndex uint64
 	committedCount   int
 
-	// Indicates that WAL can be synchronized when data is written to KV engine.
-	enableSyncLog bool
 	// Whether to use the delete range API instead of deleting one by one.
 	useDeleteRange bool
 }
@@ -247,7 +245,6 @@ func newApplyContext(tag string, regionScheduler chan<- task, engines *Engines,
 		regionScheduler: regionScheduler,
 		engines:         engines,
 		applyResCh:      applyResCh,
-		enableSyncLog:   cfg.SyncLog,
 		useDeleteRange:  cfg.UseDeleteRange,
 		wb:              NewKVWriteBatch(engines.kv),
 	}
@@ -363,9 +360,9 @@ type applier struct {
 	// ID of last region that reports ready.
 	readySourceRegion uint64
 
-	/// We writes apply_state to KV DB, in one write batch together with kv data.
+	/// We writes apply_state to KV Engine, in one write batch together with kv data.
 	///
-	/// If we write it to Raft DB, apply_state and kv data (Put, Delete) are in
+	/// If we write it to Raft Engine, apply_state and kv data (Put, Delete) are in
 	/// separate WAL file. When power failure, for current raft log, apply_index may synced
 	/// to file, but KV data may not synced to file, so we will lose data.
 	applyState applyState
@@ -374,7 +371,7 @@ type applier struct {
 	metrics applyMetrics
 
 	lockCache map[string][]byte
-	dbSnap    *sdb.Snapshot
+	snap      *engine.SnapAccess
 }
 
 func newApplier(reg *registration) *applier {
@@ -398,9 +395,9 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 		return
 	}
 	defer func() {
-		if a.dbSnap != nil {
-			a.dbSnap.Discard()
-			a.dbSnap = nil
+		if a.snap != nil {
+			a.snap.Discard()
+			a.snap = nil
 		}
 	}()
 	aCtx.committedCount += len(committedEntries)
@@ -577,7 +574,7 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 			change, err := cl.GetShardChangeSet()
 			y.Assert(err == nil)
 			shard := aCtx.engines.kv.GetShard(a.region.Id)
-			if shard.GetSplitStage() >= sdbpb.SplitStage_PRE_SPLIT && change != nil && change.Compaction != nil {
+			if shard.GetSplitStage() >= enginepb.SplitStage_PRE_SPLIT && change != nil && change.Compaction != nil {
 				log.S().Warnf("region %d:%d reject compaction for splitting state",
 					shard.ID, shard.Ver)
 				change.Compaction.Rejected = true
@@ -793,7 +790,7 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 	return cnt
 }
 
-func (a *applier) commitLock(aCtx *applyContext, wb *sdb.WriteBatch, key, val []byte, commitTS uint64) {
+func (a *applier) commitLock(aCtx *applyContext, wb *engine.WriteBatch, key, val []byte, commitTS uint64) {
 	if len(val) == 0 {
 		val = a.getLockForCommit(aCtx, key)
 	}
@@ -817,10 +814,10 @@ func (a *applier) getLockForCommit(aCtx *applyContext, key []byte) []byte {
 		return val
 	}
 	regionID := a.region.Id
-	if a.dbSnap == nil {
-		a.dbSnap = aCtx.engines.kv.NewSnapshot(aCtx.engines.kv.GetShard(regionID))
+	if a.snap == nil {
+		a.snap = aCtx.engines.kv.NewSnapAccess(aCtx.engines.kv.GetShard(regionID))
 	}
-	item, err := a.dbSnap.Get(mvcc.LockCF, key, math.MaxUint64)
+	item, err := a.snap.Get(mvcc.LockCF, key, math.MaxUint64)
 	y.AssertTruef(err == nil, "key %v index %d", key, aCtx.execCtx.index)
 	val, err = item.Value()
 	y.Assert(err == nil)
@@ -949,9 +946,9 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 		return
 	}
 	a.applyState.appliedIndex = aCtx.execCtx.index
-	newShardProps := make([]*sdbpb.Properties, len(regions))
+	newShardProps := make([]*enginepb.Properties, len(regions))
 	for i := 0; i < len(regions); i++ {
-		props := new(sdbpb.Properties)
+		props := new(enginepb.Properties)
 		props.ShardID = regions[i].Id
 		props.Keys = append(props.Keys, applyStateKey)
 		if regions[i].Id == a.region.Id {

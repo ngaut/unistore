@@ -16,8 +16,8 @@ package tikv
 import (
 	"bytes"
 	"fmt"
-	"github.com/ngaut/unistore/sdb"
-	"github.com/ngaut/unistore/sdbpb"
+	"github.com/ngaut/unistore/engine"
+	"github.com/ngaut/unistore/enginepb"
 	lockwaiter2 "github.com/ngaut/unistore/tikv/lockwaiter"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger/y"
@@ -89,22 +89,22 @@ func CreateTestRaftDB(dbPath, LogPath string) (*badger.DB, error) {
 	return badger.Open(opts)
 }
 
-func CreateTestShardingDB(dbPath string) (*sdb.DB, error) {
-	opts := sdb.DefaultOpt
+func CreateTestShardingDB(dbPath string) (*engine.Engine, error) {
+	opts := engine.DefaultOpt
 	opts.Dir = dbPath
-	opts.CFs = []sdb.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}, {Managed: false}}
-	db, err := sdb.OpenDB(opts)
+	opts.CFs = []engine.CFConfig{{Managed: true}, {Managed: false}, {Managed: true}, {Managed: false}}
+	db, err := engine.OpenEngine(opts)
 	if err != nil {
 		return nil, err
 	}
-	ingestTree := &sdb.IngestTree{
-		ChangeSet: &sdbpb.ChangeSet{
+	ingestTree := &engine.IngestTree{
+		ChangeSet: &enginepb.ChangeSet{
 			ShardID:  1,
 			ShardVer: 1,
-			Snapshot: &sdbpb.Snapshot{
+			Snapshot: &enginepb.Snapshot{
 				Start:      nil,
 				End:        []byte{255, 255, 255, 255, 255, 255, 255, 255},
-				Properties: &sdbpb.Properties{ShardID: 1},
+				Properties: &enginepb.Properties{ShardID: 1},
 			},
 		},
 	}
@@ -134,7 +134,7 @@ func NewTestStore(dbPrefix string, logPrefix string, c *C) (*TestStore, error) {
 		return nil, err
 	}
 	// Some raft store path problems could not be found using simple store in tests
-	// writer := NewDBWriter(dbBundle, safePoint)
+	// writer := NewEngineWriter(dbBundle, safePoint)
 
 	os.MkdirAll(kvPath, os.ModePerm)
 	os.MkdirAll(raftPath, os.ModePerm)
@@ -411,7 +411,7 @@ func MustPrewritePessimisticErr(pk []byte, key []byte, value []byte, startTs uin
 func MustCommitKeyPut(key, val []byte, startTs, commitTs uint64, store *TestStore) {
 	err := store.MvccStore.Commit(store.newReqCtx(), [][]byte{key}, startTs, commitTs)
 	store.c.Assert(err, IsNil)
-	getVal, err := store.newReqCtx().getDBReader().Get(key, commitTs)
+	getVal, err := store.newReqCtx().getKVReader().Get(key, commitTs)
 	store.c.Assert(err, IsNil)
 	store.c.Assert(bytes.Compare(getVal, val), Equals, 0)
 }
@@ -460,7 +460,7 @@ func kvGet(key []byte, readTs uint64, store *TestStore) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	getVal, err := reqCtx.getDBReader().Get(key, readTs)
+	getVal, err := reqCtx.getKVReader().Get(key, readTs)
 	return getVal, err
 }
 
@@ -531,7 +531,7 @@ func (s *testMvccSuite) TestBasicOptimistic(c *C) {
 	MustPrewriteOptimistic(key1, key1, val1, 1, ttl, 0, store)
 	MustCommitKeyPut(key1, val1, 1, 2, store)
 	// Read using smaller ts results in nothing
-	getVal, err := store.newReqCtx().getDBReader().Get(key1, 1)
+	getVal, err := store.newReqCtx().getKVReader().Get(key1, 1)
 	c.Assert(getVal, IsNil)
 }
 
@@ -954,16 +954,16 @@ func (s *testMvccSuite) TestPrimaryKeyOpLock(c *C) {
 	_, commitTS, _, _ = CheckTxnStatus(pk(), 100, 130, 130, false, store)
 	c.Assert(commitTS, Equals, uint64(101))
 
-	getVal, err := store.newReqCtx().getDBReader().Get(pk(), 90)
+	getVal, err := store.newReqCtx().getKVReader().Get(pk(), 90)
 	c.Assert(err, IsNil)
 	c.Assert(getVal, IsNil)
-	getVal, err = store.newReqCtx().getDBReader().Get(pk(), 110)
+	getVal, err = store.newReqCtx().getKVReader().Get(pk(), 110)
 	c.Assert(err, IsNil)
 	c.Assert(getVal, IsNil)
-	getVal, err = store.newReqCtx().getDBReader().Get(pk(), 111)
+	getVal, err = store.newReqCtx().getKVReader().Get(pk(), 111)
 	c.Assert(err, IsNil)
 	c.Assert(getVal, DeepEquals, val2)
-	getVal, err = store.newReqCtx().getDBReader().Get(pk(), 130)
+	getVal, err = store.newReqCtx().getKVReader().Get(pk(), 130)
 	c.Assert(err, IsNil)
 	c.Assert(getVal, DeepEquals, val2) // Op_Lock value should not be recorded and returned
 }
@@ -1499,7 +1499,7 @@ func (s *testMvccSuite) TestResolveCommit(c *C) {
 	MustPrewritePessimistic(k2, k2, v2, 3, 100, []bool{true}, 3, store)
 	MustCommit(k2, 3, 4, store)
 
-	db := store.MvccStore.db
+	db := store.MvccStore.eng
 	// The error path
 	wb := db.NewWriteBatch(db.GetShard(1))
 	c.Assert(wb.Delete(mvcc.WriteCF, sk, 3), IsNil)

@@ -25,8 +25,6 @@ const (
 )
 
 type Config struct {
-	// true for high reliability, prevent data loss when power failure.
-	SyncLog bool
 	// minimizes disruption when a partitioned node rejoins the cluster by using a two phase election.
 	Prevote    bool
 	RaftdbPath string
@@ -161,7 +159,6 @@ type StoreLabel struct {
 
 func NewDefaultConfig() *Config {
 	return &Config{
-		SyncLog:                          true,
 		Prevote:                          true,
 		RaftdbPath:                       "",
 		Capacity:                         0,

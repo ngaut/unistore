@@ -17,12 +17,12 @@ import (
 	"bytes"
 	"context"
 	"github.com/ngaut/unistore/config"
+	"github.com/ngaut/unistore/engine"
+	"github.com/ngaut/unistore/engine/compaction"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/raftengine"
-	"github.com/ngaut/unistore/sdb"
-	"github.com/ngaut/unistore/sdb/compaction"
 	"github.com/ngaut/unistore/tikv/cophandler"
-	"github.com/ngaut/unistore/tikv/dbreader"
+	"github.com/ngaut/unistore/tikv/enginereader"
 	"github.com/ngaut/unistore/tikv/lockwaiter"
 	"github.com/ngaut/unistore/tikv/raftstore"
 	"github.com/pingcap/errors"
@@ -62,9 +62,9 @@ const (
 )
 
 func NewServer(conf *config.Config, pdClient pd.Client) (*Server, error) {
-	dbPath := conf.Engine.DBPath
-	kvPath := filepath.Join(dbPath, "kv")
-	raftPath := filepath.Join(dbPath, "raft")
+	path := conf.Engine.Path
+	kvPath := filepath.Join(path, "kv")
+	raftPath := filepath.Join(path, "raft")
 
 	os.MkdirAll(kvPath, os.ModePerm)
 	os.MkdirAll(raftPath, os.ModePerm)
@@ -76,25 +76,25 @@ func NewServer(conf *config.Config, pdClient pd.Client) (*Server, error) {
 	allocator := &idAllocator{
 		pdCli: pdClient,
 	}
-	raftDB, err := createRaftDB(subPathRaft, &conf.RaftEngine)
+	raftEngine, err := createRaftEngine(subPathRaft, &conf.RaftEngine)
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
-	recoverHandler, err := raftstore.NewRecoverHandler(raftDB)
+	recoverHandler, err := raftstore.NewRecoverHandler(raftEngine)
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
-	db, err := createKVDB(subPathKV, listener, allocator, recoverHandler, &conf.Engine)
+	eng, err := createKVEngine(subPathKV, listener, allocator, recoverHandler, &conf.Engine)
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
-	http.DefaultServeMux.HandleFunc("/debug/db", db.DebugHandler())
-	engines := raftstore.NewEngines(db, raftDB, kvPath, raftPath, listener)
+	http.DefaultServeMux.HandleFunc("/debug/db", eng.DebugHandler())
+	engines := raftstore.NewEngines(eng, raftEngine, kvPath, raftPath, listener)
 	innerServer := raftstore.NewRaftInnerServer(conf, engines, raftConf)
 	innerServer.Setup(pdClient)
 	router := innerServer.GetRaftstoreRouter()
 	storeMeta := innerServer.GetStoreMeta()
-	store := NewMVCCStore(conf, db, dbPath, raftstore.NewDBWriter(conf, router), pdClient)
+	store := NewMVCCStore(conf, eng, path, raftstore.NewEngineWriter(router), pdClient)
 	rm := NewRaftRegionManager(storeMeta, router, store.DeadlockDetectSvr)
 	innerServer.SetPeerEventObserver(rm)
 
@@ -136,13 +136,13 @@ func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	raftConf.ApplyWorkerCnt = conf.RaftStore.ApplyWorkerCount
 }
 
-func createRaftDB(subPath string, conf *config.RaftEngine) (*raftengine.Engine, error) {
-	return raftengine.Open(filepath.Join(conf.DBPath, subPath), conf.WALSize)
+func createRaftEngine(subPath string, conf *config.RaftEngine) (*raftengine.Engine, error) {
+	return raftengine.Open(filepath.Join(conf.Path, subPath), conf.WALSize)
 }
 
-func createKVDB(subPath string, listener *raftstore.MetaChangeListener,
-	allocator compaction.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*sdb.DB, error) {
-	opts := sdb.DefaultOpt
+func createKVEngine(subPath string, listener *raftstore.MetaChangeListener,
+	allocator compaction.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*engine.Engine, error) {
+	opts := engine.DefaultOpt
 	opts.BaseSize = conf.BaseSize
 	opts.TableBuilderOptions.MaxTableSize = conf.MaxTableSize
 	opts.MaxMemTableSizeFactor = conf.MaxMemTableSizeFactor
@@ -156,13 +156,13 @@ func createKVDB(subPath string, listener *raftstore.MetaChangeListener,
 	opts.S3Options.Bucket = conf.S3.Bucket
 	opts.S3Options.Region = conf.S3.Region
 	opts.S3Options.ExpirationDuration = conf.S3.ExpirationDuration
-	opts.Dir = filepath.Join(conf.DBPath, subPath)
+	opts.Dir = filepath.Join(conf.Path, subPath)
 	if allocator != nil {
 		opts.IDAllocator = allocator
 	}
 	opts.MetaChangeListener = listener
 	opts.RecoverHandler = recoverHandler
-	return sdb.OpenDB(opts)
+	return engine.OpenEngine(opts)
 }
 
 const requestMaxSize = 6 * 1024 * 1024
@@ -203,7 +203,7 @@ type requestCtx struct {
 	regCtx           *regionCtx
 	regErr           *errorpb.Error
 	buf              []byte
-	reader           *dbreader.DBReader
+	reader           *enginereader.Reader
 	method           string
 	startTime        time.Time
 	rpcCtx           *kvrpcpb.Context
@@ -227,14 +227,14 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCt
 	if req.regErr != nil {
 		return req, nil
 	}
-	shd := svr.mvccStore.db.GetShard(req.rpcCtx.RegionId)
+	shd := svr.mvccStore.eng.GetShard(req.rpcCtx.RegionId)
 	if shd.Ver != ctx.RegionEpoch.Version {
 		meta := req.regCtx.meta
 		var startKey, endKey []byte
 		if len(shd.Start) != 0 {
 			startKey = codec.EncodeBytes(nil, shd.Start)
 		}
-		if bytes.Compare(shd.End, sdb.GlobalShardEndKey) != 0 {
+		if bytes.Compare(shd.End, engine.GlobalShardEndKey) != 0 {
 			endKey = codec.EncodeBytes(nil, shd.End)
 		}
 		req.regErr = &errorpb.Error{
@@ -250,14 +250,14 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCt
 			},
 		}
 	} else {
-		snap := svr.mvccStore.db.NewSnapshot(shd)
-		req.reader = dbreader.NewDBReader(req.regCtx.startKey, req.regCtx.endKey, snap)
+		snap := svr.mvccStore.eng.NewSnapAccess(shd)
+		req.reader = enginereader.NewReader(req.regCtx.startKey, req.regCtx.endKey, snap)
 	}
 	return req, nil
 }
 
 // For read-only requests that doesn't acquire latches, this function must be called after all locks has been checked.
-func (req *requestCtx) getDBReader() *dbreader.DBReader {
+func (req *requestCtx) getKVReader() *enginereader.Reader {
 	return req.reader
 }
 
@@ -281,7 +281,7 @@ func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb
 	if err != nil {
 		return &kvrpcpb.GetResponse{Error: convertToKeyError(err)}, nil
 	}
-	reader := reqCtx.getDBReader()
+	reader := reqCtx.getKVReader()
 	val, err := reader.Get(req.Key, req.GetVersion())
 	if err != nil {
 		return &kvrpcpb.GetResponse{
@@ -602,7 +602,7 @@ func (svr *Server) KvDeleteRange(ctx context.Context, req *kvrpcpb.DeleteRangeRe
 	if reqCtx.regErr != nil {
 		return &kvrpcpb.DeleteRangeResponse{RegionError: reqCtx.regErr}, nil
 	}
-	err = svr.mvccStore.dbWriter.DeleteRange(req.StartKey, req.EndKey, reqCtx.regCtx)
+	err = svr.mvccStore.writer.DeleteRange(req.StartKey, req.EndKey, reqCtx.regCtx)
 	if err != nil {
 		log.Error("delete range failed", zap.Error(err))
 	}
@@ -656,7 +656,7 @@ func (svr *Server) Coprocessor(ctx context.Context, req *coprocessor.Request) (*
 	if reqCtx.regErr != nil {
 		return &coprocessor.Response{RegionError: reqCtx.regErr}, nil
 	}
-	resp := cophandler.HandleCopRequest(reqCtx.getDBReader(), req)
+	resp := cophandler.HandleCopRequest(reqCtx.getKVReader(), req)
 	return resp, nil
 }
 

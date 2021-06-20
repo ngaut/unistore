@@ -19,7 +19,7 @@ import (
 	"math"
 	"sort"
 
-	"github.com/ngaut/unistore/tikv/dbreader"
+	"github.com/ngaut/unistore/tikv/enginereader"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -144,7 +144,7 @@ func newClosureExecutor(dagCtx *dagContext, dagReq *tipb.DAGRequest) (*closureEx
 	default:
 		panic(fmt.Sprintf("unknown first executor type %s", executors[0].Tp))
 	}
-	ranges, err := extractKVRanges(dagCtx.dbReader.StartKey, dagCtx.dbReader.EndKey, dagCtx.keyRanges, e.scanCtx.desc)
+	ranges, err := extractKVRanges(dagCtx.reader.StartKey, dagCtx.reader.EndKey, dagCtx.keyRanges, e.scanCtx.desc)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
@@ -321,7 +321,7 @@ type closureExecutor struct {
 }
 
 type closureProcessor interface {
-	dbreader.ScanProcessor
+	enginereader.ScanProcessor
 	Finish() error
 }
 
@@ -363,10 +363,10 @@ func (e *closureExecutor) execute() ([]tipb.Chunk, error) {
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	dbReader := e.dbReader
+	reader := e.reader
 	for i, ran := range e.kvRanges {
 		if e.isPointGetRange(ran) {
-			val, err := dbReader.Get(ran.StartKey, e.startTS)
+			val, err := reader.Get(ran.StartKey, e.startTS)
 			if err != nil {
 				return nil, errors.Trace(err)
 			}
@@ -383,9 +383,9 @@ func (e *closureExecutor) execute() ([]tipb.Chunk, error) {
 		} else {
 			oldCnt := e.rowCount
 			if e.scanCtx.desc {
-				err = dbReader.ReverseScan(ran.StartKey, ran.EndKey, math.MaxInt64, e.startTS, e.processor)
+				err = reader.ReverseScan(ran.StartKey, ran.EndKey, math.MaxInt64, e.startTS, e.processor)
 			} else {
-				err = dbReader.Scan(ran.StartKey, ran.EndKey, math.MaxInt64, e.startTS, e.processor)
+				err = reader.Scan(ran.StartKey, ran.EndKey, math.MaxInt64, e.startTS, e.processor)
 			}
 			delta := int64(e.rowCount - oldCnt)
 			if e.counts != nil {
@@ -424,7 +424,7 @@ func (e *closureExecutor) checkRangeLock() error {
 }
 
 func (e *closureExecutor) checkRangeLockForRange(ran kv.KeyRange) error {
-	it := e.dbReader.GetLockIter()
+	it := e.reader.GetLockIter()
 	for it.Seek(ran.StartKey); it.Valid(); it.Next() {
 		item := it.Item()
 		if exceedEndKey(item.Key(), ran.EndKey) {
@@ -513,7 +513,7 @@ type tableScanProcessor struct {
 
 func (e *tableScanProcessor) Process(key, value []byte) error {
 	if e.rowCount == e.limit {
-		return dbreader.ScanBreak
+		return enginereader.ScanBreak
 	}
 	e.rowCount++
 	err := e.tableScanProcessCore(key, value)
@@ -613,7 +613,7 @@ type indexScanProcessor struct {
 
 func (e *indexScanProcessor) Process(key, value []byte) error {
 	if e.rowCount == e.limit {
-		return dbreader.ScanBreak
+		return enginereader.ScanBreak
 	}
 	e.rowCount++
 	err := e.indexScanProcessCore(key, value)
@@ -678,7 +678,7 @@ type selectionProcessor struct {
 
 func (e *selectionProcessor) Process(key, value []byte) error {
 	if e.rowCount == e.limit {
-		return dbreader.ScanBreak
+		return enginereader.ScanBreak
 	}
 	err := e.processCore(key, value)
 	if err != nil {

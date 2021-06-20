@@ -16,7 +16,6 @@ package raftstore
 import (
 	"time"
 
-	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
@@ -27,23 +26,23 @@ import (
 	rcpb "github.com/pingcap/kvproto/pkg/raft_cmdpb"
 )
 
-type raftDBWriter struct {
+type engineWriter struct {
 	router *router
 }
 
-func (writer *raftDBWriter) Open() {
+func (writer *engineWriter) Open() {
 	// TODO: stub
 }
 
-func (writer *raftDBWriter) Close() {
+func (writer *engineWriter) Close() {
 	// TODO: stub
 }
 
-func (writer *raftDBWriter) NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Context) mvcc.WriteBatch {
+func (writer *engineWriter) NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Context) mvcc.WriteBatch {
 	return NewCustomWriteBatch(startTS, commitTS, ctx)
 }
 
-func (writer *raftDBWriter) Write(batch mvcc.WriteBatch) error {
+func (writer *engineWriter) Write(batch mvcc.WriteBatch) error {
 	cmd := &MsgRaftCmd{
 		SendTime: time.Now(),
 		Callback: NewCallback(),
@@ -74,7 +73,7 @@ func (re *RaftError) Error() string {
 	return re.RequestErr.String()
 }
 
-func (writer *raftDBWriter) checkResponse(resp *rcpb.RaftCmdResponse, reqCount int) error {
+func (writer *engineWriter) checkResponse(resp *rcpb.RaftCmdResponse, reqCount int) error {
 	if resp.Header.Error != nil {
 		return &RaftError{RequestErr: resp.Header.Error}
 	}
@@ -85,12 +84,12 @@ func (writer *raftDBWriter) checkResponse(resp *rcpb.RaftCmdResponse, reqCount i
 	return nil
 }
 
-func (writer *raftDBWriter) DeleteRange(startKey, endKey []byte, latchHandle mvcc.LatchHandle) error {
+func (writer *engineWriter) DeleteRange(startKey, endKey []byte, latchHandle mvcc.LatchHandle) error {
 	return nil // TODO: stub
 }
 
-func NewDBWriter(conf *config.Config, router *RaftstoreRouter) mvcc.DBWriter {
-	return &raftDBWriter{
+func NewEngineWriter(router *RaftstoreRouter) mvcc.EngineWriter {
+	return &engineWriter{
 		router: router.router,
 	}
 }
@@ -125,7 +124,7 @@ func (w *TestRaftWriter) NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Co
 	return NewCustomWriteBatch(startTS, commitTS, ctx)
 }
 
-func NewTestRaftWriter(engine *Engines) mvcc.DBWriter {
+func NewTestRaftWriter(engine *Engines) mvcc.EngineWriter {
 	writer := &TestRaftWriter{
 		engine: engine,
 	}

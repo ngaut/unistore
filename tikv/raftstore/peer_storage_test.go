@@ -75,7 +75,7 @@ func getMetaKeyCount(t *testing.T, peerStore *PeerStorage) int {
 	count := 0
 	metaStart := RegionMetaPrefixKey(regionID)
 	metaEnd := RegionMetaPrefixKey(regionID + 1)
-	snap := peerStore.Engines.kv.NewSnapshot(nil)
+	snap := peerStore.Engines.kv.NewSnapAccess(nil)
 	defer snap.Discard()
 	it := snap.NewIterator(mvcc.RaftCF, false, false)
 	defer it.Close()
@@ -226,7 +226,7 @@ func TestPeerStorageCacheFetch(t *testing.T) {
 	peerStore := newTestPeerStorageFromEnts(t, ents)
 	defer cleanUpTestData(peerStore)
 	peerStore.cache.cache = nil
-	// empty cache should fetch data from engine directly.
+	// empty cache should fetch data from raft engine directly.
 	fetched, err := peerStore.Entries(4, 6, math.MaxUint64)
 	require.Nil(t, err)
 	assert.Equal(t, fetched, ents[1:])

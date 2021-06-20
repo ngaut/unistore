@@ -16,8 +16,8 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	"github.com/ngaut/unistore/enginepb"
 	"github.com/ngaut/unistore/raftengine"
-	"github.com/ngaut/unistore/sdbpb"
 	"github.com/ngaut/unistore/tikv/regiontree"
 	"sync"
 	"sync/atomic"
@@ -196,7 +196,7 @@ func (d *storeMsgHandler) start(store *metapb.Store) {
 	d.ticker.scheduleStore(StoreTickConsistencyCheck)
 }
 
-/// loadPeers loads peers in this store. It scans the db engine, loads all regions
+/// loadPeers loads peers in this store. It scans the kv engine, loads all regions
 /// and their peers from it, and schedules snapshot worker if necessary.
 /// WARN: This store should not be used before initialized.
 func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
@@ -260,7 +260,7 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 		meta.regionTree.Put(region)
 		meta.regions[regionID] = region
 		// No need to check duplicated here, because we use region id as the key
-		// in DB.
+		// in Engine.
 		regionPeers = append(regionPeers, peer)
 		return nil
 	})
@@ -608,7 +608,7 @@ func (d *storeMsgHandler) storeHeartbeatPD() {
 	stats.IsBusy = atomic.SwapUint64(&globalStats.isBusy, 0) > 0
 	storeInfo := &pdStoreHeartbeatTask{
 		stats:    stats,
-		engine:   d.ctx.engine.kv,
+		kv:       d.ctx.engine.kv,
 		capacity: d.ctx.cfg.Capacity,
 		path:     d.ctx.engine.kvPath,
 	}
@@ -698,7 +698,7 @@ func (d *storeMsgHandler) onGenerateEngineMetaChange(msg Msg) {
 	// GenerateEngineMetaChange message is first sent to store handler to find a region id for this change,
 	// Once we got the region ID, we send it to the router to create a raft log then propose this log, replicate to
 	// followers.
-	e := msg.Data.(*sdbpb.ChangeSet)
+	e := msg.Data.(*enginepb.ChangeSet)
 	err := d.ctx.router.send(e.ShardID, msg)
 	if err != nil {
 		log.S().Errorf("failed to send change event for %d:%d err %v", e.ShardID, e.ShardVer, err)

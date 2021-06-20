@@ -182,7 +182,7 @@ func (r *pdTaskHandler) onStoreHeartbeat(t *pdStoreHeartbeatTask) {
 	if capacity == 0 || diskStat.Total < capacity {
 		capacity = diskStat.Total
 	}
-	lsmSize := t.engine.Size()
+	lsmSize := t.kv.Size()
 	usedSize := t.stats.UsedSize + uint64(lsmSize) // t.stats.UsedSize contains size of snapshot files.
 	available := uint64(0)
 	if capacity > usedSize {
