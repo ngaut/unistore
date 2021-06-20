@@ -134,6 +134,9 @@ func (st *L0Table) computeSmallestAndBiggest() {
 }
 
 func (sl0 *L0Table) Get(cf int, key []byte, version, keyHash uint64) y.ValueStruct {
+	if bytes.Compare(key, sl0.smallest) < 0 || bytes.Compare(sl0.biggest, key) < 0 {
+		return y.ValueStruct{}
+	}
 	tbl := sl0.cfs[cf]
 	if tbl == nil {
 		return y.ValueStruct{}

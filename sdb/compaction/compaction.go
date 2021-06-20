@@ -88,7 +88,7 @@ func CompactTables(cr *Request, discardStats *DiscardStats, s3c *s3util.S3Client
 
 			// Only consider the versions which are below the minReadTs, otherwise, we might end up discarding the
 			// only valid version for a running transaction.
-			if vs.Version <= cr.SafeTS {
+			if cr.CF == LockCF || vs.Version <= cr.SafeTS {
 				// key is the latest readable version of this key, so we simply discard all the rest of the versions.
 				skipKey = append(skipKey[:0], key...)
 
@@ -164,9 +164,9 @@ func shouldFinishFile(lastKey []byte, currentSize, maxSize int64) bool {
 }
 
 const (
-	writeCF = 0
-	lockCF  = 1
-	extraCF = 2
+	WriteCF = 0
+	LockCF  = 1
+	ExtraCF = 2
 )
 
 // Decision is the type for compaction filter decision.
@@ -191,13 +191,13 @@ type IDAllocator interface {
 // It is called for the first valid version before safe point, older versions are discarded automatically.
 func filter(safePoint uint64, cf int, key, value, userMeta []byte) Decision {
 	switch cf {
-	case writeCF:
+	case WriteCF:
 		if mvcc.DBUserMeta(userMeta).CommitTS() < safePoint && len(value) == 0 {
 			return DecisionMarkTombstone
 		}
-	case lockCF:
+	case LockCF:
 		return DecisionKeep
-	case extraCF:
+	case ExtraCF:
 		if mvcc.DBUserMeta(userMeta).StartTS() < safePoint {
 			return DecisionDrop
 		}

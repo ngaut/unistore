@@ -580,7 +580,7 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 			if shard.GetSplitStage() >= sdbpb.SplitStage_PRE_SPLIT && change != nil && change.Compaction != nil {
 				log.S().Warnf("region %d:%d reject compaction for splitting state",
 					shard.ID, shard.Ver)
-				change.Compaction.Rejected=true
+				change.Compaction.Rejected = true
 			}
 			// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
 			change.Sequence = aCtx.execCtx.index

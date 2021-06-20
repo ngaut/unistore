@@ -92,7 +92,8 @@ type Options struct {
 }
 
 type CFConfig struct {
-	Managed bool
+	Managed   bool
+	MaxLevels int
 }
 
 // MetaChangeListener is used to notify the engine user that engine meta has changed.
@@ -115,6 +116,10 @@ var DefaultOpt = Options{
 		LogicalBloomFPR:     0.01,
 		MaxLevels:           5,
 	},
-	CFs:                   []CFConfig{{Managed: true}, {Managed: false}, {Managed: true}},
+	CFs: []CFConfig{
+		{Managed: true, MaxLevels: 3},
+		{Managed: false, MaxLevels: 2},
+		{Managed: true, MaxLevels: 1},
+	},
 	MaxMemTableSizeFactor: 256,
 }
