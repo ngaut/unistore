@@ -350,7 +350,10 @@ func (en *Engine) Compact(pri CompactionPriority) error {
 	}
 	if pri.CF == -1 {
 		log.Info("compact shard multi cf", zap.Uint64("shard", shard.ID), zap.Float64("score", pri.Score))
-		req := en.buildCompactL0Request(shard)
+		req, err := en.buildCompactL0Request(shard)
+		if err != nil {
+			return err
+		}
 		resp := en.compClient.Compact(req)
 		return en.handleCompactionResponse(shard, resp, guard)
 	}
@@ -371,7 +374,10 @@ func (en *Engine) Compact(pri CompactionPriority) error {
 	y.Assert(ok)
 	scf.setHasOverlapping(cd)
 	log.Info("running compaction", zap.Stringer("def", cd))
-	req := en.buildCompactLnRequest(cd)
+	req, err := en.buildCompactLnRequest(cd)
+	if err != nil {
+		return err
+	}
 	if req.Level > 0 && len(req.Bottoms) == 0 && req.CF == compaction.WriteCF {
 		// Move down. only write CF benefits from this optimization.
 		respComp := &enginepb.Compaction{Cf: int32(req.CF), Level: uint32(req.Level), TopDeletes: req.Tops}
@@ -407,11 +413,13 @@ func (en *Engine) newCompactionRequest(cf, level int) *compaction.Request {
 	return req
 }
 
-func (en *Engine) buildCompactL0Request(shard *Shard) *compaction.Request {
+func (en *Engine) buildCompactL0Request(shard *Shard) (*compaction.Request, error) {
 	l0s := shard.loadL0Tables()
 	req := en.newCompactionRequest(-1, 0)
+	var totalSize int64
 	for _, l0 := range l0s.tables {
 		req.Tops = append(req.Tops, l0.ID())
+		totalSize += l0.Size()
 	}
 	req.MultiCFBottoms = make([][]uint64, en.numCFs)
 	for cf := 0; cf < en.numCFs; cf++ {
@@ -419,13 +427,18 @@ func (en *Engine) buildCompactL0Request(shard *Shard) *compaction.Request {
 		bottoms := make([]uint64, len(levelHandler.tables))
 		for i, tbl := range levelHandler.tables {
 			bottoms[i] = tbl.ID()
+			totalSize += tbl.Size()
 		}
 		req.MultiCFBottoms[cf] = bottoms
 	}
-	return req
+	err := en.setAllocIDForRequest(req, totalSize)
+	if err != nil {
+		return nil, err
+	}
+	return req, nil
 }
 
-func (en *Engine) buildCompactLnRequest(cd *CompactDef) *compaction.Request {
+func (en *Engine) buildCompactLnRequest(cd *CompactDef) (*compaction.Request, error) {
 	req := en.newCompactionRequest(cd.CF, cd.Level)
 	req.Overlap = cd.HasOverlap
 	for _, tbl := range cd.Top {
@@ -434,7 +447,22 @@ func (en *Engine) buildCompactLnRequest(cd *CompactDef) *compaction.Request {
 	for _, tbl := range cd.Bot {
 		req.Bottoms = append(req.Bottoms, tbl.ID())
 	}
-	return req
+	err := en.setAllocIDForRequest(req, cd.topSize+cd.botSize)
+	if err != nil {
+		return nil, err
+	}
+	return req, nil
+}
+
+func (en *Engine) setAllocIDForRequest(req *compaction.Request, totalSize int64) error {
+	idCount := totalSize/req.MaxTableSize + 100 // Add 100 here just in case we run out of ID.
+	var err error
+	req.LastID, err = en.idAlloc.AllocID(int(idCount))
+	if err != nil {
+		return err
+	}
+	req.FirstID = req.LastID - uint64(idCount) + 1
+	return nil
 }
 
 func (en *Engine) handleCompactionResponse(shard *Shard, resp *compaction.Response, guard *epoch.Guard) error {

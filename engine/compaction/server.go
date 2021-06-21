@@ -14,11 +14,9 @@
 package compaction
 
 import (
-	"context"
 	"encoding/json"
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
-	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/s3util"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/log"
@@ -44,6 +42,8 @@ type Request struct {
 	BloomFPR       float64        `json:"bloom_fpr"`
 	InstanceID     uint32         `json:"instance_id"`
 	S3             s3util.Options `json:"s_3"`
+	FirstID        uint64         `json:"first_id"`
+	LastID         uint64         `json:"last_id"`
 }
 
 func (req *Request) getTableBuilderOptions() sstable.TableBuilderOptions {
@@ -62,11 +62,10 @@ type Response struct {
 var _ http.Handler = &Server{}
 
 type Server struct {
-	pd pd.Client
 }
 
-func NewServer(pd pd.Client) *Server {
-	return &Server{pd: pd}
+func NewServer() *Server {
+	return &Server{}
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -89,7 +88,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		Compaction: &enginepb.Compaction{Cf: int32(req.CF), Level: uint32(req.Level), TopDeletes: req.Tops},
 	}
 	if req.Level == 0 {
-		allResults, err1 := compactL0(req, s3c, s)
+		allResults, err1 := compactL0(req, s3c)
 		if err1 != nil {
 			log.Error("failed to compact L0", zap.Error(err1))
 			resp.Error = err1.Error()
@@ -106,7 +105,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 	} else {
 		stats := new(DiscardStats)
-		results, err1 := CompactTables(req, stats, s3c, s)
+		results, err1 := CompactTables(req, stats, s3c)
 		if err1 != nil {
 			log.Error("failed to compact", zap.Int("L", req.Level), zap.Error(err1))
 			resp.Error = err1.Error()
@@ -122,14 +121,6 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if err != nil {
 		log.S().Error("failed to response to client %v", err)
 	}
-}
-
-func (s *Server) AllocID() (uint64, error) {
-	physical, logical, tsErr := s.pd.GetTS(context.Background())
-	if tsErr != nil {
-		panic(tsErr)
-	}
-	return uint64(physical)<<18 + uint64(logical), nil
 }
 
 func resultToTableCreate(cf, level int, result *sstable.BuildResult) *enginepb.TableCreate {

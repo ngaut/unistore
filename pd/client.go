@@ -47,7 +47,7 @@ type Client interface {
 	ReportBatchSplit(ctx context.Context, regions []*metapb.Region) error
 	GetGCSafePoint(ctx context.Context) (uint64, error)
 	StoreHeartbeat(ctx context.Context, stats *pdpb.StoreStats) error
-	GetTS(ctx context.Context) (int64, int64, error)
+	GetTS(ctx context.Context, count int) (uint64, error)
 	SetRegionHeartbeatResponseHandler(h func(*pdpb.RegionHeartbeatResponse))
 	Close()
 }
@@ -654,14 +654,14 @@ func (c *client) StoreHeartbeat(ctx context.Context, stats *pdpb.StoreStats) err
 	return nil
 }
 
-func (c *client) GetTS(ctx context.Context) (int64, int64, error) {
+func (c *client) GetTS(ctx context.Context, count int) (lastTS uint64, err error) {
 	var resp *pdpb.TsoResponse
-	err := c.doRequest(ctx, func(ctx context.Context, client pdpb.PDClient) error {
+	err = c.doRequest(ctx, func(ctx context.Context, client pdpb.PDClient) error {
 		tsoClient, err := client.Tso(ctx)
 		if err != nil {
 			return err
 		}
-		err = tsoClient.Send(&pdpb.TsoRequest{Header: c.requestHeader(), Count: 1})
+		err = tsoClient.Send(&pdpb.TsoRequest{Header: c.requestHeader(), Count: uint32(count)})
 		if err != nil {
 			return err
 		}
@@ -672,12 +672,12 @@ func (c *client) GetTS(ctx context.Context) (int64, int64, error) {
 		return err
 	})
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	if herr := resp.Header.GetError(); herr != nil {
-		return 0, 0, errors.New(herr.String())
+		return 0, errors.New(herr.String())
 	}
-	return resp.Timestamp.Physical, resp.Timestamp.Logical, nil
+	return uint64((resp.Timestamp.Physical << 18) + resp.Timestamp.Logical), nil
 }
 
 func (c *client) ReportRegion(request *pdpb.RegionHeartbeatRequest) {

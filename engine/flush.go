@@ -64,7 +64,7 @@ func (en *Engine) runFlushMemTable(c *y.Closer) {
 
 func (en *Engine) flushMemTable(shard *Shard, m *memtable.Table) (*enginepb.L0Create, error) {
 	y.Assert(en.idAlloc != nil)
-	id, err := en.idAlloc.AllocID()
+	id, err := en.idAlloc.AllocID(1)
 	if err != nil {
 		return nil, err
 	}

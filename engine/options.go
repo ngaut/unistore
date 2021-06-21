@@ -30,7 +30,6 @@
 package engine
 
 import (
-	"github.com/ngaut/unistore/engine/compaction"
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
 	"github.com/ngaut/unistore/s3util"
@@ -79,7 +78,7 @@ type Options struct {
 
 	CFs []CFConfig
 
-	IDAllocator compaction.IDAllocator
+	IDAllocator IDAllocator
 
 	MetaChangeListener MetaChangeListener
 
@@ -94,6 +93,10 @@ type Options struct {
 type CFConfig struct {
 	Managed   bool
 	MaxLevels int
+}
+
+type IDAllocator interface {
+	AllocID(count int) (lastID uint64, err error)
 }
 
 // MetaChangeListener is used to notify the engine user that engine meta has changed.
