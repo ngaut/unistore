@@ -172,6 +172,10 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 			peerBatch := batch.peers[msg.RegionID]
 			if peerBatch == nil {
 				peerState := rw.pr.get(msg.RegionID)
+				if peerState == nil {
+					log.S().Warnf("region %d peer state is nil", msg.RegionID)
+					continue
+				}
 				peerBatch = &peerApplyBatch{
 					apply: peerState.apply,
 				}
