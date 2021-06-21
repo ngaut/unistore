@@ -23,7 +23,6 @@ import (
 )
 
 type Client struct {
-	alloc     IDAllocator
 	s3c       *s3util.S3Client
 	remoteURL string
 }
@@ -33,7 +32,7 @@ func (c *Client) Compact(req *Request) *Response {
 		compResp := &enginepb.Compaction{TopDeletes: req.Tops, Level: uint32(req.Level), Cf: int32(req.CF)}
 		resp := &Response{Compaction: compResp}
 		if req.Level == 0 {
-			results, err := compactL0(req, c.s3c, c.alloc)
+			results, err := compactL0(req, c.s3c)
 			if err != nil {
 				return &Response{Error: err.Error()}
 			}
@@ -45,7 +44,7 @@ func (c *Client) Compact(req *Request) *Response {
 			}
 		} else {
 			discardStats := new(DiscardStats)
-			results, err := CompactTables(req, discardStats, c.s3c, c.alloc)
+			results, err := CompactTables(req, discardStats, c.s3c)
 			if err != nil {
 				return &Response{Error: err.Error()}
 			}
@@ -79,6 +78,6 @@ func (c *Client) Compact(req *Request) *Response {
 	return compResp
 }
 
-func NewClient(addr string, allocator IDAllocator, s3c *s3util.S3Client) *Client {
-	return &Client{remoteURL: addr, alloc: allocator, s3c: s3c}
+func NewClient(addr string, s3c *s3util.S3Client) *Client {
+	return &Client{remoteURL: addr, s3c: s3c}
 }

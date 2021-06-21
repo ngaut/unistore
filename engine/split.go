@@ -199,7 +199,7 @@ func (en *Engine) needSplitL0(shard *Shard, l0 *sstable.L0Table) bool {
 }
 
 func (en *Engine) buildShardL0BeforeKey(iters []table.Iterator, endKey []byte, commitTS uint64) (*sstable.BuildResult, error) {
-	fid, err := en.idAlloc.AllocID()
+	fid, err := en.idAlloc.AllocID(1)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +298,7 @@ func (en *Engine) splitTables(shard *Shard, cf int, level int, keys [][]byte, sp
 }
 
 func (en *Engine) buildTableBeforeKey(itr table.Iterator, key []byte, opt sstable.TableBuilderOptions) (*sstable.BuildResult, error) {
-	id, err := en.idAlloc.AllocID()
+	id, err := en.idAlloc.AllocID(1)
 	if err != nil {
 		return nil, err
 	}

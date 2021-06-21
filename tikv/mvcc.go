@@ -659,11 +659,11 @@ func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpc
 	var minCommitTS uint64
 	if req.UseAsyncCommit || req.TryOnePc {
 		// Get minCommitTS for async commit protocol. After all keys are locked in memory lock.
-		physical, logical, tsErr := store.pdClient.GetTS(context.Background())
+		var tsErr error
+		minCommitTS, tsErr = store.pdClient.GetTS(context.Background(), 1)
 		if tsErr != nil {
 			return tsErr
 		}
-		minCommitTS = uint64(physical)<<18 + uint64(logical)
 		if req.UseAsyncCommit {
 			reqCtx.asyncMinCommitTS = minCommitTS
 		}

@@ -16,27 +16,20 @@ package main
 import (
 	"flag"
 	"github.com/ngaut/unistore/engine/compaction"
-	"github.com/ngaut/unistore/pd"
 	"github.com/pingcap/log"
 	"net/http"
 	"runtime"
-	"strings"
 )
 
 var (
-	pdAddr = flag.String("pd", "127.0.0.1:2379", "pd address")
-	addr   = flag.String("addr", ":9080", "serve address")
+	addr = flag.String("addr", ":9080", "serve address")
 )
 
 func main() {
 	flag.Parse()
 	runtime.SetMutexProfileFraction(10)
-	pdClient, err := pd.NewClient(strings.Split(*pdAddr, ","), "compaction")
-	if err != nil {
-		log.S().Fatal(err)
-	}
-	server := compaction.NewServer(pdClient)
-	err = http.ListenAndServe(*addr, server)
+	server := compaction.NewServer()
+	err := http.ListenAndServe(*addr, server)
 	if err != nil {
 		log.S().Error(err)
 	}

@@ -18,7 +18,6 @@ import (
 	"context"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/engine"
-	"github.com/ngaut/unistore/engine/compaction"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/raftengine"
 	"github.com/ngaut/unistore/tikv/cophandler"
@@ -114,12 +113,12 @@ type idAllocator struct {
 	pdCli pd.Client
 }
 
-func (a *idAllocator) AllocID() (uint64, error) {
-	physical, logical, tsErr := a.pdCli.GetTS(context.Background())
+func (a *idAllocator) AllocID(count int) (uint64, error) {
+	lastTS, tsErr := a.pdCli.GetTS(context.Background(), count)
 	if tsErr != nil {
 		return 0, tsErr
 	}
-	return uint64(physical)<<18 + uint64(logical), nil
+	return lastTS, nil
 }
 
 func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
@@ -141,7 +140,7 @@ func createRaftEngine(subPath string, conf *config.RaftEngine) (*raftengine.Engi
 }
 
 func createKVEngine(subPath string, listener *raftstore.MetaChangeListener,
-	allocator compaction.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*engine.Engine, error) {
+	allocator engine.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*engine.Engine, error) {
 	opts := engine.DefaultOpt
 	opts.BaseSize = conf.BaseSize
 	opts.TableBuilderOptions.MaxTableSize = conf.MaxTableSize

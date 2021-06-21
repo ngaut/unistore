@@ -64,7 +64,7 @@ type Engine struct {
 	flushCh      chan *flushTask
 	manifest     *Manifest
 	mangedSafeTS uint64
-	idAlloc      compaction.IDAllocator
+	idAlloc      IDAllocator
 	compClient   *compaction.Client
 	s3c          *s3util.S3Client
 	closed       uint32
@@ -120,7 +120,7 @@ func OpenEngine(opt Options) (en *Engine, err error) {
 	if opt.S3Options.EndPoint != "" {
 		en.s3c = s3util.NewS3Client(en.closers.s3Client, opt.Dir, opt.InstanceID, opt.S3Options)
 	}
-	en.compClient = compaction.NewClient(opt.RemoteCompactionAddr, en.idAlloc, en.s3c)
+	en.compClient = compaction.NewClient(opt.RemoteCompactionAddr, en.s3c)
 	if err = en.loadShards(); err != nil {
 		return nil, errors.AddStack(err)
 	}
@@ -467,8 +467,8 @@ type localIDAllocator struct {
 	latest uint64
 }
 
-func (l *localIDAllocator) AllocID() (uint64, error) {
-	return atomic.AddUint64(&l.latest, 1), nil
+func (l *localIDAllocator) AllocID(count int) (uint64, error) {
+	return atomic.AddUint64(&l.latest, uint64(count)), nil
 }
 
 func (en *Engine) Close() error {

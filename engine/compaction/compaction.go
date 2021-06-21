@@ -41,7 +41,7 @@ func (ds *DiscardStats) String() string {
 }
 
 // CompactTables compacts tables in CompactDef and returns the file names.
-func CompactTables(cr *Request, discardStats *DiscardStats, s3c *s3util.S3Client, allocator IDAllocator) ([]*sstable.BuildResult, error) {
+func CompactTables(cr *Request, discardStats *DiscardStats, s3c *s3util.S3Client) ([]*sstable.BuildResult, error) {
 	var buildResults []*sstable.BuildResult
 	it, err := buildIterators(cr, s3c)
 	if err != nil {
@@ -55,11 +55,11 @@ func CompactTables(cr *Request, discardStats *DiscardStats, s3c *s3util.S3Client
 	if s3c != nil {
 		bt = scheduler.NewBatchTasks()
 	}
+	allocID := cr.FirstID
 	for it.Valid() {
-		id, err := allocator.AllocID()
-		if err != nil {
-			return nil, err
-		}
+		y.Assert(allocID <= cr.LastID)
+		id := allocID
+		allocID++
 		if builder == nil {
 			builder = sstable.NewTableBuilder(id, cr.getTableBuilderOptions())
 		} else {
@@ -181,11 +181,6 @@ const (
 	DecisionDrop Decision = 2
 )
 
-// IDAllocator is a function that allocated file ID.
-type IDAllocator interface {
-	AllocID() (uint64, error)
-}
-
 // filter implements the badger.CompactionFilter interface.
 // Since we use txn ts as badger version, we only need to filter Delete, Rollback and Op_Lock.
 // It is called for the first valid version before safe point, older versions are discarded automatically.
@@ -295,7 +290,7 @@ func (h *compactL0Helper) buildOne(id uint64) (*sstable.BuildResult, error) {
 	return result, nil
 }
 
-func compactL0(req *Request, s3c *s3util.S3Client, allocator IDAllocator) ([][]*sstable.BuildResult, error) {
+func compactL0(req *Request, s3c *s3util.S3Client) ([][]*sstable.BuildResult, error) {
 	l0Files, err := loadTableFiles(req.Tops, s3c)
 	if err != nil {
 		return nil, err
@@ -303,6 +298,7 @@ func compactL0(req *Request, s3c *s3util.S3Client, allocator IDAllocator) ([][]*
 	allResults := make([][]*sstable.BuildResult, len(req.MultiCFBottoms))
 	l0Tbls := inMemFilesToL0Tables(l0Files)
 	bt := scheduler.NewBatchTasks()
+	allocID := req.FirstID
 	for cf := 0; cf < len(req.MultiCFBottoms); cf++ {
 		botIDs := req.MultiCFBottoms[cf]
 		botFiles, err1 := loadTableFiles(botIDs, s3c)
@@ -313,10 +309,9 @@ func compactL0(req *Request, s3c *s3util.S3Client, allocator IDAllocator) ([][]*
 		defer helper.iter.Close()
 		var results []*sstable.BuildResult
 		for {
-			id, err2 := allocator.AllocID()
-			if err2 != nil {
-				return nil, err2
-			}
+			y.Assert(allocID <= req.LastID)
+			id := allocID
+			allocID++
 			result, err2 := helper.buildOne(id)
 			if err2 != nil {
 				return nil, err2
