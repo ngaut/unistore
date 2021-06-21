@@ -54,6 +54,7 @@ type Options struct {
 	Bucket             string `json:"bucket"`
 	Region             string `json:"region"`
 	ExpirationDuration string `json:"expiration_duration"`
+	Concurrency        int    `json:"concurrency"`
 }
 
 type S3Client struct {
@@ -67,9 +68,12 @@ type S3Client struct {
 }
 
 func NewS3Client(c *y.Closer, dirPath string, instanceID uint32, opts Options) *S3Client {
+	if opts.Concurrency <= 0 {
+		opts.Concurrency = 256
+	}
 	s3c := &S3Client{
 		Options:    opts,
-		Scheduler:  scheduler.NewScheduler(256),
+		Scheduler:  scheduler.NewScheduler(opts.Concurrency),
 		instanceID: instanceID,
 	}
 	tr := &http.Transport{

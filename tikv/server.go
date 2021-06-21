@@ -155,6 +155,7 @@ func createKVEngine(subPath string, listener *raftstore.MetaChangeListener,
 	opts.S3Options.Bucket = conf.S3.Bucket
 	opts.S3Options.Region = conf.S3.Region
 	opts.S3Options.ExpirationDuration = conf.S3.ExpirationDuration
+	opts.S3Options.Concurrency = conf.S3.Concurrency
 	opts.Dir = filepath.Join(conf.Path, subPath)
 	if allocator != nil {
 		opts.IDAllocator = allocator
