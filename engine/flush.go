@@ -36,7 +36,7 @@ func (en *Engine) runFlushMemTable(c *y.Closer) {
 	defer c.Done()
 	for task := range en.flushCh {
 		change := newChangeSet(task.shard)
-		change.Flush = &enginepb.Flush{CommitTS: task.tbl.GetVersion()}
+		change.Flush = &enginepb.Flush{CommitTS: task.tbl.GetVersion(), Properties: task.tbl.GetProps()}
 		change.Stage = task.tbl.GetSplitStage()
 		if !task.tbl.Empty() {
 			l0Table, err := en.flushMemTable(task.shard, task.tbl)
@@ -120,7 +120,7 @@ func (en *Engine) flushMemTable(shard *Shard, m *memtable.Table) (*enginepb.L0Cr
 			return nil, err
 		}
 	}
-	return newL0CreateByResult(result, m.GetProps()), nil
+	return newL0CreateByResult(result), nil
 }
 
 func atomicAddMemTable(pointer *unsafe.Pointer, memTbl *memtable.Table) {

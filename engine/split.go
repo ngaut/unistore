@@ -159,7 +159,7 @@ func (en *Engine) splitShardL0Table(shard *Shard, l0 *sstable.L0Table) ([]*engin
 					return putSSTBuildResultToS3(en.s3c, result)
 				})
 			}
-			newL0 := newL0CreateByResult(result, nil)
+			newL0 := newL0CreateByResult(result)
 			newL0s = append(newL0s, newL0)
 		}
 	}
@@ -173,7 +173,7 @@ func (en *Engine) splitShardL0Table(shard *Shard, l0 *sstable.L0Table) ([]*engin
 				return putSSTBuildResultToS3(en.s3c, result)
 			})
 		}
-		lastL0 := newL0CreateByResult(result, nil)
+		lastL0 := newL0CreateByResult(result)
 		newL0s = append(newL0s, lastL0)
 	}
 	if en.s3c != nil {

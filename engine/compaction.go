@@ -216,12 +216,11 @@ func newTableCreateByResult(result *sstable.BuildResult, cf int, level int) *eng
 	}
 }
 
-func newL0CreateByResult(result *sstable.BuildResult, props *enginepb.Properties) *enginepb.L0Create {
+func newL0CreateByResult(result *sstable.BuildResult) *enginepb.L0Create {
 	change := &enginepb.L0Create{
-		ID:         result.ID,
-		Smallest:   result.Smallest,
-		Biggest:    result.Biggest,
-		Properties: props,
+		ID:       result.ID,
+		Smallest: result.Smallest,
+		Biggest:  result.Biggest,
 	}
 	return change
 }

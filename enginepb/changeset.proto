@@ -52,6 +52,7 @@ message Compaction {
 message Flush {
   L0Create l0Create = 1;
   uint64 commitTS = 2;
+  Properties properties = 3;
 }
 
 message Snapshot {
@@ -74,7 +75,6 @@ message L0Create {
   uint64 ID = 1;
   bytes smallest = 2;
   bytes biggest = 3;
-  Properties properties = 4;
 }
 
 message TableCreate {

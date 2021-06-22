@@ -1403,9 +1403,9 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 	change := result.change
 	if change.Flush != nil {
 		store.initialFlushed = true
-		l0 := change.Flush.L0Create
-		if l0 != nil && l0.Properties != nil {
-			val, ok := engine.GetShardProperty(applyStateKey, l0.Properties)
+		props := change.Flush.Properties
+		if props != nil {
+			val, ok := engine.GetShardProperty(applyStateKey, props)
 			y.Assert(ok)
 			var applyState applyState
 			applyState.Unmarshal(val)
