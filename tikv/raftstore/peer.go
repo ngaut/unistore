@@ -246,7 +246,7 @@ type Peer struct {
 	RaftGroup      *raft.RawNode
 	peerStorage    *PeerStorage
 	proposals      *ProposalQueue
-	applyProposals []*proposal
+	applyProposals []proposal
 	pendingReads   *ReadIndexQueue
 
 	peerCache map[uint64]*metapb.Peer
@@ -1255,7 +1255,7 @@ func (p *Peer) PostPropose(meta *ProposalMeta, isConfChange bool, cb *Callback) 
 	// Try to renew leader lease on every consistent read/write request.
 	t := time.Now()
 	meta.RenewLeaseTime = &t
-	proposal := &proposal{
+	proposal := proposal{
 		isConfChange: isConfChange,
 		index:        meta.Index,
 		term:         meta.Term,

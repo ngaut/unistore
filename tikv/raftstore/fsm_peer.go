@@ -262,7 +262,6 @@ func (d *peerMsgHandler) HandleRaftReadyAppend(proposals []*regionProposal) []*r
 		return proposals
 	}
 	d.ctx.pendingCount += 1
-	d.ctx.hasReady = true
 	if p := d.peer.TakeApplyProposals(); p != nil {
 		proposals = append(proposals, p)
 	}

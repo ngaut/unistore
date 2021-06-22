@@ -15,6 +15,7 @@ package raftstore
 
 import (
 	"encoding/binary"
+	"fmt"
 	"github.com/dgryski/go-farm"
 	"github.com/ngaut/unistore/raftengine"
 	"github.com/pingcap/log"
@@ -66,20 +67,22 @@ func hashRegionID(regionID uint64) uint64 {
 type raftWorker struct {
 	pr *router
 
-	raftCh        chan Msg
-	raftCtx       *RaftContext
-	raftStartTime time.Time
+	msgs    []Msg
+	ticker  *time.Ticker
+	raftCh  chan Msg
+	raftCtx *RaftContext
 
 	applyChs   []chan []*peerApplyBatch
 	applyCtxes []*applyContext
 	applyResCh chan Msg
 
-	msgCnt            uint64
 	movePeerCandidate uint64
 	closeCh           <-chan struct{}
 
-	topWriteDurations []time.Duration
-	writeDurTotal     time.Duration
+	handleMsgDc   *durationCollector
+	readyAppendDc *durationCollector
+	writeDc       *durationCollector
+	handleReadyDc *durationCollector
 }
 
 func newRaftWorker(ctx *GlobalContext, ch chan Msg, pm *router, applyWorkerCnt int) *raftWorker {
@@ -97,12 +100,16 @@ func newRaftWorker(ctx *GlobalContext, ch chan Msg, pm *router, applyWorkerCnt i
 		applyCtxes[i] = newApplyContext("", ctx.regionTaskSender, ctx.engine, applyResCh, ctx.cfg)
 	}
 	return &raftWorker{
-		raftCh:     ch,
-		applyResCh: applyResCh,
-		raftCtx:    raftCtx,
-		pr:         pm,
-		applyChs:   applyChs,
-		applyCtxes: applyCtxes,
+		raftCh:        ch,
+		applyResCh:    applyResCh,
+		raftCtx:       raftCtx,
+		pr:            pm,
+		applyChs:      applyChs,
+		applyCtxes:    applyCtxes,
+		handleMsgDc:   newDurationCollector("raft_handle_msg"),
+		readyAppendDc: newDurationCollector("raft_ready_append"),
+		writeDc:       newDurationCollector("raft_write"),
+		handleReadyDc: newDurationCollector("raft_handle_ready"),
 	}
 }
 
@@ -111,87 +118,82 @@ func newRaftWorker(ctx *GlobalContext, ch chan Msg, pm *router, applyWorkerCnt i
 // After commands are handled, we collect apply messages by peers, make a applyBatch, send it to apply channel.
 func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
-	timeTicker := time.NewTicker(rw.raftCtx.cfg.RaftBaseTickInterval)
-	var msgs []Msg
+	rw.ticker = time.NewTicker(rw.raftCtx.cfg.RaftBaseTickInterval)
 	for {
-		for i := range msgs {
-			msgs[i] = Msg{}
-		}
-		msgs = msgs[:0]
-		select {
-		case <-closeCh:
-			for _, applyCh := range rw.applyChs {
-				applyCh <- nil
-			}
+		if quit := rw.receiveMsgs(closeCh); quit {
 			return
-		case msg := <-rw.raftCh:
-			msgs = append(msgs, msg)
-		case msg := <-rw.applyResCh:
-			msgs = append(msgs, msg)
-		case <-timeTicker.C:
-			rw.pr.peers.Range(func(key, value interface{}) bool {
-				msgs = append(msgs, NewPeerMsg(MsgTypeTick, key.(uint64), nil))
-				return true
-			})
 		}
-		pending := len(rw.raftCh)
-		for i := 0; i < pending; i++ {
-			msgs = append(msgs, <-rw.raftCh)
-		}
-		resLen := len(rw.applyResCh)
-		for i := 0; i < resLen; i++ {
-			msgs = append(msgs, <-rw.applyResCh)
-		}
-		metrics.RaftBatchSize.Observe(float64(len(msgs)))
-		atomic.AddUint64(&rw.msgCnt, uint64(len(msgs)))
-		peerStateMap := make(map[uint64]*peerState)
-		rw.raftCtx.pendingCount = 0
-		rw.raftCtx.hasReady = false
-		rw.raftStartTime = time.Now()
-		batch := newApplyBatch()
-		var proposals []*regionProposal
-		for _, msg := range msgs {
-			peerState := rw.getPeerState(peerStateMap, msg.RegionID)
-			h := newRaftMsgHandler(peerState.peer, rw.raftCtx)
-			h.HandleMsgs(msg)
-		}
-		var movePeer uint64
-		for id, peerState := range peerStateMap {
-			movePeer = id
-			h := newRaftMsgHandler(peerState.peer, rw.raftCtx)
-			proposals = h.HandleRaftReadyAppend(proposals)
-		}
-		// Pick one peer as the candidate to be moved to other workers.
-		atomic.StoreUint64(&rw.movePeerCandidate, movePeer)
-		if rw.raftCtx.hasReady {
-			rw.handleRaftReady(peerStateMap, proposals)
-		}
+		peerStateMap := rw.handleMsgs()
+		rw.handleRaftReadyAppend(peerStateMap)
+		rw.writeRaftWriteBatch()
+		rw.handleRaftReady(peerStateMap)
 		rw.raftCtx.flushLocalStats()
-		applyMsgs := rw.raftCtx.applyMsgs
-		for i, msg := range applyMsgs.msgs {
-			peerBatch := batch.peers[msg.RegionID]
-			if peerBatch == nil {
-				peerState := rw.pr.get(msg.RegionID)
-				if peerState == nil {
-					log.S().Warnf("region %d peer state is nil", msg.RegionID)
-					continue
-				}
-				peerBatch = &peerApplyBatch{
-					apply: peerState.apply,
-				}
-				batch.peers[msg.RegionID] = peerBatch
-			}
-			peerBatch.applyMsgs = append(peerBatch.applyMsgs, msg)
-			applyMsgs.msgs[i] = Msg{}
-		}
-		applyMsgs.msgs = applyMsgs.msgs[:0]
-		groups := batch.group(len(rw.applyChs))
-		for i, group := range groups {
-			if len(group) > 0 {
-				rw.applyChs[i] <- group
-			}
-		}
+		rw.scheduleApply()
 	}
+}
+
+func (rw *raftWorker) receiveMsgs(closeCh <-chan struct{}) (quit bool) {
+	for i := range rw.msgs {
+		rw.msgs[i] = Msg{}
+	}
+	rw.msgs = rw.msgs[:0]
+	select {
+	case <-closeCh:
+		for _, applyCh := range rw.applyChs {
+			applyCh <- nil
+		}
+		return true
+	case msg := <-rw.raftCh:
+		rw.msgs = append(rw.msgs, msg)
+	case msg := <-rw.applyResCh:
+		rw.msgs = append(rw.msgs, msg)
+	case <-rw.ticker.C:
+		rw.pr.peers.Range(func(key, value interface{}) bool {
+			rw.msgs = append(rw.msgs, NewPeerMsg(MsgTypeTick, key.(uint64), nil))
+			return true
+		})
+	}
+	pending := len(rw.raftCh)
+	for i := 0; i < pending; i++ {
+		rw.msgs = append(rw.msgs, <-rw.raftCh)
+	}
+	resLen := len(rw.applyResCh)
+	for i := 0; i < resLen; i++ {
+		rw.msgs = append(rw.msgs, <-rw.applyResCh)
+	}
+	metrics.RaftBatchSize.Observe(float64(len(rw.msgs)))
+	return false
+}
+
+func (rw *raftWorker) handleMsgs() (peerStateMap map[uint64]*peerState) {
+	begin := time.Now()
+	rw.raftCtx.pendingCount = 0
+	peerStateMap = make(map[uint64]*peerState)
+	for _, msg := range rw.msgs {
+		peerState := rw.getPeerState(peerStateMap, msg.RegionID)
+		h := newRaftMsgHandler(peerState.peer, rw.raftCtx)
+		h.HandleMsgs(msg)
+	}
+	rw.handleMsgDc.collect(time.Since(begin))
+	return peerStateMap
+}
+
+func (rw *raftWorker) handleRaftReadyAppend(peerStateMap map[uint64]*peerState) {
+	begin := time.Now()
+	var movePeer uint64
+	var proposals []*regionProposal
+	for id, peerState := range peerStateMap {
+		movePeer = id
+		h := newRaftMsgHandler(peerState.peer, rw.raftCtx)
+		proposals = h.HandleRaftReadyAppend(proposals)
+	}
+	for _, proposal := range proposals {
+		msg := Msg{Type: MsgTypeApplyProposal, Data: proposal}
+		rw.raftCtx.applyMsgs.appendMsg(proposal.RegionId, msg)
+	}
+	// Pick one peer as the candidate to be moved to other workers.
+	atomic.StoreUint64(&rw.movePeerCandidate, movePeer)
+	rw.readyAppendDc.collect(time.Since(begin))
 }
 
 func (rw *raftWorker) getPeerState(peersMap map[uint64]*peerState, regionID uint64) *peerState {
@@ -203,50 +205,21 @@ func (rw *raftWorker) getPeerState(peersMap map[uint64]*peerState, regionID uint
 	return peer
 }
 
-func (rw *raftWorker) handleRaftReady(peers map[uint64]*peerState, proposals []*regionProposal) {
-	for _, proposal := range proposals {
-		msg := Msg{Type: MsgTypeApplyProposal, Data: proposal}
-		rw.raftCtx.applyMsgs.appendMsg(proposal.RegionId, msg)
-	}
-	var dur time.Duration
-	dur = rw.writeRaftWriteBatch()
+func (rw *raftWorker) handleRaftReady(peers map[uint64]*peerState) {
 	readyRes := rw.raftCtx.ReadyRes
-	rw.raftCtx.ReadyRes = nil
 	if len(readyRes) > 0 {
+		rw.raftCtx.ReadyRes = nil
+		begin := time.Now()
 		for _, pair := range readyRes {
 			h := newRaftMsgHandler(peers[pair.IC.Region.Id].peer, rw.raftCtx)
 			h.HandleRaftReady(&pair.Ready, pair.IC)
 		}
-	}
-	if !rw.raftCtx.isBusy {
-		electionTimeout := rw.raftCtx.cfg.RaftBaseTickInterval * time.Duration(rw.raftCtx.cfg.RaftElectionTimeoutTicks)
-		if dur > electionTimeout {
-			rw.raftCtx.isBusy = true
-		}
+		rw.handleReadyDc.collect(time.Since(begin))
 	}
 }
 
-func (rw *raftWorker) appendWriteDuration(dur time.Duration) {
-	rw.writeDurTotal += dur
-	if dur > 10*time.Millisecond {
-		rw.topWriteDurations = append(rw.topWriteDurations, dur)
-	}
-	if rw.writeDurTotal > 10*time.Second {
-		sort.Slice(rw.topWriteDurations, func(i, j int) bool {
-			return rw.topWriteDurations[i] > rw.topWriteDurations[j]
-		})
-		if len(rw.topWriteDurations) > 10 {
-			rw.topWriteDurations = rw.topWriteDurations[:10]
-		}
-		log.S().Infof("raft store write duration %v top:%v", rw.writeDurTotal, rw.topWriteDurations)
-		rw.topWriteDurations = rw.topWriteDurations[:0]
-		rw.writeDurTotal = 0
-	}
-}
-
-func (rw *raftWorker) writeRaftWriteBatch() time.Duration {
+func (rw *raftWorker) writeRaftWriteBatch() {
 	raftWB := rw.raftCtx.raftWB
-	var dur time.Duration
 	if !raftWB.IsEmpty() {
 		begin := time.Now()
 		err := rw.raftCtx.engine.raft.Write(raftWB)
@@ -254,10 +227,36 @@ func (rw *raftWorker) writeRaftWriteBatch() time.Duration {
 			panic(err)
 		}
 		raftWB.Reset()
-		dur = time.Since(begin)
-		rw.appendWriteDuration(dur)
+		rw.writeDc.collect(time.Since(begin))
 	}
-	return dur
+}
+
+func (rw *raftWorker) scheduleApply() {
+	applyMsgs := rw.raftCtx.applyMsgs
+	batch := newApplyBatch()
+	for i, msg := range applyMsgs.msgs {
+		peerBatch := batch.peers[msg.RegionID]
+		if peerBatch == nil {
+			peerState := rw.pr.get(msg.RegionID)
+			if peerState == nil {
+				log.S().Warnf("region %d peer state is nil", msg.RegionID)
+				continue
+			}
+			peerBatch = &peerApplyBatch{
+				apply: peerState.apply,
+			}
+			batch.peers[msg.RegionID] = peerBatch
+		}
+		peerBatch.applyMsgs = append(peerBatch.applyMsgs, msg)
+		applyMsgs.msgs[i] = Msg{}
+	}
+	applyMsgs.msgs = applyMsgs.msgs[:0]
+	groups := batch.group(len(rw.applyChs))
+	for i, group := range groups {
+		if len(group) > 0 {
+			rw.applyChs[i] <- group
+		}
+	}
 }
 
 type applyWorker struct {
@@ -265,9 +264,7 @@ type applyWorker struct {
 	r   *router
 	ch  chan []*peerApplyBatch
 	ctx *applyContext
-
-	total time.Duration
-	top   []time.Duration
+	dc  *durationCollector
 }
 
 func newApplyWorker(r *router, idx int, ch chan []*peerApplyBatch, ctx *applyContext) *applyWorker {
@@ -276,6 +273,7 @@ func newApplyWorker(r *router, idx int, ch chan []*peerApplyBatch, ctx *applyCon
 		r:   r,
 		ch:  ch,
 		ctx: ctx,
+		dc:  newDurationCollector(fmt.Sprintf("apply%d", idx)),
 	}
 }
 
@@ -293,25 +291,7 @@ func (aw *applyWorker) run(wg *sync.WaitGroup) {
 				peerBatch.apply.handleMsg(aw.ctx, msg)
 			}
 		}
-		aw.appendDuration(time.Since(begin))
-	}
-}
-
-func (aw *applyWorker) appendDuration(dur time.Duration) {
-	aw.total += dur
-	if dur > 5*time.Millisecond {
-		aw.top = append(aw.top, dur)
-	}
-	if aw.total > time.Second*10 {
-		sort.Slice(aw.top, func(i, j int) bool {
-			return aw.top[i] > aw.top[j]
-		})
-		if len(aw.top) > 10 {
-			aw.top = aw.top[:10]
-		}
-		log.S().Infof("%d apply duration %v top:%v", aw.idx, aw.total, aw.top)
-		aw.total = 0
-		aw.top = aw.top[:0]
+		aw.dc.collect(time.Since(begin))
 	}
 }
 
@@ -347,4 +327,43 @@ func (sw *storeWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 		}
 		sw.store.handleMsg(msg)
 	}
+}
+
+type durationCollector struct {
+	name      string
+	top       []time.Duration
+	total     time.Duration
+	cnt       int
+	lastPrint time.Time
+}
+
+const printInterval = time.Second * 10
+
+func newDurationCollector(name string) *durationCollector {
+	return &durationCollector{name: name, lastPrint: time.Now()}
+}
+
+func (dc *durationCollector) collect(dur time.Duration) {
+	dc.total += dur
+	dc.cnt++
+	if dur > 5*time.Millisecond {
+		dc.top = append(dc.top, dur)
+	}
+	if dc.total > printInterval {
+		sort.Slice(dc.top, func(i, j int) bool {
+			return dc.top[i] > dc.top[j]
+		})
+		if len(dc.top) > 10 {
+			dc.top = dc.top[:10]
+		}
+		log.S().Infof("%s duration:%v/%v count:%d top:%v", dc.name, dc.total, time.Since(dc.lastPrint), dc.cnt, dc.top)
+		dc.reset()
+	}
+}
+
+func (dc *durationCollector) reset() {
+	dc.total = 0
+	dc.cnt = 0
+	dc.top = dc.top[:0]
+	dc.lastPrint = time.Now()
 }

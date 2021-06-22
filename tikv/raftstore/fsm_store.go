@@ -102,8 +102,6 @@ type RaftContext struct {
 	ReadyRes     []*ReadyICPair
 	raftWB       *raftengine.WriteBatch
 	pendingCount int
-	hasReady     bool
-	isBusy       bool
 	localStats   *storeStats
 }
 
