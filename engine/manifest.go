@@ -186,10 +186,9 @@ func (m *Manifest) toChangeSet(shardID uint64) (*enginepb.ChangeSet, error) {
 		fileMeta := m.globalFiles[fid]
 		if fileMeta.level == 0 {
 			shardSnap.L0Creates = append(shardSnap.L0Creates, &enginepb.L0Create{
-				ID:         fid,
-				Smallest:   fileMeta.smallest,
-				Biggest:    fileMeta.biggest,
-				Properties: nil, // Store properties in ShardCreate.
+				ID:       fid,
+				Smallest: fileMeta.smallest,
+				Biggest:  fileMeta.biggest,
 			})
 		} else {
 			shardSnap.TableCreates = append(shardSnap.TableCreates, &enginepb.TableCreate{
@@ -386,12 +385,13 @@ func (m *Manifest) applyFlush(cs *enginepb.ChangeSet, shardInfo *ShardMeta) {
 	shardInfo.parent = nil
 	l0 := cs.Flush.L0Create
 	if l0 != nil {
-		if l0.Properties != nil {
-			for i, key := range l0.Properties.Keys {
-				shardInfo.properties.set(key, l0.Properties.Values[i])
-			}
-		}
 		m.addFile(l0.ID, -1, 0, l0.Smallest, l0.Biggest, shardInfo)
+	}
+	props := cs.Flush.Properties
+	if props != nil {
+		for i, key := range props.Keys {
+			shardInfo.properties.set(key, props.Values[i])
+		}
 	}
 	log.S().Infof("%d:%d apply flush ver:%d props:%s", cs.ShardID, cs.ShardVer, cs.Flush.CommitTS, shardInfo.properties)
 }
