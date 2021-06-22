@@ -41,9 +41,11 @@ var (
 	// ErrKeyNotFound is returned when key isn't found on a txn.Get.
 	ErrKeyNotFound = errors.New("Key not found")
 
-	errShardNotFound            = errors.New("shard not found")
-	errShardNotMatch            = errors.New("shard not match")
-	errShardWrongSplittingStage = errors.New("shard wrong splitting stage")
+	ErrShardNotFound         = errors.New("shard not found")
+	ErrShardNotMatch         = errors.New("shard not match")
+	ErrPreSplitWrongStage    = errors.New("pre-split wrong stage")
+	ErrSplitFilesWrongStage  = errors.New("split-files wrong stage")
+	ErrFinishSplitWrongStage = errors.New("finish-split wrong stage")
 )
 
 type closers struct {

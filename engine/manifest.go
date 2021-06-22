@@ -313,7 +313,7 @@ func (m *Manifest) ApplyChangeSet(cs *enginepb.ChangeSet) error {
 	}
 	shardInfo := m.shards[cs.ShardID]
 	if shardInfo == nil {
-		return errors.WithStack(errShardNotFound)
+		return errors.WithStack(ErrShardNotFound)
 	}
 	y.Assert(shardInfo.Ver == cs.ShardVer)
 	if cs.Sequence != 0 {
