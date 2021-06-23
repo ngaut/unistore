@@ -185,10 +185,10 @@ type proposal struct {
 type regionProposal struct {
 	Id       uint64
 	RegionId uint64
-	Props    []*proposal
+	Props    []proposal
 }
 
-func newRegionProposal(id uint64, regionId uint64, props []*proposal) *regionProposal {
+func newRegionProposal(id uint64, regionId uint64, props []proposal) *regionProposal {
 	return &regionProposal{
 		Id:       id,
 		RegionId: regionId,
