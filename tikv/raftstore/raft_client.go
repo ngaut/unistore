@@ -48,7 +48,7 @@ type raftConn struct {
 func newRaftConn(storeID uint64, cfg *Config, pdCli pd.Client) *raftConn {
 	ctx, cancel := context.WithCancel(context.Background())
 	rc := &raftConn{
-		msgCh:   make(chan *raft_serverpb.RaftMessage, 256),
+		msgCh:   make(chan *raft_serverpb.RaftMessage, 4096),
 		ctx:     ctx,
 		cancel:  cancel,
 		storeID: storeID,
