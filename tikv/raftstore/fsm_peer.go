@@ -1412,6 +1412,10 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 			store.stableApplyState = applyState
 		}
 	}
+	if change.SplitFiles != nil {
+		d.ctx.applyMsgs.appendMsg(d.regionID(), NewPeerMsg(MsgTypeApplyResume, d.regionID(), nil))
+		d.hasReady = true
+	}
 	if change.Stage > store.splitStage {
 		log.S().Infof("%d:%d peer store split stage is changed from %s to %s",
 			change.ShardID, change.ShardVer, store.splitStage, change.Stage)

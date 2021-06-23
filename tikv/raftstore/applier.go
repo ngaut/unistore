@@ -161,6 +161,7 @@ const (
 	applyResultTypeNone              applyResultType = 0
 	applyResultTypeExecResult        applyResultType = 1
 	applyResultTypeWaitMergeResource applyResultType = 2
+	applyResultTypePause             applyResultType = 3
 )
 
 type applyResult struct {
@@ -232,7 +233,6 @@ type applyContext struct {
 	execCtx          *applyExecContext
 	wb               *KVWriteBatch
 	lastAppliedIndex uint64
-	committedCount   int
 
 	// Whether to use the delete range API instead of deleting one by one.
 	useDeleteRange bool
@@ -372,6 +372,8 @@ type applier struct {
 
 	lockCache map[string][]byte
 	snap      *engine.SnapAccess
+
+	pauseState *apply
 }
 
 func newApplier(reg *registration) *applier {
@@ -400,11 +402,14 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 			a.snap = nil
 		}
 	}()
-	aCtx.committedCount += len(committedEntries)
+	if a.pauseState != nil {
+		a.pauseState.entries = append(a.pauseState.entries, committedEntries...)
+		return
+	}
+
 	// If we send multiple ConfChange commands, only first one will be proposed correctly,
 	// others will be saved as a normal entry with no data, so we must re-propose these
 	// commands again.
-	aCtx.committedCount += len(committedEntries)
 	var results []execResult
 	for i := range committedEntries {
 		entry := &committedEntries[i]
@@ -435,7 +440,6 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 			results = append(results, res.data)
 		case applyResultTypeWaitMergeResource:
 			readyToMerge := res.data.(*atomic.Uint64)
-			aCtx.committedCount -= len(committedEntries) - i
 			pendingEntries := make([]eraftpb.Entry, 0, len(committedEntries)-i)
 			// Note that CommitMerge is skipped when `WaitMergeSource` is returned.
 			// So we need to enqueue it again and execute it again when resuming.
@@ -445,6 +449,16 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 				pendingEntries: pendingEntries,
 				readyToMerge:   readyToMerge,
 			}
+			return
+		case applyResultTypePause:
+			pause := &apply{
+				regionId: a.region.Id,
+				term:     a.term,
+				entries:  make([]eraftpb.Entry, 0, len(committedEntries)-i),
+			}
+			pause.entries = append(pause.entries, committedEntries[i:]...)
+			aCtx.finishFor(a, results)
+			a.pauseState = pause
 			return
 		}
 	}
@@ -544,6 +558,9 @@ func (a *applier) processRaftCmd(aCtx *applyContext, index, term uint64, rlog ra
 	if result.tp == applyResultTypeWaitMergeResource {
 		return result
 	}
+	if result.tp == applyResultTypePause {
+		return result
+	}
 	log.S().Debugf("applied command. region_id %d, peer_id %d, index %d", a.region.Id, a.id, index)
 
 	// TODO: if we have exec_result, maybe we should return this callback too. Outer
@@ -601,6 +618,9 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 		resp = ErrResp(err)
 	}
 	if applyResult.tp == applyResultTypeWaitMergeResource {
+		return resp, applyResult
+	}
+	if applyResult.tp == applyResultTypePause {
 		return resp, applyResult
 	}
 	a.applyState = aCtx.execCtx.applyState
@@ -960,6 +980,13 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	}
 	_, err = aCtx.engines.kv.FinishSplit(a.region.Id, a.region.RegionEpoch.Version, newShardProps)
 	if err != nil {
+		if err == engine.ErrFinishSplitWrongStage {
+			// This must be a follower that fall behind, we need to pause the apply and wait for split files to finish
+			// in the background worker.
+			log.S().Warnf("%d:%d is not in split file done stage for finish split, pause apply",
+				a.region.Id, a.region.RegionEpoch.Version)
+			result = applyResult{tp: applyResultTypePause}
+		}
 		return
 	}
 	// clear the cache here or the locks doesn't belong to the new range would never have chance to delete.
@@ -1223,5 +1250,11 @@ func (a *applier) handleMsg(aCtx *applyContext, msg Msg) {
 	case MsgTypeApplyCatchUpLogs:
 		a.catchUpLogsForMerge(aCtx, msg.Data.(*catchUpLogs))
 	case MsgTypeApplyLogsUpToDate:
+	case MsgTypeApplyResume:
+		pause := a.pauseState
+		a.pauseState = nil
+		if pause != nil {
+			a.handleApply(aCtx, pause)
+		}
 	}
 }

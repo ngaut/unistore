@@ -26,17 +26,9 @@ import (
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
 	"github.com/ngaut/unistore/scheduler"
-	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
 )
-
-/*
-Shard split can be performed in 3 steps:
-1. PreSplit
-	Set the split keys of the shard, then all new entries are written to separated mem-tables.
-    This operation also
-*/
 
 // PreSplit sets the split keys, then all new entries are written to separated mem-tables.
 func (en *Engine) PreSplit(shardID, ver uint64, keys [][]byte) error {
@@ -44,14 +36,14 @@ func (en *Engine) PreSplit(shardID, ver uint64, keys [][]byte) error {
 	defer guard.Done()
 	shard := en.GetShard(shardID)
 	if shard == nil {
-		return errShardNotFound
+		return ErrShardNotFound
 	}
 	if shard.Ver != ver {
 		log.Info("shard not match", zap.Uint64("current", shard.Ver), zap.Uint64("request", ver))
-		return errShardNotMatch
+		return ErrShardNotMatch
 	}
 	if !shard.setSplitKeys(keys) {
-		return errors.New("failed to set split keys")
+		return ErrPreSplitWrongStage
 	}
 	change := newChangeSet(shard)
 	change.Stage = enginepb.SplitStage_PRE_SPLIT
@@ -75,15 +67,15 @@ func (en *Engine) SplitShardFiles(shardID, ver uint64) (*enginepb.ChangeSet, err
 	defer guard.Done()
 	shard := en.GetShard(shardID)
 	if shard == nil {
-		return nil, errShardNotFound
+		return nil, ErrShardNotFound
 	}
 	if shard.Ver != ver {
 		log.Info("shard not match", zap.Uint64("current", shard.Ver), zap.Uint64("request", ver))
-		return nil, errShardNotMatch
+		return nil, ErrShardNotMatch
 	}
 	if !shard.isSplitting() {
-		log.S().Infof("wrong splitting stage %s", shard.GetSplitStage())
-		return nil, errShardWrongSplittingStage
+		log.S().Warnf("wrong splitting stage for split files %s", shard.GetSplitStage())
+		return nil, ErrSplitFilesWrongStage
 	}
 	change := newChangeSet(shard)
 	change.SplitFiles = &enginepb.SplitFiles{}
@@ -326,10 +318,10 @@ func (en *Engine) buildTableBeforeKey(itr table.Iterator, key []byte, opt sstabl
 func (en *Engine) FinishSplit(oldShardID, ver uint64, newShardsProps []*enginepb.Properties) (newShards []*Shard, err error) {
 	oldShard := en.GetShard(oldShardID)
 	if oldShard.Ver != ver {
-		return nil, errShardNotMatch
+		return nil, ErrShardNotMatch
 	}
-	if !oldShard.isSplitting() {
-		return nil, errors.New("shard is not in splitting stage")
+	if oldShard.GetSplitStage() != enginepb.SplitStage_SPLIT_FILE_DONE {
+		return nil, ErrFinishSplitWrongStage
 	}
 	if len(newShardsProps) != len(oldShard.splittingMemTbls) {
 		return nil, fmt.Errorf("newShardsProps length %d is not equals to splittingMemTbls length %d", len(newShardsProps), len(oldShard.splittingMemTbls))

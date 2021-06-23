@@ -583,7 +583,7 @@ func (en *Engine) ApplyChangeSet(changeSet *enginepb.ChangeSet) error {
 	defer guard.Done()
 	shard := en.GetShard(changeSet.ShardID)
 	if shard.Ver != changeSet.ShardVer {
-		return errShardNotMatch
+		return ErrShardNotMatch
 	}
 	if en.manifest.isDuplicatedChange(changeSet) {
 		return nil
@@ -772,7 +772,7 @@ func (en *Engine) compactionUpdateLevelHandler(shard *Shard, cf, level int,
 func (en *Engine) applySplitFiles(shard *Shard, changeSet *enginepb.ChangeSet, guard *epoch.Guard) error {
 	if shard.GetSplitStage() != enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE {
 		log.S().Errorf("wrong split stage %s", shard.GetSplitStage())
-		return errShardWrongSplittingStage
+		return ErrSplitFilesWrongStage
 	}
 	splitFiles := changeSet.SplitFiles
 	bt := scheduler.NewBatchTasks()

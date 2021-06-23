@@ -220,7 +220,7 @@ func (st *shardTester) runWriter() {
 func (st *shardTester) handleWriteRequest(req *testerWriteRequest) {
 	shard := st.db.GetShard(req.shard.ID)
 	if shard.Ver != req.shard.Ver {
-		req.resp <- errShardNotMatch
+		req.resp <- ErrShardNotMatch
 		return
 	}
 	if !req.replay {
@@ -247,12 +247,12 @@ func (st *shardTester) handleIterateRequest(req *testerGetSnapRequest) {
 	shard := st.db.GetShard(req.shard.ID)
 	if shard == nil {
 		log.Error("shard not found", zap.Uint64("shard", req.shard.ID))
-		req.resp <- errShardNotFound
+		req.resp <- ErrShardNotFound
 		return
 	}
 	if shard.Ver != req.shard.Ver {
 		log.S().Infof("shard version not match, %d %d", shard.Ver, req.shard.Ver)
-		req.resp <- errShardNotMatch
+		req.resp <- ErrShardNotMatch
 		return
 	}
 	req.snap = st.db.NewSnapAccess(shard)
@@ -291,7 +291,7 @@ func (st *shardTester) write(entries ...*testerEntry) error {
 	var retries []*testerEntry
 	for _, req := range requests {
 		err := <-req.resp
-		if err == errShardNotMatch {
+		if err == ErrShardNotMatch {
 			log.S().Infof("write shard not match %s %s %d %d", entries[0].key, entries[len(entries)-1].key, req.shard.ID, req.shard.Ver)
 			retries = append(retries, req.entries...)
 		} else if err != nil {
@@ -363,7 +363,7 @@ func (st *shardTester) iterate(start, end []byte, cf int, iterFunc func(key, val
 	}
 	for _, req := range requests {
 		err := <-req.resp
-		if err == errShardNotMatch {
+		if err == ErrShardNotMatch {
 			time.Sleep(time.Millisecond * 10)
 			err = st.iterate(req.start, req.end, cf, iterFunc)
 			if err != nil {
