@@ -320,16 +320,11 @@ func initLastTerm(raftEngine *raftengine.Engine, region *metapb.Region,
 	} else {
 		y.Assert(lastIdx > RaftInitLogIndex)
 	}
-	e := new(eraftpb.Entry)
-	val := raftEngine.GetRaftLog(region.Id, lastIdx)
-	if len(val) == 0 {
+	entry := raftEngine.GetRaftLog(region.Id, lastIdx)
+	if entry.Index == 0 {
 		return 0, errors.Errorf("[region %s] entry at %d doesn't exist, may lost data.", region, lastIdx)
 	}
-	err := e.Unmarshal(val)
-	if err != nil {
-		return 0, err
-	}
-	return e.Term, nil
+	return entry.Term, nil
 }
 
 func (ps *PeerStorage) InitialState() (eraftpb.HardState, eraftpb.ConfState, error) {
@@ -542,11 +537,7 @@ func (ps *PeerStorage) Append(invokeCtx *InvokeContext, entries []eraftpb.Entry,
 	lastIndex := lastEntry.Index
 	lastTerm := lastEntry.Term
 	for _, entry := range entries {
-		data, err := entry.Marshal()
-		if err != nil {
-			return err
-		}
-		raftWB.AppendRaftLog(ps.region.Id, entry.Index, data)
+		raftWB.AppendRaftLog(ps.region.Id, entry)
 	}
 	invokeCtx.RaftState.lastIndex = lastIndex
 	invokeCtx.lastTerm = lastTerm
@@ -595,19 +586,14 @@ func fetchEntriesTo(engine *raftengine.Engine, regionID, low, high, maxSize uint
 		// If election happens in inactive regions, they will just try
 		// to fetch one empty log.
 		for i := low; i < high; i++ {
-			val := engine.GetRaftLog(regionID, i)
-			if len(val) == 0 {
+			entry := engine.GetRaftLog(regionID, i)
+			if entry.Index == 0 {
 				start, end := engine.GetRaftLogRange(regionID)
 				log.S().Errorf("no enough entries, has start %d end %d, request low %d high %d, idx %d", start, end, low, high, i)
 				return nil, 0, raft.ErrUnavailable
 			}
-			var entry eraftpb.Entry
-			err := entry.Unmarshal(val)
-			if err != nil {
-				return nil, 0, err
-			}
 			y.Assert(entry.Index == i)
-			totalSize += uint64(len(val))
+			totalSize += uint64(len(entry.Data))
 
 			if len(buf) == 0 || totalSize <= maxSize {
 				buf = append(buf, entry)
@@ -619,23 +605,18 @@ func fetchEntriesTo(engine *raftengine.Engine, regionID, low, high, maxSize uint
 		return buf, totalSize, nil
 	}
 	for i := low; i < high; i++ {
-		val := engine.GetRaftLog(regionID, i)
-		if len(val) == 0 {
+		entry := engine.GetRaftLog(regionID, i)
+		if entry.Index == 0 {
 			start, end := engine.GetRaftLogRange(regionID)
 			log.S().Infof("raft log unavailable %d %d request %d", start, end, i)
 			return nil, 0, raft.ErrUnavailable
-		}
-		var entry eraftpb.Entry
-		err := entry.Unmarshal(val)
-		if err != nil {
-			return nil, 0, err
 		}
 		// May meet gap or has been compacted.
 		if entry.Index != nextIndex {
 			break
 		}
 		nextIndex++
-		totalSize += uint64(len(val))
+		totalSize += uint64(len(entry.Data))
 		exceededMaxSize = totalSize > maxSize
 		if !exceededMaxSize || len(buf) == 0 {
 			buf = append(buf, entry)

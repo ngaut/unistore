@@ -35,6 +35,22 @@ type peerState struct {
 	apply  *applier
 }
 
+type peerInbox struct {
+	peer *peerFsm
+	msgs []Msg
+}
+
+func (pi *peerInbox) reset() {
+	for i := range pi.msgs {
+		pi.msgs[i] = Msg{}
+	}
+	pi.msgs = pi.msgs[:0]
+}
+
+func (pi *peerInbox) append(msg Msg) {
+	pi.msgs = append(pi.msgs, msg)
+}
+
 type applyBatch struct {
 	peers map[uint64]*peerApplyBatch
 }
@@ -67,7 +83,7 @@ func hashRegionID(regionID uint64) uint64 {
 type raftWorker struct {
 	pr *router
 
-	msgs    []Msg
+	inboxes map[uint64]*peerInbox
 	ticker  *time.Ticker
 	raftCh  chan Msg
 	raftCtx *RaftContext
@@ -102,6 +118,7 @@ func newRaftWorker(ctx *GlobalContext, ch chan Msg, pm *router, applyWorkerCnt i
 	return &raftWorker{
 		raftCh:        ch,
 		applyResCh:    applyResCh,
+		inboxes:       map[uint64]*peerInbox{},
 		raftCtx:       raftCtx,
 		pr:            pm,
 		applyChs:      applyChs,
@@ -123,20 +140,23 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 		if quit := rw.receiveMsgs(closeCh); quit {
 			return
 		}
-		peerStateMap := rw.handleMsgs()
-		rw.handleRaftReadyAppend(peerStateMap)
+		rw.handleMsgs()
+		rw.handleRaftReadyAppend()
 		rw.writeRaftWriteBatch()
-		rw.handleRaftReady(peerStateMap)
+		rw.handleRaftReady()
 		rw.raftCtx.flushLocalStats()
 		rw.scheduleApply()
 	}
 }
 
 func (rw *raftWorker) receiveMsgs(closeCh <-chan struct{}) (quit bool) {
-	for i := range rw.msgs {
-		rw.msgs[i] = Msg{}
+	for regionID, inbox := range rw.inboxes {
+		if len(inbox.msgs) == 0 {
+			delete(rw.inboxes, regionID)
+		} else {
+			inbox.reset()
+		}
 	}
-	rw.msgs = rw.msgs[:0]
 	select {
 	case <-closeCh:
 		for _, applyCh := range rw.applyChs {
@@ -144,47 +164,59 @@ func (rw *raftWorker) receiveMsgs(closeCh <-chan struct{}) (quit bool) {
 		}
 		return true
 	case msg := <-rw.raftCh:
-		rw.msgs = append(rw.msgs, msg)
+		rw.getPeerInbox(msg.RegionID).append(msg)
 	case msg := <-rw.applyResCh:
-		rw.msgs = append(rw.msgs, msg)
+		rw.getPeerInbox(msg.RegionID).append(msg)
 	case <-rw.ticker.C:
 		rw.pr.peers.Range(func(key, value interface{}) bool {
-			rw.msgs = append(rw.msgs, NewPeerMsg(MsgTypeTick, key.(uint64), nil))
+			regionID := key.(uint64)
+			rw.getPeerInbox(regionID).append(NewPeerMsg(MsgTypeTick, regionID, nil))
 			return true
 		})
 	}
 	pending := len(rw.raftCh)
 	for i := 0; i < pending; i++ {
-		rw.msgs = append(rw.msgs, <-rw.raftCh)
+		msg := <-rw.raftCh
+		rw.getPeerInbox(msg.RegionID).append(msg)
 	}
 	resLen := len(rw.applyResCh)
 	for i := 0; i < resLen; i++ {
-		rw.msgs = append(rw.msgs, <-rw.applyResCh)
+		msg := <-rw.applyResCh
+		rw.getPeerInbox(msg.RegionID).append(msg)
 	}
-	metrics.RaftBatchSize.Observe(float64(len(rw.msgs)))
+	metrics.RaftBatchSize.Observe(float64(len(rw.inboxes)))
 	return false
 }
 
-func (rw *raftWorker) handleMsgs() (peerStateMap map[uint64]*peerState) {
-	begin := time.Now()
-	rw.raftCtx.pendingCount = 0
-	peerStateMap = make(map[uint64]*peerState)
-	for _, msg := range rw.msgs {
-		peerState := rw.getPeerState(peerStateMap, msg.RegionID)
-		h := newRaftMsgHandler(peerState.peer, rw.raftCtx)
-		h.HandleMsgs(msg)
+func (rw *raftWorker) getPeerInbox(regionID uint64) *peerInbox {
+	inbox, ok := rw.inboxes[regionID]
+	if !ok {
+		peerState := rw.pr.get(regionID)
+		inbox = &peerInbox{peer: peerState.peer}
+		rw.inboxes[regionID] = inbox
 	}
-	rw.handleMsgDc.collect(time.Since(begin))
-	return peerStateMap
+	return inbox
 }
 
-func (rw *raftWorker) handleRaftReadyAppend(peerStateMap map[uint64]*peerState) {
+func (rw *raftWorker) handleMsgs() {
+	begin := time.Now()
+	rw.raftCtx.pendingCount = 0
+	for _, inbox := range rw.inboxes {
+		h := newRaftMsgHandler(inbox.peer, rw.raftCtx)
+		for _, msg := range inbox.msgs {
+			h.HandleMsgs(msg)
+		}
+	}
+	rw.handleMsgDc.collect(time.Since(begin))
+}
+
+func (rw *raftWorker) handleRaftReadyAppend() {
 	begin := time.Now()
 	var movePeer uint64
 	var proposals []*regionProposal
-	for id, peerState := range peerStateMap {
+	for id, inbox := range rw.inboxes {
 		movePeer = id
-		h := newRaftMsgHandler(peerState.peer, rw.raftCtx)
+		h := newRaftMsgHandler(inbox.peer, rw.raftCtx)
 		proposals = h.HandleRaftReadyAppend(proposals)
 	}
 	for _, proposal := range proposals {
@@ -196,22 +228,13 @@ func (rw *raftWorker) handleRaftReadyAppend(peerStateMap map[uint64]*peerState) 
 	rw.readyAppendDc.collect(time.Since(begin))
 }
 
-func (rw *raftWorker) getPeerState(peersMap map[uint64]*peerState, regionID uint64) *peerState {
-	peer, ok := peersMap[regionID]
-	if !ok {
-		peer = rw.pr.get(regionID)
-		peersMap[regionID] = peer
-	}
-	return peer
-}
-
-func (rw *raftWorker) handleRaftReady(peers map[uint64]*peerState) {
+func (rw *raftWorker) handleRaftReady() {
 	readyRes := rw.raftCtx.ReadyRes
 	if len(readyRes) > 0 {
 		rw.raftCtx.ReadyRes = nil
 		begin := time.Now()
 		for _, pair := range readyRes {
-			h := newRaftMsgHandler(peers[pair.IC.Region.Id].peer, rw.raftCtx)
+			h := newRaftMsgHandler(rw.inboxes[pair.IC.Region.Id].peer, rw.raftCtx)
 			h.HandleRaftReady(&pair.Ready, pair.IC)
 		}
 		rw.handleReadyDc.collect(time.Since(begin))

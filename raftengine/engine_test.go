@@ -17,6 +17,7 @@ import (
 	"encoding/binary"
 	"github.com/google/btree"
 	"github.com/pingcap/errors"
+	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/log"
 	"github.com/stretchr/testify/require"
 	"io/ioutil"
@@ -38,7 +39,7 @@ func TestEngine(t *testing.T) {
 			if regionID == 1 && (index > 100 && index < 900) {
 				continue
 			}
-			wb.AppendRaftLog(regionID, index, makeLogData(regionID, index, 128))
+			wb.AppendRaftLog(regionID, makeLogData(index, 128))
 			key, val := makeStateKV(regionID, index)
 			wb.SetState(regionID, key, val)
 			if index%100 == 0 && regionID != 1 {
@@ -77,11 +78,12 @@ func TestEngine(t *testing.T) {
 	}
 }
 
-func makeLogData(regionID, index uint64, size int) []byte {
-	data := make([]byte, size)
-	binary.LittleEndian.PutUint64(data, regionID)
-	binary.LittleEndian.PutUint64(data[8:], index)
-	return data
+func makeLogData(index uint64, size int) (entry eraftpb.Entry) {
+	entry.Index = index
+	entry.Term = 1
+	entry.EntryType = 1
+	entry.Data = make([]byte, size)
+	return
 }
 
 func makeStateKV(regionID, index uint64) (key, val []byte) {

@@ -128,12 +128,12 @@ func (c *worker) compact(e *epoch) error {
 		if tp != typeRaftLog {
 			return
 		}
-		regionID, index, rlog := parseLog(entry)
-		if c.truncatedIndex[regionID] > index {
+		op := parseLog(entry)
+		if c.truncatedIndex[op.regionID] > op.index {
 			return
 		}
-		entries := getRegionRaftLogs(entriesMap, regionID)
-		entries.append(index, y.Copy(rlog))
+		entries := getRegionRaftLogs(entriesMap, op.regionID)
+		entries.append(op)
 		return
 	})
 	if err != nil {
@@ -158,9 +158,11 @@ func (c *worker) writeRaftLogFile(e *epoch, regionID uint64, entries *regionRaft
 	}
 	defer fd.Close()
 	c.buf = c.buf[:0]
-	for _, entry := range entries.raftLogs {
-		c.buf = sstable.AppendU32(c.buf, uint32(len(entry)))
-		c.buf = append(c.buf, entry...)
+	for _, op := range entries.raftLogs {
+		c.buf = sstable.AppendU32(c.buf, uint32(8+len(op.data)))
+		c.buf = sstable.AppendU32(c.buf, op.term)
+		c.buf = sstable.AppendU32(c.buf, op.eType)
+		c.buf = append(c.buf, op.data...)
 	}
 	checksum := crc32.Checksum(c.buf, crc32.MakeTable(crc32.Castagnoli))
 	c.buf = sstable.AppendU32(c.buf, checksum)
