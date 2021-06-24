@@ -128,7 +128,7 @@ func (c *worker) compact(e *epoch) error {
 		if tp != typeRaftLog {
 			return
 		}
-		op := parseLog(entry)
+		op := parseLog(y.Copy(entry))
 		if c.truncatedIndex[op.regionID] > op.index {
 			return
 		}
