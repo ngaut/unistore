@@ -141,17 +141,17 @@ const (
 
 func (e *Engine) loadWALFile(epochID uint32) (offset int64, err error) {
 	it := newIterator(e.dir, epochID)
-	err = it.iterate(func(tp uint32, entry []byte) bool {
+	err = it.iterate(func(tp uint32, entryData []byte) bool {
 		switch tp {
 		case typeState:
-			regionID, key, val := parseState(y.Copy(entry))
+			regionID, key, val := parseState(y.Copy(entryData))
 			e.states.ReplaceOrInsert(&stateItem{regionID: regionID, key: key, val: val})
 		case typeRaftLog:
-			regionID, index, rlog := parseLog(y.Copy(entry))
-			entries := getRegionRaftLogs(e.entriesMap, regionID)
-			entries.append(index, rlog)
+			logOp := parseLog(y.Copy(entryData))
+			entries := getRegionRaftLogs(e.entriesMap, logOp.regionID)
+			entries.append(logOp)
 		case typeTruncate:
-			regionID, index := parseTruncate(entry)
+			regionID, index := parseTruncate(entryData)
 			entries := getRegionRaftLogs(e.entriesMap, regionID)
 			if empty := entries.truncate(index); empty {
 				delete(e.entriesMap, regionID)
@@ -206,8 +206,16 @@ func (e *Engine) loadRaftLogFile(epochID uint32, regionID uint64, raftLogRange r
 		data = data[4:]
 		entry := data[:length]
 		data = data[length:]
+		var op raftLogOp
+		op.regionID = regionID
+		op.index = index
+		op.term = binary.LittleEndian.Uint32(entry)
+		entry = entry[4:]
+		op.eType = binary.LittleEndian.Uint32(entry)
+		entry = entry[4:]
+		op.data = entry
 		entries := getRegionRaftLogs(e.entriesMap, regionID)
-		entries.append(index, y.Copy(entry))
+		entries.append(op)
 		index++
 	}
 	y.Assert(index == raftLogRange.endIndex)

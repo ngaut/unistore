@@ -114,12 +114,16 @@ func parseState(entry []byte) (regionID uint64, key, val []byte) {
 	return
 }
 
-func parseLog(entry []byte) (regionID, index uint64, rlog []byte) {
-	regionID = binary.LittleEndian.Uint64(entry)
-	entry = entry[8:]
-	index = binary.LittleEndian.Uint64(entry)
-	entry = entry[8:]
-	rlog = entry
+func parseLog(entryData []byte) (op raftLogOp) {
+	op.regionID = binary.LittleEndian.Uint64(entryData)
+	entryData = entryData[8:]
+	op.index = binary.LittleEndian.Uint64(entryData)
+	entryData = entryData[8:]
+	op.term = binary.LittleEndian.Uint32(entryData)
+	entryData = entryData[4:]
+	op.eType = binary.LittleEndian.Uint32(entryData)
+	entryData = entryData[4:]
+	op.data = entryData
 	return
 }
 

@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"github.com/google/btree"
 	"github.com/pingcap/errors"
+	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"os"
 	"path/filepath"
 )
@@ -40,9 +41,10 @@ func NewWriteBatch() *WriteBatch {
 	return &WriteBatch{size: batchHdrSize}
 }
 
-func (b *WriteBatch) AppendRaftLog(regionID, index uint64, data []byte) {
-	b.raftLogOps = append(b.raftLogOps, raftLogOp{regionID: regionID, index: index, data: data})
-	b.size += raftLogSize(data)
+func (b *WriteBatch) AppendRaftLog(regionID uint64, entry eraftpb.Entry) {
+	op := newRaftLogOp(regionID, entry)
+	b.raftLogOps = append(b.raftLogOps, op)
+	b.size += raftLogSize(op)
 }
 
 func (b *WriteBatch) TruncateRaftLog(regionID, index uint64) {
@@ -74,7 +76,19 @@ type truncateOp struct {
 type raftLogOp struct {
 	regionID uint64
 	index    uint64
+	term     uint32
+	eType    uint32
 	data     []byte
+}
+
+func newRaftLogOp(regionID uint64, entry eraftpb.Entry) raftLogOp {
+	return raftLogOp{
+		regionID: regionID,
+		index:    entry.Index,
+		term:     uint32(entry.Term),
+		eType:    uint32(entry.EntryType),
+		data:     entry.Data,
+	}
 }
 
 type stateOp struct {
@@ -99,8 +113,8 @@ func (e *Engine) Write(wb *WriteBatch) error {
 		e.worker.taskCh <- rotateTask{epochID: epochID, states: states}
 	}
 	for _, op := range wb.raftLogOps {
-		e.writer.appendRaftLog(op.regionID, op.index, op.data)
-		getRegionRaftLogs(e.entriesMap, op.regionID).append(op.index, op.data)
+		e.writer.appendRaftLog(op)
+		getRegionRaftLogs(e.entriesMap, op.regionID).append(op)
 	}
 	for _, op := range wb.stateOps {
 		e.writer.appendState(op.regionID, op.key, op.val)
@@ -158,7 +172,7 @@ func (e *Engine) GetState(regionID uint64, key []byte) []byte {
 
 type regionRaftLogs struct {
 	raftLogRange
-	raftLogs [][]byte
+	raftLogs []raftLogOp
 }
 
 func (re *regionRaftLogs) prepareAppend(index uint64) {
@@ -180,9 +194,9 @@ func (re *regionRaftLogs) prepareAppend(index uint64) {
 	re.endIndex = index
 }
 
-func (re *regionRaftLogs) append(index uint64, data []byte) {
-	re.prepareAppend(index)
-	re.raftLogs = append(re.raftLogs, data)
+func (re *regionRaftLogs) append(op raftLogOp) {
+	re.prepareAppend(op.index)
+	re.raftLogs = append(re.raftLogs, op)
 	re.endIndex++
 }
 
@@ -202,15 +216,21 @@ func (re *regionRaftLogs) truncate(index uint64) (empty bool) {
 	return len(re.raftLogs) == 0
 }
 
-func (re *regionRaftLogs) get(index uint64) []byte {
+func (re *regionRaftLogs) get(index uint64) eraftpb.Entry {
 	if index < re.startIndex || index >= re.endIndex {
-		return nil
+		return eraftpb.Entry{}
 	}
 	localIdx := index - re.startIndex
-	return re.raftLogs[localIdx]
+	op := re.raftLogs[localIdx]
+	return eraftpb.Entry{
+		EntryType: eraftpb.EntryType(op.eType),
+		Term:      uint64(op.term),
+		Index:     op.index,
+		Data:      op.data,
+	}
 }
 
-func (e *Engine) GetRaftLog(regionID, index uint64) []byte {
+func (e *Engine) GetRaftLog(regionID, index uint64) eraftpb.Entry {
 	entries := getRegionRaftLogs(e.entriesMap, regionID)
 	return entries.get(index)
 }
