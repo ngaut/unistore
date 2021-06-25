@@ -199,7 +199,8 @@ func newRaftClient(config *Config, pdCli pd.Client) *RaftClient {
 }
 
 func (c *RaftClient) getConn(storeID, regionID uint64) *raftConn {
-	key := connKey{storeID, int(regionID % c.config.GrpcRaftConnNum)}
+	index := hashRegionID(regionID) % c.config.GrpcRaftConnNum
+	key := connKey{storeID, int(index)}
 	c.Lock()
 	defer c.Unlock()
 	conn, ok := c.conns[key]
