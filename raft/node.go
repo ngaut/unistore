@@ -82,7 +82,7 @@ type Ready struct {
 	// committed to stable storage.
 	// If it contains a MessageType_MsgSnapshot message, the application MUST report back to raft
 	// when the snapshot has been received or has failed by calling ReportSnapshot.
-	Messages []pb.Message
+	Messages []*pb.Message
 
 	// MustSync indicates whether the HardState and Entries must be synchronously
 	// written to disk or if an asynchronous write is permissible.
@@ -140,7 +140,7 @@ type Node interface {
 	// Application needs to call ApplyConfChange when applying EntryType_EntryConfChange type entry.
 	ProposeConfChange(ctx context.Context, cc pb.ConfChange) error
 	// Step advances the state machine using the given message. ctx.Err() will be returned, if any.
-	Step(ctx context.Context, msg pb.Message) error
+	Step(ctx context.Context, msg *pb.Message) error
 
 	// Ready returns a channel that returns the current point-in-time state.
 	// Users of the Node must call Advance after retrieving the state returned by Ready.
@@ -251,14 +251,14 @@ func RestartNode(c *Config) Node {
 }
 
 type msgWithResult struct {
-	m      pb.Message
+	m      *pb.Message
 	result chan error
 }
 
 // node is the canonical implementation of the Node interface
 type node struct {
 	propc      chan msgWithResult
-	recvc      chan pb.Message
+	recvc      chan *pb.Message
 	confc      chan pb.ConfChange
 	confstatec chan pb.ConfState
 	readyc     chan Ready
@@ -274,7 +274,7 @@ type node struct {
 func newNode() node {
 	return node{
 		propc:      make(chan msgWithResult),
-		recvc:      make(chan pb.Message),
+		recvc:      make(chan *pb.Message),
 		confc:      make(chan pb.ConfChange),
 		confstatec: make(chan pb.ConfState),
 		readyc:     make(chan Ready),
@@ -447,15 +447,15 @@ func (n *node) Tick() {
 }
 
 func (n *node) Campaign(ctx context.Context) error {
-	return n.step(ctx, pb.Message{MsgType: pb.MessageType_MsgHup})
+	return n.step(ctx, &pb.Message{MsgType: pb.MessageType_MsgHup})
 }
 
 func (n *node) Propose(ctx context.Context, data []byte) error {
 	entry := pb.Entry{Data: data}
-	return n.stepWait(ctx, pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{&entry}})
+	return n.stepWait(ctx, &pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{&entry}})
 }
 
-func (n *node) Step(ctx context.Context, m pb.Message) error {
+func (n *node) Step(ctx context.Context, m *pb.Message) error {
 	// ignore unexpected local messages receiving over network
 	if IsLocalMsg(m.MsgType) {
 		// TODO: return an error?
@@ -470,20 +470,20 @@ func (n *node) ProposeConfChange(ctx context.Context, cc pb.ConfChange) error {
 		return err
 	}
 	entry := pb.Entry{EntryType: pb.EntryType_EntryConfChange, Data: data}
-	return n.Step(ctx, pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{&entry}})
+	return n.Step(ctx, &pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{&entry}})
 }
 
-func (n *node) step(ctx context.Context, m pb.Message) error {
+func (n *node) step(ctx context.Context, m *pb.Message) error {
 	return n.stepWithWaitOption(ctx, m, false)
 }
 
-func (n *node) stepWait(ctx context.Context, m pb.Message) error {
+func (n *node) stepWait(ctx context.Context, m *pb.Message) error {
 	return n.stepWithWaitOption(ctx, m, true)
 }
 
 // Step advances the state machine using msgs. The ctx.Err() will be returned,
 // if any.
-func (n *node) stepWithWaitOption(ctx context.Context, m pb.Message, wait bool) error {
+func (n *node) stepWithWaitOption(ctx context.Context, m *pb.Message, wait bool) error {
 	if m.MsgType != pb.MessageType_MsgPropose {
 		select {
 		case n.recvc <- m:
@@ -556,7 +556,7 @@ func (n *node) Status() Status {
 
 func (n *node) ReportUnreachable(id uint64) {
 	select {
-	case n.recvc <- pb.Message{MsgType: pb.MessageType_MsgUnreachable, From: id}:
+	case n.recvc <- &pb.Message{MsgType: pb.MessageType_MsgUnreachable, From: id}:
 	case <-n.done:
 	}
 }
@@ -565,7 +565,7 @@ func (n *node) ReportSnapshot(id uint64, status SnapshotStatus) {
 	rej := status == SnapshotFailure
 
 	select {
-	case n.recvc <- pb.Message{MsgType: pb.MessageType_MsgSnapStatus, From: id, Reject: rej}:
+	case n.recvc <- &pb.Message{MsgType: pb.MessageType_MsgSnapStatus, From: id, Reject: rej}:
 	case <-n.done:
 	}
 }
@@ -573,7 +573,7 @@ func (n *node) ReportSnapshot(id uint64, status SnapshotStatus) {
 func (n *node) TransferLeadership(ctx context.Context, lead, transferee uint64) {
 	select {
 	// manually set 'from' and 'to', so that leader can voluntarily transfers its leadership
-	case n.recvc <- pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee, To: lead}:
+	case n.recvc <- &pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee, To: lead}:
 	case <-n.done:
 	case <-ctx.Done():
 	}
@@ -581,7 +581,7 @@ func (n *node) TransferLeadership(ctx context.Context, lead, transferee uint64) 
 
 func (n *node) ReadIndex(ctx context.Context, rctx []byte) error {
 	entry := pb.Entry{Data: rctx}
-	return n.step(ctx, pb.Message{MsgType: pb.MessageType_MsgReadIndex, Entries: []*pb.Entry{&entry}})
+	return n.step(ctx, &pb.Message{MsgType: pb.MessageType_MsgReadIndex, Entries: []*pb.Entry{&entry}})
 }
 
 func newReady(r *Raft, prevSoftSt *SoftState, prevHardSt pb.HardState, sinceIdx *uint64) Ready {
