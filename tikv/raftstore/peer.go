@@ -286,7 +286,7 @@ type Peer struct {
 	leaderChecker                leaderChecker
 
 	// If a snapshot is being applied asynchronously, messages should not be sent.
-	pendingMessages         []eraftpb.Message
+	pendingMessages         []*eraftpb.Message
 	PendingMergeApplyResult *WaitApplyResultState
 	PeerStat                PeerStat
 
@@ -536,7 +536,7 @@ func (p *Peer) HasPendingSnapshot() bool {
 	return p.RaftGroup.GetSnap() != nil
 }
 
-func (p *Peer) Send(trans *RaftClient, msgs []eraftpb.Message) error {
+func (p *Peer) Send(trans *RaftClient, msgs []*eraftpb.Message) error {
 	for _, msg := range msgs {
 		msgType := msg.MsgType
 		err := p.sendRaftMessage(msg, trans)
@@ -568,7 +568,7 @@ func (p *Peer) Step(m *eraftpb.Message) error {
 		// As another role know we're not missing.
 		p.leaderMissingTime = nil
 	}
-	return p.RaftGroup.Step(*m)
+	return p.RaftGroup.Step(m)
 }
 
 /// Checks and updates `peer_heartbeats` for the peer.
@@ -981,27 +981,22 @@ func (p *Peer) HeartbeatPd(pdScheduler chan<- task) {
 
 const ExtraMessageTypeSplitFilesDone rspb.ExtraMessageType = 8
 
-func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans *RaftClient) error {
+func (p *Peer) sendRaftMessage(msg *eraftpb.Message, trans *RaftClient) error {
 	sendMsg := new(rspb.RaftMessage)
 	sendMsg.RegionId = p.regionId
 	// set current epoch
-	sendMsg.RegionEpoch = &metapb.RegionEpoch{
-		ConfVer: p.Region().RegionEpoch.ConfVer,
-		Version: p.Region().RegionEpoch.Version,
-	}
+	sendMsg.RegionEpoch = p.Region().RegionEpoch
 	if !p.IsLeader() && p.Store().splitStage == enginepb.SplitStage_SPLIT_FILE_DONE {
 		sendMsg.ExtraMsg = &rspb.ExtraMessage{Type: ExtraMessageTypeSplitFilesDone}
 		log.S().Infof("follower %d:%d add extra message split file done", p.regionId, sendMsg.RegionEpoch.Version)
 	}
 
-	fromPeer := *p.Meta
 	toPeer := p.getPeerFromCache(msg.To)
 	if toPeer == nil {
 		return fmt.Errorf("failed to lookup recipient peer %v in region %v", msg.To, p.regionId)
 	}
-	log.S().Debugf("%v, send raft msg %v from %v to %v", p.Tag, msg.MsgType, fromPeer.Id, toPeer.Id)
 
-	sendMsg.FromPeer = &fromPeer
+	sendMsg.FromPeer = p.Meta
 	sendMsg.ToPeer = toPeer
 
 	// There could be two cases:
@@ -1012,11 +1007,11 @@ func (p *Peer) sendRaftMessage(msg eraftpb.Message, trans *RaftClient) error {
 	// Heartbeat message for the store of that peer to check whether to create a new peer
 	// when receiving these messages, or just to wait for a pending region split to perform
 	// later.
-	if p.Store().isInitialized() && isInitialMsg(&msg) {
+	if p.Store().isInitialized() && isInitialMsg(msg) {
 		sendMsg.StartKey = append([]byte{}, p.Region().StartKey...)
 		sendMsg.EndKey = append([]byte{}, p.Region().EndKey...)
 	}
-	sendMsg.Message = &msg
+	sendMsg.Message = msg
 	trans.Send(sendMsg)
 	return nil
 }

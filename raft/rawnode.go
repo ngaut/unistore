@@ -139,7 +139,7 @@ func (rn *RawNode) TickQuiesced() {
 
 // Campaign causes this RawNode to transition to candidate state.
 func (rn *RawNode) Campaign() error {
-	return rn.Raft.Step(pb.Message{
+	return rn.Raft.Step(&pb.Message{
 		MsgType: pb.MessageType_MsgHup,
 	})
 }
@@ -147,7 +147,7 @@ func (rn *RawNode) Campaign() error {
 // Propose proposes data be appended to the raft log.
 func (rn *RawNode) Propose(ctx, data []byte) error {
 	ent := pb.Entry{Data: data, Context: ctx}
-	return rn.Raft.Step(pb.Message{
+	return rn.Raft.Step(&pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
 		From:    rn.Raft.id,
 		Entries: []*pb.Entry{&ent}})
@@ -160,7 +160,7 @@ func (rn *RawNode) ProposeConfChange(ctx []byte, cc pb.ConfChange) error {
 		return err
 	}
 	ent := pb.Entry{EntryType: pb.EntryType_EntryConfChange, Data: data, Context: ctx}
-	return rn.Raft.Step(pb.Message{
+	return rn.Raft.Step(&pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
 		Entries: []*pb.Entry{&ent},
 	})
@@ -185,7 +185,7 @@ func (rn *RawNode) ApplyConfChange(cc pb.ConfChange) *pb.ConfState {
 }
 
 // Step advances the state machine using the given message.
-func (rn *RawNode) Step(m pb.Message) error {
+func (rn *RawNode) Step(m *pb.Message) error {
 	// ignore unexpected local messages receiving over network
 	if IsLocalMsg(m.MsgType) {
 		return ErrStepLocalMsg
@@ -281,19 +281,19 @@ func (rn *RawNode) WithProgress(visitor func(id uint64, typ ProgressType, pr Pro
 
 // ReportUnreachable reports the given node is not reachable for the last send.
 func (rn *RawNode) ReportUnreachable(id uint64) {
-	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgUnreachable, From: id})
+	_ = rn.Raft.Step(&pb.Message{MsgType: pb.MessageType_MsgUnreachable, From: id})
 }
 
 // ReportSnapshot reports the status of the sent snapshot.
 func (rn *RawNode) ReportSnapshot(id uint64, status SnapshotStatus) {
 	rej := status == SnapshotFailure
 
-	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgSnapStatus, From: id, Reject: rej})
+	_ = rn.Raft.Step(&pb.Message{MsgType: pb.MessageType_MsgSnapStatus, From: id, Reject: rej})
 }
 
 // TransferLeader tries to transfer leadership to the given transferee.
 func (rn *RawNode) TransferLeader(transferee uint64) {
-	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
+	_ = rn.Raft.Step(&pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
 }
 
 // ReadIndex requests a read state. The read state will be set in ready.
@@ -302,7 +302,7 @@ func (rn *RawNode) TransferLeader(transferee uint64) {
 // processed safely. The read state will have the same rctx attached.
 func (rn *RawNode) ReadIndex(rctx []byte) {
 	ent := pb.Entry{Data: rctx}
-	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgReadIndex, Entries: []*pb.Entry{&ent}})
+	_ = rn.Raft.Step(&pb.Message{MsgType: pb.MessageType_MsgReadIndex, Entries: []*pb.Entry{&ent}})
 }
 
 func (rn *RawNode) GetSnap() *pb.Snapshot {
