@@ -28,13 +28,13 @@ import (
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
+	"github.com/ngaut/unistore/raft"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
-	"github.com/zhangjinpeng1987/raft"
 )
 
 type ReadyICPair struct {

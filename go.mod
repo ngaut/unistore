@@ -30,7 +30,7 @@ require (
 	github.com/tikv/pd v1.1.0-beta.0.20210323121136-78679e5e209d
 	github.com/twmb/murmur3 v1.1.3
 	github.com/uber-go/atomic v1.4.0
-	github.com/zhangjinpeng1987/raft v0.0.0-20200819064223-df31bb68a018
+	go.etcd.io/etcd v0.5.0-alpha.5.0.20200824191128-ae9734ed278b
 	go.uber.org/zap v1.16.0
 	golang.org/x/net v0.0.0-20210316092652-d523dce5a7f4
 	golang.org/x/sys v0.0.0-20210324051608-47abb6519492
@@ -39,7 +39,5 @@ require (
 )
 
 replace go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.5.0-alpha.5.0.20201117041249-9487a87e2cbd
-
-replace github.com/zhangjinpeng1987/raft => github.com/hslam/raft-1 v0.0.0-20210430053542-5b276eb6ffcd
 
 go 1.13

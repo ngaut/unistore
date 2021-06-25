@@ -19,10 +19,10 @@ import (
 	"math"
 	"testing"
 
+	"github.com/ngaut/unistore/raft"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/zhangjinpeng1987/raft"
 )
 
 func TestPeerStorageTerm(t *testing.T) {
