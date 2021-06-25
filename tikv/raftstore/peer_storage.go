@@ -19,6 +19,7 @@ import (
 	"github.com/cznic/mathutil"
 	"github.com/ngaut/unistore/engine"
 	"github.com/ngaut/unistore/enginepb"
+	"github.com/ngaut/unistore/raft"
 	"github.com/ngaut/unistore/raftengine"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -26,7 +27,6 @@ import (
 	"github.com/pingcap/kvproto/pkg/metapb"
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
-	"github.com/zhangjinpeng1987/raft"
 	"math"
 	"sync/atomic"
 )

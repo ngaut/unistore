@@ -22,6 +22,7 @@ import (
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
+	"github.com/ngaut/unistore/raft"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -30,7 +31,6 @@ import (
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/tablecodec"
-	"github.com/zhangjinpeng1987/raft"
 )
 
 type peerFsm struct {

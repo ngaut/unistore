@@ -16,7 +16,7 @@ package tikv
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/zhangjinpeng1987/raft"
+	"github.com/ngaut/unistore/raft"
 	"strconv"
 	"sync"
 	"sync/atomic"
