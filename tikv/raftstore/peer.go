@@ -823,8 +823,6 @@ func (p *Peer) HandleRaftReadyAppend(trans *RaftClient, raftWB *raftengine.Write
 		return nil
 	}
 
-	log.S().Debugf("%v handle raft ready", p.Tag)
-
 	ready := p.RaftGroup.ReadySince(p.LastApplyingIdx)
 	// TODO: workaround for:
 	//   in kvproto/eraftpb, we use *SnapshotMetadata

@@ -350,7 +350,6 @@ func (d *peerMsgHandler) onApplyResult(res *applyTaskRes) {
 		y.Assert(res.destroyPeerID == d.peerID())
 		d.destroyPeer(false)
 	} else {
-		log.S().Debugf("%s async apply finished %v", d.tag(), res)
 		var readyToMerge *uint32
 		readyToMerge, res.execResults = d.onReadyResult(res.merged, res.execResults)
 		if readyToMerge != nil {
@@ -371,8 +370,6 @@ func (d *peerMsgHandler) onApplyResult(res *applyTaskRes) {
 }
 
 func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
-	log.S().Debugf("%s handle raft message %s from %d to %d",
-		d.tag(), msg.GetMessage().GetMsgType(), msg.GetFromPeer().GetId(), msg.GetToPeer().GetId())
 	if !d.validateRaftMessage(msg) {
 		return nil
 	}
@@ -417,9 +414,7 @@ func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
 // return false means the message is invalid, and can be ignored.
 func (d *peerMsgHandler) validateRaftMessage(msg *rspb.RaftMessage) bool {
 	regionID := msg.GetRegionId()
-	from := msg.GetFromPeer()
 	to := msg.GetToPeer()
-	log.S().Debugf("[region %d] handle raft message %s from %d to %d", regionID, msg, from.GetId(), to.GetId())
 	if to.GetStoreId() != d.storeID() {
 		log.S().Warnf("[region %d] store not match, to store id %d, mine %d, ignore it",
 			regionID, to.GetStoreId(), d.storeID())

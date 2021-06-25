@@ -529,7 +529,6 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 // Return the new last index for later update. After we commit in the kv engine, we can set last_index
 // to the return one.
 func (ps *PeerStorage) Append(invokeCtx *InvokeContext, entries []eraftpb.Entry, raftWB *raftengine.WriteBatch) error {
-	log.S().Debugf("%s append %d entries", ps.Tag, len(entries))
 	if len(entries) == 0 {
 		return nil
 	}
