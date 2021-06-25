@@ -78,6 +78,9 @@ func (it *walIterator) iterate(fn func(tp uint32, entry []byte) (stop bool)) err
 func (it *walIterator) readBatch(reader io.Reader) ([]byte, error) {
 	_, err := io.ReadFull(reader, it.batchHdrBuf[:])
 	if err != nil {
+		if err == io.ErrUnexpectedEOF {
+			err = io.EOF
+		}
 		return nil, err
 	}
 	epochID := binary.LittleEndian.Uint32(it.batchHdrBuf[:])
