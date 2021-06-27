@@ -812,7 +812,10 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 
 func (a *applier) commitLock(aCtx *applyContext, wb *engine.WriteBatch, key, val []byte, commitTS uint64) {
 	if len(val) == 0 {
-		val = a.getLockForCommit(aCtx, key)
+		val = a.getLockForCommit(aCtx, key, commitTS)
+		if len(val) == 0 {
+			return
+		}
 	}
 	lock := mvcc.DecodeLock(val)
 	if lock.Op == uint8(kvrpcpb.Op_PessimisticLock) {
@@ -827,7 +830,7 @@ func (a *applier) commitLock(aCtx *applyContext, wb *engine.WriteBatch, key, val
 	DeleteLock(wb, key)
 }
 
-func (a *applier) getLockForCommit(aCtx *applyContext, key []byte) []byte {
+func (a *applier) getLockForCommit(aCtx *applyContext, key []byte, commitTS uint64) []byte {
 	val, ok := a.lockCache[string(key)]
 	if ok {
 		delete(a.lockCache, string(key))
@@ -838,9 +841,17 @@ func (a *applier) getLockForCommit(aCtx *applyContext, key []byte) []byte {
 		a.snap = aCtx.engines.kv.NewSnapAccess(aCtx.engines.kv.GetShard(regionID))
 	}
 	item, err := a.snap.Get(mvcc.LockCF, key, math.MaxUint64)
-	y.AssertTruef(err == nil, "key %v index %d", key, aCtx.execCtx.index)
-	val, err = item.Value()
-	y.Assert(err == nil)
+	if err != nil {
+		// TODO: investigate why there is duplicated commit and avoid it.
+		log.S().Warnf("lock for key %v not found, check if it's duplicated commit", key)
+		item, err = a.snap.Get(mvcc.WriteCF, key, math.MaxUint64)
+		y.AssertTruef(err == nil, "key %v commit should be duplicated at index %d", key, aCtx.execCtx.index)
+		um := mvcc.UserMeta(item.UserMeta())
+		y.AssertTruef(um.CommitTS() == commitTS, "key %v commitTS %d not equal old %d",
+			commitTS, um.CommitTS())
+		return nil
+	}
+	val, _ = item.Value()
 	return val
 }
 
