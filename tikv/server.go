@@ -250,15 +250,17 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCt
 				}},
 			},
 		}
-	} else {
-		snap := svr.mvccStore.eng.NewSnapAccess(shd)
-		req.reader = enginereader.NewReader(req.regCtx.startKey, req.regCtx.endKey, snap)
 	}
 	return req, nil
 }
 
 // For read-only requests that doesn't acquire latches, this function must be called after all locks has been checked.
 func (req *requestCtx) getKVReader() *enginereader.Reader {
+	if req.reader == nil {
+		shd := req.svr.mvccStore.eng.GetShard(req.rpcCtx.RegionId)
+		snap := req.svr.mvccStore.eng.NewSnapAccess(shd)
+		req.reader = enginereader.NewReader(req.regCtx.startKey, req.regCtx.endKey, snap)
+	}
 	return req.reader
 }
 
