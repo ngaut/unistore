@@ -688,7 +688,7 @@ func (ps *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *eraftpb.Snapshot,
 	ctx.ApplyState.truncatedIndex = lastIdx
 	ctx.ApplyState.truncatedTerm = snap.Metadata.Term
 
-	ctx.Region.RegionEpoch.Version = snapData.region.RegionEpoch.Version
+	ctx.Region = ctx.SnapData.region
 
 	log.S().Debugf("%v apply snapshot for region %v with state %v ok", ps.Tag, snapData.region, ctx.ApplyState)
 	ctx.SnapData = snapData
