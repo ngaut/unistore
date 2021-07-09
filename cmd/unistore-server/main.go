@@ -17,6 +17,8 @@ import (
 	"flag"
 	"fmt"
 	"github.com/ngaut/unistore/tikv"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -157,6 +159,9 @@ func main() {
 		grpc.MaxRecvMsgSize(20*1024*1024),
 	)
 	tikvpb.RegisterTikvServer(grpcServer, tikvServer)
+	hsrv := health.NewServer()
+	hsrv.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(grpcServer, hsrv)
 	listenAddr := conf.Server.StoreAddr[strings.IndexByte(conf.Server.StoreAddr, ':'):]
 	l, err := net.Listen("tcp", listenAddr)
 	deadlock.RegisterDeadlockServer(grpcServer, tikvServer)
