@@ -24,7 +24,7 @@ type unstable struct {
 	// the incoming unstable snapshot, if any.
 	snapshot *pb.Snapshot
 	// all entries that have not yet been written to storage.
-	entries []pb.Entry
+	entries []*pb.Entry
 	offset  uint64
 
 	logger Logger
@@ -102,7 +102,7 @@ func (u *unstable) shrinkEntriesArray() {
 	if len(u.entries) == 0 {
 		u.entries = nil
 	} else if len(u.entries)*lenMultiple < cap(u.entries) {
-		newEntries := make([]pb.Entry, len(u.entries))
+		newEntries := make([]*pb.Entry, len(u.entries))
 		copy(newEntries, u.entries)
 		u.entries = newEntries
 	}
@@ -120,7 +120,7 @@ func (u *unstable) restore(s pb.Snapshot) {
 	u.snapshot = &s
 }
 
-func (u *unstable) truncateAndAppend(ents []pb.Entry) {
+func (u *unstable) truncateAndAppend(ents []*pb.Entry) {
 	after := ents[0].Index
 	switch {
 	case after == u.offset+uint64(len(u.entries)):
@@ -137,12 +137,12 @@ func (u *unstable) truncateAndAppend(ents []pb.Entry) {
 		// truncate to after and copy to u.entries
 		// then append
 		u.logger.Infof("truncate the unstable entries before index %d", after)
-		u.entries = append([]pb.Entry{}, u.slice(u.offset, after)...)
+		u.entries = append([]*pb.Entry{}, u.slice(u.offset, after)...)
 		u.entries = append(u.entries, ents...)
 	}
 }
 
-func (u *unstable) slice(lo uint64, hi uint64) []pb.Entry {
+func (u *unstable) slice(lo uint64, hi uint64) []*pb.Entry {
 	u.mustCheckOutOfBounds(lo, hi)
 	return u.entries[lo-u.offset : hi-u.offset]
 }

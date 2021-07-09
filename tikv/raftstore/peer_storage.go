@@ -88,14 +88,14 @@ func CompactRaftLog(tag string, state *applyState, compactIndex, compactTerm uin
 }
 
 type EntryCache struct {
-	cache []eraftpb.Entry
+	cache []*eraftpb.Entry
 }
 
-func (ec *EntryCache) front() eraftpb.Entry {
+func (ec *EntryCache) front() *eraftpb.Entry {
 	return ec.cache[0]
 }
 
-func (ec *EntryCache) back() eraftpb.Entry {
+func (ec *EntryCache) back() *eraftpb.Entry {
 	return ec.cache[len(ec.cache)-1]
 }
 
@@ -103,7 +103,7 @@ func (ec *EntryCache) length() int {
 	return len(ec.cache)
 }
 
-func (ec *EntryCache) fetchEntriesTo(begin, end, maxSize uint64, fetchSize *uint64, ents []eraftpb.Entry) []eraftpb.Entry {
+func (ec *EntryCache) fetchEntriesTo(begin, end, maxSize uint64, fetchSize *uint64, ents []*eraftpb.Entry) []*eraftpb.Entry {
 	if begin >= end {
 		return nil
 	}
@@ -128,7 +128,7 @@ func (ec *EntryCache) fetchEntriesTo(begin, end, maxSize uint64, fetchSize *uint
 	return ents
 }
 
-func (ec *EntryCache) append(tag string, entries []eraftpb.Entry) {
+func (ec *EntryCache) append(tag string, entries []*eraftpb.Entry) {
 	if len(entries) == 0 {
 		return
 	}
@@ -365,12 +365,12 @@ func (ps *PeerStorage) IsApplyingSnapshot() bool {
 	return ps.snapState.StateType == SnapState_Applying
 }
 
-func (ps *PeerStorage) Entries(low, high, maxSize uint64) ([]eraftpb.Entry, error) {
+func (ps *PeerStorage) Entries(low, high, maxSize uint64) ([]*eraftpb.Entry, error) {
 	err := ps.checkRange(low, high)
 	if err != nil {
 		return nil, err
 	}
-	ents := make([]eraftpb.Entry, 0, high-low)
+	ents := make([]*eraftpb.Entry, 0, high-low)
 	if low == high {
 		return ents, nil
 	}
@@ -528,7 +528,7 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 // Append the given entries to the raft log using previous last index or self.last_index.
 // Return the new last index for later update. After we commit in the kv engine, we can set last_index
 // to the return one.
-func (ps *PeerStorage) Append(invokeCtx *InvokeContext, entries []eraftpb.Entry, raftWB *raftengine.WriteBatch) error {
+func (ps *PeerStorage) Append(invokeCtx *InvokeContext, entries []*eraftpb.Entry, raftWB *raftengine.WriteBatch) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -577,7 +577,7 @@ type CacheQueryStats struct {
 	miss uint64
 }
 
-func fetchEntriesTo(engine *raftengine.Engine, regionID, low, high, maxSize uint64, buf []eraftpb.Entry) ([]eraftpb.Entry, uint64, error) {
+func fetchEntriesTo(engine *raftengine.Engine, regionID, low, high, maxSize uint64, buf []*eraftpb.Entry) ([]*eraftpb.Entry, uint64, error) {
 	var totalSize uint64
 	nextIndex := low
 	exceededMaxSize := false

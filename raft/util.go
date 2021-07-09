@@ -100,7 +100,7 @@ func DescribeMessage(m pb.Message, f EntryFormatter) string {
 
 // PayloadSize is the size of the payload of this Entry. Notably, it does not
 // depend on its Index or Term.
-func PayloadSize(e pb.Entry) int {
+func PayloadSize(e *pb.Entry) int {
 	return len(e.Data)
 }
 
@@ -126,7 +126,7 @@ func DescribeEntries(ents []pb.Entry, f EntryFormatter) string {
 	return buf.String()
 }
 
-func limitSize(ents []pb.Entry, maxSize uint64) []pb.Entry {
+func limitSize(ents []*pb.Entry, maxSize uint64) []*pb.Entry {
 	if len(ents) == 0 {
 		return ents
 	}

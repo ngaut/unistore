@@ -82,7 +82,7 @@ func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *e
 	}
 	defer applier.snap.Discard()
 	for i := range entries {
-		e := &entries[i]
+		e := entries[i]
 		if len(e.Data) == 0 || e.EntryType != eraftpb.EntryType_EntryNormal {
 			continue
 		}

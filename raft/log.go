@@ -85,7 +85,7 @@ func (l *RaftLog) String() string {
 
 // maybeAppend returns (0, false) if the entries cannot be appended. Otherwise,
 // it returns (last index of new entries, true).
-func (l *RaftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry) (lastnewi uint64, ok bool) {
+func (l *RaftLog) maybeAppend(index, logTerm, committed uint64, ents ...*pb.Entry) (lastnewi uint64, ok bool) {
 	if l.matchTerm(index, logTerm) {
 		lastnewi = index + uint64(len(ents))
 		ci := l.findConflict(ents)
@@ -103,7 +103,7 @@ func (l *RaftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry
 	return 0, false
 }
 
-func (l *RaftLog) append(ents ...pb.Entry) uint64 {
+func (l *RaftLog) append(ents ...*pb.Entry) uint64 {
 	if len(ents) == 0 {
 		return l.LastIndex()
 	}
@@ -125,7 +125,7 @@ func (l *RaftLog) append(ents ...pb.Entry) uint64 {
 // a different term.
 // The first entry MUST have an index equal to the argument 'from'.
 // The index of the given entries MUST be continuously increasing.
-func (l *RaftLog) findConflict(ents []pb.Entry) uint64 {
+func (l *RaftLog) findConflict(ents []*pb.Entry) uint64 {
 	for _, ne := range ents {
 		if !l.matchTerm(ne.Index, ne.Term) {
 			if ne.Index <= l.LastIndex() {
@@ -138,7 +138,7 @@ func (l *RaftLog) findConflict(ents []pb.Entry) uint64 {
 	return 0
 }
 
-func (l *RaftLog) unstableEntries() []pb.Entry {
+func (l *RaftLog) unstableEntries() []*pb.Entry {
 	if len(l.unstable.entries) == 0 {
 		return nil
 	}
@@ -148,7 +148,7 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the available entries for execution.
 // If applied is smaller than the index of snapshot, it returns all committed
 // entries after the index of snapshot.
-func (l *RaftLog) nextEnts() (ents []pb.Entry) {
+func (l *RaftLog) nextEnts() (ents []*pb.Entry) {
 	off := max(l.applied+1, l.firstIndex())
 	if l.committed+1 > off {
 		ents, err := l.slice(off, l.committed+1, l.maxNextEntsSize)
@@ -160,7 +160,7 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	return nil
 }
 
-func (l *RaftLog) nextEntsSince(sinceIdx uint64) (ents []pb.Entry) {
+func (l *RaftLog) nextEntsSince(sinceIdx uint64) (ents []*pb.Entry) {
 	off := max(sinceIdx+1, l.firstIndex())
 	if l.committed+1 > off {
 		ents, err := l.slice(off, l.committed+1, l.maxNextEntsSize)
@@ -267,7 +267,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	panic(err) // TODO(bdarnell)
 }
 
-func (l *RaftLog) Entries(i, maxsize uint64) ([]pb.Entry, error) {
+func (l *RaftLog) Entries(i, maxsize uint64) ([]*pb.Entry, error) {
 	if i > l.LastIndex() {
 		return nil, nil
 	}
@@ -275,7 +275,7 @@ func (l *RaftLog) Entries(i, maxsize uint64) ([]pb.Entry, error) {
 }
 
 // allEntries returns all entries in the log.
-func (l *RaftLog) allEntries() []pb.Entry {
+func (l *RaftLog) allEntries() []*pb.Entry {
 	ents, err := l.Entries(l.firstIndex(), noLimit)
 	if err == nil {
 		return ents
@@ -320,7 +320,7 @@ func (l *RaftLog) restore(s pb.Snapshot) {
 }
 
 // slice returns a slice of log entries from lo through hi-1, inclusive.
-func (l *RaftLog) slice(lo, hi, maxSize uint64) ([]pb.Entry, error) {
+func (l *RaftLog) slice(lo, hi, maxSize uint64) ([]*pb.Entry, error) {
 	err := l.mustCheckOutOfBounds(lo, hi)
 	if err != nil {
 		return nil, err
@@ -328,7 +328,7 @@ func (l *RaftLog) slice(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 	if lo == hi {
 		return nil, nil
 	}
-	var ents []pb.Entry
+	var ents []*pb.Entry
 	if lo < l.unstable.offset {
 		storedEnts, err := l.storage.Entries(lo, min(hi, l.unstable.offset), maxSize)
 		if err == ErrCompacted {
@@ -349,7 +349,6 @@ func (l *RaftLog) slice(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 	if hi > l.unstable.offset {
 		unstable := l.unstable.slice(max(lo, l.unstable.offset), hi)
 		if len(ents) > 0 {
-			ents = append([]pb.Entry{}, ents...)
 			ents = append(ents, unstable...)
 		} else {
 			ents = unstable

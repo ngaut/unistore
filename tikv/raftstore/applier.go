@@ -91,7 +91,7 @@ type keyRange struct {
 type apply struct {
 	regionId uint64
 	term     uint64
-	entries  []eraftpb.Entry
+	entries  []*eraftpb.Entry
 }
 
 type applyMetrics struct {
@@ -296,7 +296,7 @@ func notifyStaleReq(term uint64, cb *Callback) {
 type waitSourceMergeState struct {
 	/// All of the entries that need to continue to be applied after
 	/// the source peer has applied its logs.
-	pendingEntries []eraftpb.Entry
+	pendingEntries []*eraftpb.Entry
 	/// All of messages that need to continue to be handled after
 	/// the source peer has applied its logs and pending entries
 	/// are all handled.
@@ -392,7 +392,7 @@ func makeTag(region *metapb.Region, peerID uint64) string {
 }
 
 /// Handles all the committed_entries, namely, applies the committed entries.
-func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntries []eraftpb.Entry) {
+func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntries []*eraftpb.Entry) {
 	if len(committedEntries) == 0 {
 		return
 	}
@@ -412,7 +412,7 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 	// commands again.
 	var results []execResult
 	for i := range committedEntries {
-		entry := &committedEntries[i]
+		entry := committedEntries[i]
 		if a.pendingRemove {
 			// This peer is about to be destroyed, skip everything.
 			break
@@ -440,7 +440,7 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 			results = append(results, res.data)
 		case applyResultTypeWaitMergeResource:
 			readyToMerge := res.data.(*atomic.Uint64)
-			pendingEntries := make([]eraftpb.Entry, 0, len(committedEntries)-i)
+			pendingEntries := make([]*eraftpb.Entry, 0, len(committedEntries)-i)
 			// Note that CommitMerge is skipped when `WaitMergeSource` is returned.
 			// So we need to enqueue it again and execute it again when resuming.
 			pendingEntries = append(pendingEntries, committedEntries[i:]...)
@@ -454,7 +454,7 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 			pause := &apply{
 				regionId: a.region.Id,
 				term:     a.term,
-				entries:  make([]eraftpb.Entry, 0, len(committedEntries)-i),
+				entries:  make([]*eraftpb.Entry, 0, len(committedEntries)-i),
 			}
 			pause.entries = append(pause.entries, committedEntries[i:]...)
 			aCtx.finishFor(a, results)
@@ -1177,10 +1177,6 @@ func (a *applier) handleApply(aCtx *applyContext, apply *apply) {
 	a.metrics = applyMetrics{}
 	a.term = apply.term
 	a.handleRaftCommittedEntries(aCtx, apply.entries)
-	for i := range apply.entries {
-		apply.entries[i] = eraftpb.Entry{}
-	}
-	apply.entries = apply.entries[:0]
 	if a.waitMergeState != nil {
 		return
 	}
