@@ -92,7 +92,7 @@ func NewRawNode(config *Config, peers []Peer) (*RawNode, error) {
 	// to be able to tell us when it expects the RawNode to exist.
 	if lastIndex == 0 {
 		r.becomeFollower(1, None)
-		ents := make([]pb.Entry, len(peers))
+		ents := make([]*pb.Entry, len(peers))
 		for i, peer := range peers {
 			cc := pb.ConfChange{ChangeType: pb.ConfChangeType_AddNode, NodeId: peer.ID, Context: peer.Context}
 			data, err := cc.Marshal()
@@ -100,7 +100,7 @@ func NewRawNode(config *Config, peers []Peer) (*RawNode, error) {
 				panic("unexpected marshal error")
 			}
 
-			ents[i] = pb.Entry{EntryType: pb.EntryType_EntryConfChange, Term: 1, Index: uint64(i + 1), Data: data}
+			ents[i] = &pb.Entry{EntryType: pb.EntryType_EntryConfChange, Term: 1, Index: uint64(i + 1), Data: data}
 		}
 		r.RaftLog.append(ents...)
 		r.RaftLog.committed = uint64(len(ents))

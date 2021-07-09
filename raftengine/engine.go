@@ -41,7 +41,7 @@ func NewWriteBatch() *WriteBatch {
 	return &WriteBatch{size: batchHdrSize}
 }
 
-func (b *WriteBatch) AppendRaftLog(regionID uint64, entry eraftpb.Entry) {
+func (b *WriteBatch) AppendRaftLog(regionID uint64, entry *eraftpb.Entry) {
 	op := newRaftLogOp(regionID, entry)
 	b.raftLogOps = append(b.raftLogOps, op)
 	b.size += raftLogSize(op)
@@ -81,7 +81,7 @@ type raftLogOp struct {
 	data     []byte
 }
 
-func newRaftLogOp(regionID uint64, entry eraftpb.Entry) raftLogOp {
+func newRaftLogOp(regionID uint64, entry *eraftpb.Entry) raftLogOp {
 	return raftLogOp{
 		regionID: regionID,
 		index:    entry.Index,
@@ -216,13 +216,13 @@ func (re *regionRaftLogs) truncate(index uint64) (empty bool) {
 	return len(re.raftLogs) == 0
 }
 
-func (re *regionRaftLogs) get(index uint64) eraftpb.Entry {
+func (re *regionRaftLogs) get(index uint64) *eraftpb.Entry {
 	if index < re.startIndex || index >= re.endIndex {
-		return eraftpb.Entry{}
+		return nil
 	}
 	localIdx := index - re.startIndex
 	op := re.raftLogs[localIdx]
-	return eraftpb.Entry{
+	return &eraftpb.Entry{
 		EntryType: eraftpb.EntryType(op.eType),
 		Term:      uint64(op.term),
 		Index:     op.index,
@@ -230,7 +230,7 @@ func (re *regionRaftLogs) get(index uint64) eraftpb.Entry {
 	}
 }
 
-func (e *Engine) GetRaftLog(regionID, index uint64) eraftpb.Entry {
+func (e *Engine) GetRaftLog(regionID, index uint64) *eraftpb.Entry {
 	entries := getRegionRaftLogs(e.entriesMap, regionID)
 	return entries.get(index)
 }

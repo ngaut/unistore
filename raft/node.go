@@ -68,7 +68,7 @@ type Ready struct {
 
 	// Entries specifies entries to be saved to stable storage BEFORE
 	// Messages are sent.
-	Entries []pb.Entry
+	Entries []*pb.Entry
 
 	// Snapshot specifies the snapshot to be saved to stable storage.
 	Snapshot pb.Snapshot
@@ -76,7 +76,7 @@ type Ready struct {
 	// CommittedEntries specifies entries to be committed to a
 	// store/state-machine. These have previously been committed to stable
 	// store.
-	CommittedEntries []pb.Entry
+	CommittedEntries []*pb.Entry
 
 	// Messages specifies outbound messages to be sent AFTER Entries are
 	// committed to stable storage.
@@ -211,7 +211,7 @@ func StartNode(c *Config, peers []Peer) Node {
 		if err != nil {
 			panic("unexpected marshal error")
 		}
-		e := pb.Entry{EntryType: pb.EntryType_EntryConfChange, Term: 1, Index: r.RaftLog.LastIndex() + 1, Data: d}
+		e := &pb.Entry{EntryType: pb.EntryType_EntryConfChange, Term: 1, Index: r.RaftLog.LastIndex() + 1, Data: d}
 		r.RaftLog.append(e)
 	}
 	// Mark these initial entries as committed.
@@ -586,16 +586,16 @@ func (n *node) ReadIndex(ctx context.Context, rctx []byte) error {
 
 func newReady(r *Raft, prevSoftSt *SoftState, prevHardSt pb.HardState, sinceIdx *uint64) Ready {
 	rd := Ready{
-		Entries: r.RaftLog.unstableEntries(),
+		Entries: append([]*pb.Entry{}, r.RaftLog.unstableEntries()...),
 	}
 	if len(r.msgs) != 0 {
 		rd.Messages = r.msgs
 		r.msgs = nil
 	}
 	if sinceIdx != nil {
-		rd.CommittedEntries = r.RaftLog.nextEntsSince(*sinceIdx)
+		rd.CommittedEntries = append([]*pb.Entry{}, r.RaftLog.nextEntsSince(*sinceIdx)...)
 	} else {
-		rd.CommittedEntries = r.RaftLog.nextEnts()
+		rd.CommittedEntries = append([]*pb.Entry{}, r.RaftLog.nextEnts()...)
 	}
 	if softSt := r.softState(); !softSt.equal(prevSoftSt) {
 		rd.SoftState = softSt

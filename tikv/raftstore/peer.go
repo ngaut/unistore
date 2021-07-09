@@ -832,7 +832,7 @@ func (p *Peer) HandleRaftReadyAppend(trans *RaftClient, raftWB *raftengine.Write
 		ready.Snapshot.Metadata = &eraftpb.SnapshotMetadata{}
 	}
 	for i := 0; i < len(ready.CommittedEntries); i++ {
-		e := &ready.CommittedEntries[i]
+		e := ready.CommittedEntries[i]
 		if raftlog.IsPreSplitLog(e.Data) {
 			// Set the PreSplit state so we can reject any future compaction.
 			p.Store().splitStage = enginepb.SplitStage_PRE_SPLIT

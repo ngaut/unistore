@@ -562,12 +562,7 @@ func (r *Raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		m.Index = pr.Next - 1
 		m.LogTerm = term
 
-		entries := make([]*pb.Entry, 0, len(ents))
-		for i := range ents {
-			clone := new(pb.Entry)
-			*clone = ents[i]
-			entries = append(entries, clone)
-		}
+		entries := append([]*pb.Entry{}, ents...)
 		m.Entries = entries
 		m.Commit = r.RaftLog.committed
 		if n := len(m.Entries); n != 0 {
@@ -694,7 +689,7 @@ func (r *Raft) reset(term uint64) {
 	r.readOnly = newReadOnly(r.readOnly.option)
 }
 
-func (r *Raft) appendEntry(es ...pb.Entry) (accepted bool) {
+func (r *Raft) appendEntry(es ...*pb.Entry) (accepted bool) {
 	li := r.RaftLog.LastIndex()
 	for i := range es {
 		es[i].Term = r.Term
@@ -814,7 +809,7 @@ func (r *Raft) becomeLeader() {
 	// could be expensive.
 	r.PendingConfIndex = r.RaftLog.LastIndex()
 
-	emptyEnt := pb.Entry{Data: nil}
+	emptyEnt := &pb.Entry{Data: nil}
 	if !r.appendEntry(emptyEnt) {
 		// This won't happen because we just called reset() above.
 		r.logger.Panic("empty entry was dropped")
@@ -823,7 +818,7 @@ func (r *Raft) becomeLeader() {
 	// uncommitted log quota. This is because we want to preserve the
 	// behavior of allowing one entry larger than quota if the current
 	// usage is zero.
-	r.reduceUncommittedSize([]pb.Entry{emptyEnt})
+	r.reduceUncommittedSize([]*pb.Entry{emptyEnt})
 	r.logger.Infof("%d became leader at term %d", r.regionID, r.Term)
 }
 
@@ -1067,9 +1062,9 @@ func stepLeader(r *Raft, m *pb.Message) error {
 			}
 		}
 
-		es := make([]pb.Entry, 0, len(m.Entries))
+		es := make([]*pb.Entry, 0, len(m.Entries))
 		for _, e := range m.Entries {
-			es = append(es, *e)
+			es = append(es, e)
 		}
 		if !r.appendEntry(es...) {
 			return ErrProposalDropped
@@ -1366,9 +1361,9 @@ func (r *Raft) handleAppendEntries(m *pb.Message) {
 		r.send(&pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed})
 		return
 	}
-	ents := make([]pb.Entry, 0, len(m.Entries))
+	ents := make([]*pb.Entry, 0, len(m.Entries))
 	for _, ent := range m.Entries {
-		ents = append(ents, *ent)
+		ents = append(ents, ent)
 	}
 	if mlastIndex, ok := r.RaftLog.maybeAppend(m.Index, m.LogTerm, m.Commit, ents...); ok {
 		r.send(&pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: mlastIndex})
@@ -1596,7 +1591,7 @@ func (r *Raft) abortLeaderTransfer() {
 // If the new entries would exceed the limit, the method returns false. If not,
 // the increase in uncommitted entry size is recorded and the method returns
 // true.
-func (r *Raft) increaseUncommittedSize(ents []pb.Entry) bool {
+func (r *Raft) increaseUncommittedSize(ents []*pb.Entry) bool {
 	var s uint64
 	for _, e := range ents {
 		s += uint64(PayloadSize(e))
@@ -1614,7 +1609,7 @@ func (r *Raft) increaseUncommittedSize(ents []pb.Entry) bool {
 
 // reduceUncommittedSize accounts for the newly committed entries by decreasing
 // the uncommitted entry size limit.
-func (r *Raft) reduceUncommittedSize(ents []pb.Entry) {
+func (r *Raft) reduceUncommittedSize(ents []*pb.Entry) {
 	if r.uncommittedSize == 0 {
 		// Fast-path for followers, who do not track or enforce the limit.
 		return
@@ -1634,7 +1629,7 @@ func (r *Raft) reduceUncommittedSize(ents []pb.Entry) {
 	}
 }
 
-func numOfPendingConf(ents []pb.Entry) int {
+func numOfPendingConf(ents []*pb.Entry) int {
 	n := 0
 	for i := range ents {
 		if ents[i].EntryType == pb.EntryType_EntryConfChange {
