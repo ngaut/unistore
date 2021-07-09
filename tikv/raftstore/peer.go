@@ -180,8 +180,9 @@ func (c *ProposalContext) insert(flag ProposalContext) {
 }
 
 type PeerStat struct {
-	WrittenBytes uint64
-	WrittenKeys  uint64
+	WrittenBytes    uint64
+	WrittenKeys     uint64
+	ApproximateSize uint64
 }
 
 /// A struct that stores the state to wait for `PrepareMerge` apply result.
@@ -258,11 +259,6 @@ type Peer struct {
 	/// Remove them after they are not pending any more.
 	PeersStartPendingTime map[uint64]time.Time
 	RecentAddedPeer       *RecentAddedPeer
-
-	/// approximate size of the region.
-	ApproximateSize *uint64
-	/// approximate keys of the region.
-	ApproximateKeys *uint64
 
 	ConsistencyState *ConsistencyState
 
@@ -972,8 +968,8 @@ func (p *Peer) HeartbeatPd(pdScheduler chan<- task) {
 			pendingPeers:    p.CollectPendingPeers(),
 			writtenBytes:    p.PeerStat.WrittenBytes,
 			writtenKeys:     p.PeerStat.WrittenKeys,
-			approximateSize: p.ApproximateSize,
-			approximateKeys: p.ApproximateKeys,
+			approximateSize: p.PeerStat.ApproximateSize,
+			approximateKeys: p.PeerStat.ApproximateSize / 256, // TODO: use real key number.
 		},
 	}
 }
@@ -1163,6 +1159,7 @@ func (p *Peer) PostApply(kv *engine.Engine, applyState applyState, merged bool, 
 
 	p.PeerStat.WrittenBytes += applyMetrics.writtenBytes
 	p.PeerStat.WrittenKeys += applyMetrics.writtenKeys
+	p.PeerStat.ApproximateSize = applyMetrics.approximateSize
 	if p.HasPendingSnapshot() && p.ReadyToHandlePendingSnap() {
 		hasReady = true
 	}

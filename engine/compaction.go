@@ -585,6 +585,7 @@ func (en *Engine) ApplyChangeSet(changeSet *enginepb.ChangeSet) error {
 	if shard.Ver != changeSet.ShardVer {
 		return ErrShardNotMatch
 	}
+	defer shard.refreshEstimatedSize()
 	if en.manifest.isDuplicatedChange(changeSet) {
 		return nil
 	}

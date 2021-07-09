@@ -66,6 +66,8 @@ type Shard struct {
 	skippedFlushLock sync.Mutex
 
 	commitTS uint64
+
+	estimatedSize int64
 }
 
 const (
@@ -171,6 +173,10 @@ func (s *Shard) isSplitting() bool {
 }
 
 func (s *Shard) GetEstimatedSize() int64 {
+	return atomic.LoadInt64(&s.estimatedSize)
+}
+
+func (s *Shard) refreshEstimatedSize() {
 	l0Tables := s.loadL0Tables()
 	L0TablesSize := int64(0)
 	for _, t := range l0Tables.tables {
@@ -181,7 +187,7 @@ func (s *Shard) GetEstimatedSize() int64 {
 		CFsSize += level.totalSize
 		return false
 	})
-	return L0TablesSize + CFsSize
+	atomic.StoreInt64(&s.estimatedSize, L0TablesSize+CFsSize)
 }
 
 func (s *Shard) getMaxMemTableSize() int64 {

@@ -186,10 +186,6 @@ func (d *peerMsgHandler) HandleMsgs(msgs ...Msg) {
 		case MsgTypeComputeResult:
 			result := msg.Data.(*MsgComputeHashResult)
 			d.onHashComputed(result.Index, result.Hash)
-		case MsgTypeRegionApproximateSize:
-			d.onApproximateRegionSize(msg.Data.(uint64))
-		case MsgTypeRegionApproximateKeys:
-			d.onApproximateRegionKeys(msg.Data.(uint64))
 		case MsgTypeHalfSplitRegion:
 			half := msg.Data.(*MsgHalfSplitRegion)
 			d.onScheduleHalfSplitRegion(half.RegionEpoch)
@@ -763,8 +759,6 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 	if !meta.regionTree.Delete(lastRegion) {
 		panic(d.tag() + " original region should exist")
 	}
-	// It's not correct anymore, so set it to None to let split checker update it.
-	d.peer.ApproximateSize = nil
 
 	newPeers := make([]*PeerEventContext, 0, len(regions))
 	for _, newRegion := range regions {
@@ -1112,14 +1106,6 @@ func (d *peerMsgHandler) validateSplitRegion(epoch *metapb.RegionEpoch, splitKey
 		}
 	}
 	return nil
-}
-
-func (d *peerMsgHandler) onApproximateRegionSize(size uint64) {
-	d.peer.ApproximateSize = &size
-}
-
-func (d *peerMsgHandler) onApproximateRegionKeys(keys uint64) {
-	d.peer.ApproximateKeys = &keys
 }
 
 func (d *peerMsgHandler) onScheduleHalfSplitRegion(regionEpoch *metapb.RegionEpoch) {

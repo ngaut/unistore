@@ -109,8 +109,8 @@ type pdRegionHeartbeatTask struct {
 	pendingPeers    []*metapb.Peer
 	writtenBytes    uint64
 	writtenKeys     uint64
-	approximateSize *uint64
-	approximateKeys *uint64
+	approximateSize uint64
+	approximateKeys uint64
 }
 
 type pdStoreHeartbeatTask struct {

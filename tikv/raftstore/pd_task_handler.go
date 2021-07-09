@@ -131,21 +131,13 @@ func (r *pdTaskHandler) onAskBatchSplit(t *pdAskBatchSplitTask) {
 }
 
 func (r *pdTaskHandler) onHeartbeat(t *pdRegionHeartbeatTask) {
-	var size, keys int64
-	if t.approximateSize != nil {
-		size = int64(*t.approximateSize)
-	}
-	if t.approximateKeys != nil {
-		keys = int64(*t.approximateKeys)
-	}
-
 	req := &pdpb.RegionHeartbeatRequest{
 		Region:          t.region,
 		Leader:          t.peer,
 		DownPeers:       t.downPeers,
 		PendingPeers:    t.pendingPeers,
-		ApproximateSize: uint64(size),
-		ApproximateKeys: uint64(keys),
+		ApproximateSize: t.approximateSize,
+		ApproximateKeys: t.approximateKeys,
 	}
 
 	s, ok := r.peerStats[t.region.GetId()]

@@ -380,6 +380,7 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 		}
 	}
 	for _, nShard := range newShards {
+		nShard.refreshEstimatedSize()
 		en.shardMap.Store(nShard.ID, nShard)
 		mem := en.switchMemTable(nShard, nShard.allocCommitTS())
 		en.scheduleFlushTask(nShard, mem)

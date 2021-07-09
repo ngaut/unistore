@@ -95,8 +95,9 @@ type apply struct {
 }
 
 type applyMetrics struct {
-	writtenBytes uint64
-	writtenKeys  uint64
+	writtenBytes    uint64
+	writtenKeys     uint64
+	approximateSize uint64
 }
 
 type applyTaskRes struct {
@@ -806,6 +807,8 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 	applyState.appliedIndexTerm = aCtx.execCtx.term
 	SetApplyState(wb, applyState)
 	aCtx.engines.kv.Write(wb)
+	a.metrics.writtenBytes += uint64(wb.EstimatedSize())
+	a.metrics.writtenKeys += uint64(wb.NumEntries())
 	wb.Reset()
 	return cnt
 }
@@ -1175,6 +1178,8 @@ func (a *applier) handleApply(aCtx *applyContext, apply *apply) {
 		return
 	}
 	a.metrics = applyMetrics{}
+	shard := aCtx.engines.kv.GetShard(a.region.GetId())
+	a.metrics.approximateSize = uint64(shard.GetEstimatedSize())
 	a.term = apply.term
 	a.handleRaftCommittedEntries(aCtx, apply.entries)
 	if a.waitMergeState != nil {
