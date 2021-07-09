@@ -695,6 +695,7 @@ func (ps *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *eraftpb.Snapshot,
 			snapApplyState.truncatedIndex = ctx.ApplyState.truncatedIndex
 			snapApplyState.truncatedTerm = ctx.ApplyState.truncatedTerm
 			properties.Values[i] = snapApplyState.Marshal()
+			break
 		}
 	}
 
