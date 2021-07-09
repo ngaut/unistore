@@ -687,6 +687,16 @@ func (ps *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *eraftpb.Snapshot,
 	// here the truncate state's (index, term) is in snapshot metadata.
 	ctx.ApplyState.truncatedIndex = lastIdx
 	ctx.ApplyState.truncatedTerm = snap.Metadata.Term
+	properties := snapData.changeSet.Snapshot.Properties
+	for i, key := range properties.Keys {
+		if key == applyStateKey {
+			var snapApplyState applyState
+			snapApplyState.Unmarshal(properties.Values[i])
+			snapApplyState.truncatedIndex = ctx.ApplyState.truncatedIndex
+			snapApplyState.truncatedTerm = ctx.ApplyState.truncatedTerm
+			properties.Values[i] = snapApplyState.Marshal()
+		}
+	}
 
 	ctx.Region = snapData.region
 
