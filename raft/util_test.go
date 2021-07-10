@@ -28,40 +28,40 @@ var testFormatter EntryFormatter = func(data []byte) string {
 }
 
 func TestDescribeEntry(t *testing.T) {
-	entry := pb.Entry{
-		Term:  1,
-		Index: 2,
-		Type:  pb.EntryType_EntryNormal,
-		Data:  []byte("hello\x00world"),
+	entry := &pb.Entry{
+		Term:      1,
+		Index:     2,
+		EntryType: pb.EntryType_EntryNormal,
+		Data:      []byte("hello\x00world"),
 	}
 
 	defaultFormatted := DescribeEntry(entry, nil)
-	if defaultFormatted != "1/2 EntryType_EntryNormal \"hello\\x00world\"" {
+	if defaultFormatted != "1/2 EntryNormal \"hello\\x00world\"" {
 		t.Errorf("unexpected default output: %s", defaultFormatted)
 	}
 
 	customFormatted := DescribeEntry(entry, testFormatter)
-	if customFormatted != "1/2 EntryType_EntryNormal HELLO\x00WORLD" {
+	if customFormatted != "1/2 EntryNormal HELLO\x00WORLD" {
 		t.Errorf("unexpected custom output: %s", customFormatted)
 	}
 }
 
 func TestLimitSize(t *testing.T) {
-	ents := []pb.Entry{{Index: 4, Term: 4}, {Index: 5, Term: 5}, {Index: 6, Term: 6}}
+	ents := []*pb.Entry{{Index: 4, Term: 4}, {Index: 5, Term: 5}, {Index: 6, Term: 6}}
 	tests := []struct {
 		maxsize  uint64
-		wentries []pb.Entry
+		wentries []*pb.Entry
 	}{
-		{math.MaxUint64, []pb.Entry{{Index: 4, Term: 4}, {Index: 5, Term: 5}, {Index: 6, Term: 6}}},
+		{math.MaxUint64, []*pb.Entry{{Index: 4, Term: 4}, {Index: 5, Term: 5}, {Index: 6, Term: 6}}},
 		// even if maxsize is zero, the first entry should be returned
-		{0, []pb.Entry{{Index: 4, Term: 4}}},
+		{0, []*pb.Entry{{Index: 4, Term: 4}}},
 		// limit to 2
-		{uint64(ents[0].Size() + ents[1].Size()), []pb.Entry{{Index: 4, Term: 4}, {Index: 5, Term: 5}}},
+		{uint64(ents[0].Size() + ents[1].Size()), []*pb.Entry{{Index: 4, Term: 4}, {Index: 5, Term: 5}}},
 		// limit to 2
-		{uint64(ents[0].Size() + ents[1].Size() + ents[2].Size()/2), []pb.Entry{{Index: 4, Term: 4}, {Index: 5, Term: 5}}},
-		{uint64(ents[0].Size() + ents[1].Size() + ents[2].Size() - 1), []pb.Entry{{Index: 4, Term: 4}, {Index: 5, Term: 5}}},
+		{uint64(ents[0].Size() + ents[1].Size() + ents[2].Size()/2), []*pb.Entry{{Index: 4, Term: 4}, {Index: 5, Term: 5}}},
+		{uint64(ents[0].Size() + ents[1].Size() + ents[2].Size() - 1), []*pb.Entry{{Index: 4, Term: 4}, {Index: 5, Term: 5}}},
 		// all
-		{uint64(ents[0].Size() + ents[1].Size() + ents[2].Size()), []pb.Entry{{Index: 4, Term: 4}, {Index: 5, Term: 5}, {Index: 6, Term: 6}}},
+		{uint64(ents[0].Size() + ents[1].Size() + ents[2].Size()), []*pb.Entry{{Index: 4, Term: 4}, {Index: 5, Term: 5}, {Index: 6, Term: 6}}},
 	}
 
 	for i, tt := range tests {
@@ -79,7 +79,7 @@ func TestIsLocalMsg(t *testing.T) {
 		{pb.MessageType_MsgHup, true},
 		{pb.MessageType_MsgBeat, true},
 		{pb.MessageType_MsgUnreachable, true},
-		{pb.MessageType_MessageType_MsgSnapshotStatus, true},
+		{pb.MessageType_MsgSnapStatus, true},
 		{pb.MessageType_MsgCheckQuorum, true},
 		{pb.MessageType_MsgTransferLeader, false},
 		{pb.MessageType_MsgPropose, false},

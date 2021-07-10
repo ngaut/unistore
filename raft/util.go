@@ -73,7 +73,7 @@ type EntryFormatter func([]byte) string
 
 // DescribeMessage returns a concise human-readable description of a
 // Message for debugging.
-func DescribeMessage(m pb.Message, f EntryFormatter) string {
+func DescribeMessage(m *pb.Message, f EntryFormatter) string {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "%x->%x %v Term:%d Log:%d/%d", m.From, m.To, m.MsgType, m.Term, m.LogTerm, m.Index)
 	if m.Reject {
@@ -88,7 +88,7 @@ func DescribeMessage(m pb.Message, f EntryFormatter) string {
 			if i != 0 {
 				buf.WriteString(", ")
 			}
-			buf.WriteString(DescribeEntry(*e, f))
+			buf.WriteString(DescribeEntry(e, f))
 		}
 		fmt.Fprintf(&buf, "]")
 	}
@@ -106,7 +106,7 @@ func PayloadSize(e *pb.Entry) int {
 
 // DescribeEntry returns a concise human-readable description of an
 // Entry for debugging.
-func DescribeEntry(e pb.Entry, f EntryFormatter) string {
+func DescribeEntry(e *pb.Entry, f EntryFormatter) string {
 	var formatted string
 	if e.EntryType == pb.EntryType_EntryNormal && f != nil {
 		formatted = f(e.Data)
@@ -118,7 +118,7 @@ func DescribeEntry(e pb.Entry, f EntryFormatter) string {
 
 // DescribeEntries calls DescribeEntry for each Entry, adding a newline to
 // each.
-func DescribeEntries(ents []pb.Entry, f EntryFormatter) string {
+func DescribeEntries(ents []*pb.Entry, f EntryFormatter) string {
 	var buf bytes.Buffer
 	for _, e := range ents {
 		_, _ = buf.WriteString(DescribeEntry(e, f) + "\n")

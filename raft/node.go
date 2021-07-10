@@ -100,7 +100,7 @@ func IsEmptyHardState(st pb.HardState) bool {
 
 // IsEmptySnap returns true if the given Snapshot is empty.
 func IsEmptySnap(sp *pb.Snapshot) bool {
-	if sp == nil {
+	if sp == nil || sp.Metadata == nil {
 		return true
 	}
 	return sp.Metadata.Index == 0

@@ -24,8 +24,8 @@ import (
 	"testing"
 	"time"
 
+	raftpb "github.com/pingcap/kvproto/pkg/eraftpb"
 	"go.etcd.io/etcd/pkg/testutil"
-	"go.etcd.io/etcd/raft/raftpb"
 )
 
 // readyWithTimeout selects from n.Ready() with a 1-second timeout. It
@@ -47,10 +47,10 @@ func TestNodeStep(t *testing.T) {
 	for i, msgn := range raftpb.MessageType_name {
 		n := &node{
 			propc: make(chan msgWithResult, 1),
-			recvc: make(chan raftpb.Message, 1),
+			recvc: make(chan *raftpb.Message, 1),
 		}
 		msgt := raftpb.MessageType(i)
-		n.Step(context.TODO(), raftpb.Message{Type: msgt})
+		n.Step(context.TODO(), &raftpb.Message{MsgType: msgt})
 		// Proposal goes to proc chan. Others go to recvc chan.
 		if msgt == raftpb.MessageType_MsgPropose {
 			select {
@@ -98,7 +98,7 @@ func TestNodeStepUnblock(t *testing.T) {
 	for i, tt := range tests {
 		errc := make(chan error, 1)
 		go func() {
-			err := n.Step(ctx, raftpb.Message{Type: raftpb.MessageType_MsgPropose})
+			err := n.Step(ctx, &raftpb.Message{MsgType: raftpb.MessageType_MsgPropose})
 			errc <- err
 		}()
 		tt.unblock()
@@ -124,8 +124,8 @@ func TestNodeStepUnblock(t *testing.T) {
 
 // TestNodePropose ensures that node.Propose sends the given proposal to the underlying raft.
 func TestNodePropose(t *testing.T) {
-	msgs := []raftpb.Message{}
-	appendStep := func(r *raft, m raftpb.Message) error {
+	msgs := []*raftpb.Message{}
+	appendStep := func(r *Raft, m *raftpb.Message) error {
 		msgs = append(msgs, m)
 		return nil
 	}
@@ -152,8 +152,8 @@ func TestNodePropose(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("len(msgs) = %d, want %d", len(msgs), 1)
 	}
-	if msgs[0].Type != raftpb.MessageType_MsgPropose {
-		t.Errorf("msg type = %d, want %d", msgs[0].Type, raftpb.MessageType_MsgPropose)
+	if msgs[0].MsgType != raftpb.MessageType_MsgPropose {
+		t.Errorf("msg type = %d, want %d", msgs[0].MsgType, raftpb.MessageType_MsgPropose)
 	}
 	if !bytes.Equal(msgs[0].Entries[0].Data, []byte("somedata")) {
 		t.Errorf("data = %v, want %v", msgs[0].Entries[0].Data, []byte("somedata"))
@@ -163,8 +163,8 @@ func TestNodePropose(t *testing.T) {
 // TestNodeReadIndex ensures that node.ReadIndex sends the MessageType_MsgReadIndex message to the underlying raft.
 // It also ensures that ReadState can be read out through ready chan.
 func TestNodeReadIndex(t *testing.T) {
-	msgs := []raftpb.Message{}
-	appendStep := func(r *raft, m raftpb.Message) error {
+	msgs := []*raftpb.Message{}
+	appendStep := func(r *Raft, m *raftpb.Message) error {
 		msgs = append(msgs, m)
 		return nil
 	}
@@ -200,8 +200,8 @@ func TestNodeReadIndex(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("len(msgs) = %d, want %d", len(msgs), 1)
 	}
-	if msgs[0].Type != raftpb.MessageType_MsgReadIndex {
-		t.Errorf("msg type = %d, want %d", msgs[0].Type, raftpb.MessageType_MsgReadIndex)
+	if msgs[0].MsgType != raftpb.MessageType_MsgReadIndex {
+		t.Errorf("msg type = %d, want %d", msgs[0].MsgType, raftpb.MessageType_MsgReadIndex)
 	}
 	if !bytes.Equal(msgs[0].Entries[0].Data, wrequestCtx) {
 		t.Errorf("data = %v, want %v", msgs[0].Entries[0].Data, wrequestCtx)
@@ -219,12 +219,12 @@ func TestDisableProposalForwarding(t *testing.T) {
 	nt := newNetwork(r1, r2, r3)
 
 	// elect r1 as leader
-	nt.send(raftpb.Message{From: 1, To: 1, Type: raftpb.MessageType_MsgHup})
+	nt.send(&raftpb.Message{From: 1, To: 1, MsgType: raftpb.MessageType_MsgHup})
 
-	var testEntries = []raftpb.Entry{{Data: []byte("testdata")}}
+	var testEntries = []*raftpb.Entry{{Data: []byte("testdata")}}
 
 	// send proposal to r2(follower) where DisableProposalForwarding is false
-	r2.Step(raftpb.Message{From: 2, To: 2, Type: raftpb.MessageType_MsgPropose, Entries: testEntries})
+	r2.Step(&raftpb.Message{From: 2, To: 2, MsgType: raftpb.MessageType_MsgPropose, Entries: testEntries})
 
 	// verify r2(follower) does forward the proposal when DisableProposalForwarding is false
 	if len(r2.msgs) != 1 {
@@ -232,7 +232,7 @@ func TestDisableProposalForwarding(t *testing.T) {
 	}
 
 	// send proposal to r3(follower) where DisableProposalForwarding is true
-	r3.Step(raftpb.Message{From: 3, To: 3, Type: raftpb.MessageType_MsgPropose, Entries: testEntries})
+	r3.Step(&raftpb.Message{From: 3, To: 3, MsgType: raftpb.MessageType_MsgPropose, Entries: testEntries})
 
 	// verify r3(follower) does not forward the proposal when DisableProposalForwarding is true
 	if len(r3.msgs) != 0 {
@@ -250,36 +250,36 @@ func TestNodeReadIndexToOldLeader(t *testing.T) {
 	nt := newNetwork(r1, r2, r3)
 
 	// elect r1 as leader
-	nt.send(raftpb.Message{From: 1, To: 1, Type: raftpb.MessageType_MsgHup})
+	nt.send(&raftpb.Message{From: 1, To: 1, MsgType: raftpb.MessageType_MsgHup})
 
-	var testEntries = []raftpb.Entry{{Data: []byte("testdata")}}
+	var testEntries = []*raftpb.Entry{{Data: []byte("testdata")}}
 
 	// send readindex request to r2(follower)
-	r2.Step(raftpb.Message{From: 2, To: 2, Type: raftpb.MessageType_MsgReadIndex, Entries: testEntries})
+	r2.Step(&raftpb.Message{From: 2, To: 2, MsgType: raftpb.MessageType_MsgReadIndex, Entries: testEntries})
 
 	// verify r2(follower) forwards this message to r1(leader) with term not set
 	if len(r2.msgs) != 1 {
 		t.Fatalf("len(r2.msgs) expected 1, got %d", len(r2.msgs))
 	}
-	readIndxMsg1 := raftpb.Message{From: 2, To: 1, Type: raftpb.MessageType_MsgReadIndex, Entries: testEntries}
+	readIndxMsg1 := &raftpb.Message{From: 2, To: 1, MsgType: raftpb.MessageType_MsgReadIndex, Entries: testEntries}
 	if !reflect.DeepEqual(r2.msgs[0], readIndxMsg1) {
 		t.Fatalf("r2.msgs[0] expected %+v, got %+v", readIndxMsg1, r2.msgs[0])
 	}
 
 	// send readindex request to r3(follower)
-	r3.Step(raftpb.Message{From: 3, To: 3, Type: raftpb.MessageType_MsgReadIndex, Entries: testEntries})
+	r3.Step(&raftpb.Message{From: 3, To: 3, MsgType: raftpb.MessageType_MsgReadIndex, Entries: testEntries})
 
 	// verify r3(follower) forwards this message to r1(leader) with term not set as well.
 	if len(r3.msgs) != 1 {
 		t.Fatalf("len(r3.msgs) expected 1, got %d", len(r3.msgs))
 	}
-	readIndxMsg2 := raftpb.Message{From: 3, To: 1, Type: raftpb.MessageType_MsgReadIndex, Entries: testEntries}
+	readIndxMsg2 := &raftpb.Message{From: 3, To: 1, MsgType: raftpb.MessageType_MsgReadIndex, Entries: testEntries}
 	if !reflect.DeepEqual(r3.msgs[0], readIndxMsg2) {
 		t.Fatalf("r3.msgs[0] expected %+v, got %+v", readIndxMsg2, r3.msgs[0])
 	}
 
 	// now elect r3 as leader
-	nt.send(raftpb.Message{From: 3, To: 3, Type: raftpb.MessageType_MsgHup})
+	nt.send(&raftpb.Message{From: 3, To: 3, MsgType: raftpb.MessageType_MsgHup})
 
 	// let r1 steps the two messages previously we got from r2, r3
 	r1.Step(readIndxMsg1)
@@ -289,7 +289,7 @@ func TestNodeReadIndexToOldLeader(t *testing.T) {
 	if len(r1.msgs) != 2 {
 		t.Fatalf("len(r1.msgs) expected 1, got %d", len(r1.msgs))
 	}
-	readIndxMsg3 := raftpb.Message{From: 1, To: 3, Type: raftpb.MessageType_MsgReadIndex, Entries: testEntries}
+	readIndxMsg3 := &raftpb.Message{From: 1, To: 3, MsgType: raftpb.MessageType_MsgReadIndex, Entries: testEntries}
 	if !reflect.DeepEqual(r1.msgs[0], readIndxMsg3) {
 		t.Fatalf("r1.msgs[0] expected %+v, got %+v", readIndxMsg3, r1.msgs[0])
 	}
@@ -301,8 +301,8 @@ func TestNodeReadIndexToOldLeader(t *testing.T) {
 // TestNodeProposeConfig ensures that node.ProposeConfChange sends the given configuration proposal
 // to the underlying raft.
 func TestNodeProposeConfig(t *testing.T) {
-	msgs := []raftpb.Message{}
-	appendStep := func(r *raft, m raftpb.Message) error {
+	msgs := []*raftpb.Message{}
+	appendStep := func(r *Raft, m *raftpb.Message) error {
 		msgs = append(msgs, m)
 		return nil
 	}
@@ -323,7 +323,7 @@ func TestNodeProposeConfig(t *testing.T) {
 		}
 		n.Advance()
 	}
-	cc := raftpb.ConfChange{Type: raftpb.ConfChangeType_AddNode, NodeId: 1}
+	cc := raftpb.ConfChange{ChangeType: raftpb.ConfChangeType_AddNode, NodeId: 1}
 	ccdata, err := cc.Marshal()
 	if err != nil {
 		t.Fatal(err)
@@ -334,8 +334,8 @@ func TestNodeProposeConfig(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("len(msgs) = %d, want %d", len(msgs), 1)
 	}
-	if msgs[0].Type != raftpb.MessageType_MsgPropose {
-		t.Errorf("msg type = %d, want %d", msgs[0].Type, raftpb.MessageType_MsgPropose)
+	if msgs[0].MsgType != raftpb.MessageType_MsgPropose {
+		t.Errorf("msg type = %d, want %d", msgs[0].MsgType, raftpb.MessageType_MsgPropose)
 	}
 	if !bytes.Equal(msgs[0].Entries[0].Data, ccdata) {
 		t.Errorf("data = %v, want %v", msgs[0].Entries[0].Data, ccdata)
@@ -350,7 +350,7 @@ func TestNodeProposeAddDuplicateNode(t *testing.T) {
 	r := newTestRaft(1, []uint64{1}, 10, 1, s)
 	go n.run(r)
 	n.Campaign(context.TODO())
-	rdyEntries := make([]raftpb.Entry, 0)
+	rdyEntries := make([]*raftpb.Entry, 0)
 	ticker := time.NewTicker(time.Millisecond * 100)
 	defer ticker.Stop()
 	done := make(chan struct{})
@@ -370,7 +370,7 @@ func TestNodeProposeAddDuplicateNode(t *testing.T) {
 				applied := false
 				for _, e := range rd.Entries {
 					rdyEntries = append(rdyEntries, e)
-					switch e.Type {
+					switch e.EntryType {
 					case raftpb.EntryType_EntryNormal:
 					case raftpb.EntryType_EntryConfChange:
 						var cc raftpb.ConfChange
@@ -387,7 +387,7 @@ func TestNodeProposeAddDuplicateNode(t *testing.T) {
 		}
 	}()
 
-	cc1 := raftpb.ConfChange{Type: raftpb.ConfChangeType_AddNode, NodeId: 1}
+	cc1 := raftpb.ConfChange{ChangeType: raftpb.ConfChangeType_AddNode, NodeId: 1}
 	ccdata1, _ := cc1.Marshal()
 	n.ProposeConfChange(context.TODO(), cc1)
 	<-applyConfChan
@@ -397,7 +397,7 @@ func TestNodeProposeAddDuplicateNode(t *testing.T) {
 	<-applyConfChan
 
 	// the new node join should be ok
-	cc2 := raftpb.ConfChange{Type: raftpb.ConfChangeType_AddNode, NodeId: 2}
+	cc2 := raftpb.ConfChange{ChangeType: raftpb.ConfChangeType_AddNode, NodeId: 2}
 	ccdata2, _ := cc2.Marshal()
 	n.ProposeConfChange(context.TODO(), cc2)
 	<-applyConfChan
@@ -450,9 +450,9 @@ func TestBlockProposal(t *testing.T) {
 }
 
 func TestNodeProposeWaitDropped(t *testing.T) {
-	msgs := []raftpb.Message{}
+	msgs := []*raftpb.Message{}
 	droppingMsg := []byte("test_dropping")
-	dropStep := func(r *raft, m raftpb.Message) error {
+	dropStep := func(r *Raft, m *raftpb.Message) error {
 		if m.MsgType == raftpb.MessageType_MsgPropose && strings.Contains(m.String(), string(droppingMsg)) {
 			t.Logf("dropping message: %v", m.String())
 			return ErrProposalDropped
@@ -556,10 +556,10 @@ func TestReadyContainUpdates(t *testing.T) {
 		{Ready{}, false},
 		{Ready{SoftState: &SoftState{Lead: 1}}, true},
 		{Ready{HardState: raftpb.HardState{Vote: 1}}, true},
-		{Ready{Entries: make([]raftpb.Entry, 1)}, true},
-		{Ready{CommittedEntries: make([]raftpb.Entry, 1)}, true},
-		{Ready{Messages: make([]raftpb.Message, 1)}, true},
-		{Ready{Snapshot: raftpb.Snapshot{Metadata: raftpb.SnapshotMetadata{Index: 1}}}, true},
+		{Ready{Entries: make([]*raftpb.Entry, 1)}, true},
+		{Ready{CommittedEntries: make([]*raftpb.Entry, 1)}, true},
+		{Ready{Messages: make([]*raftpb.Message, 1)}, true},
+		{Ready{Snapshot: raftpb.Snapshot{Metadata: &raftpb.SnapshotMetadata{Index: 1}}}, true},
 	}
 
 	for i, tt := range tests {
@@ -576,7 +576,7 @@ func TestNodeStart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cc := raftpb.ConfChange{Type: raftpb.ConfChangeType_AddNode, NodeId: 1}
+	cc := raftpb.ConfChange{ChangeType: raftpb.ConfChangeType_AddNode, NodeId: 1}
 	ccdata, err := cc.Marshal()
 	if err != nil {
 		t.Fatalf("unexpected marshal error: %v", err)
@@ -584,18 +584,18 @@ func TestNodeStart(t *testing.T) {
 	wants := []Ready{
 		{
 			HardState: raftpb.HardState{Term: 1, Commit: 1, Vote: 0},
-			Entries: []raftpb.Entry{
-				{Type: raftpb.EntryType_EntryConfChange, Term: 1, Index: 1, Data: ccdata},
+			Entries: []*raftpb.Entry{
+				{EntryType: raftpb.EntryType_EntryConfChange, Term: 1, Index: 1, Data: ccdata},
 			},
-			CommittedEntries: []raftpb.Entry{
-				{Type: raftpb.EntryType_EntryConfChange, Term: 1, Index: 1, Data: ccdata},
+			CommittedEntries: []*raftpb.Entry{
+				{EntryType: raftpb.EntryType_EntryConfChange, Term: 1, Index: 1, Data: ccdata},
 			},
 			MustSync: true,
 		},
 		{
 			HardState:        raftpb.HardState{Term: 2, Commit: 3, Vote: 1},
-			Entries:          []raftpb.Entry{{Term: 2, Index: 3, Data: []byte("foo")}},
-			CommittedEntries: []raftpb.Entry{{Term: 2, Index: 3, Data: []byte("foo")}},
+			Entries:          []*raftpb.Entry{{Term: 2, Index: 3, Data: []byte("foo")}},
+			CommittedEntries: []*raftpb.Entry{{Term: 2, Index: 3, Data: []byte("foo")}},
 			MustSync:         true,
 		},
 	}
@@ -639,7 +639,7 @@ func TestNodeStart(t *testing.T) {
 }
 
 func TestNodeRestart(t *testing.T) {
-	entries := []raftpb.Entry{
+	entries := []*raftpb.Entry{
 		{Term: 1, Index: 1},
 		{Term: 1, Index: 2, Data: []byte("foo")},
 	}
@@ -665,7 +665,7 @@ func TestNodeRestart(t *testing.T) {
 	}
 	n := RestartNode(c)
 	defer n.Stop()
-	if g := <-n.Ready(); !reflect.DeepEqual(g, want) {
+	if g := <-n.Ready(); g.String() != want.String() {
 		t.Errorf("g = %+v,\n             w   %+v", g, want)
 	}
 	n.Advance()
@@ -679,13 +679,13 @@ func TestNodeRestart(t *testing.T) {
 
 func TestNodeRestartFromSnapshot(t *testing.T) {
 	snap := raftpb.Snapshot{
-		Metadata: raftpb.SnapshotMetadata{
-			ConfState: raftpb.ConfState{Nodes: []uint64{1, 2}},
+		Metadata: &raftpb.SnapshotMetadata{
+			ConfState: &raftpb.ConfState{Voters: []uint64{1, 2}},
 			Index:     2,
 			Term:      1,
 		},
 	}
-	entries := []raftpb.Entry{
+	entries := []*raftpb.Entry{
 		{Term: 1, Index: 3, Data: []byte("foo")},
 	}
 	st := raftpb.HardState{Term: 1, Commit: 3}
@@ -711,7 +711,7 @@ func TestNodeRestartFromSnapshot(t *testing.T) {
 	}
 	n := RestartNode(c)
 	defer n.Stop()
-	if g := <-n.Ready(); !reflect.DeepEqual(g, want) {
+	if g := <-n.Ready(); g.String() != want.String() {
 		t.Errorf("g = %+v,\n             w   %+v", g, want)
 	} else {
 		n.Advance()
@@ -818,7 +818,7 @@ func TestNodeProposeAddLearnerNode(t *testing.T) {
 				s.Append(rd.Entries)
 				t.Logf("raft: %v", rd.Entries)
 				for _, ent := range rd.Entries {
-					if ent.Type != raftpb.EntryType_EntryConfChange {
+					if ent.EntryType != raftpb.EntryType_EntryConfChange {
 						continue
 					}
 					var cc raftpb.ConfChange
@@ -830,7 +830,7 @@ func TestNodeProposeAddLearnerNode(t *testing.T) {
 						t.Errorf("apply conf change should return new added learner: %v", state.String())
 					}
 
-					if len(state.Nodes) != 1 {
+					if len(state.Voters) != 1 {
 						t.Errorf("add learner should not change the nodes: %v", state.String())
 					}
 					t.Logf("apply raft conf %v changed to: %v", cc, state.String())
@@ -840,7 +840,7 @@ func TestNodeProposeAddLearnerNode(t *testing.T) {
 			}
 		}
 	}()
-	cc := raftpb.ConfChange{Type: raftpb.ConfChangeType_AddLearnerNode, NodeId: 2}
+	cc := raftpb.ConfChange{ChangeType: raftpb.ConfChangeType_AddLearnerNode, NodeId: 2}
 	n.ProposeConfChange(context.TODO(), cc)
 	<-applyConfChan
 	close(stop)
@@ -856,7 +856,7 @@ func TestAppendPagination(t *testing.T) {
 	seenFullMessage := false
 	// Inspect all messages to see that we never exceed the limit, but
 	// we do see messages of larger than half the limit.
-	n.msgHook = func(m raftpb.Message) bool {
+	n.msgHook = func(m *raftpb.Message) bool {
 		if m.MsgType == raftpb.MessageType_MsgAppend {
 			size := 0
 			for _, e := range m.Entries {
@@ -872,20 +872,20 @@ func TestAppendPagination(t *testing.T) {
 		return true
 	}
 
-	n.send(raftpb.Message{From: 1, To: 1, Type: raftpb.MessageType_MsgHup})
+	n.send(&raftpb.Message{From: 1, To: 1, MsgType: raftpb.MessageType_MsgHup})
 
 	// Partition the network while we make our proposals. This forces
 	// the entries to be batched into larger messages.
 	n.isolate(1)
 	blob := []byte(strings.Repeat("a", 1000))
 	for i := 0; i < 5; i++ {
-		n.send(raftpb.Message{From: 1, To: 1, Type: raftpb.MessageType_MsgPropose, Entries: []raftpb.Entry{{Data: blob}}})
+		n.send(&raftpb.Message{From: 1, To: 1, MsgType: raftpb.MessageType_MsgPropose, Entries: []*raftpb.Entry{{Data: blob}}})
 	}
 	n.recover()
 
 	// After the partition recovers, tick the clock to wake everything
 	// back up and send the messages.
-	n.send(raftpb.Message{From: 1, To: 1, Type: raftpb.MessageType_MsgBeat})
+	n.send(&raftpb.Message{From: 1, To: 1, MsgType: raftpb.MessageType_MsgBeat})
 	if !seenFullMessage {
 		t.Error("didn't see any messages more than half the max size; something is wrong with this test")
 	}
@@ -933,7 +933,7 @@ type ignoreSizeHintMemStorage struct {
 	*MemoryStorage
 }
 
-func (s *ignoreSizeHintMemStorage) Entries(lo, hi uint64, maxSize uint64) ([]raftpb.Entry, error) {
+func (s *ignoreSizeHintMemStorage) Entries(lo, hi uint64, maxSize uint64) ([]*raftpb.Entry, error) {
 	return s.MemoryStorage.Entries(lo, hi, math.MaxUint64)
 }
 
@@ -964,14 +964,14 @@ func TestNodeCommitPaginationAfterRestart(t *testing.T) {
 	}
 
 	s.hardState = persistedHardState
-	s.ents = make([]raftpb.Entry, 10)
+	s.ents = make([]*raftpb.Entry, 10)
 	var size uint64
 	for i := range s.ents {
-		ent := raftpb.Entry{
-			Term:  1,
-			Index: uint64(i + 1),
-			Type:  raftpb.EntryType_EntryNormal,
-			Data:  []byte("a"),
+		ent := &raftpb.Entry{
+			Term:      1,
+			Index:     uint64(i + 1),
+			EntryType: raftpb.EntryType_EntryNormal,
+			Data:      []byte("a"),
 		}
 
 		s.ents[i] = ent
@@ -1005,7 +1005,7 @@ func TestNodeCommitPaginationAfterRestart(t *testing.T) {
 func TestNodeBoundedLogGrowthWithPartition(t *testing.T) {
 	const maxEntries = 16
 	data := []byte("testdata")
-	testEntry := raftpb.Entry{Data: data}
+	testEntry := &raftpb.Entry{Data: data}
 	maxEntrySize := uint64(maxEntries * PayloadSize(testEntry))
 
 	s := NewMemoryStorage()

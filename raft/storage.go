@@ -87,7 +87,8 @@ type MemoryStorage struct {
 func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{
 		// When starting from scratch populate the list with a dummy entry at term zero.
-		ents: make([]*pb.Entry, 1),
+		ents:     []*pb.Entry{{}},
+		snapshot: pb.Snapshot{Metadata: &pb.SnapshotMetadata{ConfState: &pb.ConfState{}}},
 	}
 }
 
@@ -226,6 +227,7 @@ func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 
 	i := compactIndex - offset
 	ents := make([]*pb.Entry, 1, 1+uint64(len(ms.ents))-i)
+	ents[0] = &pb.Entry{}
 	ents[0].Index = ms.ents[i].Index
 	ents[0].Term = ms.ents[i].Term
 	ents = append(ents, ms.ents[i+1:]...)

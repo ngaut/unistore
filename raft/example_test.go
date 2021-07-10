@@ -18,10 +18,10 @@ import (
 	pb "github.com/pingcap/kvproto/pkg/eraftpb"
 )
 
-func applyToStore(ents []pb.Entry)    {}
-func sendMessages(msgs []pb.Message)  {}
+func applyToStore(ents []*pb.Entry)   {}
+func sendMessages(msgs []*pb.Message) {}
 func saveStateToDisk(st pb.HardState) {}
-func saveToDisk(ents []pb.Entry)      {}
+func saveToDisk(ents []*pb.Entry)     {}
 
 func ExampleNode() {
 	c := &Config{}

@@ -322,7 +322,7 @@ func hardStateEqual(l, r *pb.HardState) bool {
 }
 
 func (rn *RawNode) HasReadySince(appliedIdx *uint64) bool {
-	if len(rn.Raft.msgs) != 0 || rn.Raft.RaftLog.unstableEntries != nil {
+	if len(rn.Raft.msgs) != 0 || rn.Raft.RaftLog.unstableEntries() != nil {
 		return true
 	}
 	if len(rn.Raft.readStates) != 0 {
