@@ -164,7 +164,7 @@ func (h *RecoverHandler) loadRegionMeta(id, ver uint64) (region *metapb.Region, 
 func (h *RecoverHandler) executeAdminRequest(a *applier, cmdReq *raft_cmdpb.RaftCmdRequest) error {
 	adminReq := cmdReq.AdminRequest
 	if adminReq.Splits != nil {
-		_, _, err := a.splitGenNewRegionMetas(adminReq.Splits)
+		_, _, err := a.execBatchSplit(h.ctx, adminReq)
 		if err != nil {
 			return err
 		}
