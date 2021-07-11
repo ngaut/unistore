@@ -23,7 +23,7 @@ import (
 
 func TestUnstableMaybeFirstIndex(t *testing.T) {
 	tests := []struct {
-		entries []pb.Entry
+		entries []*pb.Entry
 		offset  uint64
 		snap    *pb.Snapshot
 
@@ -32,20 +32,20 @@ func TestUnstableMaybeFirstIndex(t *testing.T) {
 	}{
 		// no snapshot
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, nil,
 			false, 0,
 		},
 		{
-			[]pb.Entry{}, 0, nil,
+			[]*pb.Entry{}, 0, nil,
 			false, 0,
 		},
 		// has snapshot
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 			true, 5,
 		},
 		{
-			[]pb.Entry{}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+			[]*pb.Entry{}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 			true, 5,
 		},
 	}
@@ -69,7 +69,7 @@ func TestUnstableMaybeFirstIndex(t *testing.T) {
 
 func TestMaybeLastIndex(t *testing.T) {
 	tests := []struct {
-		entries []pb.Entry
+		entries []*pb.Entry
 		offset  uint64
 		snap    *pb.Snapshot
 
@@ -78,21 +78,21 @@ func TestMaybeLastIndex(t *testing.T) {
 	}{
 		// last in entries
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, nil,
 			true, 5,
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 			true, 5,
 		},
 		// last in snapshot
 		{
-			[]pb.Entry{}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+			[]*pb.Entry{}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 			true, 4,
 		},
 		// empty unstable
 		{
-			[]pb.Entry{}, 0, nil,
+			[]*pb.Entry{}, 0, nil,
 			false, 0,
 		},
 	}
@@ -116,7 +116,7 @@ func TestMaybeLastIndex(t *testing.T) {
 
 func TestUnstableMaybeTerm(t *testing.T) {
 	tests := []struct {
-		entries []pb.Entry
+		entries []*pb.Entry
 		offset  uint64
 		snap    *pb.Snapshot
 		index   uint64
@@ -126,53 +126,53 @@ func TestUnstableMaybeTerm(t *testing.T) {
 	}{
 		// term from entries
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, nil,
 			5,
 			true, 1,
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, nil,
 			6,
 			false, 0,
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, nil,
 			4,
 			false, 0,
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 			5,
 			true, 1,
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 			6,
 			false, 0,
 		},
 		// term from snapshot
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 			4,
 			true, 1,
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 			3,
 			false, 0,
 		},
 		{
-			[]pb.Entry{}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+			[]*pb.Entry{}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 			5,
 			false, 0,
 		},
 		{
-			[]pb.Entry{}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+			[]*pb.Entry{}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 			4,
 			true, 1,
 		},
 		{
-			[]pb.Entry{}, 0, nil,
+			[]*pb.Entry{}, 0, nil,
 			5,
 			false, 0,
 		},
@@ -197,12 +197,12 @@ func TestUnstableMaybeTerm(t *testing.T) {
 
 func TestUnstableRestore(t *testing.T) {
 	u := unstable{
-		entries:  []pb.Entry{{Index: 5, Term: 1}},
+		entries:  []*pb.Entry{{Index: 5, Term: 1}},
 		offset:   5,
-		snapshot: &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+		snapshot: &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 		logger:   raftLogger,
 	}
-	s := pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 6, Term: 2}}
+	s := pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 6, Term: 2}}
 	u.restore(s)
 
 	if u.offset != s.Metadata.Index+1 {
@@ -218,7 +218,7 @@ func TestUnstableRestore(t *testing.T) {
 
 func TestUnstableStableTo(t *testing.T) {
 	tests := []struct {
-		entries     []pb.Entry
+		entries     []*pb.Entry
 		offset      uint64
 		snap        *pb.Snapshot
 		index, term uint64
@@ -227,58 +227,58 @@ func TestUnstableStableTo(t *testing.T) {
 		wlen    int
 	}{
 		{
-			[]pb.Entry{}, 0, nil,
+			[]*pb.Entry{}, 0, nil,
 			5, 1,
 			0, 0,
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, nil,
 			5, 1, // stable to the first entry
 			6, 0,
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}}, 5, nil,
 			5, 1, // stable to the first entry
 			6, 1,
 		},
 		{
-			[]pb.Entry{{Index: 6, Term: 2}}, 6, nil,
+			[]*pb.Entry{{Index: 6, Term: 2}}, 6, nil,
 			6, 1, // stable to the first entry and term mismatch
 			6, 1,
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, nil,
 			4, 1, // stable to old entry
 			5, 1,
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, nil,
 			4, 2, // stable to old entry
 			5, 1,
 		},
 		// with snapshot
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 			5, 1, // stable to the first entry
 			6, 0,
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+			[]*pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 			5, 1, // stable to the first entry
 			6, 1,
 		},
 		{
-			[]pb.Entry{{Index: 6, Term: 2}}, 6, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 5, Term: 1}},
+			[]*pb.Entry{{Index: 6, Term: 2}}, 6, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 5, Term: 1}},
 			6, 1, // stable to the first entry and term mismatch
 			6, 1,
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 1}},
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 1}},
 			4, 1, // stable to snapshot
 			5, 1,
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 2}}, 5, &pb.Snapshot{Metadata: pb.SnapshotMetadata{Index: 4, Term: 2}},
+			[]*pb.Entry{{Index: 5, Term: 2}}, 5, &pb.Snapshot{Metadata: &pb.SnapshotMetadata{Index: 4, Term: 2}},
 			4, 1, // stable to old entry
 			5, 1,
 		},
@@ -303,41 +303,41 @@ func TestUnstableStableTo(t *testing.T) {
 
 func TestUnstableTruncateAndAppend(t *testing.T) {
 	tests := []struct {
-		entries  []pb.Entry
+		entries  []*pb.Entry
 		offset   uint64
 		snap     *pb.Snapshot
-		toappend []pb.Entry
+		toappend []*pb.Entry
 
 		woffset  uint64
-		wentries []pb.Entry
+		wentries []*pb.Entry
 	}{
 		// append to the end
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
-			[]pb.Entry{{Index: 6, Term: 1}, {Index: 7, Term: 1}},
-			5, []pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}, {Index: 7, Term: 1}},
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 6, Term: 1}, {Index: 7, Term: 1}},
+			5, []*pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}, {Index: 7, Term: 1}},
 		},
 		// replace the unstable entries
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
-			[]pb.Entry{{Index: 5, Term: 2}, {Index: 6, Term: 2}},
-			5, []pb.Entry{{Index: 5, Term: 2}, {Index: 6, Term: 2}},
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 5, Term: 2}, {Index: 6, Term: 2}},
+			5, []*pb.Entry{{Index: 5, Term: 2}, {Index: 6, Term: 2}},
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
-			[]pb.Entry{{Index: 4, Term: 2}, {Index: 5, Term: 2}, {Index: 6, Term: 2}},
-			4, []pb.Entry{{Index: 4, Term: 2}, {Index: 5, Term: 2}, {Index: 6, Term: 2}},
+			[]*pb.Entry{{Index: 5, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 4, Term: 2}, {Index: 5, Term: 2}, {Index: 6, Term: 2}},
+			4, []*pb.Entry{{Index: 4, Term: 2}, {Index: 5, Term: 2}, {Index: 6, Term: 2}},
 		},
 		// truncate the existing entries and append
 		{
-			[]pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}, {Index: 7, Term: 1}}, 5, nil,
-			[]pb.Entry{{Index: 6, Term: 2}},
-			5, []pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 2}},
+			[]*pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}, {Index: 7, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 6, Term: 2}},
+			5, []*pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 2}},
 		},
 		{
-			[]pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}, {Index: 7, Term: 1}}, 5, nil,
-			[]pb.Entry{{Index: 7, Term: 2}, {Index: 8, Term: 2}},
-			5, []pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}, {Index: 7, Term: 2}, {Index: 8, Term: 2}},
+			[]*pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}, {Index: 7, Term: 1}}, 5, nil,
+			[]*pb.Entry{{Index: 7, Term: 2}, {Index: 8, Term: 2}},
+			5, []*pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}, {Index: 7, Term: 2}, {Index: 8, Term: 2}},
 		},
 	}
 

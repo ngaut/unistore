@@ -22,10 +22,10 @@ import (
 
 var (
 	testingSnap = pb.Snapshot{
-		Metadata: pb.SnapshotMetadata{
+		Metadata: &pb.SnapshotMetadata{
 			Index:     11, // magic number
 			Term:      11, // magic number
-			ConfState: pb.ConfState{Nodes: []uint64{1, 2}},
+			ConfState: &pb.ConfState{Voters: []uint64{1, 2}},
 		},
 	}
 )
@@ -40,11 +40,11 @@ func TestSendingSnapshotSetPendingSnapshot(t *testing.T) {
 
 	// force set the next of node 2, so that
 	// node 2 needs a snapshot
-	sm.prs[2].Next = sm.raftLog.firstIndex()
+	sm.Prs[2].Next = sm.RaftLog.firstIndex()
 
-	sm.Step(pb.Message{From: 2, To: 1, Type: pb.MessageType_MsgAppendResponse, Index: sm.prs[2].Next - 1, Reject: true})
-	if sm.prs[2].PendingSnapshot != 11 {
-		t.Fatalf("PendingSnapshot = %d, want 11", sm.prs[2].PendingSnapshot)
+	sm.Step(&pb.Message{From: 2, To: 1, MsgType: pb.MessageType_MsgAppendResponse, Index: sm.Prs[2].Next - 1, Reject: true})
+	if sm.Prs[2].PendingSnapshot != 11 {
+		t.Fatalf("PendingSnapshot = %d, want 11", sm.Prs[2].PendingSnapshot)
 	}
 }
 
@@ -56,9 +56,9 @@ func TestPendingSnapshotPauseReplication(t *testing.T) {
 	sm.becomeCandidate()
 	sm.becomeLeader()
 
-	sm.prs[2].becomeSnapshot(11)
+	sm.Prs[2].becomeSnapshot(11)
 
-	sm.Step(pb.Message{From: 1, To: 1, Type: pb.MessageType_MsgPropose, Entries: []pb.Entry{{Data: []byte("somedata")}}})
+	sm.Step(&pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("somedata")}}})
 	msgs := sm.readMessages()
 	if len(msgs) != 0 {
 		t.Fatalf("len(msgs) = %d, want 0", len(msgs))
@@ -73,18 +73,18 @@ func TestSnapshotFailure(t *testing.T) {
 	sm.becomeCandidate()
 	sm.becomeLeader()
 
-	sm.prs[2].Next = 1
-	sm.prs[2].becomeSnapshot(11)
+	sm.Prs[2].Next = 1
+	sm.Prs[2].becomeSnapshot(11)
 
-	sm.Step(pb.Message{From: 2, To: 1, Type: pb.MessageType_MessageType_MsgSnapshotStatus, Reject: true})
-	if sm.prs[2].PendingSnapshot != 0 {
-		t.Fatalf("PendingSnapshot = %d, want 0", sm.prs[2].PendingSnapshot)
+	sm.Step(&pb.Message{From: 2, To: 1, MsgType: pb.MessageType_MsgSnapStatus, Reject: true})
+	if sm.Prs[2].PendingSnapshot != 0 {
+		t.Fatalf("PendingSnapshot = %d, want 0", sm.Prs[2].PendingSnapshot)
 	}
-	if sm.prs[2].Next != 1 {
-		t.Fatalf("Next = %d, want 1", sm.prs[2].Next)
+	if sm.Prs[2].Next != 1 {
+		t.Fatalf("Next = %d, want 1", sm.Prs[2].Next)
 	}
-	if !sm.prs[2].Paused {
-		t.Errorf("Paused = %v, want true", sm.prs[2].Paused)
+	if !sm.Prs[2].Paused {
+		t.Errorf("Paused = %v, want true", sm.Prs[2].Paused)
 	}
 }
 
@@ -96,18 +96,18 @@ func TestSnapshotSucceed(t *testing.T) {
 	sm.becomeCandidate()
 	sm.becomeLeader()
 
-	sm.prs[2].Next = 1
-	sm.prs[2].becomeSnapshot(11)
+	sm.Prs[2].Next = 1
+	sm.Prs[2].becomeSnapshot(11)
 
-	sm.Step(pb.Message{From: 2, To: 1, Type: pb.MessageType_MessageType_MsgSnapshotStatus, Reject: false})
-	if sm.prs[2].PendingSnapshot != 0 {
-		t.Fatalf("PendingSnapshot = %d, want 0", sm.prs[2].PendingSnapshot)
+	sm.Step(&pb.Message{From: 2, To: 1, MsgType: pb.MessageType_MsgSnapStatus, Reject: false})
+	if sm.Prs[2].PendingSnapshot != 0 {
+		t.Fatalf("PendingSnapshot = %d, want 0", sm.Prs[2].PendingSnapshot)
 	}
-	if sm.prs[2].Next != 12 {
-		t.Fatalf("Next = %d, want 12", sm.prs[2].Next)
+	if sm.Prs[2].Next != 12 {
+		t.Fatalf("Next = %d, want 12", sm.Prs[2].Next)
 	}
-	if !sm.prs[2].Paused {
-		t.Errorf("Paused = %v, want true", sm.prs[2].Paused)
+	if !sm.Prs[2].Paused {
+		t.Errorf("Paused = %v, want true", sm.Prs[2].Paused)
 	}
 }
 
@@ -118,10 +118,10 @@ func TestSnapshotSucceed(t *testing.T) {
 // committed.
 func TestSnapshotSucceedViaAppResp(t *testing.T) {
 	snap := pb.Snapshot{
-		Metadata: pb.SnapshotMetadata{
+		Metadata: &pb.SnapshotMetadata{
 			Index:     11, // magic number
 			Term:      11, // magic number
-			ConfState: pb.ConfState{Nodes: []uint64{1, 2, 3}},
+			ConfState: &pb.ConfState{Voters: []uint64{1, 2, 3}},
 		},
 	}
 
@@ -143,10 +143,10 @@ func TestSnapshotSucceedViaAppResp(t *testing.T) {
 	n1.restore(snap)
 
 	noMessage := pb.MessageType(-1)
-	mustSend := func(from, to *raft, typ pb.MessageType) pb.Message {
+	mustSend := func(from, to *Raft, typ pb.MessageType) *pb.Message {
 		t.Helper()
 		for i, msg := range from.msgs {
-			if msg.From != from.id || msg.To != to.id || msg.Type != typ {
+			if msg.From != from.id || msg.To != to.id || msg.MsgType != typ {
 				continue
 			}
 			t.Log(DescribeMessage(msg, func([]byte) string { return "" }))
@@ -158,12 +158,12 @@ func TestSnapshotSucceedViaAppResp(t *testing.T) {
 		}
 		if typ == noMessage {
 			if len(from.msgs) == 0 {
-				return pb.Message{}
+				return &pb.Message{}
 			}
 			t.Fatalf("expected no more messages, but got %d->%d %v", from.id, to.id, from.msgs)
 		}
 		t.Fatalf("message %d->%d %s not found in %v", from.id, to.id, typ, from.msgs)
-		return pb.Message{} // unreachable
+		return &pb.Message{} // unreachable
 	}
 
 	// Create the follower that will receive the snapshot.
@@ -206,7 +206,7 @@ func TestSnapshotSucceedViaAppResp(t *testing.T) {
 	mustSend(n2, n1, pb.MessageType_MsgAppendResponse)
 
 	// Leader has correct state for follower.
-	pr := n1.prs[2]
+	pr := n1.Prs[2]
 	if pr.State != ProgressStateReplicate {
 		t.Fatalf("unexpected state %v", pr)
 	}
@@ -227,23 +227,23 @@ func TestSnapshotAbort(t *testing.T) {
 	sm.becomeCandidate()
 	sm.becomeLeader()
 
-	sm.prs[2].Next = 1
-	sm.prs[2].becomeSnapshot(11)
+	sm.Prs[2].Next = 1
+	sm.Prs[2].becomeSnapshot(11)
 
 	// A successful MessageType_MsgAppendResponse that has a higher/equal index than the
 	// pending snapshot should abort the pending snapshot.
-	sm.Step(pb.Message{From: 2, To: 1, Type: pb.MessageType_MsgAppendResponse, Index: 11})
-	if sm.prs[2].PendingSnapshot != 0 {
-		t.Fatalf("PendingSnapshot = %d, want 0", sm.prs[2].PendingSnapshot)
+	sm.Step(&pb.Message{From: 2, To: 1, MsgType: pb.MessageType_MsgAppendResponse, Index: 11})
+	if sm.Prs[2].PendingSnapshot != 0 {
+		t.Fatalf("PendingSnapshot = %d, want 0", sm.Prs[2].PendingSnapshot)
 	}
 	// The follower entered ProgressStateReplicate and the leader send an append
 	// and optimistically updated the progress (so we see 13 instead of 12).
 	// There is something to append because the leader appended an empty entry
 	// to the log at index 12 when it assumed leadership.
-	if sm.prs[2].Next != 13 {
-		t.Fatalf("Next = %d, want 13", sm.prs[2].Next)
+	if sm.Prs[2].Next != 13 {
+		t.Fatalf("Next = %d, want 13", sm.Prs[2].Next)
 	}
-	if n := sm.prs[2].ins.count; n != 1 {
+	if n := sm.Prs[2].ins.count; n != 1 {
 		t.Fatalf("expected an inflight message, got %d", n)
 	}
 }
