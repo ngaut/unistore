@@ -817,28 +817,20 @@ func (svr *Server) CheckLeader(context.Context, *kvrpcpb.CheckLeaderRequest) (*k
 	panic("unimplemented")
 }
 
-func (svr *Server) VerGet(context.Context, *kvrpcpb.VerGetRequest) (*kvrpcpb.VerGetResponse, error) {
-	panic("unimplemented")
+func (svr *Server) RawCompareAndSwap(c context.Context, request *kvrpcpb.RawCASRequest) (*kvrpcpb.RawCASResponse, error) {
+	panic("implement me")
 }
 
-func (svr *Server) VerBatchGet(context.Context, *kvrpcpb.VerBatchGetRequest) (*kvrpcpb.VerBatchGetResponse, error) {
-	panic("unimplemented")
+func (svr *Server) RawCoprocessor(c context.Context, request *kvrpcpb.RawCoprocessorRequest) (*kvrpcpb.RawCoprocessorResponse, error) {
+	panic("implement me")
 }
 
-func (svr *Server) VerMut(context.Context, *kvrpcpb.VerMutRequest) (*kvrpcpb.VerMutResponse, error) {
-	panic("unimplemented")
+func (svr *Server) GetStoreSafeTS(c context.Context, request *kvrpcpb.StoreSafeTSRequest) (*kvrpcpb.StoreSafeTSResponse, error) {
+	panic("implement me")
 }
 
-func (svr *Server) VerBatchMut(context.Context, *kvrpcpb.VerBatchMutRequest) (*kvrpcpb.VerBatchMutResponse, error) {
-	panic("unimplemented")
-}
-
-func (svr *Server) VerScan(context.Context, *kvrpcpb.VerScanRequest) (*kvrpcpb.VerScanResponse, error) {
-	panic("unimplemented")
-}
-
-func (svr *Server) VerDeleteRange(context.Context, *kvrpcpb.VerDeleteRangeRequest) (*kvrpcpb.VerDeleteRangeResponse, error) {
-	panic("unimplemented")
+func (svr *Server) GetLockWaitInfo(c context.Context, request *kvrpcpb.GetLockWaitInfoRequest) (*kvrpcpb.GetLockWaitInfoResponse, error) {
+	panic("implement me")
 }
 
 func convertToKeyError(err error) *kvrpcpb.KeyError {
