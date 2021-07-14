@@ -414,6 +414,19 @@ func (en *Engine) loadShards() error {
 }
 
 func (en *Engine) loadShard(shardInfo *ShardMeta) (*Shard, error) {
+	if oldVal, ok := en.shardMap.Load(shardInfo.ID); ok && oldVal != nil {
+		shard := oldVal.(*Shard)
+		l0s := shard.loadL0Tables()
+		for _, l0 := range l0s.tables {
+			l0.Close()
+		}
+		shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
+			for _, tbl := range level.tables {
+				tbl.Close()
+			}
+			return false
+		})
+	}
 	shard := newShardForLoading(shardInfo, &en.opt)
 	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{memtable.NewCFTable(en.numCFs)}}))
 	for fid := range shardInfo.files {
