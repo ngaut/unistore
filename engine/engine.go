@@ -366,7 +366,7 @@ func (en *Engine) loadShards() error {
 	for _, v := range en.manifest.shards {
 		mShard := v
 		parent := mShard.parent
-		if parent != nil && !parent.recovered && en.opt.RecoverHandler != nil {
+		if parent != nil && en.opt.RecoverHandler != nil {
 			if _, ok := parents[parent.ID]; !ok {
 				parents[parent.ID] = struct{}{}
 				pbt.AppendTask(func() error {
@@ -378,7 +378,6 @@ func (en *Engine) loadShards() error {
 					if err != nil {
 						return errors.AddStack(err)
 					}
-					parent.recovered = true
 					return nil
 				})
 			}
