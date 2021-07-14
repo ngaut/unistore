@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/ngaut/unistore/tikv"
+	"github.com/soheilhy/cmux"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"net"
@@ -162,19 +163,21 @@ func main() {
 	hsrv := health.NewServer()
 	hsrv.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(grpcServer, hsrv)
+	deadlock.RegisterDeadlockServer(grpcServer, tikvServer)
 	listenAddr := conf.Server.StoreAddr[strings.IndexByte(conf.Server.StoreAddr, ':'):]
 	l, err := net.Listen("tcp", listenAddr)
-	deadlock.RegisterDeadlockServer(grpcServer, tikvServer)
 	if err != nil {
 		log.S().Fatal(err)
 	}
-	handleSignal(grpcServer)
-	err = grpcServer.Serve(l)
-	if err != nil {
-		log.S().Fatal(err)
-	}
+	matcher := cmux.New(l)
+	raftL := matcher.Match(cmux.PrefixMatcher("raft"))
+	grpcl := matcher.Match(cmux.Any())
+	go tikvServer.ServeRawRaft(raftL)
+	go grpcServer.Serve(grpcl)
+	handleSignal(matcher)
+	err = matcher.Serve()
 	tikvServer.Stop()
-	log.Info("Server stopped.")
+	log.Info("Server stopped.", zap.Error(err))
 }
 
 func loadConfig() *config.Config {
@@ -201,7 +204,7 @@ func loadConfig() *config.Config {
 	return &conf
 }
 
-func handleSignal(grpcServer *grpc.Server) {
+func handleSignal(cmux cmux.CMux) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh,
 		syscall.SIGHUP,
@@ -211,6 +214,6 @@ func handleSignal(grpcServer *grpc.Server) {
 	go func() {
 		sig := <-sigCh
 		log.S().Infof("Got signal [%s] to exit.", sig)
-		grpcServer.Stop()
+		cmux.Close()
 	}()
 }

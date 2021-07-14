@@ -26,6 +26,7 @@ require (
 	github.com/pingcap/tipb v0.0.0-20210326161441-1164ca065d1b
 	github.com/prometheus/client_golang v1.5.1
 	github.com/shirou/gopsutil v3.21.2+incompatible
+	github.com/soheilhy/cmux v0.1.5
 	github.com/stretchr/testify v1.6.1
 	github.com/tikv/pd v1.1.0-beta.0.20210323121136-78679e5e209d
 	github.com/twmb/murmur3 v1.1.3

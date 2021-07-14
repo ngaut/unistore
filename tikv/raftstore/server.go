@@ -14,11 +14,18 @@
 package raftstore
 
 import (
+	"bufio"
 	"context"
+	"encoding/binary"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
+	"github.com/pingcap/badger/y"
 	"github.com/pingcap/kvproto/pkg/metapb"
+	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
+	"github.com/pingcap/log"
+	"io"
+	"net"
 	"sync"
 )
 
@@ -55,6 +62,42 @@ func (ris *InnerServer) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
 		for _, msg := range msgs.GetMsgs() {
 			_ = ris.router.sendRaftMessage(msg)
 		}
+	}
+}
+
+func (ris *InnerServer) HandleRawRaft(conn net.Conn) {
+	reader := bufio.NewReaderSize(conn, 1*1024*1024)
+	var rawBuf []byte
+	header := make([]byte, 4)
+	var err error
+	defer func() {
+		if err != nil {
+			log.S().Error(err)
+		}
+	}()
+	_, err = io.ReadFull(reader, header) // Read protocol header.
+	if err != nil {
+		return
+	}
+	for {
+		_, err = io.ReadFull(reader, header)
+		if err != nil {
+			return
+		}
+		length := binary.LittleEndian.Uint32(header)
+		if cap(rawBuf) < int(length) {
+			rawBuf = make([]byte, length, length*3/2)
+		} else {
+			rawBuf = rawBuf[:length]
+		}
+		_, err = io.ReadFull(reader, rawBuf)
+		if err != nil {
+			return
+		}
+		msg := &raft_serverpb.RaftMessage{}
+		err = msg.Unmarshal(rawBuf)
+		y.Assert(err == nil)
+		_ = ris.router.sendRaftMessage(msg)
 	}
 }
 

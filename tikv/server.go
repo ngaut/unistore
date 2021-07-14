@@ -36,6 +36,7 @@ import (
 	"github.com/pingcap/tidb/util/codec"
 	"go.uber.org/zap"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -831,6 +832,21 @@ func (svr *Server) GetStoreSafeTS(c context.Context, request *kvrpcpb.StoreSafeT
 
 func (svr *Server) GetLockWaitInfo(c context.Context, request *kvrpcpb.GetLockWaitInfoRequest) (*kvrpcpb.GetLockWaitInfoResponse, error) {
 	panic("implement me")
+}
+
+func (svr *Server) ServeRawRaft(l net.Listener) error {
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			if opErr, ok := err.(*net.OpError); ok {
+				if opErr.Err.Error() == "use of closed network connection" {
+					return nil
+				}
+			}
+			return err
+		}
+		go svr.innerServer.HandleRawRaft(conn)
+	}
 }
 
 func convertToKeyError(err error) *kvrpcpb.KeyError {
