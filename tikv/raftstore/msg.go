@@ -15,6 +15,7 @@ package raftstore
 
 import (
 	"github.com/ngaut/unistore/enginepb"
+	"github.com/pingcap/log"
 	"time"
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
@@ -74,11 +75,25 @@ func NewMsg(tp MsgType, data interface{}) Msg {
 
 type Callback struct {
 	respCh chan *raft_cmdpb.RaftCmdResponse
+	doneFn func()
+
+	// If respOnProposed is true, we response early after propose instead of after apply.
+	respOnProposed bool
+}
+
+func (cb *Callback) MaybeResponseOnProposed(resp *raft_cmdpb.RaftCmdResponse) {
+	if cb != nil && cb.respOnProposed {
+		cb.respCh <- resp
+		log.S().Info("response on proposed")
+	}
 }
 
 func (cb *Callback) Done(resp *raft_cmdpb.RaftCmdResponse) {
 	if cb != nil {
 		cb.respCh <- resp
+		if cb.doneFn != nil {
+			cb.doneFn()
+		}
 	}
 }
 

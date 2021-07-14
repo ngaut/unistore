@@ -21,6 +21,7 @@ import (
 	"github.com/ngaut/unistore/enginepb"
 	"github.com/ngaut/unistore/raftengine"
 	"github.com/pingcap/badger/y"
+	"github.com/pingcap/errors"
 	"math"
 	"sync/atomic"
 	"time"
@@ -273,6 +274,10 @@ type Peer struct {
 	lastCommittedSplitIdx uint64
 
 	PendingRemove bool
+
+	// PendingSplit is set to true when there are Split admin command proposed.
+	// It is set back to false when Split is finished.
+	PendingSplit bool
 
 	// The index of the latest committed prepare merge command.
 	lastCommittedPrepareMergeIdx uint64
@@ -1190,8 +1195,10 @@ func (p *Peer) PostApply(kv *engine.Engine, applyState applyState, merged bool, 
 // Propose a request.
 //
 // Return true means the request has been proposed successfully.
-func (p *Peer) Propose(kv *engine.Engine, cfg *Config, cb *Callback, rlog raftlog.RaftLog, errResp *raft_cmdpb.RaftCmdResponse) bool {
+func (p *Peer) Propose(kv *engine.Engine, cfg *Config, cb *Callback, rlog raftlog.RaftLog, resp *raft_cmdpb.RaftCmdResponse) bool {
 	if p.PendingRemove {
+		BindRespError(resp, errors.New("pending remove"))
+		cb.Done(resp)
 		return false
 	}
 
@@ -1200,8 +1207,8 @@ func (p *Peer) Propose(kv *engine.Engine, cfg *Config, cb *Callback, rlog raftlo
 
 	policy, err := p.inspect(rlog)
 	if err != nil {
-		BindRespError(errResp, err)
-		cb.Done(errResp)
+		BindRespError(resp, err)
+		cb.Done(resp)
 		return false
 	}
 	req := rlog.GetRaftCmdRequest()
@@ -1211,7 +1218,7 @@ func (p *Peer) Propose(kv *engine.Engine, cfg *Config, cb *Callback, rlog raftlo
 		p.readLocal(kv, req, cb)
 		return false
 	case RequestPolicy_ReadIndex:
-		return p.readIndex(cfg, req, errResp, cb)
+		return p.readIndex(cfg, req, resp, cb)
 	case RequestPolicy_ProposeNormal:
 		idx, err = p.ProposeNormal(cfg, rlog)
 	case RequestPolicy_ProposeTransferLeader:
@@ -1222,9 +1229,12 @@ func (p *Peer) Propose(kv *engine.Engine, cfg *Config, cb *Callback, rlog raftlo
 	}
 
 	if err != nil {
-		BindRespError(errResp, err)
-		cb.Done(errResp)
+		BindRespError(resp, err)
+		cb.Done(resp)
 		return false
+	}
+	if !p.PendingSplit {
+		cb.MaybeResponseOnProposed(resp)
 	}
 
 	if isUrgent {
@@ -1538,6 +1548,7 @@ func (p *Peer) PrePropose(cfg *Config, rlog raftlog.RaftLog) (*ProposalContext, 
 	switch req.AdminRequest.GetCmdType() {
 	case raft_cmdpb.AdminCmdType_BatchSplit:
 		ctx.insert(ProposalContext_Split)
+		p.PendingSplit = true
 	default:
 	}
 

@@ -85,9 +85,12 @@ func (pr *router) send(regionID uint64, msg Msg) error {
 	return nil
 }
 
-func (pr *router) sendRaftCommand(cmd *MsgRaftCmd) error {
+func (pr *router) sendRaftCommand(cmd *MsgRaftCmd) {
 	regionID := cmd.Request.RegionID()
-	return pr.send(regionID, NewPeerMsg(MsgTypeRaftCmd, regionID, cmd))
+	err := pr.send(regionID, NewPeerMsg(MsgTypeRaftCmd, regionID, cmd))
+	if err != nil {
+		cmd.Callback.Done(ErrResp(err))
+	}
 }
 
 func (pr *router) sendRaftMessage(msg *raft_serverpb.RaftMessage) error {
@@ -108,14 +111,14 @@ type RaftstoreRouter struct {
 	// TODO: add localReader here.
 }
 
-func (r *RaftstoreRouter) SendCommand(req *raft_cmdpb.RaftCmdRequest, cb *Callback) error {
+func (r *RaftstoreRouter) SendCommand(req *raft_cmdpb.RaftCmdRequest, cb *Callback) {
 	// TODO: support local reader
 	msg := &MsgRaftCmd{
 		SendTime: time.Now(),
 		Request:  raftlog.NewRequest(req),
 		Callback: cb,
 	}
-	return r.router.sendRaftCommand(msg)
+	r.router.sendRaftCommand(msg)
 }
 
 func (r *RaftstoreRouter) SplitRegion(ctx *kvrpcpb.Context, kv *engine.Engine, region *metapb.Region, keys [][]byte) ([]*metapb.Region, error) {

@@ -20,7 +20,6 @@ import (
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/badger/y"
-	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	rcpb "github.com/pingcap/kvproto/pkg/raft_cmdpb"
@@ -43,25 +42,28 @@ func (writer *engineWriter) NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb
 }
 
 func (writer *engineWriter) Write(batch mvcc.WriteBatch) error {
+	return writer.write(batch, NewCallback())
+}
+
+func (writer *engineWriter) write(batch mvcc.WriteBatch, cb *Callback) error {
 	cmd := &MsgRaftCmd{
 		SendTime: time.Now(),
-		Callback: NewCallback(),
-	}
-	var reqLen int
-	switch x := batch.(type) {
-	case *customWriteBatch:
-		cmd.Request = x.builder.Build()
-		reqLen = x.builder.Len()
+		Callback: cb,
+		Request:  batch.(*customWriteBatch).builder.Build(),
 	}
 	start := time.Now()
-	err := writer.router.sendRaftCommand(cmd)
-	if err != nil {
-		return err
-	}
+	writer.router.sendRaftCommand(cmd)
 	resp := cmd.Callback.Wait()
 	waitDoneTime := time.Now()
 	metrics.RaftWriterWait.Observe(waitDoneTime.Sub(start).Seconds())
-	return writer.checkResponse(resp, reqLen)
+	return writer.checkResponse(resp)
+}
+
+func (writer *engineWriter) WritePessimisticLock(batch mvcc.WriteBatch, doneFn func()) error {
+	cb := NewCallback()
+	cb.respOnProposed = true
+	cb.doneFn = doneFn
+	return writer.write(batch, cb)
 }
 
 type RaftError struct {
@@ -72,13 +74,9 @@ func (re *RaftError) Error() string {
 	return re.RequestErr.String()
 }
 
-func (writer *engineWriter) checkResponse(resp *rcpb.RaftCmdResponse, reqCount int) error {
-	if resp.Header.Error != nil {
+func (writer *engineWriter) checkResponse(resp *rcpb.RaftCmdResponse) error {
+	if resp.GetHeader().GetError() != nil {
 		return &RaftError{RequestErr: resp.Header.Error}
-	}
-	if len(resp.Responses) != reqCount {
-		return errors.Errorf("responses count %d is not equal to requests count %d",
-			len(resp.Responses), reqCount)
 	}
 	return nil
 }
@@ -113,6 +111,10 @@ func (w *TestRaftWriter) Write(batch mvcc.WriteBatch) error {
 	applyCtx.execCtx = &applyExecContext{index: RaftInitLogIndex, term: RaftInitLogTerm}
 	applier.execWriteCmd(applyCtx, raftLog)
 	return nil
+}
+
+func (w *TestRaftWriter) WritePessimisticLock(batch mvcc.WriteBatch, doneFn func()) error {
+	return w.Write(batch)
 }
 
 func (w *TestRaftWriter) DeleteRange(start, end []byte, latchHandle mvcc.LatchHandle) error {
