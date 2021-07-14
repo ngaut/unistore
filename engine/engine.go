@@ -24,6 +24,7 @@ import (
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
 	"github.com/ngaut/unistore/s3util"
+	"github.com/ngaut/unistore/scheduler"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
@@ -358,42 +359,59 @@ func formatInt(n int) string {
 }
 
 func (en *Engine) loadShards() error {
-	for _, mShard := range en.manifest.shards {
+	sche := scheduler.NewScheduler(en.opt.RecoveryConcurrency)
+	var parents = make(map[uint64]struct{})
+	pbt := scheduler.NewBatchTasks()
+	bt := scheduler.NewBatchTasks()
+	for _, v := range en.manifest.shards {
+		mShard := v
 		parent := mShard.parent
 		if parent != nil && !parent.recovered && en.opt.RecoverHandler != nil {
-			parentShard, err := en.loadShard(parent)
-			if err != nil {
-				return errors.AddStack(err)
-			}
-			err = en.opt.RecoverHandler.Recover(en, parentShard, parent, parent.split.MemProps)
-			if err != nil {
-				return errors.AddStack(err)
-			}
-			parent.recovered = true
-		}
-		mShard.parent = nil
-		shard, err := en.loadShard(mShard)
-		if err != nil {
-			return err
-		}
-		if en.opt.RecoverHandler != nil {
-			if mShard.preSplit != nil {
-				if mShard.preSplit.MemProps != nil {
-					// Recover to the state before PreSplit.
-					err = en.opt.RecoverHandler.Recover(en, shard, mShard, mShard.preSplit.MemProps)
+			if _, ok := parents[parent.ID]; !ok {
+				parents[parent.ID] = struct{}{}
+				pbt.AppendTask(func() error {
+					parentShard, err := en.loadShard(parent)
 					if err != nil {
 						return errors.AddStack(err)
 					}
-					shard.setSplitKeys(mShard.preSplit.Keys)
-				}
-			}
-			err = en.opt.RecoverHandler.Recover(en, shard, mShard, nil)
-			if err != nil {
-				return errors.AddStack(err)
+					err = en.opt.RecoverHandler.Recover(en, parentShard, parent, parent.split.MemProps)
+					if err != nil {
+						return errors.AddStack(err)
+					}
+					parent.recovered = true
+					return nil
+				})
 			}
 		}
+		mShard.parent = nil
+		bt.AppendTask(func() error {
+			shard, err := en.loadShard(mShard)
+			if err != nil {
+				return err
+			}
+			if en.opt.RecoverHandler != nil {
+				if mShard.preSplit != nil {
+					if mShard.preSplit.MemProps != nil {
+						// Recover to the state before PreSplit.
+						err = en.opt.RecoverHandler.Recover(en, shard, mShard, mShard.preSplit.MemProps)
+						if err != nil {
+							return errors.AddStack(err)
+						}
+						shard.setSplitKeys(mShard.preSplit.Keys)
+					}
+				}
+				err = en.opt.RecoverHandler.Recover(en, shard, mShard, nil)
+				if err != nil {
+					return errors.AddStack(err)
+				}
+			}
+			return nil
+		})
 	}
-	return nil
+	if err := sche.BatchSchedule(pbt); err != nil {
+		return err
+	}
+	return sche.BatchSchedule(bt)
 }
 
 func (en *Engine) loadShard(shardInfo *ShardMeta) (*Shard, error) {

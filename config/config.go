@@ -60,6 +60,7 @@ type Engine struct {
 	RemoteCompactionAddr  string    `toml:"remote-compaction-addr"`
 	InstanceID            uint32    `toml:"instance-id"`
 	S3                    S3Options `toml:"s3"`
+	RecoveryConcurrency   int       `toml:"recovery-concurrency"`
 }
 
 type RaftEngine struct {
@@ -117,6 +118,7 @@ var DefaultConf = Config{
 		NumCompactors:         3,
 		BaseSize:              64 * MB,
 		BlockCacheSize:        0, // 0 means disable block cache, use mmap to access sst.
+		RecoveryConcurrency:   1,
 	},
 	RaftEngine: RaftEngine{
 		Path:    "/tmp/badger",

@@ -14,9 +14,11 @@ import (
 	"github.com/pingcap/log"
 	"io"
 	"math"
+	"sync"
 )
 
 type RecoverHandler struct {
+	lock          sync.Mutex
 	raftEngine    *raftengine.Engine
 	storeID       uint64
 	ctx           *applyContext
@@ -39,6 +41,7 @@ func NewRecoverHandler(raftEngine *raftengine.Engine) (*RecoverHandler, error) {
 
 func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *engine.ShardMeta, toState *enginepb.Properties) error {
 	log.S().Infof("recover region:%d ver:%d", shard.ID, shard.Ver)
+	h.lock.Lock()
 	if h.ctx == nil {
 		h.ctx = &applyContext{
 			wb:      NewKVWriteBatch(kv),
@@ -46,6 +49,7 @@ func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *e
 			execCtx: &applyExecContext{},
 		}
 	}
+	h.lock.Unlock()
 	val, ok := shard.RecoverGetProperty(applyStateKey)
 	if !ok {
 		return errors.New("no applyState")
@@ -120,7 +124,7 @@ func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *e
 		} else if cl.Type() == raftlog.TypePreSplit {
 			// PreSplit is handled by kv.
 		} else {
-			applier.execCustomLog(h.ctx, cl)
+			applier.execCustomLog(h.ctx, cl, true)
 		}
 		applier.applyState.appliedIndex = e.Index
 		applier.applyState.appliedIndexTerm = e.Term

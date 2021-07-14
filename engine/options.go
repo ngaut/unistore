@@ -84,6 +84,8 @@ type Options struct {
 
 	RecoverHandler RecoverHandler
 
+	RecoveryConcurrency int
+
 	// Max mem size is dynamically adjusted for each time the mem-table get flushed.
 	// The formula is (factor * write_bytes_per_second)
 	// And limited in range [2MB, 256MB].
