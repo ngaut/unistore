@@ -70,11 +70,7 @@ func (c *leaderChecker) IsLeader(ctx *kvrpcpb.Context, router *RaftstoreRouter) 
 		Request:  raftlog.NewRequest(cmd),
 		Callback: cb,
 	}
-	err = router.router.sendRaftCommand(msg)
-	if err != nil {
-		return RaftstoreErrToPbError(err)
-	}
-
+	router.router.sendRaftCommand(msg)
 	resp := cb.Wait()
 
 	if resp.GetHeader().GetError() != nil {

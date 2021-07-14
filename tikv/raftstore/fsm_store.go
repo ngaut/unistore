@@ -641,7 +641,7 @@ func (d *storeMsgHandler) onComputeHashTick() {
 	cmd := &MsgRaftCmd{
 		Request: raftlog.NewRequest(request),
 	}
-	_ = d.ctx.router.sendRaftCommand(cmd)
+	d.ctx.router.sendRaftCommand(cmd)
 }
 
 func (d *storeMsgHandler) findTargetRegionForComputeHash() *metapb.Region {

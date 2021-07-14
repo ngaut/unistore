@@ -275,10 +275,7 @@ func preSplitRegion(router *router, eng *engine.Engine, peer *metapb.Peer, regio
 		Callback: cb,
 		Request:  builder.Build(),
 	}
-	err := router.sendRaftCommand(cmd)
-	if err != nil {
-		return err
-	}
+	router.sendRaftCommand(cmd)
 	resp := cb.Wait()
 	if resp.GetHeader().GetError() != nil {
 		return errors.New(resp.Header.Error.Message)
@@ -305,10 +302,7 @@ func splitShardFiles(router *router, eng *engine.Engine, peer *metapb.Peer, regi
 		Callback: cb,
 		Request:  builder.Build(),
 	}
-	err = router.sendRaftCommand(cmd)
-	if err != nil {
-		return err
-	}
+	router.sendRaftCommand(cmd)
 	resp := cb.Wait()
 	if resp.GetHeader().GetError() != nil {
 		return errors.New(resp.Header.Error.Message)

@@ -394,6 +394,7 @@ func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
 	if err != nil {
 		return err
 	}
+	d.checkPendingSplit(msg)
 	d.peer.insertPeerCache(msg.GetFromPeer())
 	err = d.peer.Step(msg.GetMessage())
 	if err != nil {
@@ -405,6 +406,17 @@ func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
 	d.updateFollowerSplitFilesDone(msg)
 	d.hasReady = true
 	return nil
+}
+
+func (d *peerMsgHandler) checkPendingSplit(msg *rspb.RaftMessage) {
+	for _, e := range msg.Message.Entries {
+		if e.EntryType == eraftpb.EntryType_EntryNormal && len(e.Data) > 0 {
+			rlog := raftlog.DecodeLog(e.Data)
+			if rlog.GetRaftCmdRequest().GetAdminRequest().GetSplits() != nil {
+				d.peer.PendingSplit = true
+			}
+		}
+	}
 }
 
 // return false means the message is invalid, and can be ignored.
@@ -742,6 +754,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 	meta := d.ctx.storeMeta
 	regionID := derived.Id
 	meta.setRegion(derived, d.getPeer())
+	d.peer.PendingSplit = false
 	isLeader := d.peer.IsLeader()
 	if isLeader {
 		d.peer.HeartbeatPd(d.ctx.pdTaskSender)

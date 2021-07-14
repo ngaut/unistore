@@ -22,6 +22,7 @@ type EngineWriter interface {
 	Open()
 	Close()
 	Write(batch WriteBatch) error
+	WritePessimisticLock(batch WriteBatch, doneFn func()) error
 	DeleteRange(start, end []byte, latchHandle LatchHandle) error
 	NewWriteBatch(startTS, commitTS uint64, ctx *kvrpcpb.Context) WriteBatch
 }

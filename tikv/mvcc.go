@@ -177,7 +177,12 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 	regCtx := reqCtx.regCtx
 	hashVals := mutationsToHashVals(mutations)
 	regCtx.AcquireLatches(hashVals)
-	defer regCtx.ReleaseLatches(hashVals)
+	var releaseLatchInCallback bool
+	defer func() {
+		if !releaseLatchInCallback {
+			regCtx.ReleaseLatches(hashVals)
+		}
+	}()
 
 	batch := store.writer.NewWriteBatch(startTS, 0, reqCtx.rpcCtx)
 	var dup bool
@@ -219,7 +224,10 @@ func (store *MVCCStore) PessimisticLock(reqCtx *requestCtx, req *kvrpcpb.Pessimi
 			}
 			batch.PessimisticLock(m.Key, lock)
 		}
-		err = store.writer.Write(batch)
+		releaseLatchInCallback = true
+		err = store.writer.WritePessimisticLock(batch, func() {
+			regCtx.ReleaseLatches(hashVals)
+		})
 		if err != nil {
 			return nil, err
 		}
