@@ -124,8 +124,7 @@ func (r *RaftstoreRouter) SplitRegion(ctx *kvrpcpb.Context, kv *engine.Engine, r
 	if err != nil {
 		return nil, err
 	}
-	cb.wg.Wait()
-	resp := cb.resp
+	resp := cb.Wait()
 	if resp.GetHeader().GetError() != nil {
 		return nil, &RaftError{RequestErr: resp.Header.Error}
 	}

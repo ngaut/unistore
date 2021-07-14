@@ -58,11 +58,10 @@ func (writer *engineWriter) Write(batch mvcc.WriteBatch) error {
 	if err != nil {
 		return err
 	}
-	cmd.Callback.wg.Wait()
+	resp := cmd.Callback.Wait()
 	waitDoneTime := time.Now()
 	metrics.RaftWriterWait.Observe(waitDoneTime.Sub(start).Seconds())
-	cb := cmd.Callback
-	return writer.checkResponse(cb.resp, reqLen)
+	return writer.checkResponse(resp, reqLen)
 }
 
 type RaftError struct {

@@ -75,10 +75,10 @@ func (c *leaderChecker) IsLeader(ctx *kvrpcpb.Context, router *RaftstoreRouter) 
 		return RaftstoreErrToPbError(err)
 	}
 
-	cb.wg.Wait()
+	resp := cb.Wait()
 
-	if cb.resp.Header.Error != nil {
-		return cb.resp.Header.Error
+	if resp.GetHeader().GetError() != nil {
+		return resp.Header.Error
 	}
 	return nil
 }
