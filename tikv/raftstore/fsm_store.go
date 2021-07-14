@@ -279,6 +279,7 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 		if err != nil {
 			return nil, err
 		}
+		ctx.peerEventObserver.OnPeerCreate(peer.peer.getEventContext(), region)
 		status := JobStatus_Cancelled
 		peer.peer.Store().snapState = SnapState{
 			StateType: SnapState_ApplyAborted,
