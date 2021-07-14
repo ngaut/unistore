@@ -279,9 +279,9 @@ func preSplitRegion(router *router, eng *engine.Engine, peer *metapb.Peer, regio
 	if err != nil {
 		return err
 	}
-	cb.wg.Wait()
-	if cb.resp.GetHeader().GetError() != nil {
-		return errors.New(cb.resp.Header.Error.Message)
+	resp := cb.Wait()
+	if resp.GetHeader().GetError() != nil {
+		return errors.New(resp.Header.Error.Message)
 	}
 	return nil
 }
@@ -309,9 +309,9 @@ func splitShardFiles(router *router, eng *engine.Engine, peer *metapb.Peer, regi
 	if err != nil {
 		return err
 	}
-	cb.wg.Wait()
-	if cb.resp.GetHeader().GetError() != nil {
-		return errors.New(cb.resp.Header.Error.Message)
+	resp := cb.Wait()
+	if resp.GetHeader().GetError() != nil {
+		return errors.New(resp.Header.Error.Message)
 	}
 	return nil
 }
@@ -331,8 +331,11 @@ func finishSplit(router *router, region *metapb.Region, rawKeys [][]byte) ([]*me
 	if err != nil {
 		return nil, err
 	}
-	splitRegionCB.wg.Wait()
-	return splitRegionCB.resp.GetAdminResponse().GetSplits().GetRegions(), nil
+	resp := splitRegionCB.Wait()
+	if resp.GetHeader().GetError() != nil {
+		return nil, errors.New(resp.Header.Error.Message)
+	}
+	return resp.GetAdminResponse().GetSplits().GetRegions(), nil
 }
 
 type stalePeerInfo struct {

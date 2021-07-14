@@ -101,7 +101,7 @@ func (n *Node) Start(ctx context.Context, engines *Engines, trans *RaftClient, p
 		if err != nil {
 			return err
 		}
-		cb.wg.Wait()
+		cb.Wait()
 	}
 
 	return nil

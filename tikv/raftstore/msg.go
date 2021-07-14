@@ -15,7 +15,6 @@ package raftstore
 
 import (
 	"github.com/ngaut/unistore/enginepb"
-	"sync"
 	"time"
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
@@ -74,20 +73,22 @@ func NewMsg(tp MsgType, data interface{}) Msg {
 }
 
 type Callback struct {
-	resp *raft_cmdpb.RaftCmdResponse
-	wg   sync.WaitGroup
+	respCh chan *raft_cmdpb.RaftCmdResponse
 }
 
 func (cb *Callback) Done(resp *raft_cmdpb.RaftCmdResponse) {
 	if cb != nil {
-		cb.resp = resp
-		cb.wg.Done()
+		cb.respCh <- resp
 	}
+}
+
+func (cb *Callback) Wait() *raft_cmdpb.RaftCmdResponse {
+	return <-cb.respCh
 }
 
 func NewCallback() *Callback {
 	cb := &Callback{}
-	cb.wg.Add(1)
+	cb.respCh = make(chan *raft_cmdpb.RaftCmdResponse, 2)
 	return cb
 }
 
