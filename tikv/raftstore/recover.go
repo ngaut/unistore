@@ -19,7 +19,6 @@ import (
 type RecoverHandler struct {
 	raftEngine    *raftengine.Engine
 	storeID       uint64
-	ctx           *applyContext
 	regionHandler *regionTaskHandler
 }
 
@@ -39,12 +38,10 @@ func NewRecoverHandler(raftEngine *raftengine.Engine) (*RecoverHandler, error) {
 
 func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *engine.ShardMeta, toState *enginepb.Properties) error {
 	log.S().Infof("recover region:%d ver:%d", shard.ID, shard.Ver)
-	if h.ctx == nil {
-		h.ctx = &applyContext{
-			wb:      NewKVWriteBatch(kv),
-			engines: &Engines{kv: kv, raft: h.raftEngine},
-			execCtx: &applyExecContext{},
-		}
+	aCtx := &applyContext{
+		wb:      NewKVWriteBatch(kv),
+		engines: &Engines{kv: kv, raft: h.raftEngine},
+		execCtx: &applyExecContext{},
 	}
 	val, ok := shard.RecoverGetProperty(applyStateKey)
 	if !ok {
@@ -88,7 +85,7 @@ func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *e
 		}
 		rlog := raftlog.DecodeLog(e.Data)
 		if cmdReq := rlog.GetRaftCmdRequest(); cmdReq != nil {
-			err := h.executeAdminRequest(applier, cmdReq)
+			err := h.executeAdminRequest(applier, aCtx, cmdReq)
 			if err != nil {
 				return err
 			}
@@ -103,9 +100,9 @@ func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *e
 			// must be delete range request. TODO: handle it in the future.
 			continue
 		}
-		h.ctx.execCtx.applyState = applier.applyState
-		h.ctx.execCtx.index = e.Index
-		h.ctx.execCtx.term = e.Term
+		aCtx.execCtx.applyState = applier.applyState
+		aCtx.execCtx.index = e.Index
+		aCtx.execCtx.term = e.Term
 		if raftlog.IsChangeSetLog(cl.Data) {
 			// We don't have a background region worker now, should do it synchronously.
 			cs, err := cl.GetShardChangeSet()
@@ -120,7 +117,7 @@ func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *e
 		} else if cl.Type() == raftlog.TypePreSplit {
 			// PreSplit is handled by kv.
 		} else {
-			applier.execCustomLog(h.ctx, cl)
+			applier.execCustomLog(aCtx, cl)
 		}
 		applier.applyState.appliedIndex = e.Index
 		applier.applyState.appliedIndexTerm = e.Term
@@ -161,10 +158,10 @@ func (h *RecoverHandler) loadRegionMeta(id, ver uint64) (region *metapb.Region, 
 	return region, committedIdx, nil
 }
 
-func (h *RecoverHandler) executeAdminRequest(a *applier, cmdReq *raft_cmdpb.RaftCmdRequest) error {
+func (h *RecoverHandler) executeAdminRequest(a *applier, aCtx *applyContext, cmdReq *raft_cmdpb.RaftCmdRequest) error {
 	adminReq := cmdReq.AdminRequest
 	if adminReq.Splits != nil {
-		_, _, err := a.execBatchSplit(h.ctx, adminReq)
+		_, _, err := a.execBatchSplit(aCtx, adminReq)
 		if err != nil {
 			return err
 		}

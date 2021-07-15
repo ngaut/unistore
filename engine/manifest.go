@@ -92,7 +92,6 @@ type ShardMeta struct {
 	splitStage enginepb.SplitStage
 	commitTS   uint64
 	parent     *ShardMeta
-	recovered  bool
 }
 
 func (si *ShardMeta) FileLevel(fid uint64) (int, bool) {
