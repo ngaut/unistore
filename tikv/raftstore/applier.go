@@ -730,7 +730,7 @@ func (a *applier) execAdminCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdReques
 func (a *applier) execWriteCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 	resp *raft_cmdpb.RaftCmdResponse, result applyResult) {
 	if cl, ok := rlog.(*raftlog.CustomRaftLog); ok {
-		cnt := a.execCustomLog(aCtx, cl, false)
+		cnt := a.execCustomLog(aCtx, cl)
 		resp = &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
 		resp.Responses = make([]*raft_cmdpb.Response, cnt)
 		return
@@ -751,8 +751,8 @@ func (a *applier) execWriteCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 	return
 }
 
-func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog, concurrent bool) int {
-	wb := aCtx.wb.getEngineWriteBatch(cl.RegionID(), concurrent)
+func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) int {
+	wb := aCtx.wb.getEngineWriteBatch(cl.RegionID())
 	var cnt int
 	switch cl.Type() {
 	case raftlog.TypePrewrite:

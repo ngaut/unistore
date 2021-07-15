@@ -385,7 +385,6 @@ func (en *Engine) loadShards() error {
 				})
 			}
 		}
-		mShard.parent = nil
 		task := func() error {
 			shard, err := en.loadShard(mShard)
 			if err != nil {
