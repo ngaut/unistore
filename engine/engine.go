@@ -362,7 +362,6 @@ func (en *Engine) loadShards() error {
 	sche := scheduler.NewScheduler(en.opt.RecoveryConcurrency)
 	var parents = make(map[uint64]struct{})
 	parentsBT := scheduler.NewBatchTasks()
-	hasParentBT := scheduler.NewBatchTasks()
 	bt := scheduler.NewBatchTasks()
 	for _, v := range en.manifest.shards {
 		mShard := v
@@ -385,7 +384,7 @@ func (en *Engine) loadShards() error {
 				})
 			}
 		}
-		task := func() error {
+		bt.AppendTask(func() error {
 			shard, err := en.loadShard(mShard)
 			if err != nil {
 				return err
@@ -407,17 +406,9 @@ func (en *Engine) loadShards() error {
 				}
 			}
 			return nil
-		}
-		if parent != nil && mShard.ID != parent.ID {
-			hasParentBT.AppendTask(task)
-		} else {
-			bt.AppendTask(task)
-		}
+		})
 	}
 	if err := sche.BatchSchedule(parentsBT); err != nil {
-		return err
-	}
-	if err := sche.BatchSchedule(hasParentBT); err != nil {
 		return err
 	}
 	return sche.BatchSchedule(bt)
@@ -426,6 +417,9 @@ func (en *Engine) loadShards() error {
 func (en *Engine) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 	if oldVal, ok := en.shardMap.Load(shardInfo.ID); ok && oldVal != nil {
 		shard := oldVal.(*Shard)
+		if shard.Ver == shardInfo.Ver {
+			return shard, nil
+		}
 		l0s := shard.loadL0Tables()
 		for _, l0 := range l0s.tables {
 			l0.Close()
