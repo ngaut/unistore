@@ -15,7 +15,6 @@ package raftstore
 
 import (
 	"github.com/ngaut/unistore/enginepb"
-	"github.com/pingcap/log"
 	"time"
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
@@ -84,7 +83,6 @@ type Callback struct {
 func (cb *Callback) MaybeResponseOnProposed(resp *raft_cmdpb.RaftCmdResponse) {
 	if cb != nil && cb.respOnProposed {
 		cb.respCh <- resp
-		log.S().Info("response on proposed")
 	}
 }
 
