@@ -361,29 +361,32 @@ func formatInt(n int) string {
 func (en *Engine) loadShards() error {
 	sche := scheduler.NewScheduler(en.opt.RecoveryConcurrency)
 	var parents = make(map[uint64]struct{})
-	pbt := scheduler.NewBatchTasks()
+	parentsBT := scheduler.NewBatchTasks()
+	hasParentBT := scheduler.NewBatchTasks()
 	bt := scheduler.NewBatchTasks()
 	for _, v := range en.manifest.shards {
 		mShard := v
 		parent := mShard.parent
-		if parent != nil && en.opt.RecoverHandler != nil {
+		if parent != nil {
 			if _, ok := parents[parent.ID]; !ok {
 				parents[parent.ID] = struct{}{}
-				pbt.AppendTask(func() error {
+				parentsBT.AppendTask(func() error {
 					parentShard, err := en.loadShard(parent)
 					if err != nil {
 						return errors.AddStack(err)
 					}
-					err = en.opt.RecoverHandler.Recover(en, parentShard, parent, parent.split.MemProps)
-					if err != nil {
-						return errors.AddStack(err)
+					if en.opt.RecoverHandler != nil {
+						err = en.opt.RecoverHandler.Recover(en, parentShard, parent, parent.split.MemProps)
+						if err != nil {
+							return errors.AddStack(err)
+						}
 					}
 					return nil
 				})
 			}
 		}
 		mShard.parent = nil
-		bt.AppendTask(func() error {
+		task := func() error {
 			shard, err := en.loadShard(mShard)
 			if err != nil {
 				return err
@@ -405,9 +408,17 @@ func (en *Engine) loadShards() error {
 				}
 			}
 			return nil
-		})
+		}
+		if parent != nil && mShard.ID != parent.ID {
+			hasParentBT.AppendTask(task)
+		} else {
+			bt.AppendTask(task)
+		}
 	}
-	if err := sche.BatchSchedule(pbt); err != nil {
+	if err := sche.BatchSchedule(parentsBT); err != nil {
+		return err
+	}
+	if err := sche.BatchSchedule(hasParentBT); err != nil {
 		return err
 	}
 	return sche.BatchSchedule(bt)
