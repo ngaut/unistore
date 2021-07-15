@@ -796,7 +796,7 @@ func (p *Peer) TakeApplyProposals() *regionProposal {
 	return newRegionProposal(p.PeerId(), p.regionId, props)
 }
 
-func (p *Peer) HandleRaftReadyAppend(trans *RaftClient, raftWB *raftengine.WriteBatch, observer PeerEventObserver) *ReadyICPair {
+func (p *Peer) NewRaftReady(trans *RaftClient, raftWB *raftengine.WriteBatch, observer PeerEventObserver) *ReadyICPair {
 	if p.PendingRemove {
 		return nil
 	}
