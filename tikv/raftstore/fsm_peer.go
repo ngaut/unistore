@@ -251,25 +251,20 @@ func (d *peerMsgHandler) resumeHandlePendingApplyResult() bool {
 	return false // TODO: merge func
 }
 
-func (d *peerMsgHandler) HandleRaftReadyAppend(proposals []*regionProposal) []*regionProposal {
+func (d *peerMsgHandler) newRaftReady() *ReadyICPair {
 	hasReady := d.hasReady
 	d.hasReady = false
 	if !hasReady || d.stopped {
-		return proposals
+		return nil
 	}
-	d.ctx.pendingCount += 1
-	if p := d.peer.TakeApplyProposals(); p != nil {
-		proposals = append(proposals, p)
-	}
-	readyRes := d.peer.HandleRaftReadyAppend(d.ctx.trans, d.ctx.raftWB, d.ctx.peerEventObserver)
+	readyRes := d.peer.NewRaftReady(d.ctx.trans, d.ctx.raftWB, d.ctx.peerEventObserver)
 	if readyRes != nil {
-		d.ctx.ReadyRes = append(d.ctx.ReadyRes, readyRes)
 		ss := readyRes.Ready.SoftState
 		if ss != nil && ss.RaftState == raft.StateLeader {
 			d.peer.HeartbeatPd(d.ctx.pdTaskSender)
 		}
 	}
-	return proposals
+	return readyRes
 }
 
 func (d *peerMsgHandler) HandleRaftReady(ready *raft.Ready, ic *InvokeContext) {
@@ -280,9 +275,9 @@ func (d *peerMsgHandler) HandleRaftReady(ready *raft.Ready, ic *InvokeContext) {
 		// The peer may change from learner to voter after snapshot applied.
 		d.peer.maybeUpdatePeerMeta()
 	}
-
-	if !d.peer.IsLeader() {
-		d.peer.followerSendReadyMessages(d.ctx.trans, ready)
+	if p := d.peer.TakeApplyProposals(); p != nil {
+		msg := Msg{Type: MsgTypeApplyProposal, Data: p}
+		d.ctx.applyMsgs.appendMsg(p.RegionId, msg)
 	}
 
 	if readyApplySnapshot != nil {

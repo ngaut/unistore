@@ -141,11 +141,12 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 			return
 		}
 		rw.handleMsgs()
-		rw.handleRaftReadyAppend()
-		rw.writeRaftWriteBatch()
-		rw.handleRaftReady()
-		rw.raftCtx.flushLocalStats()
+		readyRes := rw.collectRaftReady()
+		rw.handleRaftReady(readyRes)
 		rw.scheduleApply()
+		rw.persistState()
+		rw.postPersistState(readyRes)
+		rw.raftCtx.flushLocalStats()
 	}
 }
 
@@ -203,35 +204,29 @@ func (rw *raftWorker) handleMsgs() {
 	rw.raftCtx.pendingCount = 0
 	for _, inbox := range rw.inboxes {
 		h := newRaftMsgHandler(inbox.peer, rw.raftCtx)
-		for _, msg := range inbox.msgs {
-			h.HandleMsgs(msg)
-		}
+		h.HandleMsgs(inbox.msgs...)
 	}
 	rw.handleMsgDc.collect(time.Since(begin))
 }
 
-func (rw *raftWorker) handleRaftReadyAppend() {
+func (rw *raftWorker) collectRaftReady() (readyRes []*ReadyICPair) {
 	begin := time.Now()
 	var movePeer uint64
-	var proposals []*regionProposal
 	for id, inbox := range rw.inboxes {
 		movePeer = id
 		h := newRaftMsgHandler(inbox.peer, rw.raftCtx)
-		proposals = h.HandleRaftReadyAppend(proposals)
-	}
-	for _, proposal := range proposals {
-		msg := Msg{Type: MsgTypeApplyProposal, Data: proposal}
-		rw.raftCtx.applyMsgs.appendMsg(proposal.RegionId, msg)
+		if rd := h.newRaftReady(); rd != nil {
+			readyRes = append(readyRes, rd)
+		}
 	}
 	// Pick one peer as the candidate to be moved to other workers.
 	atomic.StoreUint64(&rw.movePeerCandidate, movePeer)
 	rw.readyAppendDc.collect(time.Since(begin))
+	return
 }
 
-func (rw *raftWorker) handleRaftReady() {
-	readyRes := rw.raftCtx.ReadyRes
+func (rw *raftWorker) handleRaftReady(readyRes []*ReadyICPair) {
 	if len(readyRes) > 0 {
-		rw.raftCtx.ReadyRes = nil
 		begin := time.Now()
 		for _, pair := range readyRes {
 			h := newRaftMsgHandler(rw.inboxes[pair.IC.Region.Id].peer, rw.raftCtx)
@@ -241,7 +236,16 @@ func (rw *raftWorker) handleRaftReady() {
 	}
 }
 
-func (rw *raftWorker) writeRaftWriteBatch() {
+func (rw *raftWorker) postPersistState(readyRes []*ReadyICPair) {
+	for _, pair := range readyRes {
+		peer := rw.inboxes[pair.IC.Region.Id].peer
+		if !peer.peer.IsLeader() {
+			peer.peer.followerSendReadyMessages(rw.raftCtx.trans, &pair.Ready)
+		}
+	}
+}
+
+func (rw *raftWorker) persistState() {
 	raftWB := rw.raftCtx.raftWB
 	if !raftWB.IsEmpty() {
 		begin := time.Now()
