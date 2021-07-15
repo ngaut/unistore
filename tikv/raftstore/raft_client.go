@@ -15,6 +15,9 @@ package raftstore
 
 import (
 	"context"
+	"encoding/binary"
+	"github.com/pingcap/badger/y"
+	"net"
 	"sync"
 	"time"
 
@@ -43,6 +46,9 @@ type raftConn struct {
 	batch        *tikvpb.BatchRaftMessage
 	stream       tikvpb.Tikv_BatchRaftClient
 	streamCancel context.CancelFunc
+
+	rawConn net.Conn
+	rawBuf  []byte
 }
 
 func newRaftConn(storeID uint64, cfg *Config, pdCli pd.Client) *raftConn {
@@ -69,7 +75,7 @@ func (c *raftConn) runSender() {
 	for {
 		select {
 		case msg := <-c.msgCh:
-			c.senderHandleMsg(msg)
+			c.sendRawMsg(msg)
 		case <-c.ctx.Done():
 			log.Info("raftConn done")
 			return
@@ -108,6 +114,59 @@ func (c *raftConn) senderHandleMsg(msg *raft_serverpb.RaftMessage) {
 		c.stream = nil
 		log.Warn("failed to send batch raft message", zap.Error(err))
 	}
+}
+
+func (c *raftConn) sendRawMsg(msg *raft_serverpb.RaftMessage) {
+	c.encodeRawMsg(msg)
+	chLen := len(c.msgCh)
+	for i := 0; i < chLen; i++ {
+		newMsg := <-c.msgCh
+		c.encodeRawMsg(newMsg)
+	}
+	var err error
+	if c.rawConn == nil {
+		if time.Now().Before(c.nextRetryTime) {
+			// drop the messages directly.
+			return
+		}
+		err = c.newRawConn()
+		if err != nil {
+			c.nextRetryTime = time.Now().Add(time.Second)
+			log.Warn("failed to create raft raw conn", zap.Error(err))
+			return
+		}
+		log.Info("new raft raw conn")
+	}
+	_, err = c.rawConn.Write(c.rawBuf)
+	if err != nil {
+		c.nextRetryTime = time.Now().Add(time.Second)
+		log.Warn("failed to write raft raw message", zap.Error(err))
+		c.rawConn.Close()
+		c.rawConn = nil
+	}
+	c.rawBuf = c.rawBuf[:0]
+}
+
+func (c *raftConn) encodeRawMsg(msg *raft_serverpb.RaftMessage) {
+	size := msg.Size()
+	data := c.allocFromRawBuf(size)
+	y.Assert(len(data) == size)
+	_, err := msg.MarshalTo(data)
+	y.Assert(err == nil)
+}
+
+func (c *raftConn) allocFromRawBuf(size int) []byte {
+	oldLen := len(c.rawBuf)
+	newLen := oldLen + 4 + size
+	if newLen <= cap(c.rawBuf) {
+		c.rawBuf = c.rawBuf[:newLen]
+	} else {
+		oldBuf := c.rawBuf
+		c.rawBuf = make([]byte, newLen, newLen*5/4)
+		copy(c.rawBuf, oldBuf)
+	}
+	binary.LittleEndian.PutUint32(c.rawBuf[oldLen:], uint32(size))
+	return c.rawBuf[oldLen+4:]
 }
 
 // getEstimatedSize only count the entry data size for better performance.
@@ -163,6 +222,27 @@ func (c *raftConn) newStream() error {
 	}
 	c.streamCancel = cancelFunc
 	return err
+}
+
+func (c *raftConn) newRawConn() error {
+	addr, err := c.resolveAddr()
+	if err != nil {
+		return err
+	}
+	dialer := &net.Dialer{
+		Timeout:   3 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return err
+	}
+	_, err = conn.Write([]byte("raft"))
+	if err != nil {
+		return err
+	}
+	c.rawConn = conn
+	return nil
 }
 
 func (c *raftConn) Stop() {
