@@ -982,7 +982,7 @@ func (p *Peer) HeartbeatPd(pdScheduler chan<- task) {
 const ExtraMessageTypeSplitFilesDone rspb.ExtraMessageType = 8
 
 func (p *Peer) sendRaftMessage(msg *eraftpb.Message, trans *RaftClient) error {
-	sendMsg := new(rspb.RaftMessage)
+	sendMsg := raftMsgPool.Get().(*rspb.RaftMessage)
 	sendMsg.RegionId = p.regionId
 	// set current epoch
 	sendMsg.RegionEpoch = p.Region().RegionEpoch

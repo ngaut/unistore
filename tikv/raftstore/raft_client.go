@@ -16,7 +16,9 @@ package raftstore
 import (
 	"context"
 	"encoding/binary"
+	"github.com/ngaut/unistore/raft"
 	"github.com/pingcap/badger/y"
+	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"net"
 	"sync"
 	"time"
@@ -147,12 +149,21 @@ func (c *raftConn) sendRawMsg(msg *raft_serverpb.RaftMessage) {
 	c.rawBuf = c.rawBuf[:0]
 }
 
+var raftMsgPool = sync.Pool{New: func() interface{} {
+	return &raft_serverpb.RaftMessage{}
+}}
+
 func (c *raftConn) encodeRawMsg(msg *raft_serverpb.RaftMessage) {
 	size := msg.Size()
 	data := c.allocFromRawBuf(size)
 	y.Assert(len(data) == size)
 	_, err := msg.MarshalTo(data)
 	y.Assert(err == nil)
+	pbMsg := msg.Message
+	*pbMsg = eraftpb.Message{}
+	raft.MessagePool.Put(pbMsg)
+	*msg = raft_serverpb.RaftMessage{}
+	raftMsgPool.Put(msg)
 }
 
 func (c *raftConn) allocFromRawBuf(size int) []byte {

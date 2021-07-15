@@ -269,7 +269,7 @@ type Raft struct {
 	maxInflight        int
 	Prs                map[uint64]*Progress
 	LearnerPrs         map[uint64]*Progress
-	matchBuf           uint64Slice
+	matchBuf           []uint64
 
 	State StateType
 
@@ -453,7 +453,9 @@ func (r *Raft) nodes() []uint64 {
 	for id := range r.Prs {
 		nodes = append(nodes, id)
 	}
-	sort.Sort(uint64Slice(nodes))
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i] < nodes[j]
+	})
 	return nodes
 }
 
@@ -462,7 +464,9 @@ func (r *Raft) learnerNodes() []uint64 {
 	for id := range r.LearnerPrs {
 		nodes = append(nodes, id)
 	}
-	sort.Sort(uint64Slice(nodes))
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i] < nodes[j]
+	})
 	return nodes
 }
 
@@ -514,6 +518,10 @@ func (r *Raft) sendAppend(to uint64) {
 	r.maybeSendAppend(to, true)
 }
 
+var MessagePool = sync.Pool{New: func() interface{} {
+	return &pb.Message{}
+}}
+
 // maybeSendAppend sends an append RPC with new entries to the given peer,
 // if necessary. Returns true if a message was sent. The sendIfEmpty
 // argument controls whether messages with no entries will be sent
@@ -524,7 +532,7 @@ func (r *Raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 	if pr.IsPaused() {
 		return false
 	}
-	m := &pb.Message{}
+	m := MessagePool.Get().(*pb.Message)
 	m.To = to
 
 	term, errt := r.RaftLog.Term(pr.Next - 1)
@@ -592,13 +600,11 @@ func (r *Raft) sendHeartbeat(to uint64, ctx []byte) {
 	// The leader MUST NOT forward the follower's commit to
 	// an unmatched index.
 	commit := min(r.getProgress(to).Match, r.RaftLog.committed)
-	m := &pb.Message{
-		To:      to,
-		MsgType: pb.MessageType_MsgHeartbeat,
-		Commit:  commit,
-		Context: ctx,
-	}
-
+	m := MessagePool.Get().(*pb.Message)
+	m.To = to
+	m.MsgType = pb.MessageType_MsgHeartbeat
+	m.Commit = commit
+	m.Context = ctx
 	r.send(m)
 }
 
@@ -650,7 +656,7 @@ func (r *Raft) maybeCommit() bool {
 	// Preserving matchBuf across calls is an optimization
 	// used to avoid allocating a new slice on each call.
 	if cap(r.matchBuf) < len(r.Prs) {
-		r.matchBuf = make(uint64Slice, len(r.Prs))
+		r.matchBuf = make([]uint64, len(r.Prs))
 	}
 	mis := r.matchBuf[:len(r.Prs)]
 	idx := 0
@@ -658,7 +664,9 @@ func (r *Raft) maybeCommit() bool {
 		mis[idx] = p.Match
 		idx++
 	}
-	sort.Sort(mis)
+	sort.Slice(mis, func(i, j int) bool {
+		return mis[i] < mis[j]
+	})
 	mci := mis[len(mis)-r.quorum()]
 	return r.RaftLog.maybeCommit(mci, r.Term)
 }
@@ -1069,6 +1077,8 @@ func stepLeader(r *Raft, m *pb.Message) error {
 		if !r.appendEntry(es...) {
 			return ErrProposalDropped
 		}
+		*m = pb.Message{}
+		MessagePool.Put(m)
 		r.bcastAppend()
 		return nil
 	case pb.MessageType_MsgReadIndex:
@@ -1366,17 +1376,25 @@ func (r *Raft) handleAppendEntries(m *pb.Message) {
 		ents = append(ents, ent)
 	}
 	if mlastIndex, ok := r.RaftLog.maybeAppend(m.Index, m.LogTerm, m.Commit, ents...); ok {
-		r.send(&pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: mlastIndex})
-		r.logger.Debugf("%d [logterm: %d, index: %d] rejected MessageType_MsgAppend [logterm: %d, index: %d] from %x",
-			r.id, r.RaftLog.zeroTermOnErrCompacted(r.RaftLog.Term(m.Index)), m.Index, m.LogTerm, m.Index, m.From)
+		msg := MessagePool.Get().(*pb.Message)
+		msg.To = m.From
+		msg.MsgType = pb.MessageType_MsgAppendResponse
+		msg.Index = mlastIndex
+		r.send(msg)
 	} else {
 		r.send(&pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: m.Index, Reject: true, RejectHint: r.RaftLog.LastIndex()})
+		r.logger.Debugf("%d [logterm: %d, index: %d] rejected MessageType_MsgAppend [logterm: %d, index: %d] from %x",
+			r.id, r.RaftLog.zeroTermOnErrCompacted(r.RaftLog.Term(m.Index)), m.Index, m.LogTerm, m.Index, m.From)
 	}
 }
 
 func (r *Raft) handleHeartbeat(m *pb.Message) {
 	r.RaftLog.commitTo(m.Commit)
-	r.send(&pb.Message{To: m.From, MsgType: pb.MessageType_MsgHeartbeatResponse, Context: m.Context})
+	msg := MessagePool.Get().(*pb.Message)
+	msg.To = m.From
+	msg.MsgType = pb.MessageType_MsgHeartbeatResponse
+	msg.Context = m.Context
+	r.send(msg)
 }
 
 func (r *Raft) handleSnapshot(m *pb.Message) {
