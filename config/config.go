@@ -14,6 +14,7 @@
 package config
 
 import (
+	"runtime"
 	"time"
 
 	"github.com/pingcap/log"
@@ -118,7 +119,7 @@ var DefaultConf = Config{
 		NumCompactors:         3,
 		BaseSize:              64 * MB,
 		BlockCacheSize:        0, // 0 means disable block cache, use mmap to access sst.
-		RecoveryConcurrency:   1,
+		RecoveryConcurrency:   runtime.NumCPU(),
 	},
 	RaftEngine: RaftEngine{
 		Path:    "/tmp/badger",
