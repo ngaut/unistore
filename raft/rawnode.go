@@ -146,11 +146,12 @@ func (rn *RawNode) Campaign() error {
 
 // Propose proposes data be appended to the raft log.
 func (rn *RawNode) Propose(ctx, data []byte) error {
-	ent := pb.Entry{Data: data, Context: ctx}
-	return rn.Raft.Step(&pb.Message{
-		MsgType: pb.MessageType_MsgPropose,
-		From:    rn.Raft.id,
-		Entries: []*pb.Entry{&ent}})
+	ent := &pb.Entry{Data: data, Context: ctx}
+	msg := MessagePool.Get().(*pb.Message)
+	msg.MsgType = pb.MessageType_MsgPropose
+	msg.From = rn.Raft.id
+	msg.Entries = []*pb.Entry{ent}
+	return rn.Raft.Step(msg)
 }
 
 // ProposeConfChange proposes a config change.
