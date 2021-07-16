@@ -51,7 +51,6 @@ type Shard struct {
 	splitStage       int32
 	splitKeys        [][]byte
 	splittingMemTbls []unsafe.Pointer
-	removeFilesOnDel bool
 
 	// If the shard is passive, flush mem table and do compaction will ignore this shard.
 	passive int32
@@ -312,22 +311,6 @@ func (s *Shard) GetPreSplitKeys() [][]byte {
 		return nil
 	}
 	return s.splitKeys
-}
-
-func (s *Shard) Delete() error {
-	l0s := s.loadL0Tables()
-	for _, l0 := range l0s.tables {
-		l0.Delete()
-	}
-	s.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
-		for _, tbl := range level.tables {
-			if s.removeFilesOnDel {
-				tbl.Delete()
-			}
-		}
-		return false
-	})
-	return nil
 }
 
 func getSplittingStartEnd(oldStart, oldEnd []byte, splitKeys [][]byte, i int) (startKey, endKey []byte) {
