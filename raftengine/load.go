@@ -145,7 +145,12 @@ func (e *Engine) loadWALFile(epochID uint32) (offset int64, err error) {
 		switch tp {
 		case typeState:
 			regionID, key, val := parseState(y.Copy(entryData))
-			e.states.ReplaceOrInsert(&stateItem{regionID: regionID, key: key, val: val})
+			item := &stateItem{regionID: regionID, key: key, val: val}
+			if len(val) > 0 {
+				e.states.ReplaceOrInsert(item)
+			} else {
+				e.states.Delete(item)
+			}
 		case typeRaftLog:
 			logOp := parseLog(y.Copy(entryData))
 			entries := getRegionRaftLogs(e.entriesMap, logOp.regionID)

@@ -122,6 +122,7 @@ type execResultCompactLog struct {
 type execResultSplitRegion struct {
 	regions []*metapb.Region
 	derived *metapb.Region
+	splitCS *enginepb.ChangeSet
 }
 
 type execResultPrepareMerge struct {
@@ -786,11 +787,10 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 			cnt++
 		})
 	case raftlog.TypePreSplit:
-		var splitKeys [][]byte
-		cl.IterateKeysOnly(func(key []byte) {
-			splitKeys = append(splitKeys, key)
-		})
-		err := aCtx.engines.kv.PreSplit(a.region.Id, a.region.RegionEpoch.Version, splitKeys)
+		cs, err := cl.GetShardChangeSet()
+		y.Assert(err == nil)
+		cs.Sequence = aCtx.execCtx.index
+		err = aCtx.engines.kv.PreSplit(cs)
 		if err != nil {
 			log.S().Warnf("region %d:%d failed to execute pre-split, may be already pre-split by ingest. log idx:%d",
 				a.region.Id, a.region.RegionEpoch.Version, aCtx.execCtx.index)
@@ -798,6 +798,7 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 	case raftlog.TypeNextMemTableSize:
 		cs, err := cl.GetShardChangeSet()
 		y.Assert(err == nil)
+		cs.Sequence = aCtx.execCtx.index
 		bin := make([]byte, 8)
 		binary.LittleEndian.PutUint64(bin, uint64(cs.NextMemTableSize))
 		SetMaxMemTableSize(wb, bin)
@@ -851,7 +852,7 @@ func (a *applier) getLockForCommit(aCtx *applyContext, key []byte, commitTS uint
 		y.AssertTruef(err == nil, "key %v commit should be duplicated at index %d", key, aCtx.execCtx.index)
 		um := mvcc.UserMeta(item.UserMeta())
 		y.AssertTruef(um.CommitTS() == commitTS, "key %v commitTS %d not equal old %d",
-			commitTS, um.CommitTS())
+			key, commitTS, um.CommitTS())
 		return nil
 	}
 	val, _ = item.Value()
@@ -992,7 +993,7 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 		}
 		newShardProps[i] = props
 	}
-	_, err = aCtx.engines.kv.FinishSplit(a.region.Id, a.region.RegionEpoch.Version, newShardProps)
+	cs, err := aCtx.engines.kv.FinishSplit(a.region.Id, a.region.RegionEpoch.Version, newShardProps, aCtx.execCtx.index)
 	if err != nil {
 		if err == engine.ErrFinishSplitWrongStage {
 			// This must be a follower that fall behind, we need to pause the apply and wait for split files to finish
@@ -1003,6 +1004,7 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 		}
 		return
 	}
+	cs.Sequence = a.applyState.appliedIndex
 	// clear the cache here or the locks doesn't belong to the new range would never have chance to delete.
 	a.lockCache = map[string][]byte{}
 	resp = &raft_cmdpb.AdminResponse{
@@ -1013,6 +1015,7 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	result = applyResult{tp: applyResultTypeExecResult, data: &execResultSplitRegion{
 		regions: regions,
 		derived: derived,
+		splitCS: cs,
 	}}
 	return
 }

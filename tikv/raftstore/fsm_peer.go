@@ -257,7 +257,7 @@ func (d *peerMsgHandler) newRaftReady() *ReadyICPair {
 	if !hasReady || d.stopped {
 		return nil
 	}
-	readyRes := d.peer.NewRaftReady(d.ctx.trans, d.ctx.raftWB, d.ctx.peerEventObserver)
+	readyRes := d.peer.NewRaftReady(d.ctx.trans, d.ctx, d.ctx.peerEventObserver)
 	if readyRes != nil {
 		ss := readyRes.Ready.SoftState
 		if ss != nil && ss.RaftState == raft.StateLeader {
@@ -268,31 +268,23 @@ func (d *peerMsgHandler) newRaftReady() *ReadyICPair {
 }
 
 func (d *peerMsgHandler) HandleRaftReady(ready *raft.Ready, ic *InvokeContext) {
-	isMerging := d.peer.PendingMergeState != nil
-	d.peer.Store().updateStates(ic)
-	readyApplySnapshot := d.peer.Store().maybeScheduleApplySnapshot(ic)
-	if readyApplySnapshot != nil && d.peer.Meta.GetRole() == metapb.PeerRole_Learner {
-		// The peer may change from learner to voter after snapshot applied.
-		d.peer.maybeUpdatePeerMeta()
-	}
 	if p := d.peer.TakeApplyProposals(); p != nil {
 		msg := Msg{Type: MsgTypeApplyProposal, Data: p}
 		d.ctx.applyMsgs.appendMsg(p.RegionId, msg)
 	}
-
+	d.peer.Store().updateStates(ic)
+	readyApplySnapshot := d.peer.Store().maybeScheduleApplySnapshot(ic)
 	if readyApplySnapshot != nil {
+		// The peer may change from learner to voter after snapshot applied.
+		d.peer.maybeUpdatePeerMeta()
 		d.peer.Activate(d.ctx.applyMsgs)
+		d.onReadyApplySnapshot(readyApplySnapshot)
+		if d.peer.PendingMergeState != nil {
+			// After applying a snapshot, merge is rollbacked implicitly.
+			d.onReadyRollbackMerge(0, nil)
+		}
 	}
 	d.peer.HandleRaftReadyApplyMessages(d.ctx.engine.kv, d.ctx.applyMsgs, ready)
-	hasSnapshot := false
-	if readyApplySnapshot != nil {
-		d.onReadyApplySnapshot(readyApplySnapshot)
-		hasSnapshot = true
-	}
-	if isMerging && hasSnapshot {
-		// After applying a snapshot, merge is rollbacked implicitly.
-		d.onReadyRollbackMerge(0, nil)
-	}
 	if d.peer.waitFollowerSplitFiles != nil {
 		if d.peer.Store().splitStage == enginepb.SplitStage_SPLIT_FILE_DONE {
 			epochVer := d.region().RegionEpoch.Version
@@ -315,6 +307,14 @@ func (d *peerMsgHandler) HandleRaftReady(ready *raft.Ready, ic *InvokeContext) {
 			}
 		}
 	}
+}
+
+func getApplyStateFromProps(props *enginepb.Properties) applyState {
+	val, ok := engine.GetShardProperty(applyStateKey, props)
+	y.Assert(ok)
+	var applyState applyState
+	applyState.Unmarshal(val)
+	return applyState
 }
 
 func (d *peerMsgHandler) onRaftBaseTick() {
@@ -740,10 +740,11 @@ func (d *peerMsgHandler) onReadyCompactLog(firstIndex uint64, truncatedIndex uin
 	d.peer.Store().CompactTo(truncatedIndex)
 }
 
-func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*metapb.Region) {
+func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*metapb.Region, cs *enginepb.ChangeSet) {
 	for _, region := range regions {
 		WritePeerState(d.ctx.raftWB, region, rspb.PeerState_Normal, nil)
 	}
+	d.handleSplitChangeSet(cs)
 	d.ctx.storeMetaLock.Lock()
 	defer d.ctx.storeMetaLock.Unlock()
 	meta := d.ctx.storeMeta
@@ -761,6 +762,10 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 			tp:   taskTypePDReportBatchSplit,
 			data: &pdReportBatchSplitTask{regions: regions},
 		}
+		kv := d.peer.Store().Engines.kv
+		shard := kv.GetShard(d.regionID())
+		shard.SetPassive(false)
+		kv.TriggerFlush(shard, 0)
 	}
 
 	lastRegion := regions[len(regions)-1]
@@ -777,6 +782,7 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 			newPeers = append(newPeers, d.peer.getEventContext())
 			store := d.peer.Store()
 			// The raft state key changed when region version change, we need to set it here.
+			y.Assert(store.raftState.commit > 0)
 			d.ctx.raftWB.SetState(regionID, RaftStateKey(d.region().RegionEpoch.Version), store.raftState.Marshal())
 			// Reset the flush state for derived region.
 			store.initialFlushed = false
@@ -840,6 +846,18 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 		}
 	}
 	d.ctx.peerEventObserver.OnSplitRegion(derived, regions, newPeers)
+}
+
+func (d *peerMsgHandler) handleSplitChangeSet(cs *enginepb.ChangeSet) {
+	ps := d.peer.Store()
+	newMetas := ps.GetEngineMeta().ApplySplit(cs)
+	for _, newMeta := range newMetas {
+		log.S().Infof("%d:%d split add snapshot files %v", newMeta.ID, newMeta.Ver, newMeta.AllFiles())
+		d.ctx.raftWB.SetState(newMeta.ID, KVEngineMetaKey(), newMeta.Marshal())
+		if newMeta.ID == d.regionID() {
+			ps.shardMeta = newMeta
+		}
+	}
 }
 
 func (d *peerMsgHandler) validateMergePeer(targetRegion *metapb.Region) (bool, error) {
@@ -914,7 +932,7 @@ func (d *peerMsgHandler) onReadyResult(merged bool, execResults []execResult) (*
 				d.onReadyCompactLog(x.firstIndex, x.truncatedIndex)
 			}
 		case *execResultSplitRegion:
-			d.onReadySplitRegion(x.derived, x.regions)
+			d.onReadySplitRegion(x.derived, x.regions, x.splitCS)
 		case *execResultPrepareMerge:
 			d.onReadyPrepareMerge(x.region, x.state, merged)
 		case *execResultCommitMerge:
@@ -1393,11 +1411,7 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 		store.initialFlushed = true
 		props := change.Flush.Properties
 		if props != nil {
-			val, ok := engine.GetShardProperty(applyStateKey, props)
-			y.Assert(ok)
-			var applyState applyState
-			applyState.Unmarshal(val)
-			store.stableApplyState = applyState
+			store.stableApplyState = getApplyStateFromProps(props)
 		}
 	}
 	if change.SplitFiles != nil {

@@ -31,12 +31,6 @@ type Engines struct {
 }
 
 func NewEngines(kv *engine.Engine, raft *raftengine.Engine, kvPath, raftPath string, listener *MetaChangeListener) *Engines {
-	kv.IterateMeta(func(meta *engine.ShardMeta) {
-		if val, ok := meta.GetProperty(applyStateKey); ok {
-			var applyState applyState
-			applyState.Unmarshal(val)
-		}
-	})
 	return &Engines{
 		kv:       kv,
 		kvPath:   kvPath,

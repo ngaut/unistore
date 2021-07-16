@@ -244,6 +244,8 @@ func (b *CustomBuilder) SetChangeSet(changeSet *enginepb.ChangeSet) {
 		b.SetType(TypeFlush)
 	} else if changeSet.Compaction != nil {
 		b.SetType(TypeCompaction)
+	} else if changeSet.PreSplit != nil {
+		b.SetType(TypePreSplit)
 	} else if changeSet.SplitFiles != nil {
 		b.SetType(TypeSplitFiles)
 	} else if changeSet.NextMemTableSize > 0 {
@@ -287,17 +289,22 @@ func u64ToBytes(v uint64) []byte {
 	return b
 }
 
-func IsChangeSetLog(data []byte) bool {
+func IsEngineMetaLog(data []byte) bool {
+	return IsPreSplitLog(data) || IsBackgroundChangeSet(data)
+}
+
+func IsBackgroundChangeSet(data []byte) bool {
 	if len(data) <= 2 || data[0] != CustomRaftLogFlag {
 		return false
 	}
 	switch CustomRaftLogType(data[1]) {
-	case TypeFlush, TypeSplitFiles, TypeCompaction:
+	case TypeFlush, TypeCompaction, TypeSplitFiles:
 		return true
+	default:
+		return false
 	}
-	return false
 }
 
 func IsPreSplitLog(data []byte) bool {
-	return len(data) > 2 && data[0] == CustomRaftLogFlag && data[1] == byte(TypePreSplit)
+	return len(data) > 2 && data[0] == CustomRaftLogFlag && CustomRaftLogType(data[1]) == TypePreSplit
 }

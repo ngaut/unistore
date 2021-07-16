@@ -65,7 +65,6 @@ type Engine struct {
 	resourceMgr  *epoch.ResourceManager
 	closers      closers
 	flushCh      chan *flushTask
-	manifest     *Manifest
 	mangedSafeTS uint64
 	idAlloc      IDAllocator
 	compClient   *compaction.Client
@@ -95,10 +94,7 @@ func OpenEngine(opt Options) (en *Engine, err error) {
 			_ = dirLockGuard.release()
 		}
 	}()
-	manifest, err := OpenManifest(opt.Dir)
-	if err != nil {
-		return nil, err
-	}
+
 	blkCache, err := createCache(opt)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create block cache")
@@ -109,14 +105,9 @@ func OpenEngine(opt Options) (en *Engine, err error) {
 		dirLock:            dirLockGuard,
 		blkCache:           blkCache,
 		flushCh:            make(chan *flushTask, opt.NumMemtables),
-		manifest:           manifest,
 		metaChangeListener: opt.MetaChangeListener,
 	}
-	if opt.IDAllocator != nil {
-		en.idAlloc = opt.IDAllocator
-	} else {
-		en.idAlloc = &localIDAllocator{latest: manifest.lastID}
-	}
+	en.idAlloc = opt.IDAllocator
 	en.closers.resourceManager = y.NewCloser(0)
 	en.resourceMgr = epoch.NewResourceManager(en.closers.resourceManager)
 	en.closers.s3Client = y.NewCloser(0)
@@ -124,7 +115,11 @@ func OpenEngine(opt Options) (en *Engine, err error) {
 		en.s3c = s3util.NewS3Client(en.closers.s3Client, opt.Dir, opt.InstanceID, opt.S3Options)
 	}
 	en.compClient = compaction.NewClient(opt.RemoteCompactionAddr, en.s3c)
-	if err = en.loadShards(); err != nil {
+	shardMetas, err := readMetas(opt.MetaReader)
+	if err != nil {
+		return nil, err
+	}
+	if err = en.loadShards(shardMetas); err != nil {
 		return nil, errors.AddStack(err)
 	}
 	en.closers.memtable = y.NewCloser(1)
@@ -182,8 +177,6 @@ func createCache(opt Options) (blkCache *cache.Cache, err error) {
 func (en *Engine) DebugHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Time %s\n", time.Now().Format(time.RFC3339Nano))
-		fmt.Fprintf(w, "Manifest.shards %s\n", formatInt(len(en.manifest.shards)))
-		fmt.Fprintf(w, "Manifest.globalFiles %s\n", formatInt(len(en.manifest.globalFiles)))
 		fmt.Fprintf(w, "FlushCh %s\n", formatInt(len(en.flushCh)))
 		MemTables := 0
 		MemTablesSize := 0
@@ -358,12 +351,12 @@ func formatInt(n int) string {
 	return string(buf)
 }
 
-func (en *Engine) loadShards() error {
+func (en *Engine) loadShards(shardMetas map[uint64]*ShardMeta) error {
 	sche := scheduler.NewScheduler(en.opt.RecoveryConcurrency)
 	var parents = make(map[uint64]struct{})
 	parentsBT := scheduler.NewBatchTasks()
 	bt := scheduler.NewBatchTasks()
-	for _, v := range en.manifest.shards {
+	for _, v := range shardMetas {
 		mShard := v
 		parent := mShard.parent
 		if parent != nil {
@@ -390,16 +383,6 @@ func (en *Engine) loadShards() error {
 				return err
 			}
 			if en.opt.RecoverHandler != nil {
-				if mShard.preSplit != nil {
-					if mShard.preSplit.MemProps != nil {
-						// Recover to the state before PreSplit.
-						err = en.opt.RecoverHandler.Recover(en, shard, mShard, mShard.preSplit.MemProps)
-						if err != nil {
-							return errors.AddStack(err)
-						}
-						shard.setSplitKeys(mShard.preSplit.Keys)
-					}
-				}
 				err = en.opt.RecoverHandler.Recover(en, shard, mShard, nil)
 				if err != nil {
 					return errors.AddStack(err)
@@ -433,10 +416,12 @@ func (en *Engine) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 	}
 	shard := newShardForLoading(shardInfo, &en.opt)
 	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{memtable.NewCFTable(en.numCFs)}}))
-	for fid := range shardInfo.files {
-		fileMeta, ok := en.manifest.globalFiles[fid]
-		y.AssertTruef(ok, "%d:%d global file %d not found", shardInfo.ID, shardInfo.Ver, fid)
-		cf := fileMeta.cf
+	for fid, fm := range shardInfo.files {
+		err := en.loadFileFromS3(fid)
+		if err != nil {
+			return nil, err
+		}
+		cf := fm.cf
 		if cf == -1 {
 			filename := sstable.NewFilename(fid, en.opt.Dir)
 			file, err := sstable.NewLocalFile(filename, true)
@@ -451,7 +436,7 @@ func (en *Engine) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 			l0Tbls.tables = append(l0Tbls.tables, sl0Tbl)
 			continue
 		}
-		level := fileMeta.level
+		level := fm.level
 		scf := shard.cfs[cf]
 		handler := scf.getLevelHandler(int(level))
 		filename := sstable.NewFilename(fid, en.opt.Dir)
@@ -738,12 +723,6 @@ func (en *Engine) RemoveShard(shardID uint64, removeFile bool) error {
 		return errors.New("shard not found")
 	}
 	shard := shardVal.(*Shard)
-	change := newChangeSet(shard)
-	change.ShardDelete = true
-	err := en.manifest.writeChangeSet(change)
-	if err != nil {
-		return err
-	}
 	en.shardMap.Delete(shardID)
 	en.removeShardFiles(shard, func(id uint64) bool {
 		return removeFile
@@ -815,12 +794,6 @@ func (en *Engine) GetOpt() Options {
 	return en.opt
 }
 
-func (en *Engine) GetShardChangeSet(shardID uint64) (*enginepb.ChangeSet, error) {
-	en.manifest.appendLock.Lock()
-	defer en.manifest.appendLock.Unlock()
-	return en.manifest.toChangeSet(shardID)
-}
-
 func (en *Engine) TriggerFlush(shard *Shard, skipCnt int) {
 	mems := shard.loadMemTables()
 	for i := len(mems.tables) - skipCnt - 1; i > 0; i-- {
@@ -841,13 +814,5 @@ func (en *Engine) TriggerFlush(shard *Shard, skipCnt int) {
 				tbl:   memTbl,
 			}
 		}
-	}
-}
-
-func (en *Engine) IterateMeta(fn func(meta *ShardMeta)) {
-	en.manifest.appendLock.Lock()
-	defer en.manifest.appendLock.Unlock()
-	for _, meta := range en.manifest.shards {
-		fn(meta)
 	}
 }
