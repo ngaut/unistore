@@ -754,13 +754,16 @@ func (en *Engine) RemoveShard(shardID uint64, removeFile bool) error {
 func (en *Engine) removeShardFiles(shard *Shard, removeFile func(id uint64) bool) {
 	guard := en.resourceMgr.Acquire()
 	defer guard.Done()
-	guard.Delete([]epoch.Resource{&deletion{res: shard, delete: func() {
+	guard.Delete([]epoch.Resource{&deletion{res: nil, delete: func() {
 		l0s := shard.loadL0Tables()
 		for _, l0 := range l0s.tables {
 			if removeFile(l0.ID()) {
 				if en.s3c != nil {
 					en.s3c.SetExpired(l0.ID())
 				}
+				l0.Delete()
+			} else {
+				l0.Close()
 			}
 		}
 		shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
@@ -769,6 +772,9 @@ func (en *Engine) removeShardFiles(shard *Shard, removeFile func(id uint64) bool
 					if en.s3c != nil {
 						en.s3c.SetExpired(tbl.ID())
 					}
+					tbl.Delete()
+				} else {
+					tbl.Close()
 				}
 			}
 			return false
