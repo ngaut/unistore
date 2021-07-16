@@ -190,6 +190,7 @@ func (d *storeMsgHandler) start(store *metapb.Store) {
 	d.id = store.Id
 	now := time.Now()
 	d.startTime = &now
+	d.storeHeartbeatPD()
 	d.ticker.scheduleStore(StoreTickPdStoreHeartbeat)
 	d.ticker.scheduleStore(StoreTickConsistencyCheck)
 }
