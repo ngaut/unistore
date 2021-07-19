@@ -29,14 +29,15 @@ type Config struct {
 }
 
 type Server struct {
-	PDAddr      string `toml:"pd-addr"`
-	StoreAddr   string `toml:"store-addr"`
-	StatusAddr  string `toml:"status-addr"`
-	LogLevel    string `toml:"log-level"`
-	RegionSize  int64  `toml:"region-size"` // Average region size.
-	MaxProcs    int    `toml:"max-procs"`   // Max CPU cores to use, set 0 to use all CPU cores in the machine.
-	GCPercent   int    `toml:"gc-percent"`  // GC percent
-	LogfilePath string `toml:"log-file"`    // Log file path for unistore server
+	PDAddr      string            `toml:"pd-addr"`
+	StoreAddr   string            `toml:"store-addr"`
+	StatusAddr  string            `toml:"status-addr"`
+	LogLevel    string            `toml:"log-level"`
+	RegionSize  int64             `toml:"region-size"` // Average region size.
+	MaxProcs    int               `toml:"max-procs"`   // Max CPU cores to use, set 0 to use all CPU cores in the machine.
+	GCPercent   int               `toml:"gc-percent"`  // GC percent
+	LogfilePath string            `toml:"log-file"`    // Log file path for unistore server
+	Labels      map[string]string `toml:"labels"`
 }
 
 type RaftStore struct {
