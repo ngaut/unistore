@@ -638,6 +638,10 @@ func (svr *Server) DispatchMPPTask(_ context.Context, _ *mpp.DispatchTaskRequest
 	panic("todo")
 }
 
+func (svr *Server) IsAlive(_ context.Context, _ *mpp.IsAliveRequest) (*mpp.IsAliveResponse, error) {
+	panic("todo")
+}
+
 func (svr *Server) executeMPPDispatch(ctx context.Context, req *mpp.DispatchTaskRequest, storeAddr string, storeId uint64, handler *cophandler.MPPTaskHandler) error {
 	var reqCtx *requestCtx
 	if len(req.Regions) > 0 {
