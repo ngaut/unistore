@@ -45,14 +45,15 @@ import (
 )
 
 var (
-	configPath    = flag.String("config", "", "config file path")
-	pdAddr        = flag.String("pd", "", "pd address")
-	storeAddr     = flag.String("addr", "", "store address")
-	advertiseAddr = flag.String("advertise-addr", "", "advertise address")
-	statusAddr    = flag.String("status-addr", "", "status address")
-	dataDir       = flag.String("data-dir", "", "data directory")
-	logFile       = flag.String("log-file", "", "log file")
-	configCheck   = flagBoolean("config-check", false, "check config file validity and exit")
+	configPath          = flag.String("config", "", "config file path")
+	pdAddr              = flag.String("pd", "", "pd address")
+	storeAddr           = flag.String("addr", "", "store address")
+	advertiseAddr       = flag.String("advertise-addr", "", "advertise address")
+	statusAddr          = flag.String("status-addr", "", "status address")
+	advertiseStatusAddr = flag.String("advertise-status-addr", "", "advertise status address")
+	dataDir             = flag.String("data-dir", "", "data directory")
+	logFile             = flag.String("log-file", "", "log file")
+	configCheck         = flagBoolean("config-check", false, "check config file validity and exit")
 )
 
 var (
@@ -85,6 +86,9 @@ func loadCmdConf(conf *config.Config) {
 	}
 	if *statusAddr != "" {
 		conf.Server.StatusAddr = *statusAddr
+	}
+	if *advertiseStatusAddr != "" {
+		conf.Server.StatusAddr = *advertiseStatusAddr
 	}
 	if *dataDir != "" {
 		conf.Engine.Path = *dataDir
@@ -132,7 +136,8 @@ func main() {
 			writer.WriteHeader(http.StatusOK)
 		})
 		statsviz.Register(http.DefaultServeMux)
-		err := http.ListenAndServe(conf.Server.StatusAddr, nil)
+		listenAddr := conf.Server.StatusAddr[strings.IndexByte(conf.Server.StatusAddr, ':'):]
+		err := http.ListenAndServe(listenAddr, nil)
 		if err != nil {
 			log.S().Fatal(err)
 		}
