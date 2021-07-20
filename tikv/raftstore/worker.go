@@ -428,6 +428,12 @@ func (r *regionTaskHandler) handle(t task) {
 		} else if changeSet.SplitFiles != nil {
 			changeSetTp = "split_files"
 		}
+		shard := kv.GetShard(regionTask.region.Id)
+		if shard.GetSplitStage() >= enginepb.SplitStage_PRE_SPLIT && changeSet != nil && changeSet.Compaction != nil {
+			log.S().Warnf("region %d:%d reject compaction for splitting state",
+				shard.ID, shard.Ver)
+			changeSet.Compaction.Rejected = true
+		}
 		log.S().Infof("shard %d:%d apply change set %s stage %s seq %d", changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence)
 		err := kv.ApplyChangeSet(changeSet)
 		if err != nil {

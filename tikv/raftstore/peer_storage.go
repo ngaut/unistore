@@ -198,15 +198,12 @@ func (ic *InvokeContext) saveRaftStateTo(wb *raftengine.WriteBatch) {
 	wb.SetState(ic.Region.Id, RaftStateKey(ic.Region.RegionEpoch.Version), ic.RaftState.Marshal())
 }
 
-func (ic *InvokeContext) saveApplyStateTo(wbs *KVWriteBatch) {
-}
-
 var _ raft.Storage = new(PeerStorage)
 
 type PeerStorage struct {
 	Engines *Engines
 
-	peerID     uint64
+	peer       *metapb.Peer
 	region     *metapb.Region
 	raftState  raftState
 	applyState applyState
@@ -231,7 +228,7 @@ type PeerStorage struct {
 	shardMeta *engine.ShardMeta
 }
 
-func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- task, peerID uint64, tag string) (*PeerStorage, error) {
+func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- task, peer *metapb.Peer, tag string) (*PeerStorage, error) {
 	log.S().Debugf("%s creating storage for %s", tag, region.String())
 	raftState, err := initRaftState(engines.raft, region)
 	if err != nil {
@@ -257,7 +254,7 @@ func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- 
 	}
 	return &PeerStorage{
 		Engines:        engines,
-		peerID:         peerID,
+		peer:           peer,
 		region:         region,
 		Tag:            tag,
 		raftState:      raftState,
@@ -464,18 +461,18 @@ func firstIndex(applyState applyState) uint64 {
 func (ps *PeerStorage) validateSnap(snap *eraftpb.Snapshot) bool {
 	idx := snap.GetMetadata().GetIndex()
 	if idx < ps.truncatedIndex() {
-		log.S().Infof("snapshot is stale, generate again, regionID: %d, peerID: %d, snapIndex: %d, truncatedIndex: %d", ps.region.GetId(), ps.peerID, idx, ps.truncatedIndex())
+		log.S().Infof("snapshot is stale, generate again, regionID: %d, peerID: %d, snapIndex: %d, truncatedIndex: %d", ps.region.GetId(), ps.peer.Id, idx, ps.truncatedIndex())
 		return false
 	}
 	snapData := new(snapData)
 	if err := snapData.Unmarshal(snap.GetData()); err != nil {
-		log.S().Errorf("failed to decode snapshot, it may be corrupted, regionID: %d, peerID: %d, err: %v", ps.region.GetId(), ps.peerID, err)
+		log.S().Errorf("failed to decode snapshot, it may be corrupted, regionID: %d, peerID: %d, err: %v", ps.region.GetId(), ps.peer.Id, err)
 		return false
 	}
 	snapEpoch := snapData.region.GetRegionEpoch()
 	latestEpoch := ps.region.GetRegionEpoch()
 	if snapEpoch.GetConfVer() < latestEpoch.GetConfVer() {
-		log.S().Infof("snapshot epoch is stale, regionID: %d, peerID: %d, snapEpoch: %s, latestEpoch: %s", ps.region.GetId(), ps.peerID, snapEpoch, latestEpoch)
+		log.S().Infof("snapshot epoch is stale, regionID: %d, peerID: %d, snapEpoch: %s, latestEpoch: %s", ps.region.GetId(), ps.peer.Id, snapEpoch, latestEpoch)
 		return false
 	}
 	return true

@@ -88,12 +88,6 @@ func NewServer(conf *config.Config, pdClient pd.Client) (*Server, error) {
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
-	if recoverHandler != nil && !recoverHandler.RaftWB.IsEmpty() {
-		err = raftEngine.Write(recoverHandler.RaftWB)
-		if err != nil {
-			return nil, err
-		}
-	}
 	http.DefaultServeMux.HandleFunc("/debug/db", eng.DebugHandler())
 	engines := raftstore.NewEngines(eng, raftEngine, kvPath, raftPath, listener)
 	innerServer := raftstore.NewRaftInnerServer(conf, engines, raftConf)

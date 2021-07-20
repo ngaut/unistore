@@ -122,7 +122,6 @@ type execResultCompactLog struct {
 type execResultSplitRegion struct {
 	regions []*metapb.Region
 	derived *metapb.Region
-	splitCS *enginepb.ChangeSet
 }
 
 type execResultPrepareMerge struct {
@@ -199,7 +198,7 @@ func newRegionProposal(id uint64, regionId uint64, props []proposal) *regionProp
 }
 
 type registration struct {
-	id         uint64
+	peer       *metapb.Peer
 	term       uint64
 	applyState applyState
 	region     *metapb.Region
@@ -207,7 +206,7 @@ type registration struct {
 
 func newRegistration(peer *Peer) *registration {
 	return &registration{
-		id:         peer.PeerId(),
+		peer:       peer.Meta,
 		term:       peer.Term(),
 		applyState: peer.Store().applyState,
 		region:     peer.Region(),
@@ -334,7 +333,7 @@ func (s *waitSourceMergeState) String() string {
 /// located at this store, and it will get the corresponding applier to
 /// handle the apply task to make the code logic more clear.
 type applier struct {
-	id     uint64
+	peer   *metapb.Peer
 	term   uint64
 	region *metapb.Region
 	tag    string
@@ -380,8 +379,8 @@ type applier struct {
 
 func newApplier(reg *registration) *applier {
 	return &applier{
-		id:         reg.id,
-		tag:        makeTag(reg.region, reg.id),
+		peer:       reg.peer,
+		tag:        makeTag(reg.region, reg.peer.Id),
 		region:     reg.region,
 		applyState: reg.applyState,
 		term:       reg.term,
@@ -424,7 +423,7 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 			// Msg::CatchUpLogs may have arrived before Msg::Apply.
 			if expectedIndex > entry.GetIndex() && a.isMerging {
 				log.S().Infof("skip log as it's already applied. region_id %d, peer_id %d, index %d",
-					a.region.Id, a.id, entry.Index)
+					a.region.Id, a.peer.Id, entry.Index)
 				continue
 			}
 			panic(fmt.Sprintf("%s expect index %d, but got %d", a.tag, expectedIndex, entry.Index))
@@ -524,7 +523,7 @@ func (a *applier) handleRaftEntryConfChange(aCtx *applyContext, entry *eraftpb.E
 
 func (a *applier) findCallback(index, term uint64, isConfChange bool) *Callback {
 	regionID := a.region.Id
-	peerID := a.id
+	peerID := a.peer.Id
 	if isConfChange {
 		cmd := a.pendingCmds.takeConfChange()
 		if cmd == nil {
@@ -563,7 +562,10 @@ func (a *applier) processRaftCmd(aCtx *applyContext, index, term uint64, rlog ra
 	if result.tp == applyResultTypePause {
 		return result
 	}
-	log.S().Debugf("applied command. region_id %d, peer_id %d, index %d", a.region.Id, a.id, index)
+	if resp == nil {
+		return result
+	}
+	log.S().Debugf("applied command. region_id %d, peer_id %d, index %d", a.region.Id, a.peer.Id, index)
 
 	// TODO: if we have exec_result, maybe we should return this callback too. Outer
 	// store will call it after handing exec result.
@@ -592,18 +594,13 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 		case raftlog.TypeFlush, raftlog.TypeCompaction, raftlog.TypeSplitFiles:
 			change, err := cl.GetShardChangeSet()
 			y.Assert(err == nil)
-			shard := aCtx.engines.kv.GetShard(a.region.Id)
-			if shard.GetSplitStage() >= enginepb.SplitStage_PRE_SPLIT && change != nil && change.Compaction != nil {
-				log.S().Warnf("region %d:%d reject compaction for splitting state",
-					shard.ID, shard.Ver)
-				change.Compaction.Rejected = true
-			}
 			// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
 			change.Sequence = aCtx.execCtx.index
 			aCtx.regionScheduler <- task{
 				tp: taskTypeRegionApplyChangeSet,
 				data: &regionTask{
 					region: a.region,
+					peer:   a.peer,
 					change: change,
 				},
 			}
@@ -613,9 +610,9 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 	if err != nil {
 		// TODO: clear dirty values.
 		if _, ok := err.(*ErrEpochNotMatch); ok {
-			log.S().Debugf("epoch not match region_id %d, peer_id %d, err %v", a.region.Id, a.id, err)
+			log.S().Debugf("epoch not match region_id %d, peer_id %d, err %v", a.region.Id, a.peer.Id, err)
 		} else {
-			log.S().Errorf("execute raft command region_id %d, peer_id %d, err %v", a.region.Id, a.id, err)
+			log.S().Errorf("execute raft command region_id %d, peer_id %d, err %v", a.region.Id, a.peer.Id, err)
 		}
 		resp = ErrResp(err)
 	}
@@ -634,6 +631,9 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 		switch x := applyResult.data.(type) {
 		case *execResultChangePeer:
 			a.region = x.cp.region
+			if x.cp.peer.Id == a.peer.Id {
+				a.peer = x.cp.peer
+			}
 		case *execResultSplitRegion:
 			a.region = x.derived
 		case *execResultPrepareMerge:
@@ -647,19 +647,19 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 			a.isMerging = false
 		default:
 		}
-		a.tag = makeTag(a.region, a.id)
+		a.tag = makeTag(a.region, a.peer.Id)
 	}
 	return resp, applyResult
 }
 
 func (a *applier) clearAllCommandsAsStale() {
 	for i, cmd := range a.pendingCmds.normals {
-		notifyStaleCommand(a.region.Id, a.id, a.term, cmd)
+		notifyStaleCommand(a.region.Id, a.peer.Id, a.term, cmd)
 		a.pendingCmds.normals[i] = pendingCmd{}
 	}
 	a.pendingCmds.normals = a.pendingCmds.normals[:0]
 	if cmd := a.pendingCmds.takeConfChange(); cmd != nil {
-		notifyStaleCommand(a.region.Id, a.id, a.term, *cmd)
+		notifyStaleCommand(a.region.Id, a.peer.Id, a.term, *cmd)
 	}
 }
 
@@ -926,7 +926,7 @@ func (a *applier) execChangePeer(req *raft_cmdpb.AdminRequest) (
 				err = errors.New(errMsg)
 				return
 			}
-			if a.id == peer.Id {
+			if a.peer.Id == peer.Id {
 				// Remove ourself, we will destroy all region data later.
 				// So we need not to apply following logs.
 				a.stopped = true
@@ -976,24 +976,13 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	delete(aCtx.wb.batches, a.region.Id)
 	var derived *metapb.Region
 	var regions []*metapb.Region
-	derived, regions, err = a.splitGenNewRegionMetas(req.Splits)
+	derived, regions, err = splitGenNewRegionMetas(a.region, req.Splits)
 	if err != nil {
 		return
 	}
 	a.applyState.appliedIndex = aCtx.execCtx.index
-	newShardProps := make([]*enginepb.Properties, len(regions))
-	for i := 0; i < len(regions); i++ {
-		props := new(enginepb.Properties)
-		props.ShardID = regions[i].Id
-		props.Keys = append(props.Keys, applyStateKey)
-		if regions[i].Id == a.region.Id {
-			props.Values = append(props.Values, a.applyState.Marshal())
-		} else {
-			props.Values = append(props.Values, newInitialApplyState().Marshal())
-		}
-		newShardProps[i] = props
-	}
-	cs, err := aCtx.engines.kv.FinishSplit(a.region.Id, a.region.RegionEpoch.Version, newShardProps, aCtx.execCtx.index)
+	cs := buildSplitChangeSet(a.region, regions, a.applyState)
+	err = aCtx.engines.kv.FinishSplit(cs)
 	if err != nil {
 		if err == engine.ErrFinishSplitWrongStage {
 			// This must be a follower that fall behind, we need to pause the apply and wait for split files to finish
@@ -1004,7 +993,6 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 		}
 		return
 	}
-	cs.Sequence = a.applyState.appliedIndex
 	// clear the cache here or the locks doesn't belong to the new range would never have chance to delete.
 	a.lockCache = map[string][]byte{}
 	resp = &raft_cmdpb.AdminResponse{
@@ -1015,17 +1003,16 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	result = applyResult{tp: applyResultTypeExecResult, data: &execResultSplitRegion{
 		regions: regions,
 		derived: derived,
-		splitCS: cs,
 	}}
 	return
 }
 
-func (a *applier) splitGenNewRegionMetas(splitReqs *raft_cmdpb.BatchSplitRequest) (derived *metapb.Region, regions []*metapb.Region, err error) {
+func splitGenNewRegionMetas(oldRegion *metapb.Region, splitReqs *raft_cmdpb.BatchSplitRequest) (derived *metapb.Region, regions []*metapb.Region, err error) {
 	if len(splitReqs.Requests) == 0 {
 		return nil, nil, errors.New("missing split key")
 	}
 	derived = new(metapb.Region)
-	if err := CloneMsg(a.region, derived); err != nil {
+	if err := CloneMsg(oldRegion, derived); err != nil {
 		panic(err)
 	}
 	rightDerive := splitReqs.RightDerive
@@ -1048,11 +1035,11 @@ func (a *applier) splitGenNewRegionMetas(splitReqs *raft_cmdpb.BatchSplitRequest
 		keys = append(keys, splitKey)
 	}
 	keys = append(keys, derived.EndKey)
-	err = CheckKeyInRegion(keys[len(keys)-2], a.region)
+	err = CheckKeyInRegion(keys[len(keys)-2], oldRegion)
 	if err != nil {
 		return nil, nil, err
 	}
-	log.S().Infof("%s split region %s, keys %v", a.tag, a.region, keys)
+	log.S().Infof("%d:%d split region %s, keys %v", oldRegion.Id, oldRegion.RegionEpoch.Version, oldRegion, keys)
 	derived.RegionEpoch.Version += uint64(newRegionCnt)
 	// Note that the split requests only contain ids for new regions, so we need
 	// to handle new regions and old region separately.
@@ -1083,6 +1070,36 @@ func (a *applier) splitGenNewRegionMetas(splitReqs *raft_cmdpb.BatchSplitRequest
 		regions = append(regions, derived)
 	}
 	return derived, regions, nil
+}
+
+func buildSplitChangeSet(oldRegion *metapb.Region, regions []*metapb.Region, state applyState) *enginepb.ChangeSet {
+	newShardProps := make([]*enginepb.Properties, len(regions))
+	for i := 0; i < len(regions); i++ {
+		props := new(enginepb.Properties)
+		props.ShardID = regions[i].Id
+		props.Keys = append(props.Keys, applyStateKey)
+		if regions[i].Id == oldRegion.Id {
+			props.Values = append(props.Values, state.Marshal())
+		} else {
+			props.Values = append(props.Values, newInitialApplyState().Marshal())
+		}
+		newShardProps[i] = props
+	}
+	splitKeys := make([][]byte, 0, len(regions)-1)
+	for i := 1; i < len(regions); i++ {
+		splitKeys = append(splitKeys, RawStartKey(regions[i]))
+	}
+	changeSet := &enginepb.ChangeSet{
+		ShardID:  oldRegion.Id,
+		ShardVer: oldRegion.RegionEpoch.Version,
+		Stage:    enginepb.SplitStage_SPLIT_FILE_DONE,
+		Sequence: state.appliedIndex,
+		Split: &enginepb.Split{
+			NewShards: newShardProps,
+			Keys:      splitKeys,
+		},
+	}
+	return changeSet
 }
 
 func (a *applier) execPrepareMerge(aCtx *applyContext, req *raft_cmdpb.AdminRequest) (
@@ -1165,7 +1182,7 @@ func newApplierFromPeer(peer *peerFsm) *applier {
 /// Handles peer registration. When a peer is created, it will register an applier.
 func (a *applier) handleRegistration(reg *registration) {
 	log.S().Infof("region %d:%d re-register to applier, term %d", a.region.Id, a.region.RegionEpoch.Version, reg.term)
-	y.Assert(a.id == reg.id)
+	y.Assert(a.peer.Id == reg.peer.Id)
 	a.term = reg.term
 	a.clearAllCommandsAsStale()
 	*a = *newApplier(reg)
@@ -1195,8 +1212,8 @@ func (a *applier) handleApply(aCtx *applyContext, apply *apply) {
 
 /// Handles proposals, and appends the commands to the applier.
 func (a *applier) handleProposal(regionProposal *regionProposal) {
-	regionID, peerID := a.region.Id, a.id
-	y.Assert(a.id == regionProposal.Id)
+	regionID, peerID := a.region.Id, a.peer.Id
+	y.Assert(a.peer.Id == regionProposal.Id)
 	if a.stopped {
 		for _, p := range regionProposal.Props {
 			cmd := pendingCmd{index: p.index, term: p.term, cb: p.cb}
@@ -1225,11 +1242,11 @@ func (a *applier) destroy(aCtx *applyContext) {
 	log.S().Infof("%s remove applier", a.tag)
 	a.stopped = true
 	for _, cmd := range a.pendingCmds.normals {
-		notifyRegionRemoved(a.region.Id, a.id, cmd)
+		notifyRegionRemoved(a.region.Id, a.peer.Id, cmd)
 	}
 	a.pendingCmds.normals = nil
 	if cmd := a.pendingCmds.takeConfChange(); cmd != nil {
-		notifyRegionRemoved(a.region.Id, a.id, *cmd)
+		notifyRegionRemoved(a.region.Id, a.peer.Id, *cmd)
 	}
 }
 
@@ -1239,7 +1256,7 @@ func (a *applier) handleDestroy(aCtx *applyContext, regionID uint64) {
 		a.destroy(aCtx)
 		aCtx.applyResCh <- NewPeerMsg(MsgTypeApplyRes, a.region.Id, &applyTaskRes{
 			regionID:      a.region.Id,
-			destroyPeerID: a.id,
+			destroyPeerID: a.peer.Id,
 		})
 	}
 }

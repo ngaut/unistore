@@ -368,7 +368,7 @@ func (en *Engine) loadShards(shardMetas map[uint64]*ShardMeta) error {
 						return errors.AddStack(err)
 					}
 					if en.opt.RecoverHandler != nil {
-						err = en.opt.RecoverHandler.Recover(en, parentShard, parent, parent.split.MemProps)
+						err = en.opt.RecoverHandler.Recover(en, parentShard, parent)
 						if err != nil {
 							return errors.AddStack(err)
 						}
@@ -383,7 +383,7 @@ func (en *Engine) loadShards(shardMetas map[uint64]*ShardMeta) error {
 				return err
 			}
 			if en.opt.RecoverHandler != nil {
-				err = en.opt.RecoverHandler.Recover(en, shard, mShard, nil)
+				err = en.opt.RecoverHandler.Recover(en, shard, mShard)
 				if err != nil {
 					return errors.AddStack(err)
 				}
@@ -481,7 +481,7 @@ type RecoverHandler interface {
 	// Recover recovers from the shard's state to the state that is stored in the toState property.
 	// So the Engine has a chance to execute pre-split command.
 	// If toState is nil, the implementation should recovers to the latest state.
-	Recover(en *Engine, shard *Shard, info *ShardMeta, toState *enginepb.Properties) error
+	Recover(en *Engine, shard *Shard, info *ShardMeta) error
 }
 
 type localIDAllocator struct {
