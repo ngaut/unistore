@@ -305,26 +305,20 @@ func (en *Engine) buildTableBeforeKey(itr table.Iterator, key []byte, opt sstabl
 
 // FinishSplit finishes the Split process on a Shard in PreSplitStage.
 // This is done after preSplit is done, so we don't need to acquire any lock, just atomic CAS will do.
-func (en *Engine) FinishSplit(oldShardID, ver uint64, newShardsProps []*enginepb.Properties, seq uint64) (changeSet *enginepb.ChangeSet, err error) {
-	oldShard := en.GetShard(oldShardID)
-	if oldShard.Ver != ver {
-		return nil, ErrShardNotMatch
+func (en *Engine) FinishSplit(changeSet *enginepb.ChangeSet) (err error) {
+	oldShard := en.GetShard(changeSet.ShardID)
+	if oldShard.Ver != changeSet.ShardVer {
+		return ErrShardNotMatch
 	}
 	if oldShard.GetSplitStage() != enginepb.SplitStage_SPLIT_FILE_DONE {
-		return nil, ErrFinishSplitWrongStage
+		return ErrFinishSplitWrongStage
 	}
-	if len(newShardsProps) != len(oldShard.splittingMemTbls) {
-		return nil, fmt.Errorf("newShardsProps length %d is not equals to splittingMemTbls length %d", len(newShardsProps), len(oldShard.splittingMemTbls))
+	split := changeSet.Split
+	if len(split.NewShards) != len(oldShard.splittingMemTbls) {
+		return fmt.Errorf("newShardsProps length %d is not equals to splittingMemTbls length %d", len(split.NewShards), len(oldShard.splittingMemTbls))
 	}
-	changeSet = newChangeSet(oldShard)
-	changeSet.Sequence = seq
-	changeSet.Split = &enginepb.Split{
-		NewShards: newShardsProps,
-		Keys:      oldShard.splitKeys,
-		MemProps:  oldShard.properties.toPB(oldShard.ID),
-	}
-	en.buildSplitShards(oldShard, newShardsProps)
-	return changeSet, nil
+	en.buildSplitShards(oldShard, split.NewShards)
+	return nil
 }
 
 func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.Properties) (newShards []*Shard) {
@@ -334,7 +328,9 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 	for i := range oldShard.splittingMemTbls {
 		startKey, endKey := getSplittingStartEnd(oldShard.Start, oldShard.End, oldShard.splitKeys, i)
 		shard := newShard(newShardsProps[i], newVer, startKey, endKey, &en.opt)
-		shard.SetPassive(true)
+		if shard.ID != oldShard.ID {
+			shard.SetPassive(true)
+		}
 		shard.memTbls = new(unsafe.Pointer)
 		atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{oldShard.loadSplittingMemTable(i)}}))
 		shard.l0s = new(unsafe.Pointer)

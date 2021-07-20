@@ -14,15 +14,12 @@ import (
 	"github.com/pingcap/log"
 	"io"
 	"math"
-	"sync"
 )
 
 type RecoverHandler struct {
 	raftEngine    *raftengine.Engine
 	storeID       uint64
 	regionHandler *regionTaskHandler
-	RaftWB        *raftengine.WriteBatch
-	raftWBLock    sync.Mutex
 }
 
 func NewRecoverHandler(raftEngine *raftengine.Engine) (*RecoverHandler, error) {
@@ -36,11 +33,10 @@ func NewRecoverHandler(raftEngine *raftengine.Engine) (*RecoverHandler, error) {
 	return &RecoverHandler{
 		raftEngine: raftEngine,
 		storeID:    storeIdent.StoreId,
-		RaftWB:     raftengine.NewWriteBatch(),
 	}, nil
 }
 
-func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *engine.ShardMeta, toState *enginepb.Properties) error {
+func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *engine.ShardMeta) error {
 	log.S().Infof("recover region:%d ver:%d", shard.ID, shard.Ver)
 	aCtx := &applyContext{
 		wb:      NewKVWriteBatch(kv),
@@ -59,23 +55,13 @@ func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *e
 	fromApplyState.Unmarshal(val)
 	lowIdx := fromApplyState.appliedIndex + 1
 	highIdx := committedIdx
-	if toState != nil {
-		val, ok = engine.GetShardProperty(applyStateKey, toState)
-		if !ok {
-			return errors.New("no applyState")
-		}
-		var toApplyState applyState
-		toApplyState.Unmarshal(val)
-		highIdx = toApplyState.appliedIndex
-	}
 	entries, _, err1 := fetchEntriesTo(h.raftEngine, shard.ID, lowIdx, highIdx+1, math.MaxUint64, nil)
 	if err1 != nil {
 		return errors.AddStack(err1)
 	}
 	peer := findPeer(regionMeta, h.storeID)
-	peerID := peer.Id
 	applier := &applier{
-		id:         peerID,
+		peer:       peer,
 		region:     regionMeta,
 		applyState: fromApplyState,
 		lockCache:  map[string][]byte{},
@@ -89,7 +75,11 @@ func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *e
 		}
 		rlog := raftlog.DecodeLog(e.Data)
 		if cmdReq := rlog.GetRaftCmdRequest(); cmdReq != nil {
-			err := h.executeAdminRequest(applier, aCtx, cmdReq, e.Index)
+			if cmdReq.GetAdminRequest().GetSplits() != nil {
+				// We are recovering an parent shard, the split is the last command, we can skip it and return now.
+				return nil
+			}
+			err := h.executeAdminRequest(applier, cmdReq)
 			if err != nil {
 				return err
 			}
@@ -160,29 +150,9 @@ func (h *RecoverHandler) loadRegionMeta(id, ver uint64) (region *metapb.Region, 
 	return region, committedIdx, nil
 }
 
-func (h *RecoverHandler) executeAdminRequest(a *applier, aCtx *applyContext, cmdReq *raft_cmdpb.RaftCmdRequest, idx uint64) error {
+func (h *RecoverHandler) executeAdminRequest(a *applier, cmdReq *raft_cmdpb.RaftCmdRequest) error {
 	adminReq := cmdReq.AdminRequest
-	if adminReq.Splits != nil {
-		_, result, err := a.execBatchSplit(aCtx, adminReq)
-		if err != nil {
-			return err
-		}
-		oldBin := h.raftEngine.GetState(a.region.Id, KVEngineMetaKey())
-		oldCS := new(enginepb.ChangeSet)
-		err = oldCS.Unmarshal(oldBin)
-		if err != nil {
-			return err
-		}
-		splitCS := result.data.(*execResultSplitRegion).splitCS
-		splitCS.Sequence = idx
-		meta := engine.NewShardMeta(oldCS)
-		newMetas := meta.ApplySplit(splitCS)
-		h.raftWBLock.Lock()
-		for _, newMeta := range newMetas {
-			h.RaftWB.SetState(newMeta.ID, KVEngineMetaKey(), newMeta.Marshal())
-		}
-		h.raftWBLock.Unlock()
-	} else if adminReq.ChangePeer != nil {
+	if adminReq.ChangePeer != nil {
 		_, _, err := a.execChangePeer(adminReq)
 		if err != nil {
 			return err

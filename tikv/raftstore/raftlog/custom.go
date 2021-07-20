@@ -308,3 +308,15 @@ func IsBackgroundChangeSet(data []byte) bool {
 func IsPreSplitLog(data []byte) bool {
 	return len(data) > 2 && data[0] == CustomRaftLogFlag && CustomRaftLogType(data[1]) == TypePreSplit
 }
+
+func TryGetSplit(data []byte) *raft_cmdpb.BatchSplitRequest {
+	if len(data) <= 2 || data[0] == CustomRaftLogFlag {
+		return nil
+	}
+	cmd := new(raft_cmdpb.RaftCmdRequest)
+	err := cmd.Unmarshal(data)
+	if err != nil {
+		panic(err)
+	}
+	return cmd.GetAdminRequest().GetSplits()
+}

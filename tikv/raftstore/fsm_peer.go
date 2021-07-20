@@ -135,10 +135,6 @@ func (pf *peerFsm) setPendingMergeState(state *rspb.MergeState) {
 	pf.peer.PendingMergeState = state
 }
 
-func (pf *peerFsm) scheduleApplyingSnapshot(snapData *snapData) {
-	pf.peer.Store().ScheduleApplyingSnapshot(snapData)
-}
-
 func (pf *peerFsm) hasPendingMergeApplyResult() bool {
 	return pf.peer.PendingMergeApplyResult != nil
 }
@@ -406,8 +402,8 @@ func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
 func (d *peerMsgHandler) checkPendingSplit(msg *rspb.RaftMessage) {
 	for _, e := range msg.Message.Entries {
 		if e.EntryType == eraftpb.EntryType_EntryNormal && len(e.Data) > 0 {
-			rlog := raftlog.DecodeLog(e.Data)
-			if rlog.GetRaftCmdRequest().GetAdminRequest().GetSplits() != nil {
+			splits := raftlog.TryGetSplit(e.Data)
+			if splits != nil {
 				d.peer.PendingSplit = true
 			}
 		}
@@ -740,11 +736,10 @@ func (d *peerMsgHandler) onReadyCompactLog(firstIndex uint64, truncatedIndex uin
 	d.peer.Store().CompactTo(truncatedIndex)
 }
 
-func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*metapb.Region, cs *enginepb.ChangeSet) {
+func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*metapb.Region) {
 	for _, region := range regions {
 		WritePeerState(d.ctx.raftWB, region, rspb.PeerState_Normal, nil)
 	}
-	d.handleSplitChangeSet(cs)
 	d.ctx.storeMetaLock.Lock()
 	defer d.ctx.storeMetaLock.Unlock()
 	meta := d.ctx.storeMeta
@@ -762,10 +757,6 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 			tp:   taskTypePDReportBatchSplit,
 			data: &pdReportBatchSplitTask{regions: regions},
 		}
-		kv := d.peer.Store().Engines.kv
-		shard := kv.GetShard(d.regionID())
-		shard.SetPassive(false)
-		kv.TriggerFlush(shard, 0)
 	}
 
 	lastRegion := regions[len(regions)-1]
@@ -848,18 +839,6 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 	d.ctx.peerEventObserver.OnSplitRegion(derived, regions, newPeers)
 }
 
-func (d *peerMsgHandler) handleSplitChangeSet(cs *enginepb.ChangeSet) {
-	ps := d.peer.Store()
-	newMetas := ps.GetEngineMeta().ApplySplit(cs)
-	for _, newMeta := range newMetas {
-		log.S().Infof("%d:%d split add snapshot files %v", newMeta.ID, newMeta.Ver, newMeta.AllFiles())
-		d.ctx.raftWB.SetState(newMeta.ID, KVEngineMetaKey(), newMeta.Marshal())
-		if newMeta.ID == d.regionID() {
-			ps.shardMeta = newMeta
-		}
-	}
-}
-
 func (d *peerMsgHandler) validateMergePeer(targetRegion *metapb.Region) (bool, error) {
 	return false, nil // TODO: merge func
 }
@@ -932,7 +911,7 @@ func (d *peerMsgHandler) onReadyResult(merged bool, execResults []execResult) (*
 				d.onReadyCompactLog(x.firstIndex, x.truncatedIndex)
 			}
 		case *execResultSplitRegion:
-			d.onReadySplitRegion(x.derived, x.regions, x.splitCS)
+			d.onReadySplitRegion(x.derived, x.regions)
 		case *execResultPrepareMerge:
 			d.onReadyPrepareMerge(x.region, x.state, merged)
 		case *execResultCommitMerge:
@@ -1136,7 +1115,6 @@ func (d *peerMsgHandler) validateSplitRegion(epoch *metapb.RegionEpoch, splitKey
 
 func (d *peerMsgHandler) onScheduleHalfSplitRegion(regionEpoch *metapb.RegionEpoch) {
 	if !d.peer.IsLeader() {
-		log.S().Warnf("%s not leader, skip", d.tag())
 		return
 	}
 	region := d.region()

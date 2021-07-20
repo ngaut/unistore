@@ -93,7 +93,6 @@ message PreSplit {
 message Split {
   repeated Properties newShards = 1;
   repeated bytes Keys = 3;
-  Properties memProps = 4;
 }
 
 message Properties {

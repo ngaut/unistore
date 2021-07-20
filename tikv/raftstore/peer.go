@@ -302,7 +302,7 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 	}
 	tag := fmt.Sprintf("[region %v] %v", region.GetId(), peer.GetId())
 
-	ps, err := NewPeerStorage(engines, region, regionSched, peer.GetId(), tag)
+	ps, err := NewPeerStorage(engines, region, regionSched, peer, tag)
 	if err != nil {
 		return nil, err
 	}
@@ -834,8 +834,13 @@ func (p *Peer) NewRaftReady(trans *RaftClient, ctx *RaftContext, observer PeerEv
 	}
 	for i := 0; i < len(ready.CommittedEntries); i++ {
 		e := ready.CommittedEntries[i]
+		if e.EntryType != eraftpb.EntryType_EntryNormal {
+			continue
+		}
 		if raftlog.IsEngineMetaLog(e.Data) {
 			p.handleChangeSet(ctx, e)
+		} else if splits := raftlog.TryGetSplit(e.Data); splits != nil {
+			p.handlePendingSplit(ctx, e, splits)
 		}
 	}
 	p.OnRoleChanged(observer, &ready)
@@ -876,6 +881,25 @@ func (p *Peer) handleChangeSet(ctx *RaftContext, e *eraftpb.Entry) {
 	shardMeta.ApplyChangeSet(change)
 	log.S().Infof("%d:%d handle change set set engine meta, apply change %s", shardMeta.ID, shardMeta.Ver, change)
 	ctx.raftWB.SetState(p.regionId, KVEngineMetaKey(), shardMeta.Marshal())
+}
+
+func (p *Peer) handlePendingSplit(ctx *RaftContext, e *eraftpb.Entry, splits *raft_cmdpb.BatchSplitRequest) {
+	_, regions, err := splitGenNewRegionMetas(p.Region(), splits)
+	if err != nil {
+		return
+	}
+	state := p.Store().applyState
+	state.appliedIndex = e.Index
+	changeSet := buildSplitChangeSet(p.Region(), regions, state)
+	ps := p.Store()
+	newMetas := ps.GetEngineMeta().ApplySplit(changeSet)
+	for _, newMeta := range newMetas {
+		log.S().Infof("%d:%d split add snapshot files %v", newMeta.ID, newMeta.Ver, newMeta.AllFiles())
+		ctx.raftWB.SetState(newMeta.ID, KVEngineMetaKey(), newMeta.Marshal())
+		if newMeta.ID == p.regionId {
+			ps.shardMeta = newMeta
+		}
+	}
 }
 
 func (p *Peer) PostRaftReadyPersistent(trans *RaftClient, applyMsgs *applyMsgs, ready *raft.Ready, invokeCtx *InvokeContext) *ReadyApplySnapshot {
