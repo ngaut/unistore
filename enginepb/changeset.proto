@@ -31,6 +31,7 @@ message ChangeSet {
   // If specified, we check sequence is monotonically increasing.
   uint64 sequence = 12;
   int64 nextMemTableSize = 13;
+  ChangeSet parent = 14;
 }
 
 enum SplitStage {
@@ -87,9 +88,6 @@ message TableCreate {
 
 message PreSplit {
   repeated bytes Keys = 1;
-  // the properties that is in mem-table, not persistent.
-  // If it is nil, then the pre split is stable.
-  Properties memProps = 2;
 }
 
 message Split {

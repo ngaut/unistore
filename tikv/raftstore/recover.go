@@ -14,12 +14,15 @@ import (
 	"github.com/pingcap/log"
 	"io"
 	"math"
+	"sync"
 )
 
 type RecoverHandler struct {
 	raftEngine    *raftengine.Engine
 	storeID       uint64
 	regionHandler *regionTaskHandler
+	RaftWB        *raftengine.WriteBatch
+	raftWBLock    sync.Mutex
 }
 
 func NewRecoverHandler(raftEngine *raftengine.Engine) (*RecoverHandler, error) {
@@ -33,6 +36,7 @@ func NewRecoverHandler(raftEngine *raftengine.Engine) (*RecoverHandler, error) {
 	return &RecoverHandler{
 		raftEngine: raftEngine,
 		storeID:    storeIdent.StoreId,
+		RaftWB:     raftengine.NewWriteBatch(),
 	}, nil
 }
 
@@ -85,7 +89,7 @@ func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *e
 		}
 		rlog := raftlog.DecodeLog(e.Data)
 		if cmdReq := rlog.GetRaftCmdRequest(); cmdReq != nil {
-			err := h.executeAdminRequest(applier, aCtx, cmdReq)
+			err := h.executeAdminRequest(applier, aCtx, cmdReq, e.Index)
 			if err != nil {
 				return err
 			}
@@ -103,19 +107,19 @@ func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *e
 		aCtx.execCtx.applyState = applier.applyState
 		aCtx.execCtx.index = e.Index
 		aCtx.execCtx.term = e.Term
-		if raftlog.IsChangeSetLog(cl.Data) {
-			// We don't have a background region worker now, should do it synchronously.
+		if raftlog.IsBackgroundChangeSet(cl.Data) {
 			cs, err := cl.GetShardChangeSet()
 			if err != nil {
 				return err
 			}
 			cs.Sequence = e.Index
-			err = kv.ApplyChangeSet(cs)
-			if err != nil {
-				return err
+			if !meta.IsDuplicatedChangeSet(cs) {
+				// We don't have a background region worker now, should do it synchronously.
+				err = kv.ApplyChangeSet(cs)
+				if err != nil {
+					return err
+				}
 			}
-		} else if cl.Type() == raftlog.TypePreSplit {
-			// PreSplit is handled by kv.
 		} else {
 			applier.execCustomLog(aCtx, cl)
 		}
@@ -149,8 +153,6 @@ func (h *RecoverHandler) loadRegionMeta(id, ver uint64) (region *metapb.Region, 
 		return nil, 0, err
 	}
 	val := h.raftEngine.GetState(region.GetId(), RaftStateKey(region.RegionEpoch.Version))
-	log.S().Infof("get region %d:%d raft states %x",
-		region.Id, region.RegionEpoch.Version, val)
 	y.Assert(len(val) > 0)
 	var raftState raftState
 	raftState.Unmarshal(val)
@@ -158,13 +160,28 @@ func (h *RecoverHandler) loadRegionMeta(id, ver uint64) (region *metapb.Region, 
 	return region, committedIdx, nil
 }
 
-func (h *RecoverHandler) executeAdminRequest(a *applier, aCtx *applyContext, cmdReq *raft_cmdpb.RaftCmdRequest) error {
+func (h *RecoverHandler) executeAdminRequest(a *applier, aCtx *applyContext, cmdReq *raft_cmdpb.RaftCmdRequest, idx uint64) error {
 	adminReq := cmdReq.AdminRequest
 	if adminReq.Splits != nil {
-		_, _, err := a.execBatchSplit(aCtx, adminReq)
+		_, result, err := a.execBatchSplit(aCtx, adminReq)
 		if err != nil {
 			return err
 		}
+		oldBin := h.raftEngine.GetState(a.region.Id, KVEngineMetaKey())
+		oldCS := new(enginepb.ChangeSet)
+		err = oldCS.Unmarshal(oldBin)
+		if err != nil {
+			return err
+		}
+		splitCS := result.data.(*execResultSplitRegion).splitCS
+		splitCS.Sequence = idx
+		meta := engine.NewShardMeta(oldCS)
+		newMetas := meta.ApplySplit(splitCS)
+		h.raftWBLock.Lock()
+		for _, newMeta := range newMetas {
+			h.RaftWB.SetState(newMeta.ID, KVEngineMetaKey(), newMeta.Marshal())
+		}
+		h.raftWBLock.Unlock()
 	} else if adminReq.ChangePeer != nil {
 		_, _, err := a.execChangePeer(adminReq)
 		if err != nil {
@@ -172,4 +189,25 @@ func (h *RecoverHandler) executeAdminRequest(a *applier, aCtx *applyContext, cmd
 		}
 	}
 	return nil
+}
+
+func (h *RecoverHandler) IterateMeta(fn func(meta *enginepb.ChangeSet) error) error {
+	if h == nil {
+		return nil
+	}
+	err := h.raftEngine.IterateAllStates(false, func(regionID uint64, key, val []byte) error {
+		if key[0] == KVEngineMetaKeyByte {
+			cs := new(enginepb.ChangeSet)
+			err := cs.Unmarshal(val)
+			if err != nil {
+				return err
+			}
+			err = fn(cs)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return err
 }

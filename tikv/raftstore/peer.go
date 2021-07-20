@@ -796,7 +796,7 @@ func (p *Peer) TakeApplyProposals() *regionProposal {
 	return newRegionProposal(p.PeerId(), p.regionId, props)
 }
 
-func (p *Peer) NewRaftReady(trans *RaftClient, raftWB *raftengine.WriteBatch, observer PeerEventObserver) *ReadyICPair {
+func (p *Peer) NewRaftReady(trans *RaftClient, ctx *RaftContext, observer PeerEventObserver) *ReadyICPair {
 	if p.PendingRemove {
 		return nil
 	}
@@ -834,18 +834,8 @@ func (p *Peer) NewRaftReady(trans *RaftClient, raftWB *raftengine.WriteBatch, ob
 	}
 	for i := 0; i < len(ready.CommittedEntries); i++ {
 		e := ready.CommittedEntries[i]
-		if raftlog.IsPreSplitLog(e.Data) {
-			// Set the PreSplit state so we can reject any future compaction.
-			p.Store().splitStage = enginepb.SplitStage_PRE_SPLIT
-		}
-		if raftlog.IsChangeSetLog(e.Data) {
-			clog := raftlog.NewCustom(e.Data)
-			change, err := clog.GetShardChangeSet()
-			y.Assert(err == nil)
-			store := p.Store()
-			// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
-			change.Sequence = e.Index
-			store.applyingChanges = append(store.applyingChanges, change)
+		if raftlog.IsEngineMetaLog(e.Data) {
+			p.handleChangeSet(ctx, e)
 		}
 	}
 	p.OnRoleChanged(observer, &ready)
@@ -859,11 +849,33 @@ func (p *Peer) NewRaftReady(trans *RaftClient, raftWB *raftengine.WriteBatch, ob
 		ready.Messages = ready.Messages[:0]
 	}
 
-	invokeCtx, err := p.Store().SaveReadyState(raftWB, &ready)
+	invokeCtx, err := p.Store().SaveReadyState(ctx.raftWB, &ready)
 	if err != nil {
 		panic(fmt.Sprintf("failed to handle raft ready, error: %v", err))
 	}
 	return &ReadyICPair{Ready: ready, IC: invokeCtx}
+}
+
+func (p *Peer) handleChangeSet(ctx *RaftContext, e *eraftpb.Entry) {
+	clog := raftlog.NewCustom(e.Data)
+	change, err := clog.GetShardChangeSet()
+	y.Assert(err == nil)
+	store := p.Store()
+	// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
+	change.Sequence = e.Index
+	if clog.Type() == raftlog.TypePreSplit {
+		store.splitStage = enginepb.SplitStage_PRE_SPLIT
+	} else {
+		store.applyingChanges = append(store.applyingChanges, change)
+	}
+	if store.splitStage >= enginepb.SplitStage_PRE_SPLIT && change.Compaction != nil {
+		// compaction will be rejected.
+		return
+	}
+	shardMeta := store.GetEngineMeta()
+	shardMeta.ApplyChangeSet(change)
+	log.S().Infof("%d:%d handle change set set engine meta, apply change %s", shardMeta.ID, shardMeta.Ver, change)
+	ctx.raftWB.SetState(p.regionId, KVEngineMetaKey(), shardMeta.Marshal())
 }
 
 func (p *Peer) PostRaftReadyPersistent(trans *RaftClient, applyMsgs *applyMsgs, ready *raft.Ready, invokeCtx *InvokeContext) *ReadyApplySnapshot {

@@ -88,6 +88,12 @@ func NewServer(conf *config.Config, pdClient pd.Client) (*Server, error) {
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
+	if recoverHandler != nil && !recoverHandler.RaftWB.IsEmpty() {
+		err = raftEngine.Write(recoverHandler.RaftWB)
+		if err != nil {
+			return nil, err
+		}
+	}
 	http.DefaultServeMux.HandleFunc("/debug/db", eng.DebugHandler())
 	engines := raftstore.NewEngines(eng, raftEngine, kvPath, raftPath, listener)
 	innerServer := raftstore.NewRaftInnerServer(conf, engines, raftConf)
@@ -168,6 +174,7 @@ func createKVEngine(subPath string, listener *raftstore.MetaChangeListener,
 	}
 	opts.MetaChangeListener = listener
 	opts.RecoverHandler = recoverHandler
+	opts.MetaReader = recoverHandler
 	return engine.OpenEngine(opts)
 }
 

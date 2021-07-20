@@ -586,9 +586,6 @@ func (en *Engine) ApplyChangeSet(changeSet *enginepb.ChangeSet) error {
 		return ErrShardNotMatch
 	}
 	defer shard.refreshEstimatedSize()
-	if en.manifest.isDuplicatedChange(changeSet) {
-		return nil
-	}
 	if changeSet.Flush != nil {
 		return en.applyFlush(shard, changeSet)
 	}
@@ -614,12 +611,6 @@ func (en *Engine) applyFlush(shard *Shard, changeSet *enginepb.ChangeSet) error 
 		if err := en.s3c.BatchSchedule(bt); err != nil {
 			return err
 		}
-	}
-	if err := en.manifest.writeChangeSet(changeSet); err != nil {
-		if err == errDupChange {
-			return nil
-		}
-		return err
 	}
 	if newL0 != nil {
 		filename := sstable.NewFilename(newL0.ID, en.opt.Dir)
@@ -669,12 +660,6 @@ func (en *Engine) applyCompaction(shard *Shard, changeSet *enginepb.ChangeSet, g
 		if err := en.s3c.BatchSchedule(bt); err != nil {
 			return err
 		}
-	}
-	if err := en.manifest.writeChangeSet(changeSet); err != nil {
-		if err == errDupChange {
-			return nil
-		}
-		return err
 	}
 	del := &deletions{resources: map[uint64]epoch.Resource{}}
 	if comp.Level == 0 {
@@ -799,12 +784,6 @@ func (en *Engine) applySplitFiles(shard *Shard, changeSet *enginepb.ChangeSet, g
 		if err := en.s3c.BatchSchedule(bt); err != nil {
 			return err
 		}
-	}
-	if err := en.manifest.writeChangeSet(changeSet); err != nil {
-		if err == errDupChange {
-			return nil
-		}
-		return err
 	}
 	oldL0s := shard.loadL0Tables()
 	newL0Tbls := &l0Tables{make([]*sstable.L0Table, 0, len(oldL0s.tables)*2)}

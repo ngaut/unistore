@@ -169,6 +169,7 @@ type ReadyApplySnapshot struct {
 	// PrevRegion is the region before snapshot applied
 	PrevRegion *metapb.Region
 	Region     *metapb.Region
+	SnapData   *snapData
 }
 
 type InvokeContext struct {
@@ -226,6 +227,8 @@ type PeerStorage struct {
 	initialFlushed  bool
 
 	Tag string
+
+	shardMeta *engine.ShardMeta
 }
 
 func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- task, peerID uint64, tag string) (*PeerStorage, error) {
@@ -484,45 +487,32 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 		log.S().Infof("shard %d:%d has not flushed for generating snapshot", ps.region.Id, ps.region.RegionEpoch.Version)
 		return snap, raft.ErrSnapshotTemporarilyUnavailable
 	}
-	if ps.snapState.StateType == SnapState_Generating {
-		select {
-		case s := <-ps.snapState.Receiver:
-			snap = *s
-		default:
-			return snap, raft.ErrSnapshotTemporarilyUnavailable
-		}
-		ps.snapState.StateType = SnapState_Relax
-		if snap.GetMetadata() != nil {
-			ps.snapTriedCnt = 0
-			if ps.validateSnap(&snap) {
-				return snap, nil
-			}
-		} else {
-			log.S().Warnf("failed to try generating snapshot, regionID: %d, peerID: %d, times: %d", ps.region.GetId(), ps.peerID, ps.snapTriedCnt)
-		}
-	}
-	if ps.snapTriedCnt >= MaxSnapRetryCnt {
-		err := errors.Errorf("failed to get snapshot after %d times", ps.snapTriedCnt)
-		ps.snapTriedCnt = 0
-		return snap, err
-	}
+	changeSet := ps.GetEngineMeta().ToChangeSet()
 
-	log.S().Infof("requesting snapshot, regionID: %d, peerID: %d", ps.region.GetId(), ps.peerID)
-	ps.snapTriedCnt++
-	ch := make(chan *eraftpb.Snapshot, 1)
-	ps.snapState = SnapState{
-		StateType: SnapState_Generating,
-		Receiver:  ch,
+	applyState := getApplyStateFromProps(changeSet.Snapshot.Properties)
+	snapData := &snapData{
+		region:    ps.region,
+		changeSet: changeSet,
 	}
-	// Schedule gen snapshot task directly instead of .
-	ps.regionSched <- task{
-		tp: taskTypeRegionGen,
-		data: &regionTask{
-			region:   ps.region,
-			notifier: ch,
-		},
+	snap = eraftpb.Snapshot{
+		Metadata: &eraftpb.SnapshotMetadata{},
+		Data:     snapData.Marshal(),
 	}
-	return snap, raft.ErrSnapshotTemporarilyUnavailable
+	snap.Metadata.Index = applyState.appliedIndex
+	snap.Metadata.Term = applyState.appliedIndexTerm
+	confState := confStateFromRegion(ps.region)
+	snap.Metadata.ConfState = &confState
+	return snap, nil
+}
+
+func (ps *PeerStorage) GetEngineMeta() *engine.ShardMeta {
+	if ps.shardMeta == nil {
+		metaBin := ps.Engines.raft.GetState(ps.region.Id, KVEngineMetaKey())
+		cs := new(enginepb.ChangeSet)
+		y.Assert(cs.Unmarshal(metaBin) == nil)
+		ps.shardMeta = engine.NewShardMeta(cs)
+	}
+	return ps.shardMeta
 }
 
 // Append the given entries to the raft log using previous last index or self.last_index.
@@ -698,6 +688,8 @@ func (ps *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *eraftpb.Snapshot,
 			break
 		}
 	}
+	ps.shardMeta = engine.NewShardMeta(snapData.changeSet)
+	raftWB.SetState(ps.region.Id, KVEngineMetaKey(), ps.shardMeta.Marshal())
 
 	ctx.Region = snapData.region
 
@@ -756,16 +748,18 @@ func RegionEqual(l, r *metapb.Region) bool {
 
 func (ps *PeerStorage) maybeScheduleApplySnapshot(ctx *InvokeContext) *ReadyApplySnapshot {
 	// If we apply snapshot ok, we should update some infos like applied index too.
-	if ctx.SnapData == nil {
+	snapData := ctx.SnapData
+	ctx.SnapData = nil
+	if snapData == nil {
 		return nil
 	}
-	ps.ScheduleApplyingSnapshot(ctx.SnapData)
+	ps.ScheduleApplyingSnapshot(snapData)
 	prevRegion := ps.region
-	ps.region = ctx.SnapData.region
-	ctx.SnapData = nil
+	ps.region = snapData.region
 	return &ReadyApplySnapshot{
 		PrevRegion: prevRegion,
 		Region:     ps.region,
+		SnapData:   snapData,
 	}
 }
 

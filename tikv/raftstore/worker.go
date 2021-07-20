@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/ngaut/unistore/config"
-	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -51,7 +50,6 @@ const (
 	taskTypePDReadStats        taskType = 107
 	taskTypePDDestroyPeer      taskType = 108
 
-	taskTypeRegionGen   taskType = 401
 	taskTypeRegionApply taskType = 402
 	/// Destroy data between [start_key, end_key).
 	///
@@ -265,10 +263,15 @@ func preSplitRegion(router *router, eng *engine.Engine, peer *metapb.Peer, regio
 		StoreID:  peer.StoreId,
 	}
 	builder := raftlog.NewBuilder(header)
-	for _, k := range rawKeys {
-		builder.AppendKeyOnly(k)
+	preSplitCS := &enginepb.ChangeSet{
+		ShardID:  region.Id,
+		ShardVer: region.RegionEpoch.Version,
+		PreSplit: &enginepb.PreSplit{
+			Keys: rawKeys,
+		},
+		Stage: enginepb.SplitStage_PRE_SPLIT,
 	}
-	builder.SetType(raftlog.TypePreSplit)
+	builder.SetChangeSet(preSplitCS)
 	cb := NewCallback()
 	cmd := &MsgRaftCmd{
 		SendTime: time.Now(),
@@ -382,44 +385,6 @@ func newRegionTaskHandler(conf *config.Config, engines *Engines, router *router)
 	}
 }
 
-func (r *regionTaskHandler) handleGen(task *regionTask) {
-	log.S().Infof("region %d:%d handle snapshot gen", task.region.Id, task.region.RegionEpoch.Version)
-	kv := r.kv
-	shard := kv.GetShard(task.region.Id)
-	if shard.Ver != task.region.RegionEpoch.Version {
-		log.Error("failed to generate snapshot, version not match")
-		task.notifier <- new(eraftpb.Snapshot)
-		return
-	}
-	changeSet, err := kv.GetShardChangeSet(task.region.Id)
-	if changeSet == nil {
-		log.Error("failed to generate snapshot", zap.Error(err))
-		task.notifier <- new(eraftpb.Snapshot)
-		return
-	}
-	if changeSet.ShardVer != shard.Ver {
-		log.S().Errorf("failed to generate snapshot, version not match, expect %d, got %d", shard.Ver, changeSet.ShardVer)
-		task.notifier <- new(eraftpb.Snapshot)
-	}
-	val, ok := engine.GetShardProperty(applyStateKey, changeSet.Snapshot.Properties)
-	y.Assert(ok)
-	var applyState applyState
-	applyState.Unmarshal(val)
-	snapData := &snapData{
-		region:    task.region,
-		changeSet: changeSet,
-	}
-	snap := &eraftpb.Snapshot{
-		Metadata: &eraftpb.SnapshotMetadata{},
-		Data:     snapData.Marshal(),
-	}
-	snap.Metadata.Index = applyState.appliedIndex
-	snap.Metadata.Term = applyState.appliedIndexTerm
-	confState := confStateFromRegion(task.region)
-	snap.Metadata.ConfState = &confState
-	task.notifier <- snap
-}
-
 // handlePendingApplies tries to apply pending tasks if there is some.
 func (r *regionTaskHandler) handleApply(task *regionTask) {
 	atomic.StoreUint32(task.status, JobStatus_Running)
@@ -439,11 +404,6 @@ func (r *regionTaskHandler) handleApply(task *regionTask) {
 
 func (r *regionTaskHandler) handle(t task) {
 	switch t.tp {
-	case taskTypeRegionGen:
-		// It is safe for now to handle generating and applying snapshot concurrently,
-		// but it may not when merge is implemented.
-		regionTask := t.data.(*regionTask)
-		r.handleGen(regionTask)
 	case taskTypeRegionApply:
 		// To make sure applying snapshots in order.
 		task := t.data.(*regionTask)

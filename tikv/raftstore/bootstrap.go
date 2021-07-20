@@ -68,11 +68,14 @@ func writePrepareBootstrap(engines *Engines, region *metapb.Region) error {
 	raftWB.SetState(0, PrepareBootstrapKey(), val)
 	raftWB.SetState(region.Id, RegionStateKey(region.RegionEpoch.Version, region.RegionEpoch.ConfVer), val)
 	writeInitialRaftState(raftWB, region)
+	ingestTree := initialIngestTree(region.Id, region.RegionEpoch.Version)
+	csBin, _ := ingestTree.ChangeSet.Marshal()
+	raftWB.SetState(region.Id, KVEngineMetaKey(), csBin)
 	err := engines.raft.Write(raftWB)
 	if err != nil {
 		return err
 	}
-	return engines.kv.Ingest(initialIngestTree(region.Id, region.RegionEpoch.Version))
+	return engines.kv.Ingest(ingestTree)
 }
 
 func initialIngestTree(regionID, version uint64) *engine.IngestTree {
@@ -80,6 +83,7 @@ func initialIngestTree(regionID, version uint64) *engine.IngestTree {
 		ChangeSet: &enginepb.ChangeSet{
 			ShardID:  regionID,
 			ShardVer: version,
+			Sequence: RaftInitLogIndex,
 			Snapshot: &enginepb.Snapshot{
 				Start: nil,
 				End:   engine.GlobalShardEndKey,

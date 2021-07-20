@@ -26,6 +26,7 @@ const (
 	RegionMetaKeyByte       byte = 0x02
 	StoreIdentKeyByte       byte = 0x03
 	PrepareBootstrapKeyByte byte = 0x04
+	KVEngineMetaKeyByte     byte = 0x05
 )
 
 func StoreIdentKey() []byte {
@@ -49,6 +50,10 @@ func RegionStateKey(version, confVer uint64) []byte {
 	binary.BigEndian.PutUint32(key[1:], uint32(version))
 	binary.BigEndian.PutUint32(key[5:], uint32(confVer))
 	return key
+}
+
+func KVEngineMetaKey() []byte {
+	return []byte{KVEngineMetaKeyByte}
 }
 
 func ParseRegionStateKey(key []byte) (version, confVer uint64) {

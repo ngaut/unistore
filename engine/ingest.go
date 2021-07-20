@@ -54,10 +54,6 @@ func (en *Engine) Ingest(ingestTree *IngestTree) error {
 		y.Assert(scf.casLevelHandler(level.level, level, levelHandlers[cf][level.level-1]))
 		return false
 	})
-	// Ingest is manually triggered with meta change, so we don't need to notify meta listener.
-	if err = en.manifest.writeChangeSet(ingestTree.ChangeSet); err != nil {
-		return err
-	}
 	oldVal, ok := en.shardMap.Load(shard.ID)
 	if ok {
 		oldShard := oldVal.(*Shard)

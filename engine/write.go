@@ -121,10 +121,6 @@ func (en *Engine) scheduleFlushTask(shard *Shard, memTbl *memtable.Table) {
 	lastSwitchTime := shard.lastSwitchTime
 	shard.lastSwitchTime = time.Now()
 	props := shard.properties.toPB(shard.ID)
-	var nextMemTblSize int64
-	if !memTbl.Empty() && shard.IsInitialFlushed() {
-		nextMemTblSize = shard.nextMemTableSize(memTbl.Size(), lastSwitchTime)
-	}
 	memTbl.SetProps(props)
 	stage := shard.GetSplitStage()
 	if stage == enginepb.SplitStage_PRE_SPLIT {
@@ -132,6 +128,10 @@ func (en *Engine) scheduleFlushTask(shard *Shard, memTbl *memtable.Table) {
 	}
 	memTbl.SetSplitStage(stage)
 	if !shard.IsPassive() {
+		var nextMemTblSize int64
+		if !memTbl.Empty() && shard.IsInitialFlushed() {
+			nextMemTblSize = shard.nextMemTableSize(memTbl.Size(), lastSwitchTime)
+		}
 		en.flushCh <- &flushTask{
 			shard:       shard,
 			tbl:         memTbl,

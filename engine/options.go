@@ -84,6 +84,8 @@ type Options struct {
 
 	RecoverHandler RecoverHandler
 
+	MetaReader MetaReader
+
 	RecoveryConcurrency int
 
 	// Max mem size is dynamically adjusted for each time the mem-table get flushed.

@@ -31,29 +31,19 @@ import (
 )
 
 // PreSplit sets the split keys, then all new entries are written to separated mem-tables.
-func (en *Engine) PreSplit(shardID, ver uint64, keys [][]byte) error {
+func (en *Engine) PreSplit(cs *enginepb.ChangeSet) error {
 	guard := en.resourceMgr.Acquire()
 	defer guard.Done()
-	shard := en.GetShard(shardID)
+	shard := en.GetShard(cs.ShardID)
 	if shard == nil {
 		return ErrShardNotFound
 	}
-	if shard.Ver != ver {
-		log.Info("shard not match", zap.Uint64("current", shard.Ver), zap.Uint64("request", ver))
+	if shard.Ver != cs.ShardVer {
+		log.Info("shard not match", zap.Uint64("current", shard.Ver), zap.Uint64("request", cs.ShardVer))
 		return ErrShardNotMatch
 	}
-	if !shard.setSplitKeys(keys) {
+	if !shard.setSplitKeys(cs.PreSplit.Keys) {
 		return ErrPreSplitWrongStage
-	}
-	change := newChangeSet(shard)
-	change.Stage = enginepb.SplitStage_PRE_SPLIT
-	change.PreSplit = &enginepb.PreSplit{
-		Keys:     keys,
-		MemProps: shard.properties.toPB(shard.ID),
-	}
-	err := en.manifest.writeChangeSet(change)
-	if err != nil {
-		return err
 	}
 	commitTS := shard.allocCommitTS()
 	memTbl := en.switchMemTable(shard, commitTS)
@@ -315,7 +305,7 @@ func (en *Engine) buildTableBeforeKey(itr table.Iterator, key []byte, opt sstabl
 
 // FinishSplit finishes the Split process on a Shard in PreSplitStage.
 // This is done after preSplit is done, so we don't need to acquire any lock, just atomic CAS will do.
-func (en *Engine) FinishSplit(oldShardID, ver uint64, newShardsProps []*enginepb.Properties) (newShards []*Shard, err error) {
+func (en *Engine) FinishSplit(oldShardID, ver uint64, newShardsProps []*enginepb.Properties, seq uint64) (changeSet *enginepb.ChangeSet, err error) {
 	oldShard := en.GetShard(oldShardID)
 	if oldShard.Ver != ver {
 		return nil, ErrShardNotMatch
@@ -326,18 +316,15 @@ func (en *Engine) FinishSplit(oldShardID, ver uint64, newShardsProps []*enginepb
 	if len(newShardsProps) != len(oldShard.splittingMemTbls) {
 		return nil, fmt.Errorf("newShardsProps length %d is not equals to splittingMemTbls length %d", len(newShardsProps), len(oldShard.splittingMemTbls))
 	}
-	changeSet := newChangeSet(oldShard)
+	changeSet = newChangeSet(oldShard)
+	changeSet.Sequence = seq
 	changeSet.Split = &enginepb.Split{
 		NewShards: newShardsProps,
 		Keys:      oldShard.splitKeys,
 		MemProps:  oldShard.properties.toPB(oldShard.ID),
 	}
-	err = en.manifest.writeChangeSet(changeSet)
-	if err != nil {
-		return nil, err
-	}
-	newShards = en.buildSplitShards(oldShard, newShardsProps)
-	return
+	en.buildSplitShards(oldShard, newShardsProps)
+	return changeSet, nil
 }
 
 func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.Properties) (newShards []*Shard) {
@@ -347,10 +334,7 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 	for i := range oldShard.splittingMemTbls {
 		startKey, endKey := getSplittingStartEnd(oldShard.Start, oldShard.End, oldShard.splitKeys, i)
 		shard := newShard(newShardsProps[i], newVer, startKey, endKey, &en.opt)
-		if oldShard.IsPassive() || shard.ID != oldShard.ID {
-			// If the shard is not derived shard, the flush will be triggered later when the new shard elected a leader.
-			shard.SetPassive(true)
-		}
+		shard.SetPassive(true)
 		shard.memTbls = new(unsafe.Pointer)
 		atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{oldShard.loadSplittingMemTable(i)}}))
 		shard.l0s = new(unsafe.Pointer)
