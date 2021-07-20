@@ -165,10 +165,24 @@ func (h *RecoverHandler) IterateMeta(fn func(meta *enginepb.ChangeSet) error) er
 	if h == nil {
 		return nil
 	}
+	var lastRegionLocalStateBin []byte
 	err := h.raftEngine.IterateAllStates(false, func(regionID uint64, key, val []byte) error {
+		if key[0] == RegionMetaKeyByte {
+			lastRegionLocalStateBin = append(lastRegionLocalStateBin[:0], val...)
+		}
 		if key[0] == KVEngineMetaKeyByte {
+			state := new(raft_serverpb.RegionLocalState)
+			err := state.Unmarshal(lastRegionLocalStateBin)
+			if err != nil {
+				return err
+			}
+			for _, peer := range state.Region.Peers {
+				if peer.StoreId == h.storeID && peer.Witness {
+					return nil
+				}
+			}
 			cs := new(enginepb.ChangeSet)
-			err := cs.Unmarshal(val)
+			err = cs.Unmarshal(val)
 			if err != nil {
 				return err
 			}

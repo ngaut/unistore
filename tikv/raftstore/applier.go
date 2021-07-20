@@ -592,6 +592,9 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 	if cl, ok := rlog.(*raftlog.CustomRaftLog); ok {
 		switch cl.Type() {
 		case raftlog.TypeFlush, raftlog.TypeCompaction, raftlog.TypeSplitFiles:
+			if a.peer.Witness {
+				break
+			}
 			change, err := cl.GetShardChangeSet()
 			y.Assert(err == nil)
 			// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
@@ -683,6 +686,10 @@ func (a *applier) execRaftCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 	req := rlog.GetRaftCmdRequest()
 	if req.GetAdminRequest() != nil {
 		return a.execAdminCmd(aCtx, req)
+	}
+	if a.peer.Witness {
+		// Skip write command for witness.
+		return
 	}
 	resp, result = a.execWriteCmd(aCtx, rlog)
 	return
@@ -981,17 +988,19 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 		return
 	}
 	a.applyState.appliedIndex = aCtx.execCtx.index
-	cs := buildSplitChangeSet(a.region, regions, a.applyState)
-	err = aCtx.engines.kv.FinishSplit(cs)
-	if err != nil {
-		if err == engine.ErrFinishSplitWrongStage {
-			// This must be a follower that fall behind, we need to pause the apply and wait for split files to finish
-			// in the background worker.
-			log.S().Warnf("%d:%d is not in split file done stage for finish split, pause apply",
-				a.region.Id, a.region.RegionEpoch.Version)
-			result = applyResult{tp: applyResultTypePause}
+	if !a.peer.Witness {
+		cs := buildSplitChangeSet(a.region, regions, a.applyState)
+		err = aCtx.engines.kv.FinishSplit(cs)
+		if err != nil {
+			if err == engine.ErrFinishSplitWrongStage {
+				// This must be a follower that fall behind, we need to pause the apply and wait for split files to finish
+				// in the background worker.
+				log.S().Warnf("%d:%d is not in split file done stage for finish split, pause apply",
+					a.region.Id, a.region.RegionEpoch.Version)
+				result = applyResult{tp: applyResultTypePause}
+			}
+			return
 		}
-		return
 	}
 	// clear the cache here or the locks doesn't belong to the new range would never have chance to delete.
 	a.lockCache = map[string][]byte{}
@@ -1061,6 +1070,7 @@ func splitGenNewRegionMetas(oldRegion *metapb.Region, splitReqs *raft_cmdpb.Batc
 				Id:      request.NewPeerIds[j],
 				StoreId: derived.Peers[j].StoreId,
 				Role:    derived.Peers[j].Role,
+				Witness: derived.Peers[j].Witness,
 			}
 		}
 		regions = append(regions, newRegion)
@@ -1197,9 +1207,14 @@ func (a *applier) handleApply(aCtx *applyContext, apply *apply) {
 	if len(apply.entries) == 0 || a.pendingRemove || a.stopped {
 		return
 	}
-	a.metrics = applyMetrics{}
-	shard := aCtx.engines.kv.GetShard(a.region.GetId())
-	a.metrics.approximateSize = uint64(shard.GetEstimatedSize())
+	if !a.peer.Witness {
+		a.metrics = applyMetrics{}
+		shard := aCtx.engines.kv.GetShard(a.region.GetId())
+		if shard == nil {
+			log.S().Warnf("%d shard not found for peer %s", a.region.Id, a.peer)
+		}
+		a.metrics.approximateSize = uint64(shard.GetEstimatedSize())
+	}
 	a.term = apply.term
 	a.handleRaftCommittedEntries(aCtx, apply.entries)
 	if a.waitMergeState != nil {

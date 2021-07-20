@@ -65,6 +65,12 @@ func NewShardMeta(cs *enginepb.ChangeSet) *ShardMeta {
 	return shardMeta
 }
 
+func NewShardMetaFromBin(bin []byte) *ShardMeta {
+	cs := new(enginepb.ChangeSet)
+	_ = cs.Unmarshal(bin)
+	return NewShardMeta(cs)
+}
+
 func (si *ShardMeta) FileLevel(fid uint64) (int, bool) {
 	fm, ok := si.files[fid]
 	if ok {
@@ -328,6 +334,10 @@ func (si *ShardMeta) AllFiles() []uint64 {
 
 func (si *ShardMeta) PreSplitKeys() [][]byte {
 	return si.preSplit.Keys
+}
+
+func (si *ShardMeta) HasParent() bool {
+	return si.parent != nil
 }
 
 // LevelCF is the struct that contains shard id and level id,

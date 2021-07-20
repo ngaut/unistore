@@ -391,6 +391,11 @@ func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
 	if err != nil {
 		return err
 	}
+	if d.peer.IsLeader() && d.peer.Meta.Witness && !msg.FromPeer.Witness {
+		log.S().Infof("%d:%d witness transfer leader to store %d",
+			d.regionID(), d.region().RegionEpoch.Version, msg.FromPeer.StoreId)
+		d.peer.RaftGroup.TransferLeader(msg.FromPeer.Id)
+	}
 	if d.peer.AnyNewPeerCatchUp(msg.FromPeer.Id) {
 		d.peer.HeartbeatPd(d.ctx.pdTaskSender)
 	}
@@ -774,8 +779,6 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 			// The raft state key changed when region version change, we need to set it here.
 			y.Assert(store.raftState.commit > 0)
 			d.ctx.raftWB.SetState(regionID, RaftStateKey(d.region().RegionEpoch.Version), store.raftState.Marshal())
-			// Reset the flush state for derived region.
-			store.initialFlushed = false
 			store.splitStage = enginepb.SplitStage_INITIAL
 			continue
 		}
@@ -1030,7 +1033,7 @@ func (d *peerMsgHandler) onSplitRegionCheckTick() {
 		return
 	}
 
-	if !d.peer.IsLeader() {
+	if !d.peer.IsLeader() || d.peer.Meta.Witness {
 		return
 	}
 	d.ctx.splitCheckTaskSender <- task{
@@ -1112,7 +1115,7 @@ func (d *peerMsgHandler) validateSplitRegion(epoch *metapb.RegionEpoch, splitKey
 }
 
 func (d *peerMsgHandler) onScheduleHalfSplitRegion(regionEpoch *metapb.RegionEpoch) {
-	if !d.peer.IsLeader() {
+	if !d.peer.IsLeader() || d.peer.Meta.Witness {
 		return
 	}
 	region := d.region()
@@ -1389,7 +1392,6 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 	}
 	if change.Snapshot != nil {
 		log.S().Infof("%d on apply change set result", d.regionID())
-		store.initialFlushed = true
 		store.snapState = SnapState_Relax
 		props := change.Snapshot.Properties
 		if props != nil {
@@ -1397,7 +1399,6 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 		}
 	}
 	if change.Flush != nil {
-		store.initialFlushed = true
 		props := change.Flush.Properties
 		if props != nil {
 			store.stableApplyState = getApplyStateFromProps(props)
