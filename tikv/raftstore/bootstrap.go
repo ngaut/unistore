@@ -124,7 +124,10 @@ func writeInitialRaftState(raftWB *raftengine.WriteBatch, region *metapb.Region)
 
 func ClearPrepareBootstrap(engines *Engines, region *metapb.Region) error {
 	wb := raftengine.NewWriteBatch()
+	wb.SetState(0, PrepareBootstrapKey(), nil)
+	wb.SetState(region.Id, RegionStateKey(region.RegionEpoch.Version, region.RegionEpoch.ConfVer), nil)
 	wb.SetState(region.Id, RaftStateKey(region.RegionEpoch.Version), nil)
+	wb.SetState(region.Id, KVEngineMetaKey(), nil)
 	err := engines.raft.Write(wb)
 	if err != nil {
 		return errors.WithStack(err)
