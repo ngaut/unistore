@@ -735,12 +735,15 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 			}
 			store := p.Store()
 			p.Store().Engines.kv.TriggerFlush(shard, store.onGoingFlushCnt())
-			if shard.GetSplitStage() != enginepb.SplitStage_INITIAL {
+			shardMeta := p.Store().GetEngineMeta()
+			if shardMeta.SplitStage != enginepb.SplitStage_INITIAL {
 				p.Store().regionSched <- task{
 					tp: taskTypeRecoverSplit,
 					data: &regionTask{
-						region: p.Region(),
-						peer:   p.Meta,
+						region:    p.Region(),
+						peer:      p.Meta,
+						stage:     shardMeta.SplitStage,
+						splitKeys: shardMeta.PreSplitKeys(),
 					},
 				}
 			}

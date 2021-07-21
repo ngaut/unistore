@@ -72,12 +72,15 @@ type regionTask struct {
 	snapData *snapData
 	startKey []byte
 	endKey   []byte
-	redoIdx  uint64
 
 	change *enginepb.ChangeSet
 	peer   *metapb.Peer
 
 	waitMsg *MsgWaitFollowerSplitFiles
+
+	// For recover split.
+	stage     enginepb.SplitStage
+	splitKeys [][]byte
 }
 
 type splitCheckTask struct {
@@ -418,34 +421,14 @@ func (r *regionTaskHandler) handle(t task) {
 		}
 	case taskTypeRegionApplyChangeSet:
 		regionTask := t.data.(*regionTask)
-		changeSet := regionTask.change
-		kv := r.kv
-		var changeSetTp string
-		if changeSet.Flush != nil {
-			changeSetTp = "flush"
-		} else if changeSet.Compaction != nil {
-			changeSetTp = "compaction"
-		} else if changeSet.SplitFiles != nil {
-			changeSetTp = "split_files"
-		}
-		shard := kv.GetShard(regionTask.region.Id)
-		if shard.GetSplitStage() >= enginepb.SplitStage_PRE_SPLIT && changeSet != nil && changeSet.Compaction != nil {
-			log.S().Warnf("region %d:%d reject compaction for splitting state",
-				shard.ID, shard.Ver)
-			changeSet.Compaction.Rejected = true
-		}
-		log.S().Infof("shard %d:%d apply change set %s stage %s seq %d", changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence)
-		err := kv.ApplyChangeSet(changeSet)
-		if err != nil {
-			log.Error("failed to apply passive change set", zap.Error(err), zap.String("changeSet", changeSet.String()))
-		}
-		_ = r.router.send(changeSet.ShardID, NewPeerMsg(MsgTypeApplyChangeSetResult, changeSet.ShardID, &MsgApplyChangeSetResult{
-			change: changeSet,
+		err := r.handleApplyChangeSet(regionTask)
+		_ = r.router.send(regionTask.region.Id, NewPeerMsg(MsgTypeApplyChangeSetResult, regionTask.region.Id, &MsgApplyChangeSetResult{
+			change: regionTask.change,
 			err:    err,
 		}))
 	case taskTypeRecoverSplit:
 		regionTask := t.data.(*regionTask)
-		err := r.handleRecoverSplit(regionTask.region, regionTask.peer)
+		err := r.handleRecoverSplit(regionTask)
 		if err != nil {
 			log.S().Errorf("region %d:%d failed to recover split err %s", regionTask.region.Id, regionTask.region.RegionEpoch.Version, err.Error())
 		}
@@ -469,21 +452,47 @@ func (r *regionTaskHandler) shutdown() {
 	// todo, currently it is a a place holder.
 }
 
-func (r *regionTaskHandler) handleRecoverSplit(region *metapb.Region, peer *metapb.Peer) error {
-	shard := r.kv.GetShard(region.Id)
-	switch shard.GetSplitStage() {
+func (r *regionTaskHandler) handleRecoverSplit(task *regionTask) error {
+	switch task.stage {
 	case enginepb.SplitStage_PRE_SPLIT, enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE:
-		err := splitShardFiles(r.router, r.kv, peer, region)
+		err := splitShardFiles(r.router, r.kv, task.peer, task.region)
 		if err != nil {
 			return err
 		}
 	}
 	cb := NewCallback()
 	msg := &MsgWaitFollowerSplitFiles{
-		SplitKeys: shard.GetPreSplitKeys(),
+		SplitKeys: task.splitKeys,
 		Callback:  cb,
 	}
-	return r.router.send(region.Id, NewPeerMsg(MsgTypeWaitFollowerSplitFiles, region.Id, msg))
+	return r.router.send(task.region.Id, NewPeerMsg(MsgTypeWaitFollowerSplitFiles, task.region.Id, msg))
+}
+
+func (r *regionTaskHandler) handleApplyChangeSet(task *regionTask) error {
+	changeSet := task.change
+	kv := r.kv
+	var changeSetTp string
+	if changeSet.Flush != nil {
+		changeSetTp = "flush"
+	} else if changeSet.Compaction != nil {
+		changeSetTp = "compaction"
+	} else if changeSet.SplitFiles != nil {
+		changeSetTp = "split_files"
+	}
+	shard := kv.GetShard(task.region.Id)
+	if shard.GetSplitStage() >= enginepb.SplitStage_PRE_SPLIT && changeSet != nil && changeSet.Compaction != nil {
+		log.S().Warnf("region %d:%d reject compaction for splitting state",
+			shard.ID, shard.Ver)
+		changeSet.Compaction.Rejected = true
+	}
+	log.S().Infof("shard %d:%d apply change set %s stage %s seq %d",
+		changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence)
+	err := kv.ApplyChangeSet(changeSet)
+	if err != nil {
+		log.Error("failed to apply passive change set",
+			zap.Error(err), zap.String("changeSet", changeSet.String()))
+	}
+	return err
 }
 
 type computeHashTaskHandler struct {

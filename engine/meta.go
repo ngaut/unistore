@@ -11,22 +11,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/*
- * Copyright 2017 Dgraph Labs, Inc. and Contributors
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package engine
 
 import (
@@ -51,7 +35,7 @@ type ShardMeta struct {
 	properties *properties
 	preSplit   *enginepb.PreSplit
 	split      *enginepb.Split
-	splitStage enginepb.SplitStage
+	SplitStage enginepb.SplitStage
 	commitTS   uint64
 	parent     *ShardMeta
 }
@@ -66,7 +50,7 @@ func NewShardMeta(cs *enginepb.ChangeSet) *ShardMeta {
 		Seq:        cs.Sequence,
 		files:      map[uint64]*fileMeta{},
 		properties: newProperties().applyPB(snap.Properties),
-		splitStage: cs.Stage,
+		SplitStage: cs.Stage,
 		commitTS:   snap.CommitTS,
 	}
 	if len(cs.Snapshot.SplitKeys) > 0 {
@@ -126,7 +110,7 @@ func (si *ShardMeta) ApplyFlush(cs *enginepb.ChangeSet) {
 		}
 	}
 	if cs.Stage == enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE {
-		si.splitStage = enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE
+		si.SplitStage = enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE
 	}
 	if l0 := cs.Flush.L0Create; l0 != nil {
 		si.addFile(l0.ID, -1, 0, l0.Smallest, l0.Biggest)
@@ -153,7 +137,7 @@ func (si *ShardMeta) ApplyCompaction(cs *enginepb.ChangeSet) {
 
 func (si *ShardMeta) ApplyPreSplit(cs *enginepb.ChangeSet) {
 	si.preSplit = cs.PreSplit
-	si.splitStage = enginepb.SplitStage_PRE_SPLIT
+	si.SplitStage = enginepb.SplitStage_PRE_SPLIT
 }
 
 func (si *ShardMeta) ApplySplitFiles(cs *enginepb.ChangeSet) {
@@ -166,7 +150,7 @@ func (si *ShardMeta) ApplySplitFiles(cs *enginepb.ChangeSet) {
 	for _, tbl := range cs.SplitFiles.TableCreates {
 		si.addFile(tbl.ID, tbl.CF, tbl.Level, tbl.Smallest, tbl.Biggest)
 	}
-	si.splitStage = enginepb.SplitStage_SPLIT_FILE_DONE
+	si.SplitStage = enginepb.SplitStage_SPLIT_FILE_DONE
 }
 
 func (si *ShardMeta) ApplySplit(cs *enginepb.ChangeSet) []*ShardMeta {
@@ -229,7 +213,7 @@ func (si *ShardMeta) ToChangeSet() *enginepb.ChangeSet {
 	cs := &enginepb.ChangeSet{
 		ShardID:  si.ID,
 		ShardVer: si.Ver,
-		Stage:    si.splitStage,
+		Stage:    si.SplitStage,
 		Sequence: si.Seq,
 	}
 	if si.preSplit != nil {
@@ -285,7 +269,7 @@ func (si *ShardMeta) IsDuplicatedChangeSet(change *enginepb.ChangeSet) bool {
 			return false
 		}
 		if flush.L0Create == nil {
-			return si.splitStage >= change.Stage
+			return si.SplitStage >= change.Stage
 		}
 		dup := si.commitTS >= flush.CommitTS
 		if dup {
@@ -295,7 +279,7 @@ func (si *ShardMeta) IsDuplicatedChangeSet(change *enginepb.ChangeSet) bool {
 		return dup
 	}
 	if splitFiles := change.SplitFiles; splitFiles != nil {
-		return si.splitStage == change.Stage
+		return si.SplitStage == change.Stage
 	}
 	if comp := change.Compaction; comp != nil {
 		if isMoveDown(comp) {
@@ -337,6 +321,10 @@ func (si *ShardMeta) AllFiles() []uint64 {
 		return fids[i] < fids[j]
 	})
 	return fids
+}
+
+func (si *ShardMeta) PreSplitKeys() [][]byte {
+	return si.preSplit.Keys
 }
 
 // LevelCF is the struct that contains shard id and level id,
