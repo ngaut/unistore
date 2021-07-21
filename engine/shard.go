@@ -107,12 +107,12 @@ func newShard(props *enginepb.Properties, ver uint64, start, end []byte, opt *Op
 
 func newShardForLoading(shardInfo *ShardMeta, opt *Options) *Shard {
 	shard := newShard(shardInfo.properties.toPB(shardInfo.ID), shardInfo.Ver, shardInfo.Start, shardInfo.End, opt)
-	if shardInfo.preSplit != nil && shardInfo.splitStage >= enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE {
+	if shardInfo.preSplit != nil && shardInfo.SplitStage >= enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE {
 		// We don't set split keys if the split stage has not reached enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE
 		// because some the recover data should be execute before split key is set.
 		shard.setSplitKeys(shardInfo.preSplit.Keys)
 	}
-	shard.setSplitStage(shardInfo.splitStage)
+	shard.setSplitStage(shardInfo.SplitStage)
 	shard.setInitialFlushed()
 	shard.SetPassive(true)
 	shard.commitTS = shardInfo.commitTS
