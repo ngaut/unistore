@@ -1378,13 +1378,26 @@ func (d *peerMsgHandler) updateFollowerSplitFilesDone(msg *rspb.RaftMessage) {
 }
 
 func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult) {
+	store := d.peer.Store()
+	change := result.change
+	d.hasReady = true
 	if result.err != nil {
 		log.S().Errorf("%d:%d failed to apply change set %s, err %v",
 			result.change.ShardID, result.change.ShardVer, result.change, result.err)
+		if result.change.Snapshot != nil {
+			store.snapState = SnapState_ApplyAborted
+		}
 		return
 	}
-	store := d.peer.Store()
-	change := result.change
+	if change.Snapshot != nil {
+		log.S().Infof("%d on apply change set result", d.regionID())
+		store.initialFlushed = true
+		store.snapState = SnapState_Relax
+		props := change.Snapshot.Properties
+		if props != nil {
+			store.stableApplyState = getApplyStateFromProps(props)
+		}
+	}
 	if change.Flush != nil {
 		store.initialFlushed = true
 		props := change.Flush.Properties
@@ -1394,13 +1407,11 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 	}
 	if change.SplitFiles != nil {
 		d.ctx.applyMsgs.appendMsg(d.regionID(), NewPeerMsg(MsgTypeApplyResume, d.regionID(), nil))
-		d.hasReady = true
 	}
 	if change.Stage > store.splitStage {
 		log.S().Infof("%d:%d peer store split stage is changed from %s to %s",
 			change.ShardID, change.ShardVer, store.splitStage, change.Stage)
 		store.splitStage = change.Stage
-		d.hasReady = true
 	}
 	for i, applying := range store.applyingChanges {
 		if applying.Sequence == change.Sequence {

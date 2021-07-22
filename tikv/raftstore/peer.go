@@ -803,7 +803,7 @@ func (p *Peer) NewRaftReady(trans *RaftClient, ctx *RaftContext, observer PeerEv
 	if p.PendingRemove {
 		return nil
 	}
-	if p.Store().CheckApplyingSnap() {
+	if p.Store().IsApplyingSnapshot() {
 		// If we continue to handle all the messages, it may cause too many messages because
 		// leader will send all the remaining messages to this follower, which can lead
 		// to full message queue under high load.
