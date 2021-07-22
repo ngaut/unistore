@@ -41,7 +41,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -52,7 +51,6 @@ type Server struct {
 	regionManager RegionManager
 	innerServer   *raftstore.InnerServer
 	wg            sync.WaitGroup
-	refCount      int32
 	stopped       int32
 }
 
@@ -186,14 +184,6 @@ func (svr *Server) checkRequestSize(size int) *errorpb.Error {
 }
 
 func (svr *Server) Stop() {
-	atomic.StoreInt32(&svr.stopped, 1)
-	for {
-		if atomic.LoadInt32(&svr.refCount) == 0 {
-			break
-		}
-		time.Sleep(time.Millisecond * 10)
-	}
-
 	if err := svr.mvccStore.Close(); err != nil {
 		log.Error("close mvcc store failed", zap.Error(err))
 	}
@@ -219,11 +209,6 @@ type requestCtx struct {
 }
 
 func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCtx, error) {
-	atomic.AddInt32(&svr.refCount, 1)
-	if atomic.LoadInt32(&svr.stopped) > 0 {
-		atomic.AddInt32(&svr.refCount, -1)
-		return nil, ErrRetryable("server is closed")
-	}
 	req := &requestCtx{
 		svr:       svr,
 		method:    method,
@@ -271,7 +256,6 @@ func (req *requestCtx) getKVReader() *enginereader.Reader {
 }
 
 func (req *requestCtx) finish() {
-	atomic.AddInt32(&req.svr.refCount, -1)
 	if req.reader != nil {
 		req.reader.Close()
 	}
