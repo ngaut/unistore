@@ -28,34 +28,15 @@ import (
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
 	"math"
-	"sync/atomic"
-)
-
-type JobStatus = uint32
-
-const (
-	JobStatus_Pending JobStatus = 0 + iota
-	JobStatus_Running
-	JobStatus_Cancelling
-	JobStatus_Cancelled
-	JobStatus_Finished
-	JobStatus_Failed
 )
 
 type SnapStateType int
 
 const (
 	SnapState_Relax SnapStateType = 0 + iota
-	SnapState_Generating
 	SnapState_Applying
 	SnapState_ApplyAborted
 )
-
-type SnapState struct {
-	StateType SnapStateType
-	Status    *JobStatus
-	Receiver  chan *eraftpb.Snapshot
-}
 
 const (
 	// When we create a region peer, we should initialize its log term/index > 0,
@@ -209,7 +190,7 @@ type PeerStorage struct {
 	applyState applyState
 	lastTerm   uint64
 
-	snapState    SnapState
+	snapState    SnapStateType
 	regionSched  chan<- task
 	snapTriedCnt int
 
@@ -362,7 +343,7 @@ func (ps *PeerStorage) Region() *metapb.Region {
 }
 
 func (ps *PeerStorage) IsApplyingSnapshot() bool {
-	return ps.snapState.StateType == SnapState_Applying
+	return ps.snapState == SnapState_Applying
 }
 
 func (ps *PeerStorage) Entries(low, high, maxSize uint64) ([]*eraftpb.Entry, error) {
@@ -768,16 +749,11 @@ func (ps *PeerStorage) updateStates(ctx *InvokeContext) {
 }
 
 func (ps *PeerStorage) ScheduleApplyingSnapshot(snapData *snapData) {
-	status := JobStatus_Pending
-	ps.snapState = SnapState{
-		StateType: SnapState_Applying,
-		Status:    &status,
-	}
+	ps.snapState = SnapState_Applying
 	ps.regionSched <- task{
 		tp: taskTypeRegionApply,
 		data: &regionTask{
 			region:   ps.region,
-			status:   &status,
 			snapData: snapData,
 		},
 	}
@@ -813,24 +789,6 @@ func (ps *PeerStorage) hasOnGoingPreSplitFlush() bool {
 			if change.Stage == enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE {
 				return true
 			}
-		}
-	}
-	return false
-}
-
-// Check if the storage is applying a snapshot.
-func (p *PeerStorage) CheckApplyingSnap() bool {
-	switch p.snapState.StateType {
-	case SnapState_Applying:
-		switch atomic.LoadUint32(p.snapState.Status) {
-		case JobStatus_Finished:
-			p.snapState = SnapState{StateType: SnapState_Relax}
-		case JobStatus_Cancelled:
-			p.snapState = SnapState{StateType: SnapState_ApplyAborted}
-		case JobStatus_Failed:
-			panic(fmt.Sprintf("%v applying snapshot failed", p.Tag))
-		default:
-			return true
 		}
 	}
 	return false

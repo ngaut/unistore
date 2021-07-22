@@ -281,11 +281,7 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 			return nil, err
 		}
 		ctx.peerEventObserver.OnPeerCreate(peer.peer.getEventContext(), region)
-		status := JobStatus_Cancelled
-		peer.peer.Store().snapState = SnapState{
-			StateType: SnapState_ApplyAborted,
-			Status:    &status,
-		}
+		peer.peer.Store().snapState = SnapState_ApplyAborted
 		meta.regionTree.Put(region)
 		meta.regions[region.Id] = region
 		regionPeers = append(regionPeers, peer)

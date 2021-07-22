@@ -20,7 +20,6 @@ import (
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ngaut/unistore/config"
@@ -68,7 +67,6 @@ type task struct {
 type regionTask struct {
 	region   *metapb.Region
 	notifier chan<- *eraftpb.Snapshot
-	status   *JobStatus
 	snapData *snapData
 	startKey []byte
 	endKey   []byte
@@ -389,28 +387,25 @@ func newRegionTaskHandler(conf *config.Config, engines *Engines, router *router)
 }
 
 // handlePendingApplies tries to apply pending tasks if there is some.
-func (r *regionTaskHandler) handleApply(task *regionTask) {
-	atomic.StoreUint32(task.status, JobStatus_Running)
+func (r *regionTaskHandler) handleApply(task *regionTask) error {
 	snapData := task.snapData
 	inTree := &engine.IngestTree{
 		ChangeSet: snapData.changeSet,
 		Passive:   true,
 	}
-	err := r.kv.Ingest(inTree)
-	if err != nil {
-		log.Error("update region status failed", zap.Error(err))
-		atomic.StoreUint32(task.status, JobStatus_Failed)
-	} else {
-		atomic.StoreUint32(task.status, JobStatus_Finished)
-	}
+	return r.kv.Ingest(inTree)
 }
 
 func (r *regionTaskHandler) handle(t task) {
 	switch t.tp {
 	case taskTypeRegionApply:
 		// To make sure applying snapshots in order.
-		task := t.data.(*regionTask)
-		r.handleApply(task)
+		regionTask := t.data.(*regionTask)
+		err := r.handleApply(regionTask)
+		_ = r.router.send(regionTask.region.Id, NewPeerMsg(MsgTypeApplyChangeSetResult, regionTask.region.Id, &MsgApplyChangeSetResult{
+			change: regionTask.snapData.changeSet,
+			err:    err,
+		}))
 	case taskTypeRegionDestroy:
 		// We don't need to delay the range deletion because DeleteRange operation
 		// doesn't affect the existing badger.Snapshot
