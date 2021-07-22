@@ -585,6 +585,15 @@ func (en *Engine) ApplyChangeSet(changeSet *enginepb.ChangeSet) error {
 	if shard.Ver != changeSet.ShardVer {
 		return ErrShardNotMatch
 	}
+	if seq := atomic.LoadUint64(&shard.sequence); seq >= changeSet.Sequence {
+		log.S().Infof("%d:%d skip duplicated change %s", shard.ID, shard.Ver, changeSet)
+		return nil
+	} else {
+		atomic.CompareAndSwapUint64(&shard.sequence, seq, changeSet.Sequence)
+	}
+	defer func() {
+		log.S().Debugf("%d:%d all files after change %v", shard.ID, shard.Ver, shard.GetAllFiles())
+	}()
 	defer shard.refreshEstimatedSize()
 	if changeSet.Flush != nil {
 		return en.applyFlush(shard, changeSet)

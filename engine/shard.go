@@ -67,6 +67,7 @@ type Shard struct {
 	commitTS uint64
 
 	estimatedSize int64
+	sequence      uint64
 }
 
 const (
@@ -116,6 +117,7 @@ func newShardForLoading(shardInfo *ShardMeta, opt *Options) *Shard {
 	shard.setInitialFlushed()
 	shard.SetPassive(true)
 	shard.commitTS = shardInfo.commitTS
+	shard.sequence = shardInfo.Seq
 	return shard
 }
 
@@ -129,6 +131,7 @@ func newShardForIngest(changeSet *enginepb.ChangeSet, opt *Options) *Shard {
 	shard.setSplitStage(changeSet.Stage)
 	shard.setInitialFlushed()
 	shard.commitTS = shardSnap.CommitTS
+	shard.sequence = changeSet.Sequence
 	log.S().Infof("ingest shard %d:%d maxMemTblSize %d, commitTS %d",
 		changeSet.ShardID, changeSet.ShardVer, shard.getMaxMemTableSize(), shard.commitTS)
 	return shard
@@ -398,6 +401,24 @@ func boundedMemSize(size int64) int64 {
 
 func (s *Shard) allocCommitTS() uint64 {
 	return atomic.AddUint64(&s.commitTS, 1)
+}
+
+func (s *Shard) GetAllFiles() []uint64 {
+	var files []uint64
+	l0s := s.loadL0Tables()
+	for _, l0 := range l0s.tables {
+		files = append(files, l0.ID())
+	}
+	s.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
+		for _, tbl := range level.tables {
+			files = append(files, tbl.ID())
+		}
+		return false
+	})
+	sort.Slice(files, func(i, j int) bool {
+		return files[i] < files[j]
+	})
+	return files
 }
 
 type shardCF struct {

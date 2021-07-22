@@ -81,6 +81,9 @@ func (si *ShardMeta) ApplyChangeSet(cs *enginepb.ChangeSet) {
 	if si.IsDuplicatedChangeSet(cs) {
 		return
 	}
+	if cs.Sequence > 0 {
+		si.Seq = cs.Sequence
+	}
 	if cs.Flush != nil {
 		si.ApplyFlush(cs)
 		return
