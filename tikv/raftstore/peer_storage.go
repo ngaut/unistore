@@ -302,7 +302,7 @@ func initLastTerm(raftEngine *raftengine.Engine, region *metapb.Region,
 		y.Assert(lastIdx > RaftInitLogIndex)
 	}
 	entry := raftEngine.GetRaftLog(region.Id, lastIdx)
-	if entry.Index == 0 {
+	if entry == nil {
 		return 0, errors.Errorf("[region %s] entry at %d doesn't exist, may lost data.", region, lastIdx)
 	}
 	return entry.Term, nil
@@ -554,7 +554,7 @@ func fetchEntriesTo(engine *raftengine.Engine, regionID, low, high, maxSize uint
 		// to fetch one empty log.
 		for i := low; i < high; i++ {
 			entry := engine.GetRaftLog(regionID, i)
-			if entry.Index == 0 {
+			if entry == nil {
 				start, end := engine.GetRaftLogRange(regionID)
 				log.S().Errorf("no enough entries, has start %d end %d, request low %d high %d, idx %d", start, end, low, high, i)
 				return nil, 0, raft.ErrUnavailable
@@ -573,7 +573,7 @@ func fetchEntriesTo(engine *raftengine.Engine, regionID, low, high, maxSize uint
 	}
 	for i := low; i < high; i++ {
 		entry := engine.GetRaftLog(regionID, i)
-		if entry.Index == 0 {
+		if entry == nil {
 			start, end := engine.GetRaftLogRange(regionID)
 			log.S().Infof("raft log unavailable %d %d request %d", start, end, i)
 			return nil, 0, raft.ErrUnavailable
