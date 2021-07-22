@@ -733,7 +733,6 @@ func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
 func (d *peerMsgHandler) onReadyCompactLog(firstIndex uint64, truncatedIndex uint64) {
 	d.ctx.raftWB.TruncateRaftLog(d.regionID(), truncatedIndex)
 	d.peer.LastCompactedIdx = truncatedIndex
-	d.peer.Store().CompactTo(truncatedIndex)
 }
 
 func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*metapb.Region) {
@@ -1010,7 +1009,6 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 		return
 	}
 	if !d.peer.IsLeader() {
-		d.peer.Store().CompactTo(stableIdx)
 		return
 	}
 	term, err := d.peer.RaftGroup.Raft.RaftLog.Term(stableIdx)
