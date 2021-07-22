@@ -364,7 +364,8 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 		en.shardMap.Store(nShard.ID, nShard)
 		mem := en.switchMemTable(nShard, nShard.allocCommitTS())
 		en.scheduleFlushTask(nShard, mem)
-		log.S().Infof("new shard %d:%d mem-size %d props:%s", nShard.ID, nShard.Ver, mem.Size(), nShard.properties)
+		log.S().Infof("new shard %d:%d mem-size %d props:%s commitTS: %d",
+			nShard.ID, nShard.Ver, mem.Size(), nShard.properties, nShard.commitTS)
 	}
 	return
 }

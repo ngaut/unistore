@@ -96,8 +96,8 @@ func (en *Engine) flushMemTable(shard *Shard, m *memtable.Table) (*enginepb.L0Cr
 	}
 	shardL0Data := builder.Finish()
 	smallest, biggest := builder.SmallestAndBiggest()
-	log.S().Infof("%d:%d flush memtable id:%d, size:%d, l0 size: %d, props:%s",
-		shard.ID, shard.Ver, id, m.Size(), len(shardL0Data), newProperties().applyPB(m.GetProps()))
+	log.S().Infof("%d:%d flush memtable id:%d, size:%d, l0 size: %d, props:%s, commitTS: %d",
+		shard.ID, shard.Ver, id, m.Size(), len(shardL0Data), newProperties().applyPB(m.GetProps()), m.GetVersion())
 	_, err = writer.Write(shardL0Data)
 	if err != nil {
 		return nil, err
