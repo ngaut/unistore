@@ -627,17 +627,22 @@ func (store *MVCCStore) prewritePessimistic(reqCtx *requestCtx, mutations []*kvr
 		lockExists := lock != nil
 		lockMatch := lockExists && lock.StartTS == startTS
 		if isPessimisticLock {
-			valid := lockExists && lockMatch
-			if !valid {
-				return errors.New("pessimistic lock not found")
-			}
-			if lock.Op != uint8(kvrpcpb.Op_PessimisticLock) {
-				// Duplicated command.
-				return nil
-			}
-			// Do not overwrite lock ttl if prewrite ttl smaller than pessimisitc lock ttl
-			if uint64(lock.TTL) > req.LockTtl {
-				req.LockTtl = uint64(lock.TTL)
+			if lockExists {
+				if !lockMatch {
+					return errors.New("pessimistic lock not found")
+				}
+				if lock.Op != uint8(kvrpcpb.Op_PessimisticLock) {
+					// Duplicated command.
+					return nil
+				}
+				// Do not overwrite lock ttl if prewrite ttl smaller than pessimistic lock ttl
+				if uint64(lock.TTL) > req.LockTtl {
+					req.LockTtl = uint64(lock.TTL)
+				}
+			} else {
+				if err := store.amendPessimisticLock(reqCtx, m, startTS); err != nil {
+					return err
+				}
 			}
 		} else {
 			// non pessimistic lock in pessimistic transaction, e.g. non-unique index.
@@ -660,6 +665,21 @@ func (store *MVCCStore) prewritePessimistic(reqCtx *requestCtx, mutations []*kvr
 		return err
 	}
 	return store.prewriteMutations(reqCtx, mutations, req, items)
+}
+
+func (store *MVCCStore) amendPessimisticLock(reqCtx *requestCtx, m *kvrpcpb.Mutation, startTS uint64) error {
+	snap := reqCtx.getKVReader().GetSnapshot()
+	item, err := snap.Get(writeCF, m.Key, math.MaxUint64)
+	if err == engine.ErrKeyNotFound {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	userMeta := mvcc.UserMeta(item.UserMeta())
+	if userMeta.CommitTS() >= startTS {
+		return errors.New("pessimistic lock not found")
+	}
+	return nil
 }
 
 func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation,
