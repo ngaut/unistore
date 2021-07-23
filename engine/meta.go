@@ -219,14 +219,14 @@ func (si *ShardMeta) ToChangeSet() *enginepb.ChangeSet {
 		Stage:    si.SplitStage,
 		Sequence: si.Seq,
 	}
-	if si.preSplit != nil {
-		cs.PreSplit = si.preSplit
-	}
 	shardSnap := &enginepb.Snapshot{
 		Start:      si.Start,
 		End:        si.End,
 		Properties: si.properties.toPB(si.ID),
 		CommitTS:   si.commitTS,
+	}
+	if si.preSplit != nil {
+		shardSnap.SplitKeys = si.preSplit.Keys
 	}
 	for fid, fm := range si.files {
 		if fm.level == 0 {

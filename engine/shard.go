@@ -124,9 +124,9 @@ func newShardForLoading(shardInfo *ShardMeta, opt *Options) *Shard {
 func newShardForIngest(changeSet *enginepb.ChangeSet, opt *Options) *Shard {
 	shardSnap := changeSet.Snapshot
 	shard := newShard(shardSnap.Properties, changeSet.ShardVer, shardSnap.Start, shardSnap.End, opt)
-	if changeSet.PreSplit != nil {
+	if len(shardSnap.SplitKeys) > 0 {
 		log.S().Infof("shard %d:%d set pre-split keys by ingest", changeSet.ShardID, changeSet.ShardVer)
-		shard.setSplitKeys(changeSet.PreSplit.Keys)
+		shard.setSplitKeys(shardSnap.SplitKeys)
 	}
 	shard.setSplitStage(changeSet.Stage)
 	shard.setInitialFlushed()
