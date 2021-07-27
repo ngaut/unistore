@@ -1570,6 +1570,8 @@ func (p *Peer) preProposePrepareMerge(cfg *Config, req *raft_cmdpb.RaftCmdReques
 	return nil
 }
 
+var errPendingConfChange = errors.New("there is a pending conf change, try later")
+
 func (p *Peer) PrePropose(cfg *Config, rlog raftlog.RaftLog) (*ProposalContext, error) {
 	ctx := new(ProposalContext)
 	req := rlog.GetRaftCmdRequest()
@@ -1588,6 +1590,10 @@ func (p *Peer) PrePropose(cfg *Config, rlog raftlog.RaftLog) (*ProposalContext, 
 	case raft_cmdpb.AdminCmdType_BatchSplit:
 		ctx.insert(ProposalContext_Split)
 		p.PendingSplit = true
+		if p.RaftGroup.Raft.PendingConfIndex > p.Store().AppliedIndex() {
+			log.S().Infof("%v there is a pending conf change, try later", p.Tag)
+			return nil, errPendingConfChange
+		}
 	default:
 	}
 

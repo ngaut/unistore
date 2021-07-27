@@ -69,11 +69,11 @@ func TestIsUrgentRequest(t *testing.T) {
 
 func TestEntryCtx(t *testing.T) {
 	tbl := [][]ProposalContext{
-		[]ProposalContext{ProposalContext_Split},
-		[]ProposalContext{ProposalContext_SyncLog},
-		[]ProposalContext{ProposalContext_PrepareMerge},
-		[]ProposalContext{ProposalContext_Split, ProposalContext_SyncLog},
-		[]ProposalContext{ProposalContext_PrepareMerge, ProposalContext_SyncLog},
+		{ProposalContext_Split},
+		{ProposalContext_SyncLog},
+		{ProposalContext_PrepareMerge},
+		{ProposalContext_Split, ProposalContext_SyncLog},
+		{ProposalContext_PrepareMerge, ProposalContext_SyncLog},
 	}
 	for _, flags := range tbl {
 		var ctx ProposalContext
@@ -141,12 +141,12 @@ func TestRequestInspector(t *testing.T) {
 	admReq = new(raft_cmdpb.AdminRequest)
 
 	Ops := []OpPolicyPair{
-		OpPolicyPair{Tp: raft_cmdpb.CmdType_Get, Policy: RequestPolicy_ReadLocal},
-		OpPolicyPair{Tp: raft_cmdpb.CmdType_Snap, Policy: RequestPolicy_ReadLocal},
-		OpPolicyPair{Tp: raft_cmdpb.CmdType_Put, Policy: RequestPolicy_ProposeNormal},
-		OpPolicyPair{Tp: raft_cmdpb.CmdType_Delete, Policy: RequestPolicy_ProposeNormal},
-		OpPolicyPair{Tp: raft_cmdpb.CmdType_DeleteRange, Policy: RequestPolicy_ProposeNormal},
-		OpPolicyPair{Tp: raft_cmdpb.CmdType_IngestSST, Policy: RequestPolicy_ProposeNormal},
+		{Tp: raft_cmdpb.CmdType_Get, Policy: RequestPolicy_ReadLocal},
+		{Tp: raft_cmdpb.CmdType_Snap, Policy: RequestPolicy_ReadLocal},
+		{Tp: raft_cmdpb.CmdType_Put, Policy: RequestPolicy_ProposeNormal},
+		{Tp: raft_cmdpb.CmdType_Delete, Policy: RequestPolicy_ProposeNormal},
+		{Tp: raft_cmdpb.CmdType_DeleteRange, Policy: RequestPolicy_ProposeNormal},
+		{Tp: raft_cmdpb.CmdType_IngestSST, Policy: RequestPolicy_ProposeNormal},
 	}
 	for _, opPolicy := range Ops {
 		request := new(raft_cmdpb.Request)

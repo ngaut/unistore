@@ -319,21 +319,45 @@ func finishSplit(router *router, region *metapb.Region, rawKeys [][]byte) ([]*me
 	for i := 0; i < len(rawKeys); i++ {
 		encodedKeys[i] = codec.EncodeBytes(nil, rawKeys[i])
 	}
-	splitRegionCB := NewCallback()
-	splitRegionMsg := &MsgSplitRegion{
-		RegionEpoch: region.RegionEpoch,
-		SplitKeys:   encodedKeys,
-		Callback:    splitRegionCB,
+	for {
+		splitRegionCB := NewCallback()
+		splitRegionMsg := &MsgSplitRegion{
+			RegionEpoch: region.RegionEpoch,
+			SplitKeys:   encodedKeys,
+			Callback:    splitRegionCB,
+		}
+		err := router.send(region.Id, Msg{Type: MsgTypeSplitRegion, Data: splitRegionMsg})
+		if err != nil {
+			return nil, err
+		}
+		resp := splitRegionCB.Wait()
+		if resp.GetHeader().GetError() != nil {
+			if resp.GetHeader().GetError().EpochNotMatch != nil {
+				epochNotMatch := resp.GetHeader().GetError().EpochNotMatch
+				var r *metapb.Region
+				if len(epochNotMatch.CurrentRegions) > 0 {
+					for _, cr := range epochNotMatch.CurrentRegions {
+						if cr.Id == region.Id {
+							r = cr
+							break
+						}
+					}
+				}
+				if r != nil && r.RegionEpoch.Version == region.RegionEpoch.Version {
+					log.S().Warnf("region %d:%d leader finish split err: %s", region.Id, region.RegionEpoch.Version, resp.GetHeader().GetError().Message)
+					region = r
+					continue
+				}
+			} else if resp.GetHeader().GetError().Message == errPendingConfChange.Error() {
+				log.S().Warnf("region %d:%d leader finish split err: %s", region.Id, region.RegionEpoch.Version, errPendingConfChange.Error())
+				time.Sleep(time.Millisecond * 100)
+				continue
+			}
+			return nil, errors.New(resp.Header.Error.Message)
+		}
+		log.S().Infof("region %d:%d leader finish split successfully", region.Id, region.RegionEpoch.Version)
+		return resp.GetAdminResponse().GetSplits().GetRegions(), nil
 	}
-	err := router.send(region.Id, Msg{Type: MsgTypeSplitRegion, Data: splitRegionMsg})
-	if err != nil {
-		return nil, err
-	}
-	resp := splitRegionCB.Wait()
-	if resp.GetHeader().GetError() != nil {
-		return nil, errors.New(resp.Header.Error.Message)
-	}
-	return resp.GetAdminResponse().GetSplits().GetRegions(), nil
 }
 
 type stalePeerInfo struct {
