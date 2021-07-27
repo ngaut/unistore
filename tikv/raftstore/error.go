@@ -91,6 +91,7 @@ func (e *ErrRaftEntryTooLarge) Error() string {
 
 func RaftstoreErrToPbError(e error) *errorpb.Error {
 	ret := new(errorpb.Error)
+	ret.Message = e.Error()
 	switch err := errors.Cause(e).(type) {
 	case *ErrNotLeader:
 		ret.NotLeader = &errorpb.NotLeader{RegionId: err.RegionId, Leader: err.Leader}
@@ -109,8 +110,6 @@ func RaftstoreErrToPbError(e error) *errorpb.Error {
 		ret.StoreNotMatch = &errorpb.StoreNotMatch{RequestStoreId: err.RequestStoreId, ActualStoreId: err.ActualStoreId}
 	case *ErrRaftEntryTooLarge:
 		ret.RaftEntryTooLarge = &errorpb.RaftEntryTooLarge{RegionId: err.RegionId, EntrySize: err.EntrySize}
-	default:
-		ret.Message = e.Error()
 	}
 	return ret
 }

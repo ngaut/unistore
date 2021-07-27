@@ -99,11 +99,11 @@ func TestTimeU64(t *testing.T) {
 		U uint64
 	}
 	testsTimeToU64 := []TimeU64{
-		TimeU64{T: time.Unix(0, 0), U: 0},
-		TimeU64{T: time.Unix(0, 1), U: 0},      // 1ns will be rounded down to 0ms
-		TimeU64{T: time.Unix(0, 999999), U: 0}, // 999999ns will be rounded down to 0ms
-		TimeU64{T: time.Unix(1, 0), U: 1 << SEC_SHIFT},
-		TimeU64{T: time.Unix(1, int64(NSEC_PER_MSEC)), U: (1 << SEC_SHIFT) + 1},
+		{T: time.Unix(0, 0), U: 0},
+		{T: time.Unix(0, 1), U: 0},      // 1ns will be rounded down to 0ms
+		{T: time.Unix(0, 999999), U: 0}, // 999999ns will be rounded down to 0ms
+		{T: time.Unix(1, 0), U: 1 << SEC_SHIFT},
+		{T: time.Unix(1, int64(NSEC_PER_MSEC)), U: (1 << SEC_SHIFT) + 1},
 	}
 
 	for _, test := range testsTimeToU64 {
@@ -111,10 +111,10 @@ func TestTimeU64(t *testing.T) {
 	}
 
 	testsU64ToTime := []TimeU64{
-		TimeU64{T: time.Unix(0, 0), U: 0},
-		TimeU64{T: time.Unix(0, int64(NSEC_PER_MSEC)), U: 1},
-		TimeU64{T: time.Unix(1, 0), U: 1 << SEC_SHIFT},
-		TimeU64{T: time.Unix(1, int64(NSEC_PER_MSEC)), U: (1 << SEC_SHIFT) + 1},
+		{T: time.Unix(0, 0), U: 0},
+		{T: time.Unix(0, int64(NSEC_PER_MSEC)), U: 1},
+		{T: time.Unix(1, 0), U: 1 << SEC_SHIFT},
+		{T: time.Unix(1, int64(NSEC_PER_MSEC)), U: (1 << SEC_SHIFT) + 1},
 	}
 	for _, test := range testsU64ToTime {
 		assert.Equal(t, U64ToTime(test.U), test.T)

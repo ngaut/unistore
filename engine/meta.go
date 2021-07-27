@@ -317,7 +317,7 @@ func (si *ShardMeta) IsDuplicatedChangeSet(change *enginepb.ChangeSet) bool {
 
 func (si *ShardMeta) AllFiles() []uint64 {
 	var fids []uint64
-	for fid, _ := range si.files {
+	for fid := range si.files {
 		fids = append(fids, fid)
 	}
 	sort.Slice(fids, func(i, j int) bool {
