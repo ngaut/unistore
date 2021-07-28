@@ -111,7 +111,7 @@ func OpenEngine(opt Options) (en *Engine, err error) {
 	en.closers.resourceManager = y.NewCloser(0)
 	en.resourceMgr = epoch.NewResourceManager(en.closers.resourceManager)
 	en.closers.s3Client = y.NewCloser(0)
-	if opt.S3Options.EndPoint != "" {
+	if opt.S3Options.KeyID != "" {
 		en.s3c = s3util.NewS3Client(en.closers.s3Client, opt.Dir, opt.InstanceID, opt.S3Options)
 	}
 	en.compClient = compaction.NewClient(opt.RemoteCompactionAddr, en.s3c)
