@@ -91,19 +91,21 @@ func NewS3Client(c *y.Closer, dirPath string, instanceID uint32, opts Options) *
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 	client := &http.Client{Transport: tr}
-	resolver := aws.EndpointResolverFunc(func(service, region string) (aws.Endpoint, error) {
-		return aws.Endpoint{
-			URL: "http://" + opts.EndPoint,
-		}, nil
-	})
 	cred := credentials.NewStaticCredentialsProvider(opts.KeyID, opts.SecretKey, "")
 	cfg, err := s3config.LoadDefaultConfig(
 		context.TODO(),
-		s3config.WithEndpointResolver(resolver),
 		s3config.WithCredentialsProvider(cred),
 		s3config.WithHTTPClient(client),
 		s3config.WithRegion(opts.Region),
 	)
+	if len(opts.EndPoint) > 0 {
+		resolver := aws.EndpointResolverFunc(func(service, region string) (aws.Endpoint, error) {
+			return aws.Endpoint{
+				URL: "http://" + opts.EndPoint,
+			}, nil
+		})
+		cfg.EndpointResolver = resolver
+	}
 	if err != nil {
 		log.S().Errorf("load config error: %s", err.Error())
 		return nil
