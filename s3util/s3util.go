@@ -207,18 +207,19 @@ func (c *S3Client) Delete(key string) error {
 }
 
 func (c *S3Client) ListFiles() (map[uint64]struct{}, error) {
-	var marker *string
 	fileIDs := map[uint64]struct{}{}
-	for {
-		input := &s3.ListObjectsInput{}
-		input.Bucket = &c.Bucket
-		input.Prefix = aws.String(fmt.Sprintf("bg%08x", c.instanceID))
-		input.Marker = marker
-		output, err := c.cli.ListObjects(context.TODO(), input)
+	input := &s3.ListObjectsV2Input{}
+	input.Bucket = &c.Bucket
+	input.Prefix = aws.String(fmt.Sprintf("bg%08x", c.instanceID))
+	p := s3.NewListObjectsV2Paginator(c.cli, input, func(o *s3.ListObjectsV2PaginatorOptions) {
+		o.Limit = 1000
+	})
+	for p.HasMorePages() {
+		page, err := p.NextPage(context.TODO())
 		if err != nil {
 			return nil, err
 		}
-		for _, objInfo := range output.Contents {
+		for _, objInfo := range page.Contents {
 			var fid uint64
 			_, err = fmt.Sscanf((*objInfo.Key)[10:26], "%016x", &fid)
 			if err != nil {
@@ -226,10 +227,6 @@ func (c *S3Client) ListFiles() (map[uint64]struct{}, error) {
 			}
 			fileIDs[fid] = struct{}{}
 		}
-		if !output.IsTruncated {
-			break
-		}
-		marker = output.NextMarker
 	}
 	return fileIDs, nil
 }
