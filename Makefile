@@ -41,3 +41,12 @@ linux: go-build-linux
 
 compaction:
 	$(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/compaction-server cmd/compaction-server/main.go
+
+compaction-linux:
+	GOOS=linux $(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/compaction-server cmd/compaction-server/main.go
+
+s3tool:
+	$(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/s3tool s3util/s3tool/main.go
+
+s3tool-linux:
+	GOOS=linux $(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/s3tool-linux s3util/s3tool/main.go

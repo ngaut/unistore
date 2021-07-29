@@ -1,0 +1,95 @@
+# # Global variables are applied to all deployments and used as the default value of
+# # the deployments if a specific deployment value is missing.
+global:
+  # # The user who runs the tidb cluster.
+  user: "tidb"
+  # # group is used to specify the group name the user belong to,if it's not the same as user.
+  # group: "tidb"
+  # # SSH port of servers in the managed cluster.
+  ssh_port: 22
+  # # Storage directory for cluster deployment files, startup scripts, and configuration files.
+  deploy_dir: "/tidb-deploy"
+  # # TiDB Cluster data storage directory
+  data_dir: "/tidb-data"
+  # # Supported values: "amd64", "arm64" (default: "amd64")
+  arch: "amd64"
+
+server_configs:
+  pd:
+    replication.location-labels: ["host"]
+    replication.enable-placement-rules: false
+    schedule.merge-schedule-limit: 0
+    schedule.enable-joint-consensus: false
+  tidb:
+    performance.max-procs: 20
+    performance.run-auto-analyze: false
+    prepared-plan-cache.enabled: true
+    prepared-plan-cache.capacity: 256
+  tikv:
+    server.pd-addr: "10.0.1.11:2379,10.0.1.12:2379,10.0.1.13:2379"
+    server.region-size: 1500000000
+    engine.path: "/data1/tidb-data/tikv-20160"
+    engine.base-size: 64000000
+    engine.max-mem-table-size-factor: 256
+    engine.max-table-size: 16000000
+    # # Size of the block cache. Normally it should be tuned to 30%-50% of system's total memory.
+    engine.block-cache-size: 20000000000
+    engine.remote-compaction-addr: "http://10.0.1.6:9080"
+    engine.instance-id: 1
+    engine.recovery-concurrency: 1
+    raft-engine.path: "/data1/tidb-data/tikv-20160"
+    engine.s3.endpoint: "10.0.1.5:9000"
+    engine.s3.key-id: "minioadmin"
+    engine.s3.secret-key: "minioadmin"
+    engine.s3.bucket: "shard-db"
+    engine.s3.region: "local"
+    engine.s3.expiration-duration : "10m"
+    engine.s3.concurrency: 16
+    raftstore.grpc-raft-conn-num: 2
+# # Server configs are used to specify the configuration of PD Servers.
+pd_servers:
+  - host: 10.0.1.11
+    # # PD Server name
+     name: "pd-1"
+  - host: 10.0.1.12
+     name: "pd-2"
+  - host: 10.0.1.13
+     name: "pd-3"
+
+# # Server configs are used to specify the configuration of TiDB Servers.
+tidb_servers:
+  # # The ip address of the TiDB Server.
+  - host: 10.0.1.21
+  - host: 10.0.1.22
+  - host: 10.0.1.23
+
+# # Server configs are used to specify the configuration of TiKV Servers.
+tikv_servers:
+  # # The ip address of the TiKV Server.
+  - host: 10.0.1.31
+    # # SSH port of the server.
+    # ssh_port: 22
+    # # TiKV Server communication port.
+    port: 20160
+    # # Communication port for reporting TiKV Server status.
+    status_port: 20180
+    config:
+      server.labels: { host: "10.0.1.31" }
+      server.store-addr: "10.0.1.31:20160"
+      server.status-addr: "10.0.1.31:20180"
+  - host: 10.0.1.32
+    # ssh_port: 22
+    port: 20160
+    status_port: 20180
+    config:
+      server.labels: { host: "10.0.1.32" }
+      server.store-addr: "10.0.1.32:20160"
+      server.status-addr: "10.0.1.32:20180"
+  - host: 10.0.1.33
+    # ssh_port: 22
+    port: 20160
+    status_port: 20180
+    config:
+      server.labels: { host: "10.0.1.33" }
+      server.store-addr: "10.0.1.33:20160"
+      server.status-addr: "10.0.1.33:20180"
