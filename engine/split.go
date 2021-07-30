@@ -330,6 +330,8 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 		shard := newShard(newShardsProps[i], newVer, startKey, endKey, &en.opt)
 		if shard.ID != oldShard.ID {
 			shard.SetPassive(true)
+		} else {
+			shard.SetPassive(oldShard.IsPassive())
 		}
 		shard.memTbls = new(unsafe.Pointer)
 		atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{oldShard.loadSplittingMemTable(i)}}))
