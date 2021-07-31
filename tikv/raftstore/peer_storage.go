@@ -122,7 +122,6 @@ type PeerStorage struct {
 
 	applyingChanges []*enginepb.ChangeSet
 	splitStage      enginepb.SplitStage
-	initialFlushed  bool
 
 	Tag string
 
@@ -139,6 +138,9 @@ func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- 
 	if err != nil {
 		return nil, err
 	}
+	if peer.Witness {
+		applyState.appliedIndex = raftState.commit
+	}
 	if raftState.lastIndex < applyState.appliedIndex {
 		panic(fmt.Sprintf("%s unexpected raft log index: lastIndex %d < appliedIndex %d",
 			tag, raftState.lastIndex, applyState.appliedIndex))
@@ -147,24 +149,28 @@ func NewPeerStorage(engines *Engines, region *metapb.Region, regionSched chan<- 
 	if err != nil {
 		return nil, err
 	}
-	var initialFlushed bool
+	var shardMeta *engine.ShardMeta
+	if shardMetaBin := engines.raft.GetState(region.Id, KVEngineMetaKey()); len(shardMetaBin) > 0 {
+		shardMeta = engine.NewShardMetaFromBin(shardMetaBin)
+	}
 	splitStage := enginepb.SplitStage_INITIAL
 	if shard := engines.kv.GetShard(region.Id); shard != nil {
-		initialFlushed = shard.IsInitialFlushed()
 		splitStage = shard.GetSplitStage()
+	} else if shardMeta != nil {
+		splitStage = shardMeta.SplitStage
 	}
 	return &PeerStorage{
-		Engines:        engines,
-		peer:           peer,
-		region:         region,
-		Tag:            tag,
-		raftState:      raftState,
-		applyState:     applyState,
-		lastTerm:       lastTerm,
-		regionSched:    regionSched,
-		stats:          &CacheQueryStats{},
-		splitStage:     splitStage,
-		initialFlushed: initialFlushed,
+		Engines:     engines,
+		peer:        peer,
+		region:      region,
+		Tag:         tag,
+		raftState:   raftState,
+		applyState:  applyState,
+		lastTerm:    lastTerm,
+		regionSched: regionSched,
+		stats:       &CacheQueryStats{},
+		splitStage:  splitStage,
+		shardMeta:   shardMeta,
 	}, nil
 }
 
@@ -357,11 +363,12 @@ func (ps *PeerStorage) validateSnap(snap *eraftpb.Snapshot) bool {
 
 func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 	var snap eraftpb.Snapshot
-	if !ps.initialFlushed {
-		log.S().Infof("shard %d:%d has not flushed for generating snapshot", ps.region.Id, ps.region.RegionEpoch.Version)
+	shardMeta := ps.GetEngineMeta()
+	if shardMeta.HasParent() {
+		log.S().Infof("shard %d:%d has not flushed for generating snapshot", shardMeta.ID, shardMeta.Ver)
 		return snap, raft.ErrSnapshotTemporarilyUnavailable
 	}
-	changeSet := ps.GetEngineMeta().ToChangeSet()
+	changeSet := shardMeta.ToChangeSet()
 
 	applyState := getApplyStateFromProps(changeSet.Snapshot.Properties)
 	snapData := &snapData{
@@ -563,7 +570,7 @@ func (ps *PeerStorage) SaveReadyState(raftWB *raftengine.WriteBatch, ready *raft
 }
 
 func PeerEqual(l, r *metapb.Peer) bool {
-	return l.Id == r.Id && l.StoreId == r.StoreId && l.Role == r.Role
+	return l.Id == r.Id && l.StoreId == r.StoreId && l.Role == r.Role && l.Witness == r.Witness
 }
 
 func RegionEqual(l, r *metapb.Region) bool {

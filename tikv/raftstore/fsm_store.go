@@ -247,9 +247,6 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 		if err != nil {
 			return err
 		}
-		shard := ctx.engine.kv.GetShard(regionID)
-		peer.peer.Store().initialFlushed = shard.IsInitialFlushed()
-		peer.peer.Store().splitStage = shard.GetSplitStage()
 		ctx.peerEventObserver.OnPeerCreate(peer.peer.getEventContext(), region)
 		if localState.State == rspb.PeerState_Merging {
 			log.S().Infof("region %d is merging", regionID)

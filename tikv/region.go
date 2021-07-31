@@ -265,6 +265,16 @@ func (rm *regionManager) GetRegionFromCtx(ctx *kvrpcpb.Context) (*regionCtx, *er
 			},
 		}
 	}
+	for _, peer := range ri.meta.Peers {
+		if peer.StoreId == rm.storeMeta.Id && peer.Witness {
+			return nil, &errorpb.Error{
+				Message: "peer is witness",
+				NotLeader: &errorpb.NotLeader{
+					RegionId: ri.meta.Id,
+				},
+			}
+		}
+	}
 	return ri, nil
 }
 

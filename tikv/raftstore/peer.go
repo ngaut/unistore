@@ -721,6 +721,9 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 			shard.SetPassive(ss.RaftState != raft.StateLeader)
 		}
 		if ss.RaftState == raft.StateLeader {
+			if p.Meta.Witness {
+				return
+			}
 			// The local read can only be performed after a new leader has applied
 			// the first empty entry on its term. After that the lease expiring time
 			// should be updated to
@@ -873,7 +876,7 @@ func (p *Peer) handleChangeSet(ctx *RaftContext, e *eraftpb.Entry) {
 	change.Sequence = e.Index
 	if clog.Type() == raftlog.TypePreSplit {
 		store.splitStage = enginepb.SplitStage_PRE_SPLIT
-	} else {
+	} else if !p.Meta.Witness {
 		store.applyingChanges = append(store.applyingChanges, change)
 	}
 	if store.splitStage >= enginepb.SplitStage_PRE_SPLIT && change.Compaction != nil {
@@ -882,6 +885,19 @@ func (p *Peer) handleChangeSet(ctx *RaftContext, e *eraftpb.Entry) {
 	}
 	shardMeta := store.GetEngineMeta()
 	shardMeta.ApplyChangeSet(change)
+	if p.Meta.Witness {
+		// For witness, we don't apply the change set to the Engine, so there will be no apply change set result.
+		// We have to do the work in OnResultSet here.
+		if change.Flush != nil {
+			props := change.Flush.Properties
+			if props != nil {
+				store.stableApplyState = getApplyStateFromProps(props)
+			}
+		}
+		if store.splitStage < change.Stage {
+			store.splitStage = change.Stage
+		}
+	}
 	log.S().Infof("%d:%d handle change set set engine meta, apply change %s", shardMeta.ID, shardMeta.Ver, change)
 	ctx.raftWB.SetState(p.regionId, KVEngineMetaKey(), shardMeta.Marshal())
 }
