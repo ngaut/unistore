@@ -22,6 +22,7 @@ import (
 	"github.com/ngaut/unistore/enginepb"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/log"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 )
@@ -32,29 +33,54 @@ type flushTask struct {
 	nextMemSize int64
 }
 
+type flushResultTask struct {
+	*flushTask
+	change *enginepb.ChangeSet
+	wg     *sync.WaitGroup
+	err    error
+}
+
 func (en *Engine) runFlushMemTable(c *y.Closer) {
 	defer c.Done()
 	for task := range en.flushCh {
 		change := newChangeSet(task.shard)
+		resultTask := &flushResultTask{
+			wg:        &sync.WaitGroup{},
+			flushTask: task,
+			change:    change,
+		}
 		change.Flush = &enginepb.Flush{CommitTS: task.tbl.GetVersion(), Properties: task.tbl.GetProps()}
 		change.Stage = task.tbl.GetSplitStage()
 		if !task.tbl.Empty() {
-			l0Table, err := en.flushMemTable(task.shard, task.tbl)
+			resultTask.wg.Add(1)
+			l0Table, err := en.flushMemTable(task.shard, task.tbl, resultTask)
 			if err != nil {
 				// TODO: handle S3 error by queue the failed operation and retry.
 				panic(err)
 			}
 			change.Flush.L0Create = l0Table
 		}
+		en.flushResultCh <- resultTask
+	}
+}
+
+func (en *Engine) runFlushResult(c *y.Closer) {
+	defer c.Done()
+	for task := range en.flushResultCh {
+		task.wg.Wait()
+		if task.err != nil {
+			// TODO: handle S3 error by queue the failed operation and retry.
+			panic(task.err)
+		}
 		if en.metaChangeListener != nil {
-			en.metaChangeListener.OnChange(change)
+			en.metaChangeListener.OnChange(task.change)
 			if task.nextMemSize > 0 {
 				changeSize := newChangeSet(task.shard)
 				changeSize.NextMemTableSize = task.nextMemSize
 				en.metaChangeListener.OnChange(changeSize)
 			}
 		} else {
-			err := en.applyFlush(task.shard, change)
+			err := en.applyFlush(task.shard, task.change)
 			if err != nil {
 				panic(err)
 			}
@@ -62,7 +88,7 @@ func (en *Engine) runFlushMemTable(c *y.Closer) {
 	}
 }
 
-func (en *Engine) flushMemTable(shard *Shard, m *memtable.Table) (*enginepb.L0Create, error) {
+func (en *Engine) flushMemTable(shard *Shard, m *memtable.Table, resultTask *flushResultTask) (*enginepb.L0Create, error) {
 	y.Assert(en.idAlloc != nil)
 	id, err := en.idAlloc.AllocID(1)
 	if err != nil {
@@ -114,11 +140,10 @@ func (en *Engine) flushMemTable(shard *Shard, m *memtable.Table) (*enginepb.L0Cr
 		Biggest:  biggest,
 	}
 	if en.s3c != nil {
-		err = putSSTBuildResultToS3(en.s3c, result)
-		if err != nil {
-			// TODO: handle this error by queue the failed operation and retry.
-			return nil, err
-		}
+		en.s3c.Schedule(func() {
+			resultTask.err = putSSTBuildResultToS3(en.s3c, result)
+			resultTask.wg.Done()
+		})
 	}
 	return newL0CreateByResult(result), nil
 }
