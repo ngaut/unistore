@@ -144,6 +144,8 @@ func (en *Engine) flushMemTable(shard *Shard, m *memtable.Table, resultTask *flu
 			resultTask.err = putSSTBuildResultToS3(en.s3c, result)
 			resultTask.wg.Done()
 		})
+	} else {
+		resultTask.wg.Done()
 	}
 	return newL0CreateByResult(result), nil
 }
