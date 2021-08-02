@@ -57,19 +57,20 @@ type closers struct {
 }
 
 type Engine struct {
-	opt          Options
-	numCFs       int
-	dirLock      *directoryLockGuard
-	shardMap     sync.Map
-	blkCache     *cache.Cache
-	resourceMgr  *epoch.ResourceManager
-	closers      closers
-	flushCh      chan *flushTask
-	mangedSafeTS uint64
-	idAlloc      IDAllocator
-	compClient   *compaction.Client
-	s3c          *s3util.S3Client
-	closed       uint32
+	opt           Options
+	numCFs        int
+	dirLock       *directoryLockGuard
+	shardMap      sync.Map
+	blkCache      *cache.Cache
+	resourceMgr   *epoch.ResourceManager
+	closers       closers
+	flushCh       chan *flushTask
+	flushResultCh chan *flushResultTask
+	mangedSafeTS  uint64
+	idAlloc       IDAllocator
+	compClient    *compaction.Client
+	s3c           *s3util.S3Client
+	closed        uint32
 
 	metaChangeListener MetaChangeListener
 }
@@ -105,6 +106,7 @@ func OpenEngine(opt Options) (en *Engine, err error) {
 		dirLock:            dirLockGuard,
 		blkCache:           blkCache,
 		flushCh:            make(chan *flushTask, opt.NumMemtables),
+		flushResultCh:      make(chan *flushResultTask, opt.NumMemtables),
 		metaChangeListener: opt.MetaChangeListener,
 	}
 	en.idAlloc = opt.IDAllocator
@@ -122,8 +124,9 @@ func OpenEngine(opt Options) (en *Engine, err error) {
 	if err = en.loadShards(shardMetas); err != nil {
 		return nil, errors.AddStack(err)
 	}
-	en.closers.memtable = y.NewCloser(1)
+	en.closers.memtable = y.NewCloser(2)
 	go en.runFlushMemTable(en.closers.memtable)
+	go en.runFlushResult(en.closers.memtable)
 	if !en.opt.DoNotCompact {
 		en.closers.compactors = y.NewCloser(1)
 		go en.runCompactionLoop(en.closers.compactors)
@@ -496,6 +499,7 @@ func (en *Engine) Close() error {
 	atomic.StoreUint32(&en.closed, 1)
 	log.S().Info("closing Engine")
 	close(en.flushCh)
+	close(en.flushResultCh)
 	en.closers.memtable.SignalAndWait()
 	if !en.opt.DoNotCompact {
 		en.closers.compactors.SignalAndWait()
