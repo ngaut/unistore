@@ -211,10 +211,10 @@ func (r *splitCheckHandler) handle(t task) {
 	regionId := region.Id
 	keys := r.kv.GetSplitSuggestion(regionId, int64(r.config.RegionMaxSize))
 	if len(keys) != 0 {
-		log.S().Infof("split %d:%d by checker size:%d", region.Id, region.RegionEpoch.Version, r.config.RegionMaxSize)
+		log.S().Infof("split region %d:%d by checker size:%d", region.Id, region.RegionEpoch.Version, r.config.RegionMaxSize)
 		_, err := splitEngineAndRegion(r.router, r.kv, spCheckTask.peer, region, keys)
 		if err != nil {
-			log.Warn("failed to send check result", zap.Uint64("region id", regionId), zap.Error(err))
+			log.S().Warnf("region %d:%d failed to send check result err: %s", region.Id, region.RegionEpoch.Version, err.Error())
 		}
 	}
 }
@@ -227,12 +227,15 @@ func splitEngineAndRegion(router *router, eng *engine.Engine, peer *metapb.Peer,
 	// Make sure the region doesn't has parent before split.
 	err := preSplitRegion(router, eng, peer, region, keys)
 	if err != nil {
+		log.S().Warnf("shard %d:%d failed to pre-split region err: %s", region.Id, region.RegionEpoch.Version, err.Error())
 		return nil, errors.Wrap(err, "failed to pre-split region")
 	}
 	err = splitShardFiles(router, eng, peer, region)
 	if err != nil {
+		log.S().Warnf("shard %d:%d failed to split files err: %s", region.Id, region.RegionEpoch.Version, err.Error())
 		return nil, errors.Wrap(err, "failed to split files")
 	}
+	log.S().Infof("shard %d:%d send a msg to wait for followers to finish splitting files", region.Id, region.RegionEpoch.Version)
 	cb := NewCallback()
 	msg := &MsgWaitFollowerSplitFiles{
 		SplitKeys: keys,
@@ -255,6 +258,7 @@ func preSplitRegion(router *router, eng *engine.Engine, peer *metapb.Peer, regio
 		log.S().Infof("shard %d:%d wait for initial flush", shard.ID, shard.Ver)
 	}
 	if shard.GetSplitStage() != enginepb.SplitStage_INITIAL {
+		log.S().Warnf("shard %d:%d wrong split stage %s", shard.ID, shard.Ver, shard.GetSplitStage().String())
 		return errors.New("wrong split stage " + shard.GetSplitStage().String())
 	}
 	header := raftlog.CustomHeader{
@@ -290,6 +294,7 @@ func preSplitRegion(router *router, eng *engine.Engine, peer *metapb.Peer, regio
 func splitShardFiles(router *router, eng *engine.Engine, peer *metapb.Peer, region *metapb.Region) error {
 	change, err := eng.SplitShardFiles(region.Id, region.RegionEpoch.Version)
 	if err != nil {
+		log.S().Warnf("shard %d:%d split shard files err: %s", region.Id, region.RegionEpoch.Version, err.Error())
 		return err
 	}
 	header := raftlog.CustomHeader{
@@ -472,13 +477,18 @@ func (r *regionTaskHandler) shutdown() {
 }
 
 func (r *regionTaskHandler) handleRecoverSplit(task *regionTask) error {
+	log.S().Infof("shard %d:%d handle recover split", task.region.Id, task.region.RegionEpoch.Version)
 	switch task.stage {
-	case enginepb.SplitStage_PRE_SPLIT, enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE:
+	case enginepb.SplitStage_PRE_SPLIT:
+		log.S().Panicf("shard %d:%d the region worker will be blocked", task.region.Id, task.region.RegionEpoch.Version)
+	case enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE:
 		err := splitShardFiles(r.router, r.kv, task.peer, task.region)
 		if err != nil {
+			log.S().Warnf("shard %d:%d failed to split files err: %s", task.region.Id, task.region.RegionEpoch.Version, err.Error())
 			return err
 		}
 	}
+	log.S().Infof("shard %d:%d send a msg to wait for followers to finish splitting files", task.region.Id, task.region.RegionEpoch.Version)
 	cb := NewCallback()
 	msg := &MsgWaitFollowerSplitFiles{
 		SplitKeys: task.splitKeys,

@@ -164,6 +164,10 @@ func (s *Shard) SetPassive(passive bool) {
 	atomic.StoreInt32(&s.passive, v)
 }
 
+func (s *Shard) GetSequence() uint64 {
+	return atomic.LoadUint64(&s.sequence)
+}
+
 func (s *Shard) isSplitting() bool {
 	return atomic.LoadInt32(&s.splitStage) >= int32(enginepb.SplitStage_PRE_SPLIT)
 }

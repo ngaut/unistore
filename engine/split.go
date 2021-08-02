@@ -57,10 +57,11 @@ func (en *Engine) SplitShardFiles(shardID, ver uint64) (*enginepb.ChangeSet, err
 	defer guard.Done()
 	shard := en.GetShard(shardID)
 	if shard == nil {
+		log.S().Warnf("shard %d:%d shard not found", shard.ID, shard.Ver)
 		return nil, ErrShardNotFound
 	}
 	if shard.Ver != ver {
-		log.Info("shard not match", zap.Uint64("current", shard.Ver), zap.Uint64("request", ver))
+		log.S().Warnf("shard %d:%d shard not match current %d, request %d", shard.ID, shard.Ver, shard.Ver, ver)
 		return nil, ErrShardNotMatch
 	}
 	if !shard.isSplitting() {

@@ -125,6 +125,7 @@ func (r *RaftstoreRouter) SplitRegion(ctx *kvrpcpb.Context, kv *engine.Engine, r
 	log.S().Infof("split region %d:%d by RPC keys %v", region.Id, region.RegionEpoch.Version, keys)
 	cb, err := splitEngineAndRegion(r.router, kv, ctx.Peer, region, keys)
 	if err != nil {
+		log.S().Warnf("region %d:%d failed to split engine and region err: %s", region.Id, region.RegionEpoch.Version, err.Error())
 		return nil, err
 	}
 	resp := cb.Wait()
