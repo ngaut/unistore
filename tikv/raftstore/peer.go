@@ -739,18 +739,21 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 			shardMeta := p.Store().GetEngineMeta()
 			if shardMeta.SplitStage != enginepb.SplitStage_INITIAL {
 				seq := shardMeta.Seq
+				regionSched := store.regionSched
+				region := p.Region()
+				meta := p.Meta
 				go func() {
 					for {
-						if !p.IsLeader() {
+						if shard.IsPassive() {
 							break
 						}
 						if shard.GetSplitStage() >= enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE && shard.GetSequence() >= seq {
 							log.S().Infof("shard %d:%d recover split", shard.ID, shard.Ver)
-							p.Store().regionSched <- task{
+							regionSched <- task{
 								tp: taskTypeRecoverSplit,
 								data: &regionTask{
-									region:    p.Region(),
-									peer:      p.Meta,
+									region:    region,
+									peer:      meta,
 									stage:     shard.GetSplitStage(),
 									splitKeys: shard.GetPreSplitKeys(),
 								},
@@ -759,7 +762,7 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 						}
 						log.S().Infof("shard %d:%d wait to recover split, stage %s, request seq %d, current seq %d",
 							shard.ID, shard.Ver, shard.GetSplitStage(), seq, shard.GetSequence())
-						time.Sleep(time.Microsecond * 100)
+						time.Sleep(time.Millisecond * 100)
 					}
 				}()
 			}
