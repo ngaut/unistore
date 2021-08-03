@@ -718,6 +718,7 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 		shard := p.Store().Engines.kv.GetShard(p.regionId)
 		// Newly added peer have not apply snapshot yet.
 		if shard != nil {
+			log.S().Infof("shard %d:%d set passive %t on role changed", shard.ID, shard.Ver, ss.RaftState != raft.StateLeader)
 			shard.SetPassive(ss.RaftState != raft.StateLeader)
 		}
 		if ss.RaftState == raft.StateLeader {
@@ -737,15 +738,33 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 			p.Store().Engines.kv.TriggerFlush(shard, store.onGoingFlushCnt())
 			shardMeta := p.Store().GetEngineMeta()
 			if shardMeta.SplitStage != enginepb.SplitStage_INITIAL {
-				p.Store().regionSched <- task{
-					tp: taskTypeRecoverSplit,
-					data: &regionTask{
-						region:    p.Region(),
-						peer:      p.Meta,
-						stage:     shardMeta.SplitStage,
-						splitKeys: shardMeta.PreSplitKeys(),
-					},
-				}
+				seq := shardMeta.Seq
+				regionSched := store.regionSched
+				region := p.Region()
+				meta := p.Meta
+				go func() {
+					for {
+						if shard.IsPassive() {
+							break
+						}
+						if shard.GetSplitStage() >= enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE && shard.GetSequence() >= seq {
+							log.S().Infof("shard %d:%d recover split", shard.ID, shard.Ver)
+							regionSched <- task{
+								tp: taskTypeRecoverSplit,
+								data: &regionTask{
+									region:    region,
+									peer:      meta,
+									stage:     shard.GetSplitStage(),
+									splitKeys: shard.GetPreSplitKeys(),
+								},
+							}
+							return
+						}
+						log.S().Infof("shard %d:%d wait to recover split, stage %s, request seq %d, current seq %d",
+							shard.ID, shard.Ver, shard.GetSplitStage(), seq, shard.GetSequence())
+						time.Sleep(time.Millisecond * 100)
+					}
+				}()
 			}
 			observer.OnRoleChange(p.getEventContext().RegionId, ss.RaftState)
 		} else if ss.RaftState == raft.StateFollower {
@@ -871,16 +890,16 @@ func (p *Peer) handleChangeSet(ctx *RaftContext, e *eraftpb.Entry) {
 	store := p.Store()
 	// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
 	change.Sequence = e.Index
+	shardMeta := store.GetEngineMeta()
 	if clog.Type() == raftlog.TypePreSplit {
-		store.splitStage = enginepb.SplitStage_PRE_SPLIT
+		shardMeta.SplitStage = enginepb.SplitStage_PRE_SPLIT
 	} else {
 		store.applyingChanges = append(store.applyingChanges, change)
 	}
-	if store.splitStage >= enginepb.SplitStage_PRE_SPLIT && change.Compaction != nil {
+	if shardMeta.SplitStage >= enginepb.SplitStage_PRE_SPLIT && change.Compaction != nil {
 		// compaction will be rejected.
 		return
 	}
-	shardMeta := store.GetEngineMeta()
 	shardMeta.ApplyChangeSet(change)
 	log.S().Infof("%d:%d handle change set set engine meta, apply change %s", shardMeta.ID, shardMeta.Ver, change)
 	ctx.raftWB.SetState(p.regionId, KVEngineMetaKey(), shardMeta.Marshal())

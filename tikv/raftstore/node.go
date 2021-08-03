@@ -96,12 +96,11 @@ func (n *Node) Start(ctx context.Context, engines *Engines, trans *RaftClient, p
 	if newCluster {
 		n.system.ctx.storeMeta.regionTree.Put(firstRegion)
 		log.S().Info("pre-split regions")
-		var cb *Callback
-		cb, err = splitEngineAndRegion(router, engines.kv, firstRegion.Peers[0], firstRegion, [][]byte{{'m'}, {'n'}, {'t'}, {'u'}})
+		err := preSplitRegion(router, engines.kv, firstRegion.Peers[0], firstRegion, [][]byte{{'m'}, {'n'}, {'t'}, {'u'}})
 		if err != nil {
-			return err
+			log.S().Warnf("first shard %d:%d failed to pre-split region err: %s", firstRegion.Id, firstRegion.RegionEpoch.Version, err.Error())
+			return errors.Wrap(err, "failed to pre-split region")
 		}
-		cb.Wait()
 	}
 
 	return nil
