@@ -29,7 +29,6 @@ import (
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/util/codec"
-	"go.uber.org/zap"
 )
 
 type taskType int64
@@ -57,6 +56,7 @@ const (
 	taskTypeRegionApplyChangeSet taskType = 404
 	taskTypeRecoverSplit         taskType = 405
 	taskTypeFinishSplit          taskType = 406
+	taskTypeRejectChangeSet      taskType = 407
 )
 
 type task struct {
@@ -401,17 +401,24 @@ func (s stalePeerInfo) setEndKey(endKey []byte) {
 	copy(s.data[16:], endKey)
 }
 
+type changeSetKey struct {
+	regionID uint64
+	sequence uint64
+}
+
 type regionTaskHandler struct {
-	kv     *engine.Engine
-	conf   *config.Config
-	router *router
+	kv      *engine.Engine
+	conf    *config.Config
+	router  *router
+	rejects map[changeSetKey]struct{}
 }
 
 func newRegionTaskHandler(conf *config.Config, engines *Engines, router *router) *regionTaskHandler {
 	return &regionTaskHandler{
-		conf:   conf,
-		kv:     engines.kv,
-		router: router,
+		conf:    conf,
+		kv:      engines.kv,
+		router:  router,
+		rejects: map[changeSetKey]struct{}{},
 	}
 }
 
@@ -441,8 +448,11 @@ func (r *regionTaskHandler) handle(t task) {
 		regionTask := t.data.(*regionTask)
 		err := r.kv.RemoveShard(regionTask.region.Id, true)
 		if err != nil {
-			log.Error("failed to destroy region", zap.Error(err))
+			log.S().Errorf("region %d:%d failed to destroy region err %s", regionTask.region.Id, regionTask.region.RegionEpoch.Version, err.Error())
 		}
+	case taskTypeRejectChangeSet:
+		regionTask := t.data.(*regionTask)
+		r.handleRejectChangeSet(regionTask)
 	case taskTypeRegionApplyChangeSet:
 		regionTask := t.data.(*regionTask)
 		err := r.handleApplyChangeSet(regionTask)
@@ -461,6 +471,7 @@ func (r *regionTaskHandler) handle(t task) {
 		waitMsg := regionTask.waitMsg
 		regions, err := finishSplit(r.router, regionTask.region, waitMsg.SplitKeys)
 		if err != nil {
+			log.S().Errorf("region %d:%d failed to finish split err %s", regionTask.region.Id, regionTask.region.RegionEpoch.Version, err.Error())
 			waitMsg.Callback.Done(ErrResp(err))
 		} else {
 			waitMsg.Callback.Done(&raft_cmdpb.RaftCmdResponse{
@@ -497,6 +508,12 @@ func (r *regionTaskHandler) handleRecoverSplit(task *regionTask) error {
 	return r.router.send(task.region.Id, NewPeerMsg(MsgTypeWaitFollowerSplitFiles, task.region.Id, msg))
 }
 
+func (r *regionTaskHandler) handleRejectChangeSet(task *regionTask) error {
+	rejectKey := changeSetKey{task.region.Id, task.change.Sequence}
+	r.rejects[rejectKey] = struct{}{}
+	return nil
+}
+
 func (r *regionTaskHandler) handleApplyChangeSet(task *regionTask) error {
 	changeSet := task.change
 	kv := r.kv
@@ -508,18 +525,25 @@ func (r *regionTaskHandler) handleApplyChangeSet(task *regionTask) error {
 	} else if changeSet.SplitFiles != nil {
 		changeSetTp = "split_files"
 	}
-	shard := kv.GetShard(task.region.Id)
-	if shard.GetSplitStage() >= enginepb.SplitStage_PRE_SPLIT && changeSet != nil && changeSet.Compaction != nil {
-		log.S().Warnf("region %d:%d reject compaction for splitting state",
-			shard.ID, shard.Ver)
+	key := changeSetKey{task.region.Id, task.change.Sequence}
+	_, rejected := r.rejects[key]
+	if rejected {
+		delete(r.rejects, key)
+		shard := kv.GetShard(changeSet.ShardID)
+		log.S().Warnf("shard %d:%d reject change set %s stage %s seq %d, initial flushed %t",
+			changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence, shard.IsInitialFlushed())
+		if changeSet.Compaction == nil {
+			return nil
+		}
 		changeSet.Compaction.Rejected = true
+	} else {
+		log.S().Infof("shard %d:%d apply change set %s stage %s seq %d",
+			changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence)
 	}
-	log.S().Infof("shard %d:%d apply change set %s stage %s seq %d",
-		changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence)
 	err := kv.ApplyChangeSet(changeSet)
 	if err != nil {
-		log.Error("failed to apply passive change set",
-			zap.Error(err), zap.String("changeSet", changeSet.String()))
+		log.S().Errorf("failed to apply passive change set err %s change set %s",
+			err.Error(), changeSet.String())
 	}
 	return err
 }

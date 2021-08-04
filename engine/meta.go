@@ -271,9 +271,6 @@ func (si *ShardMeta) IsDuplicatedChangeSet(change *enginepb.ChangeSet) bool {
 		if si.parent != nil {
 			return false
 		}
-		if flush.L0Create == nil {
-			return si.SplitStage >= change.Stage
-		}
 		dup := si.commitTS >= flush.CommitTS
 		if dup {
 			log.S().Infof("%d:%d skip duplicated flush commitTS:%d, meta commitTS:%d",

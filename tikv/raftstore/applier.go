@@ -589,23 +589,6 @@ func (a *applier) applyRaftCmd(aCtx *applyContext, index, term uint64,
 	y.Assert(!a.pendingRemove)
 
 	aCtx.execCtx = a.newCtx(index, term)
-	if cl, ok := rlog.(*raftlog.CustomRaftLog); ok {
-		switch cl.Type() {
-		case raftlog.TypeFlush, raftlog.TypeCompaction, raftlog.TypeSplitFiles:
-			change, err := cl.GetShardChangeSet()
-			y.Assert(err == nil)
-			// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
-			change.Sequence = aCtx.execCtx.index
-			aCtx.regionScheduler <- task{
-				tp: taskTypeRegionApplyChangeSet,
-				data: &regionTask{
-					region: a.region,
-					peer:   a.peer,
-					change: change,
-				},
-			}
-		}
-	}
 	resp, applyResult, err := a.execRaftCmd(aCtx, rlog)
 	if err != nil {
 		// TODO: clear dirty values.
@@ -678,7 +661,16 @@ func (a *applier) execRaftCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 	includeRegion := rlog.Epoch().Ver() >= a.lastMergeVersion
 	err = checkRegionEpoch(rlog, a.region, includeRegion)
 	if err != nil {
-		return
+		var checkInRegionWorker bool
+		if cl, ok := rlog.(*raftlog.CustomRaftLog); ok {
+			switch cl.Type() {
+			case raftlog.TypeFlush, raftlog.TypeCompaction, raftlog.TypeSplitFiles:
+				checkInRegionWorker = true
+			}
+		}
+		if !checkInRegionWorker {
+			return
+		}
 	}
 	req := rlog.GetRaftCmdRequest()
 	if req.GetAdminRequest() != nil {
@@ -794,6 +786,19 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		if err != nil {
 			log.S().Warnf("region %d:%d failed to execute pre-split, may be already pre-split by ingest. log idx:%d",
 				a.region.Id, a.region.RegionEpoch.Version, aCtx.execCtx.index)
+		}
+	case raftlog.TypeFlush, raftlog.TypeCompaction, raftlog.TypeSplitFiles:
+		change, err := cl.GetShardChangeSet()
+		y.Assert(err == nil)
+		// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
+		change.Sequence = aCtx.execCtx.index
+		aCtx.regionScheduler <- task{
+			tp: taskTypeRegionApplyChangeSet,
+			data: &regionTask{
+				region: a.region,
+				peer:   a.peer,
+				change: change,
+			},
 		}
 	case raftlog.TypeNextMemTableSize:
 		cs, err := cl.GetShardChangeSet()
@@ -980,7 +985,6 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	if err != nil {
 		return
 	}
-	a.applyState.appliedIndex = aCtx.execCtx.index
 	cs := buildSplitChangeSet(a.region, regions, a.applyState)
 	err = aCtx.engines.kv.FinishSplit(cs)
 	if err != nil {

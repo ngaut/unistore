@@ -891,17 +891,36 @@ func (p *Peer) handleChangeSet(ctx *RaftContext, e *eraftpb.Entry) {
 	// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
 	change.Sequence = e.Index
 	shardMeta := store.GetEngineMeta()
+	var rejected bool
+	if shardMeta.Ver != change.ShardVer {
+		rejected = true
+		log.S().Warnf("shard meta %d:%d shard not match %d", shardMeta.ID, shardMeta.Ver, change.ShardVer)
+	} else if shardMeta.SplitStage >= enginepb.SplitStage_PRE_SPLIT && change.Compaction != nil {
+		rejected = true
+		log.S().Warnf("shard meta %d:%d reject compaction for splitting state seq %d",
+			shardMeta.ID, shardMeta.Ver, change.Sequence)
+	} else if shardMeta.IsDuplicatedChangeSet(change) {
+		rejected = true
+		log.S().Warnf("shard meta %d:%d is duplicated change set seq %d",
+			shardMeta.ID, shardMeta.Ver, change.Sequence)
+	}
+	if rejected {
+		p.Store().regionSched <- task{
+			tp: taskTypeRejectChangeSet,
+			data: &regionTask{
+				region: p.Region(),
+				change: change,
+			},
+		}
+		return
+	}
 	if clog.Type() == raftlog.TypePreSplit {
 		shardMeta.SplitStage = enginepb.SplitStage_PRE_SPLIT
 	} else {
 		store.applyingChanges = append(store.applyingChanges, change)
 	}
-	if shardMeta.SplitStage >= enginepb.SplitStage_PRE_SPLIT && change.Compaction != nil {
-		// compaction will be rejected.
-		return
-	}
 	shardMeta.ApplyChangeSet(change)
-	log.S().Infof("%d:%d handle change set set engine meta, apply change %s", shardMeta.ID, shardMeta.Ver, change)
+	log.S().Infof("shard meta %d:%d handle change set engine meta, apply change %s", shardMeta.ID, shardMeta.Ver, change)
 	ctx.raftWB.SetState(p.regionId, KVEngineMetaKey(), shardMeta.Marshal())
 }
 
