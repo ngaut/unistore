@@ -264,6 +264,12 @@ func (en *Engine) DebugHandler() http.HandlerFunc {
 		sort.Slice(list, func(i, j int) bool {
 			return list[i].ShardSize > list[j].ShardSize
 		})
+		var splitStageName = map[int32]string{
+			0: "INITIAL",
+			1: "P_S",
+			2: "P_S_F_D",
+			3: "S_F_D",
+		}
 		for _, shardStat := range list {
 			key := shardStat.key
 			if value, ok := en.shardMap.Load(key); ok {
@@ -275,7 +281,7 @@ func (en *Engine) DebugHandler() http.HandlerFunc {
 					splittings = len(shard.splittingMemTbls)
 				}
 				if r.FormValue("detail") == "" {
-					fmt.Fprintf(w, "\tShard\t% 13d:%d,\tSize % 13s,\tMem % 13s(%d),\tL0 % 13s(%d),\tCF0 % 13s,\tCF1 % 13s,\tMaxMemTblSize % 13s,\tStage % 20s, Passive %v\n\n",
+					fmt.Fprintf(w, "\tShard % 10d:%d,\tSize % 13s, Mem % 13s(%d),\tL0 % 13s(%d),\tCF0 % 13s, CF1 % 13s, MMTS % 13s, Stage % 7s, Passive %s, Ts % 10d, Seq % 10d\n\n",
 						key,
 						shard.Ver,
 						formatInt(shardStat.ShardSize),
@@ -286,8 +292,10 @@ func (en *Engine) DebugHandler() http.HandlerFunc {
 						formatInt(shardStat.CFSize[0]),
 						formatInt(shardStat.CFSize[1]),
 						formatInt(int(shard.getMaxMemTableSize())),
-						enginepb.SplitStage_name[shard.splitStage],
-						shard.IsPassive(),
+						splitStageName[shard.splitStage],
+						formatBool(shard.IsPassive()),
+						shard.commitTS,
+						shard.sequence,
 					)
 					continue
 				}
@@ -352,6 +360,13 @@ func formatInt(n int) string {
 	}
 	copy(buf, str[:length-separators*3])
 	return string(buf)
+}
+
+func formatBool(b bool) string {
+	if b {
+		return "T"
+	}
+	return "F"
 }
 
 func (en *Engine) loadShards(shardMetas map[uint64]*ShardMeta) error {

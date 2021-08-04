@@ -54,6 +54,7 @@ type Options struct {
 	Bucket             string `json:"bucket"`
 	Region             string `json:"region"`
 	ExpirationDuration string `json:"expiration_duration"`
+	SimulateLatency    string `json:"simulate_latency"`
 	Concurrency        int    `json:"concurrency"`
 }
 
@@ -65,6 +66,7 @@ type S3Client struct {
 	expirationSeconds uint64
 	lock              sync.RWMutex
 	deletions         deletions
+	simulateLatency   time.Duration
 }
 
 func NewS3Client(c *y.Closer, dirPath string, instanceID uint32, opts Options) *S3Client {
@@ -113,6 +115,9 @@ func NewS3Client(c *y.Closer, dirPath string, instanceID uint32, opts Options) *
 	s3c.cli = s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.UsePathStyle = true
 	})
+	if len(opts.SimulateLatency) > 0 {
+		s3c.simulateLatency = config.ParseDuration(opts.SimulateLatency)
+	}
 	if len(opts.ExpirationDuration) > 0 && c != nil {
 		s3c.expirationSeconds = uint64(config.ParseDuration(opts.ExpirationDuration) / time.Second)
 		if s3c.expirationSeconds > 0 {
@@ -159,6 +164,9 @@ func (c *S3Client) GetToFile(key string, filePath string) error {
 		return errors.New("fail to parse file id:" + key)
 	}
 	log.S().Infof("get file from s3:%d", fid)
+	if c.simulateLatency > 0 {
+		time.Sleep(c.simulateLatency)
+	}
 	fd, err := y.OpenTruncFile(filePath, false)
 	if err != nil {
 		return err
@@ -182,6 +190,9 @@ func (c *S3Client) Put(key string, data []byte) error {
 		return errors.New("fail to parse file id:" + key)
 	}
 	log.S().Infof("put file to s3:%d", fid)
+	if c.simulateLatency > 0 {
+		time.Sleep(c.simulateLatency)
+	}
 	input := &s3.PutObjectInput{}
 	input.ContentLength = int64(len(data))
 	input.Bucket = &c.Bucket

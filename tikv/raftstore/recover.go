@@ -103,7 +103,12 @@ func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *e
 				return err
 			}
 			cs.Sequence = e.Index
-			if !meta.IsDuplicatedChangeSet(cs) {
+			var rejected bool
+			if meta.SplitStage >= enginepb.SplitStage_PRE_SPLIT && cs.Compaction != nil {
+				cs.Compaction.Rejected = true
+				rejected = true
+			}
+			if rejected || !meta.IsDuplicatedChangeSet(cs) {
 				// We don't have a background region worker now, should do it synchronously.
 				err = kv.ApplyChangeSet(cs)
 				if err != nil {

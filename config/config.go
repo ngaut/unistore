@@ -77,6 +77,7 @@ type S3Options struct {
 	Bucket             string `toml:"bucket"`
 	Region             string `toml:"region"`
 	ExpirationDuration string `toml:"expiration-duration"`
+	SimulateLatency    string `toml:"simulate-latency"`
 	Concurrency        int    `toml:"concurrency"`
 }
 
