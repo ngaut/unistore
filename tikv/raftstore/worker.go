@@ -529,11 +529,11 @@ func (r *regionTaskHandler) handleApplyChangeSet(task *regionTask) error {
 	key := changeSetKey{task.region.Id, task.change.Sequence}
 	_, rejected := r.rejects[key]
 	if rejected {
+		delete(r.rejects, key)
 		shard := kv.GetShard(changeSet.ShardID)
 		log.S().Warnf("shard %d:%d reject change set %s stage %s seq %d, initial flushed %t",
 			changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence, shard.IsInitialFlushed())
 		if changeSet.Compaction == nil {
-			delete(r.rejects, key)
 			return nil
 		}
 		changeSet.Compaction.Rejected = true
@@ -545,10 +545,6 @@ func (r *regionTaskHandler) handleApplyChangeSet(task *regionTask) error {
 	if err != nil {
 		log.S().Error("failed to apply passive change set",
 			zap.Error(err), zap.String("changeSet", changeSet.String()))
-	} else {
-		if rejected && changeSet.Compaction != nil {
-			delete(r.rejects, key)
-		}
 	}
 	return err
 }
