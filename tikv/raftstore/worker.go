@@ -29,7 +29,6 @@ import (
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/util/codec"
-	"go.uber.org/zap"
 )
 
 type taskType int64
@@ -543,8 +542,8 @@ func (r *regionTaskHandler) handleApplyChangeSet(task *regionTask) error {
 	}
 	err := kv.ApplyChangeSet(changeSet)
 	if err != nil {
-		log.S().Error("failed to apply passive change set",
-			zap.Error(err), zap.String("changeSet", changeSet.String()))
+		log.S().Errorf("failed to apply passive change set err %s change set %s",
+			err.Error(), changeSet.String())
 	}
 	return err
 }
