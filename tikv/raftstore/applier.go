@@ -661,14 +661,14 @@ func (a *applier) execRaftCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 	includeRegion := rlog.Epoch().Ver() >= a.lastMergeVersion
 	err = checkRegionEpoch(rlog, a.region, includeRegion)
 	if err != nil {
-		var checkInRegion bool
+		var checkInRegionWorker bool
 		if cl, ok := rlog.(*raftlog.CustomRaftLog); ok {
 			switch cl.Type() {
 			case raftlog.TypeFlush, raftlog.TypeCompaction, raftlog.TypeSplitFiles:
-				checkInRegion = true
+				checkInRegionWorker = true
 			}
 		}
-		if !checkInRegion {
+		if !checkInRegionWorker {
 			return
 		}
 	}
