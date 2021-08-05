@@ -436,10 +436,10 @@ func (r *regionTaskHandler) prepareSnapshotResources(task *regionTask) {
 }
 
 func (r *regionTaskHandler) handle(t task) {
+	regionTask := t.data.(*regionTask)
 	switch t.tp {
 	case taskTypeRegionApply:
 		// To make sure applying snapshots in order.
-		regionTask := t.data.(*regionTask)
 		r.prepareSnapshotResources(regionTask)
 		r.applySched <- t
 	case taskTypeRegionDestroy:
@@ -447,10 +447,8 @@ func (r *regionTaskHandler) handle(t task) {
 		// doesn't affect the existing badger.Snapshot
 		r.applySched <- t
 	case taskTypeRejectChangeSet:
-		regionTask := t.data.(*regionTask)
 		r.handleRejectChangeSet(regionTask)
 	case taskTypeRegionApplyChangeSet:
-		regionTask := t.data.(*regionTask)
 		if r.prepareChangeSetResources(regionTask) {
 			r.applySched <- t
 		}
@@ -494,10 +492,9 @@ func (r *regionTaskHandler) prepareChangeSetResources(task *regionTask) bool {
 		}
 		changeSet.Compaction.Rejected = true
 		return true
-	} else {
-		log.S().Infof("shard %d:%d apply change set %s stage %s seq %d",
-			changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence)
 	}
+	log.S().Infof("shard %d:%d apply change set %s stage %s seq %d",
+		changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence)
 	task.wg.Add(1)
 	r.kv.ScheduleResources(func() {
 		task.err = r.kv.PrepareResources(changeSet)
