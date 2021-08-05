@@ -153,6 +153,7 @@ func createKVEngine(subPath string, listener *raftstore.MetaChangeListener,
 	opts.NumCompactors = conf.NumCompactors
 	opts.InstanceID = conf.InstanceID
 	opts.RecoveryConcurrency = conf.RecoveryConcurrency
+	opts.PreparationConcurrency = conf.PreparationConcurrency
 	opts.S3Options.EndPoint = conf.S3.Endpoint
 	opts.S3Options.SecretKey = conf.S3.SecretKey
 	opts.S3Options.KeyID = conf.S3.KeyID

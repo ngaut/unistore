@@ -18,7 +18,6 @@ import (
 	"github.com/ngaut/unistore/engine/table/memtable"
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
-	"github.com/ngaut/unistore/scheduler"
 	"github.com/pingcap/badger/y"
 	"os"
 	"sort"
@@ -36,9 +35,11 @@ func (en *Engine) Ingest(ingestTree *IngestTree) error {
 	guard := en.resourceMgr.Acquire()
 	defer guard.Done()
 
-	err := en.loadFiles(ingestTree)
-	if err != nil {
-		return err
+	if ingestTree.LocalPath != "" {
+		err := en.loadFiles(ingestTree)
+		if err != nil {
+			return err
+		}
 	}
 	l0s, levelHandlers, err := en.createIngestTreeLevelHandlers(ingestTree)
 	if err != nil {
@@ -129,38 +130,22 @@ func (en *Engine) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*l0Tabl
 }
 
 func (en *Engine) loadFiles(ingestTree *IngestTree) error {
+	if ingestTree.LocalPath == "" {
+		return nil
+	}
 	snap := ingestTree.ChangeSet.Snapshot
-	bt := scheduler.NewBatchTasks()
 	for i := range snap.L0Creates {
 		l0 := snap.L0Creates[i]
-		bt.AppendTask(func() error {
-			if ingestTree.LocalPath != "" {
-				return en.loadFileFromLocalPath(ingestTree.LocalPath, l0.ID)
-			}
-			return en.loadFileFromS3(l0.ID)
-		})
-	}
-	if en.s3c != nil {
-		if err := en.s3c.BatchSchedule(bt); err != nil {
+		if err := en.loadFileFromLocalPath(ingestTree.LocalPath, l0.ID); err != nil {
 			return err
 		}
 	}
-	bt = scheduler.NewBatchTasks()
 	for i := range snap.TableCreates {
 		tbl := snap.TableCreates[i]
-		bt.AppendTask(func() error {
-			if ingestTree.LocalPath != "" {
-				return en.loadFileFromLocalPath(ingestTree.LocalPath, tbl.ID)
-			}
-			return en.loadFileFromS3(tbl.ID)
-		})
-	}
-	if en.s3c != nil {
-		if err := en.s3c.BatchSchedule(bt); err != nil {
+		if err := en.loadFileFromLocalPath(ingestTree.LocalPath, tbl.ID); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 
