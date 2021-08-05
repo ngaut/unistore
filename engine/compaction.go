@@ -591,7 +591,7 @@ func (en *Engine) PrepareResources(changeSet *enginepb.ChangeSet) error {
 			})
 		}
 	}
-	if changeSet.Compaction != nil {
+	if changeSet.Compaction != nil && !isMoveDown(changeSet.Compaction) {
 		comp := changeSet.Compaction
 		for i := range comp.TableCreates {
 			tbl := comp.TableCreates[i]
