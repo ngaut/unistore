@@ -73,7 +73,7 @@ type regionTask struct {
 
 	change *enginepb.ChangeSet
 	peer   *metapb.Peer
-	wg     *sync.WaitGroup
+	wg     sync.WaitGroup
 	err    error
 
 	waitMsg *MsgWaitFollowerSplitFiles
@@ -428,7 +428,6 @@ func newRegionTaskHandler(conf *config.Config, engines *Engines, router *router,
 
 // handlePendingApplies tries to apply pending tasks if there is some.
 func (r *regionTaskHandler) prepareSnapshotResources(task *regionTask) {
-	task.wg = &sync.WaitGroup{}
 	task.wg.Add(1)
 	r.kv.ScheduleResources(func() {
 		task.err = r.kv.PrepareResources(task.snapData.changeSet)
@@ -494,20 +493,16 @@ func (r *regionTaskHandler) prepareChangeSetResources(task *regionTask) bool {
 			return false
 		}
 		changeSet.Compaction.Rejected = true
+		return true
 	} else {
 		log.S().Infof("shard %d:%d apply change set %s stage %s seq %d",
 			changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence)
 	}
-	task.wg = &sync.WaitGroup{}
 	task.wg.Add(1)
-	if rejected {
+	r.kv.ScheduleResources(func() {
+		task.err = r.kv.PrepareResources(changeSet)
 		task.wg.Done()
-	} else {
-		r.kv.ScheduleResources(func() {
-			task.err = r.kv.PrepareResources(changeSet)
-			task.wg.Done()
-		})
-	}
+	})
 	return true
 }
 
@@ -524,10 +519,11 @@ func newRegionApplyTaskHandler(engines *Engines, router *router) *regionApplyTas
 }
 
 func (r *regionApplyTaskHandler) handle(t task) {
+	regionTask := t.data.(*regionTask)
+	regionTask.wg.Wait()
 	switch t.tp {
 	case taskTypeRegionApply:
 		// To make sure applying snapshots in order.
-		regionTask := t.data.(*regionTask)
 		err := r.handleApply(regionTask)
 		_ = r.router.send(regionTask.region.Id, NewPeerMsg(MsgTypeApplyChangeSetResult, regionTask.region.Id, &MsgApplyChangeSetResult{
 			change: regionTask.snapData.changeSet,
@@ -536,26 +532,22 @@ func (r *regionApplyTaskHandler) handle(t task) {
 	case taskTypeRegionDestroy:
 		// We don't need to delay the range deletion because DeleteRange operation
 		// doesn't affect the existing badger.Snapshot
-		regionTask := t.data.(*regionTask)
 		err := r.kv.RemoveShard(regionTask.region.Id, true)
 		if err != nil {
 			log.S().Errorf("region %d:%d failed to destroy region err %s", regionTask.region.Id, regionTask.region.RegionEpoch.Version, err.Error())
 		}
 	case taskTypeRegionApplyChangeSet:
-		regionTask := t.data.(*regionTask)
 		err := r.handleApplyChangeSet(regionTask)
 		_ = r.router.send(regionTask.region.Id, NewPeerMsg(MsgTypeApplyChangeSetResult, regionTask.region.Id, &MsgApplyChangeSetResult{
 			change: regionTask.change,
 			err:    err,
 		}))
 	case taskTypeRecoverSplit:
-		regionTask := t.data.(*regionTask)
 		err := r.handleRecoverSplit(regionTask)
 		if err != nil {
 			log.S().Errorf("region %d:%d failed to recover split err %s", regionTask.region.Id, regionTask.region.RegionEpoch.Version, err.Error())
 		}
 	case taskTypeFinishSplit:
-		regionTask := t.data.(*regionTask)
 		waitMsg := regionTask.waitMsg
 		regions, err := finishSplit(r.router, regionTask.region, waitMsg.SplitKeys)
 		if err != nil {
@@ -595,7 +587,6 @@ func (r *regionApplyTaskHandler) handleRecoverSplit(task *regionTask) error {
 // handlePendingApplies tries to apply pending tasks if there is some.
 func (r *regionApplyTaskHandler) handleApply(task *regionTask) error {
 	changeSet := task.snapData.changeSet
-	task.wg.Wait()
 	if task.err != nil {
 		log.S().Errorf("failed to prepare snapshot resources err %s change set %s",
 			task.err.Error(), changeSet.String())
@@ -610,7 +601,6 @@ func (r *regionApplyTaskHandler) handleApply(task *regionTask) error {
 
 func (r *regionApplyTaskHandler) handleApplyChangeSet(task *regionTask) error {
 	changeSet := task.change
-	task.wg.Wait()
 	if task.err != nil {
 		log.S().Errorf("failed to prepare change set resources err %s change set %s",
 			task.err.Error(), changeSet.String())
