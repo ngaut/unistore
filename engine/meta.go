@@ -296,6 +296,7 @@ func (si *ShardMeta) IsDuplicatedChangeSet(change *enginepb.ChangeSet) bool {
 			if !ok {
 				log.S().Infof("%d:%d skip duplicated compaction file %d already deleted",
 					si.ID, si.Ver, del)
+				change.Compaction.Rejected = true
 				return true
 			}
 		}
@@ -304,6 +305,7 @@ func (si *ShardMeta) IsDuplicatedChangeSet(change *enginepb.ChangeSet) bool {
 			if !ok {
 				log.S().Infof("%d:%d skip duplicated compaction file %d already deleted",
 					si.ID, si.Ver, del)
+				change.Compaction.Rejected = true
 				return true
 			}
 		}

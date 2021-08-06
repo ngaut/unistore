@@ -413,7 +413,7 @@ type regionTaskHandler struct {
 	conf       *config.Config
 	router     *router
 	applySched chan<- task
-	rejects    map[changeSetKey]struct{}
+	rejects    map[changeSetKey]*enginepb.ChangeSet
 }
 
 func newRegionTaskHandler(conf *config.Config, engines *Engines, router *router, applySched chan<- task) *regionTaskHandler {
@@ -422,7 +422,7 @@ func newRegionTaskHandler(conf *config.Config, engines *Engines, router *router,
 		kv:         engines.kv,
 		router:     router,
 		applySched: applySched,
-		rejects:    map[changeSetKey]struct{}{},
+		rejects:    map[changeSetKey]*enginepb.ChangeSet{},
 	}
 }
 
@@ -465,7 +465,7 @@ func (r *regionTaskHandler) shutdown() {
 
 func (r *regionTaskHandler) handleRejectChangeSet(task *regionTask) error {
 	rejectKey := changeSetKey{task.region.Id, task.change.Sequence}
-	r.rejects[rejectKey] = struct{}{}
+	r.rejects[rejectKey] = task.change
 	return nil
 }
 
@@ -481,13 +481,13 @@ func (r *regionTaskHandler) prepareChangeSetResources(task *regionTask) bool {
 		changeSetTp = "split_files"
 	}
 	key := changeSetKey{task.region.Id, task.change.Sequence}
-	_, rejected := r.rejects[key]
+	metaChange, rejected := r.rejects[key]
 	if rejected {
 		delete(r.rejects, key)
 		shard := kv.GetShard(changeSet.ShardID)
 		log.S().Warnf("shard %d:%d reject change set %s stage %s seq %d, initial flushed %t",
 			changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence, shard.IsInitialFlushed())
-		if changeSet.Compaction == nil {
+		if metaChange.Compaction == nil || !metaChange.Compaction.Rejected {
 			return false
 		}
 		changeSet.Compaction.Rejected = true
