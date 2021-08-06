@@ -73,6 +73,7 @@ type Engine struct {
 	closed        uint32
 
 	metaChangeListener MetaChangeListener
+	resourceScheduler  *scheduler.Scheduler
 }
 
 const (
@@ -107,6 +108,7 @@ func OpenEngine(opt Options) (en *Engine, err error) {
 		blkCache:           blkCache,
 		flushCh:            make(chan *flushTask, opt.NumMemtables),
 		flushResultCh:      make(chan *flushResultTask, opt.NumMemtables),
+		resourceScheduler:  scheduler.NewScheduler(opt.PreparationConcurrency),
 		metaChangeListener: opt.MetaChangeListener,
 	}
 	en.idAlloc = opt.IDAllocator

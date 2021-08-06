@@ -73,6 +73,8 @@ type regionTask struct {
 
 	change *enginepb.ChangeSet
 	peer   *metapb.Peer
+	wg     sync.WaitGroup
+	err    error
 
 	waitMsg *MsgWaitFollowerSplitFiles
 
@@ -407,36 +409,118 @@ type changeSetKey struct {
 }
 
 type regionTaskHandler struct {
-	kv      *engine.Engine
-	conf    *config.Config
-	router  *router
-	rejects map[changeSetKey]struct{}
+	kv         *engine.Engine
+	conf       *config.Config
+	router     *router
+	applySched chan<- task
+	rejects    map[changeSetKey]struct{}
 }
 
-func newRegionTaskHandler(conf *config.Config, engines *Engines, router *router) *regionTaskHandler {
+func newRegionTaskHandler(conf *config.Config, engines *Engines, router *router, applySched chan<- task) *regionTaskHandler {
 	return &regionTaskHandler{
-		conf:    conf,
-		kv:      engines.kv,
-		router:  router,
-		rejects: map[changeSetKey]struct{}{},
+		conf:       conf,
+		kv:         engines.kv,
+		router:     router,
+		applySched: applySched,
+		rejects:    map[changeSetKey]struct{}{},
 	}
 }
 
 // handlePendingApplies tries to apply pending tasks if there is some.
-func (r *regionTaskHandler) handleApply(task *regionTask) error {
-	snapData := task.snapData
-	inTree := &engine.IngestTree{
-		ChangeSet: snapData.changeSet,
-		Passive:   true,
-	}
-	return r.kv.Ingest(inTree)
+func (r *regionTaskHandler) prepareSnapshotResources(task *regionTask) {
+	task.wg.Add(1)
+	r.kv.ScheduleResources(func() {
+		task.err = r.kv.PrepareResources(task.snapData.changeSet)
+		task.wg.Done()
+	})
 }
 
 func (r *regionTaskHandler) handle(t task) {
+	regionTask := t.data.(*regionTask)
 	switch t.tp {
 	case taskTypeRegionApply:
 		// To make sure applying snapshots in order.
-		regionTask := t.data.(*regionTask)
+		r.prepareSnapshotResources(regionTask)
+		r.applySched <- t
+	case taskTypeRegionDestroy:
+		// We don't need to delay the range deletion because DeleteRange operation
+		// doesn't affect the existing badger.Snapshot
+		r.applySched <- t
+	case taskTypeRejectChangeSet:
+		r.handleRejectChangeSet(regionTask)
+	case taskTypeRegionApplyChangeSet:
+		if r.prepareChangeSetResources(regionTask) {
+			r.applySched <- t
+		}
+	case taskTypeRecoverSplit:
+		r.applySched <- t
+	case taskTypeFinishSplit:
+		r.applySched <- t
+	}
+}
+
+func (r *regionTaskHandler) shutdown() {
+	// todo, currently it is a a place holder.
+}
+
+func (r *regionTaskHandler) handleRejectChangeSet(task *regionTask) error {
+	rejectKey := changeSetKey{task.region.Id, task.change.Sequence}
+	r.rejects[rejectKey] = struct{}{}
+	return nil
+}
+
+func (r *regionTaskHandler) prepareChangeSetResources(task *regionTask) bool {
+	changeSet := task.change
+	kv := r.kv
+	var changeSetTp string
+	if changeSet.Flush != nil {
+		changeSetTp = "flush"
+	} else if changeSet.Compaction != nil {
+		changeSetTp = "compaction"
+	} else if changeSet.SplitFiles != nil {
+		changeSetTp = "split_files"
+	}
+	key := changeSetKey{task.region.Id, task.change.Sequence}
+	_, rejected := r.rejects[key]
+	if rejected {
+		delete(r.rejects, key)
+		shard := kv.GetShard(changeSet.ShardID)
+		log.S().Warnf("shard %d:%d reject change set %s stage %s seq %d, initial flushed %t",
+			changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence, shard.IsInitialFlushed())
+		if changeSet.Compaction == nil {
+			return false
+		}
+		changeSet.Compaction.Rejected = true
+		return true
+	}
+	log.S().Infof("shard %d:%d apply change set %s stage %s seq %d",
+		changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence)
+	task.wg.Add(1)
+	r.kv.ScheduleResources(func() {
+		task.err = r.kv.PrepareResources(changeSet)
+		task.wg.Done()
+	})
+	return true
+}
+
+type regionApplyTaskHandler struct {
+	kv     *engine.Engine
+	router *router
+}
+
+func newRegionApplyTaskHandler(engines *Engines, router *router) *regionApplyTaskHandler {
+	return &regionApplyTaskHandler{
+		kv:     engines.kv,
+		router: router,
+	}
+}
+
+func (r *regionApplyTaskHandler) handle(t task) {
+	regionTask := t.data.(*regionTask)
+	regionTask.wg.Wait()
+	switch t.tp {
+	case taskTypeRegionApply:
+		// To make sure applying snapshots in order.
 		err := r.handleApply(regionTask)
 		_ = r.router.send(regionTask.region.Id, NewPeerMsg(MsgTypeApplyChangeSetResult, regionTask.region.Id, &MsgApplyChangeSetResult{
 			change: regionTask.snapData.changeSet,
@@ -445,29 +529,22 @@ func (r *regionTaskHandler) handle(t task) {
 	case taskTypeRegionDestroy:
 		// We don't need to delay the range deletion because DeleteRange operation
 		// doesn't affect the existing badger.Snapshot
-		regionTask := t.data.(*regionTask)
 		err := r.kv.RemoveShard(regionTask.region.Id, true)
 		if err != nil {
 			log.S().Errorf("region %d:%d failed to destroy region err %s", regionTask.region.Id, regionTask.region.RegionEpoch.Version, err.Error())
 		}
-	case taskTypeRejectChangeSet:
-		regionTask := t.data.(*regionTask)
-		r.handleRejectChangeSet(regionTask)
 	case taskTypeRegionApplyChangeSet:
-		regionTask := t.data.(*regionTask)
 		err := r.handleApplyChangeSet(regionTask)
 		_ = r.router.send(regionTask.region.Id, NewPeerMsg(MsgTypeApplyChangeSetResult, regionTask.region.Id, &MsgApplyChangeSetResult{
 			change: regionTask.change,
 			err:    err,
 		}))
 	case taskTypeRecoverSplit:
-		regionTask := t.data.(*regionTask)
 		err := r.handleRecoverSplit(regionTask)
 		if err != nil {
 			log.S().Errorf("region %d:%d failed to recover split err %s", regionTask.region.Id, regionTask.region.RegionEpoch.Version, err.Error())
 		}
 	case taskTypeFinishSplit:
-		regionTask := t.data.(*regionTask)
 		waitMsg := regionTask.waitMsg
 		regions, err := finishSplit(r.router, regionTask.region, waitMsg.SplitKeys)
 		if err != nil {
@@ -483,11 +560,7 @@ func (r *regionTaskHandler) handle(t task) {
 	}
 }
 
-func (r *regionTaskHandler) shutdown() {
-	// todo, currently it is a a place holder.
-}
-
-func (r *regionTaskHandler) handleRecoverSplit(task *regionTask) error {
+func (r *regionApplyTaskHandler) handleRecoverSplit(task *regionTask) error {
 	log.S().Infof("shard %d:%d handle recover split", task.region.Id, task.region.RegionEpoch.Version)
 	switch task.stage {
 	case enginepb.SplitStage_PRE_SPLIT:
@@ -508,39 +581,29 @@ func (r *regionTaskHandler) handleRecoverSplit(task *regionTask) error {
 	return r.router.send(task.region.Id, NewPeerMsg(MsgTypeWaitFollowerSplitFiles, task.region.Id, msg))
 }
 
-func (r *regionTaskHandler) handleRejectChangeSet(task *regionTask) error {
-	rejectKey := changeSetKey{task.region.Id, task.change.Sequence}
-	r.rejects[rejectKey] = struct{}{}
-	return nil
+// handlePendingApplies tries to apply pending tasks if there is some.
+func (r *regionApplyTaskHandler) handleApply(task *regionTask) error {
+	changeSet := task.snapData.changeSet
+	if task.err != nil {
+		log.S().Errorf("failed to prepare snapshot resources err %s change set %s",
+			task.err.Error(), changeSet.String())
+		return task.err
+	}
+	inTree := &engine.IngestTree{
+		ChangeSet: changeSet,
+		Passive:   true,
+	}
+	return r.kv.Ingest(inTree)
 }
 
-func (r *regionTaskHandler) handleApplyChangeSet(task *regionTask) error {
+func (r *regionApplyTaskHandler) handleApplyChangeSet(task *regionTask) error {
 	changeSet := task.change
-	kv := r.kv
-	var changeSetTp string
-	if changeSet.Flush != nil {
-		changeSetTp = "flush"
-	} else if changeSet.Compaction != nil {
-		changeSetTp = "compaction"
-	} else if changeSet.SplitFiles != nil {
-		changeSetTp = "split_files"
+	if task.err != nil {
+		log.S().Errorf("failed to prepare change set resources err %s change set %s",
+			task.err.Error(), changeSet.String())
+		return task.err
 	}
-	key := changeSetKey{task.region.Id, task.change.Sequence}
-	_, rejected := r.rejects[key]
-	if rejected {
-		delete(r.rejects, key)
-		shard := kv.GetShard(changeSet.ShardID)
-		log.S().Warnf("shard %d:%d reject change set %s stage %s seq %d, initial flushed %t",
-			changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence, shard.IsInitialFlushed())
-		if changeSet.Compaction == nil {
-			return nil
-		}
-		changeSet.Compaction.Rejected = true
-	} else {
-		log.S().Infof("shard %d:%d apply change set %s stage %s seq %d",
-			changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence)
-	}
-	err := kv.ApplyChangeSet(changeSet)
+	err := r.kv.ApplyChangeSet(changeSet)
 	if err != nil {
 		log.S().Errorf("failed to apply passive change set err %s change set %s",
 			err.Error(), changeSet.String())

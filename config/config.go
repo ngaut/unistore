@@ -51,18 +51,19 @@ type RaftStore struct {
 }
 
 type Engine struct {
-	Path                  string    `toml:"path"`           // Directory to store the data in. Should exist and be writable.
-	MaxTableSize          int64     `toml:"max-table-size"` // Each table file is at most this size.
-	BaseSize              int64     `toml:"base-size"`
-	NumL0Tables           int       `toml:"num-L0-tables"`       // Maximum number of Level 0 tables before we start compacting.
-	NumL0TablesStall      int       `toml:"num-L0-tables-stall"` // Maximum number of Level 0 tables before stalling.
-	NumCompactors         int       `toml:"num-compactors"`
-	BlockCacheSize        int64     `toml:"block-cache-size"`
-	MaxMemTableSizeFactor int       `toml:"max-mem-table-size-factor"` // Each mem table is at most this size.
-	RemoteCompactionAddr  string    `toml:"remote-compaction-addr"`
-	InstanceID            uint32    `toml:"instance-id"`
-	S3                    S3Options `toml:"s3"`
-	RecoveryConcurrency   int       `toml:"recovery-concurrency"`
+	Path                   string    `toml:"path"`           // Directory to store the data in. Should exist and be writable.
+	MaxTableSize           int64     `toml:"max-table-size"` // Each table file is at most this size.
+	BaseSize               int64     `toml:"base-size"`
+	NumL0Tables            int       `toml:"num-L0-tables"`       // Maximum number of Level 0 tables before we start compacting.
+	NumL0TablesStall       int       `toml:"num-L0-tables-stall"` // Maximum number of Level 0 tables before stalling.
+	NumCompactors          int       `toml:"num-compactors"`
+	BlockCacheSize         int64     `toml:"block-cache-size"`
+	MaxMemTableSizeFactor  int       `toml:"max-mem-table-size-factor"` // Each mem table is at most this size.
+	RemoteCompactionAddr   string    `toml:"remote-compaction-addr"`
+	InstanceID             uint32    `toml:"instance-id"`
+	S3                     S3Options `toml:"s3"`
+	RecoveryConcurrency    int       `toml:"recovery-concurrency"`
+	PreparationConcurrency int       `toml:"preparation-concurrency"`
 }
 
 type RaftEngine struct {
@@ -113,15 +114,16 @@ var DefaultConf = Config{
 		GRPCRaftConnNum:          2,
 	},
 	Engine: Engine{
-		Path:                  "/tmp/badger",
-		MaxMemTableSizeFactor: 128,
-		MaxTableSize:          8 * MB,
-		NumL0Tables:           4,
-		NumL0TablesStall:      8,
-		NumCompactors:         3,
-		BaseSize:              64 * MB,
-		BlockCacheSize:        0, // 0 means disable block cache, use mmap to access sst.
-		RecoveryConcurrency:   runtime.NumCPU(),
+		Path:                   "/tmp/badger",
+		MaxMemTableSizeFactor:  128,
+		MaxTableSize:           8 * MB,
+		NumL0Tables:            4,
+		NumL0TablesStall:       8,
+		NumCompactors:          3,
+		BaseSize:               64 * MB,
+		BlockCacheSize:         0, // 0 means disable block cache, use mmap to access sst.
+		RecoveryConcurrency:    runtime.NumCPU(),
+		PreparationConcurrency: runtime.NumCPU(),
 	},
 	RaftEngine: RaftEngine{
 		Path:    "/tmp/badger",

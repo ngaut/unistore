@@ -84,6 +84,7 @@ type GlobalContext struct {
 	trans                 *RaftClient
 	pdTaskSender          chan<- task
 	regionTaskSender      chan<- task
+	regionApplyTaskSender chan<- task
 	computeHashTaskSender chan<- task
 	splitCheckTaskSender  chan<- task
 	pdClient              pd.Client
@@ -296,6 +297,7 @@ type workers struct {
 	computeHashWorker *worker
 	splitCheckWorker  *worker
 	regionWorker      *worker
+	regionApplyWorker *worker
 	wg                *sync.WaitGroup
 }
 
@@ -324,7 +326,8 @@ func (bs *raftBatchSystem) start(
 	wg := new(sync.WaitGroup)
 	bs.workers = &workers{
 		splitCheckWorker:  newWorker("split-check", wg),
-		regionWorker:      newWorker("snapshot-worker", wg),
+		regionWorker:      newWorker("region-worker", wg),
+		regionApplyWorker: newWorker("apply-worker", wg),
 		pdWorker:          pdWorker,
 		computeHashWorker: newWorker("compute-hash", wg),
 		wg:                wg,
@@ -339,6 +342,7 @@ func (bs *raftBatchSystem) start(
 		trans:                 trans,
 		pdTaskSender:          bs.workers.pdWorker.sender,
 		regionTaskSender:      bs.workers.regionWorker.sender,
+		regionApplyTaskSender: bs.workers.regionApplyWorker.sender,
 		computeHashTaskSender: bs.workers.computeHashWorker.sender,
 		splitCheckTaskSender:  bs.workers.splitCheckWorker.sender,
 		pdClient:              pdClient,
@@ -383,7 +387,8 @@ func (bs *raftBatchSystem) startWorkers(peers []*peerFsm) {
 	engines := ctx.engine
 	cfg := ctx.cfg
 	workers.splitCheckWorker.start(newSplitCheckRunner(engines.kv, router, cfg.SplitCheck))
-	workers.regionWorker.start(newRegionTaskHandler(bs.globalCfg, engines, router))
+	workers.regionWorker.start(newRegionTaskHandler(bs.globalCfg, engines, router, bs.ctx.regionApplyTaskSender))
+	workers.regionApplyWorker.start(newRegionApplyTaskHandler(engines, router))
 	workers.pdWorker.start(newPDTaskHandler(ctx.store.Id, ctx.pdClient, bs.router))
 	workers.computeHashWorker.start(&computeHashTaskHandler{router: bs.router})
 }
@@ -399,6 +404,7 @@ func (bs *raftBatchSystem) shutDown() {
 	stopTask := task{tp: taskTypeStop}
 	workers.splitCheckWorker.sender <- stopTask
 	workers.regionWorker.sender <- stopTask
+	workers.regionApplyWorker.sender <- stopTask
 	workers.computeHashWorker.sender <- stopTask
 	workers.pdWorker.sender <- stopTask
 	workers.wg.Wait()

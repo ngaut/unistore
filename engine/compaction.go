@@ -573,6 +573,66 @@ func (en *Engine) deleteTables(old *levelHandler, toDel []table.Table) *levelHan
 	return newHandler
 }
 
+func (en *Engine) ScheduleResources(f func()) {
+	en.resourceScheduler.Schedule(f)
+}
+
+func (en *Engine) PrepareResources(changeSet *enginepb.ChangeSet) error {
+	if en.s3c == nil {
+		return nil
+	}
+	bt := scheduler.NewBatchTasks()
+	if changeSet.Flush != nil {
+		flush := changeSet.Flush
+		newL0 := flush.L0Create
+		if newL0 != nil {
+			bt.AppendTask(func() error {
+				return en.loadFileFromS3(flush.L0Create.ID)
+			})
+		}
+	}
+	if changeSet.Compaction != nil && !isMoveDown(changeSet.Compaction) {
+		comp := changeSet.Compaction
+		for i := range comp.TableCreates {
+			tbl := comp.TableCreates[i]
+			bt.AppendTask(func() error {
+				return en.loadFileFromS3(tbl.ID)
+			})
+		}
+	}
+	if changeSet.SplitFiles != nil {
+		splitFiles := changeSet.SplitFiles
+		for i := range splitFiles.L0Creates {
+			l0 := splitFiles.L0Creates[i]
+			bt.AppendTask(func() error {
+				return en.loadFileFromS3(l0.ID)
+			})
+		}
+		for i := range splitFiles.TableCreates {
+			tbl := splitFiles.TableCreates[i]
+			bt.AppendTask(func() error {
+				return en.loadFileFromS3(tbl.ID)
+			})
+		}
+	}
+	if changeSet.Snapshot != nil {
+		snap := changeSet.Snapshot
+		for i := range snap.L0Creates {
+			l0 := snap.L0Creates[i]
+			bt.AppendTask(func() error {
+				return en.loadFileFromS3(l0.ID)
+			})
+		}
+		for i := range snap.TableCreates {
+			tbl := snap.TableCreates[i]
+			bt.AppendTask(func() error {
+				return en.loadFileFromS3(tbl.ID)
+			})
+		}
+	}
+	return en.s3c.BatchSchedule(bt)
+}
+
 // ApplyChangeSet applies long running shard file change.
 // Includes:
 //   - mem-table flush.
@@ -609,18 +669,7 @@ func (en *Engine) ApplyChangeSet(changeSet *enginepb.ChangeSet) error {
 
 func (en *Engine) applyFlush(shard *Shard, changeSet *enginepb.ChangeSet) error {
 	flush := changeSet.Flush
-	bt := scheduler.NewBatchTasks()
 	newL0 := flush.L0Create
-	if newL0 != nil {
-		bt.AppendTask(func() error {
-			return en.loadFileFromS3(flush.L0Create.ID)
-		})
-	}
-	if en.s3c != nil {
-		if err := en.s3c.BatchSchedule(bt); err != nil {
-			return err
-		}
-	}
 	if newL0 != nil {
 		filename := sstable.NewFilename(newL0.ID, en.opt.Dir)
 		localFile, err := sstable.NewLocalFile(filename, true)
@@ -657,18 +706,6 @@ func (en *Engine) applyCompaction(shard *Shard, changeSet *enginepb.ChangeSet, g
 		}
 		guard.Delete(resources)
 		return nil
-	}
-	if en.s3c != nil {
-		bt := scheduler.NewBatchTasks()
-		for i := range comp.TableCreates {
-			tbl := comp.TableCreates[i]
-			bt.AppendTask(func() error {
-				return en.loadFileFromS3(tbl.ID)
-			})
-		}
-		if err := en.s3c.BatchSchedule(bt); err != nil {
-			return err
-		}
 	}
 	del := &deletions{resources: map[uint64]epoch.Resource{}}
 	if comp.Level == 0 {
@@ -770,30 +807,6 @@ func (en *Engine) applySplitFiles(shard *Shard, changeSet *enginepb.ChangeSet, g
 		return ErrSplitFilesWrongStage
 	}
 	splitFiles := changeSet.SplitFiles
-	bt := scheduler.NewBatchTasks()
-	for i := range splitFiles.L0Creates {
-		l0 := splitFiles.L0Creates[i]
-		bt.AppendTask(func() error {
-			return en.loadFileFromS3(l0.ID)
-		})
-	}
-	if en.s3c != nil {
-		if err := en.s3c.BatchSchedule(bt); err != nil {
-			return err
-		}
-	}
-	bt = scheduler.NewBatchTasks()
-	for i := range splitFiles.TableCreates {
-		tbl := splitFiles.TableCreates[i]
-		bt.AppendTask(func() error {
-			return en.loadFileFromS3(tbl.ID)
-		})
-	}
-	if en.s3c != nil {
-		if err := en.s3c.BatchSchedule(bt); err != nil {
-			return err
-		}
-	}
 	oldL0s := shard.loadL0Tables()
 	newL0Tbls := &l0Tables{make([]*sstable.L0Table, 0, len(oldL0s.tables)*2)}
 	del := &deletions{resources: map[uint64]epoch.Resource{}}
