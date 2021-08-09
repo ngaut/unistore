@@ -449,7 +449,7 @@ func (r *regionTaskHandler) handle(t task) {
 	case taskTypeRejectChangeSet:
 		r.handleRejectChangeSet(regionTask)
 	case taskTypeRegionApplyChangeSet:
-		if r.prepareChangeSetResources(regionTask) {
+		if duplicated := r.prepareChangeSetResources(regionTask); !duplicated {
 			r.applySched <- t
 		}
 	case taskTypeRecoverSplit:
@@ -469,7 +469,7 @@ func (r *regionTaskHandler) handleRejectChangeSet(task *regionTask) error {
 	return nil
 }
 
-func (r *regionTaskHandler) prepareChangeSetResources(task *regionTask) bool {
+func (r *regionTaskHandler) prepareChangeSetResources(task *regionTask) (duplicated bool) {
 	changeSet := task.change
 	kv := r.kv
 	var changeSetTp string
@@ -487,11 +487,11 @@ func (r *regionTaskHandler) prepareChangeSetResources(task *regionTask) bool {
 		shard := kv.GetShard(changeSet.ShardID)
 		log.S().Warnf("shard %d:%d reject change set %s stage %s seq %d, initial flushed %t",
 			changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence, shard.IsInitialFlushed())
-		if metaChange.Compaction == nil || !metaChange.Compaction.Rejected {
-			return false
+		if metaChange.Compaction == nil || !metaChange.Compaction.Conflicted {
+			return true
 		}
-		changeSet.Compaction.Rejected = true
-		return true
+		changeSet.Compaction.Conflicted = true
+		return false
 	}
 	log.S().Infof("shard %d:%d apply change set %s stage %s seq %d",
 		changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence)
@@ -500,7 +500,7 @@ func (r *regionTaskHandler) prepareChangeSetResources(task *regionTask) bool {
 		task.err = r.kv.PrepareResources(changeSet)
 		task.wg.Done()
 	})
-	return true
+	return false
 }
 
 type regionApplyTaskHandler struct {

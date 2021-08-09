@@ -47,7 +47,7 @@ message Compaction {
   repeated TableCreate tableCreates = 3;
   repeated uint64 topDeletes = 4;
   repeated uint64 bottomDeletes = 5;
-  bool rejected = 6;
+  bool conflicted = 6;
 }
 
 message Flush {

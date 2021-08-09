@@ -691,7 +691,10 @@ func (en *Engine) applyFlush(shard *Shard, changeSet *enginepb.ChangeSet) error 
 func (en *Engine) applyCompaction(shard *Shard, changeSet *enginepb.ChangeSet, guard *epoch.Guard) error {
 	defer shard.markCompacting(false)
 	comp := changeSet.Compaction
-	if comp.Rejected && !isMoveDown(comp) {
+	if comp.Conflicted {
+		if isMoveDown(comp) {
+			return nil
+		}
 		var resources []epoch.Resource
 		for i := range comp.TableCreates {
 			tbl := comp.TableCreates[i]
