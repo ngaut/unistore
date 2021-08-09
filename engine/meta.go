@@ -294,16 +294,18 @@ func (si *ShardMeta) IsDuplicatedChangeSet(change *enginepb.ChangeSet) bool {
 		for _, del := range comp.TopDeletes {
 			_, ok := si.FileLevel(del)
 			if !ok {
-				log.S().Infof("%d:%d skip duplicated compaction file %d already deleted",
+				log.S().Infof("%d:%d skip conflicted compaction file %d already deleted",
 					si.ID, si.Ver, del)
+				change.Compaction.Conflicted = true
 				return true
 			}
 		}
 		for _, del := range comp.BottomDeletes {
 			_, ok := si.FileLevel(del)
 			if !ok {
-				log.S().Infof("%d:%d skip duplicated compaction file %d already deleted",
+				log.S().Infof("%d:%d skip conflicted compaction file %d already deleted",
 					si.ID, si.Ver, del)
+				change.Compaction.Conflicted = true
 				return true
 			}
 		}

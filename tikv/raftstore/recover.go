@@ -105,7 +105,7 @@ func (h *RecoverHandler) Recover(kv *engine.Engine, shard *engine.Shard, meta *e
 			cs.Sequence = e.Index
 			var rejected bool
 			if meta.SplitStage >= enginepb.SplitStage_PRE_SPLIT && cs.Compaction != nil {
-				cs.Compaction.Rejected = true
+				cs.Compaction.Conflicted = true
 				rejected = true
 			}
 			if rejected || !meta.IsDuplicatedChangeSet(cs) {

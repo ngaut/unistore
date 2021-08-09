@@ -897,6 +897,7 @@ func (p *Peer) handleChangeSet(ctx *RaftContext, e *eraftpb.Entry) {
 		log.S().Warnf("shard meta %d:%d shard not match %d", shardMeta.ID, shardMeta.Ver, change.ShardVer)
 	} else if shardMeta.SplitStage >= enginepb.SplitStage_PRE_SPLIT && change.Compaction != nil {
 		rejected = true
+		change.Compaction.Conflicted = true
 		log.S().Warnf("shard meta %d:%d reject compaction for splitting state seq %d",
 			shardMeta.ID, shardMeta.Ver, change.Sequence)
 	} else if shardMeta.IsDuplicatedChangeSet(change) {
