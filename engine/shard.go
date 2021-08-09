@@ -403,6 +403,15 @@ func boundedMemSize(size int64) int64 {
 	return size
 }
 
+func (s *Shard) setCommitTS(commitTS uint64) {
+	oldCommitTS := atomic.LoadUint64(&s.commitTS)
+	if oldCommitTS >= commitTS {
+		return
+	}
+	atomic.CompareAndSwapUint64(&s.commitTS, oldCommitTS, commitTS)
+	log.S().Infof("shard %d:%d set commit ts %d", s.ID, s.Ver, commitTS)
+}
+
 func (s *Shard) allocCommitTS() uint64 {
 	return atomic.AddUint64(&s.commitTS, 1)
 }
