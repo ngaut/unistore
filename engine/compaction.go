@@ -683,6 +683,7 @@ func (en *Engine) applyFlush(shard *Shard, changeSet *enginepb.ChangeSet) error 
 		atomicAddL0(shard, tbl)
 		atomicRemoveMemTable(shard)
 	}
+	shard.setCommitTS(flush.CommitTS)
 	shard.setSplitStage(changeSet.Stage)
 	shard.setInitialFlushed()
 	return nil
