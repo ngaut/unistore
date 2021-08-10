@@ -122,6 +122,8 @@ type Config struct {
 	Addr          string
 	AdvertiseAddr string
 	Labels        []StoreLabel
+	StatusAddr    string
+	GitHash       string
 
 	ApplyWorkerCnt int
 

@@ -15,12 +15,14 @@ package raftstore
 
 import (
 	"context"
-	"github.com/ngaut/unistore/raftengine"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/ngaut/unistore/pd"
+	"github.com/ngaut/unistore/raftengine"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
@@ -45,6 +47,10 @@ func NewNode(system *raftBatchSystem, store *metapb.Store, cfg *Config, pdClient
 		store.Address = cfg.Addr
 	}
 	store.Version = "3.0.0-bata.1"
+	store.StatusAddress = cfg.StatusAddr
+	store.GitHash = cfg.GitHash
+	path, _ := os.Executable()
+	store.DeployPath = filepath.Dir(path)
 	for _, l := range cfg.Labels {
 		store.Labels = append(store.Labels, &metapb.StoreLabel{Key: l.LabelKey, Value: l.LabelValue})
 	}
@@ -71,6 +77,7 @@ func (n *Node) Start(ctx context.Context, engines *Engines, trans *RaftClient, p
 		return err
 	}
 	n.store.Id = storeID
+	n.store.StartTimestamp = time.Now().Unix()
 
 	firstRegion, err := n.checkOrPrepareBootstrapCluster(ctx, engines, storeID)
 	if err != nil {

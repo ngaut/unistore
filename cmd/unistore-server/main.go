@@ -113,6 +113,7 @@ func main() {
 	flag.Parse()
 	conf := loadConfig()
 	loadCmdConf(conf)
+	conf.RaftStore.GitHash = gitHash
 	runtime.GOMAXPROCS(conf.Server.MaxProcs)
 	runtime.SetMutexProfileFraction(10)
 	debug.SetGCPercent(conf.Server.GCPercent)
