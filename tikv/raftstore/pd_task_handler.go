@@ -17,9 +17,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
-
+	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/pd"
+	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/pdpb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
@@ -174,8 +174,7 @@ func (r *pdTaskHandler) onStoreHeartbeat(t *pdStoreHeartbeatTask) {
 	if capacity == 0 || diskStat.Total < capacity {
 		capacity = diskStat.Total
 	}
-	lsmSize := t.kv.Size()
-	usedSize := t.stats.UsedSize + uint64(lsmSize) // t.stats.UsedSize contains size of snapshot files.
+	usedSize := t.stats.UsedSize
 	available := uint64(0)
 	if capacity > usedSize {
 		available = capacity - usedSize
@@ -195,6 +194,15 @@ func (r *pdTaskHandler) onStoreHeartbeat(t *pdStoreHeartbeatTask) {
 	r.storeStats.lastTotalReadBytes = r.storeStats.totalReadBytes
 	r.storeStats.lastTotalReadKeys = r.storeStats.totalReadKeys
 	r.storeStats.lastReport = time.Now()
+
+	metrics.StoreSizeBytes.WithLabelValues("available").Set(float64(t.stats.Available))
+	metrics.StoreSizeBytes.WithLabelValues("capacity").Set(float64(t.stats.Capacity))
+	metrics.RaftstoreRegionCount.WithLabelValues("region").Set(float64(t.stats.RegionCount))
+	metrics.RaftstoreRegionCount.WithLabelValues("leader").Set(float64(t.leaderCount))
+	metrics.EngineFlowBytes.WithLabelValues("kv", "bytes_read").Add(float64(t.stats.BytesRead))
+	metrics.EngineFlowBytes.WithLabelValues("kv", "bytes_written").Add(float64(t.stats.BytesWritten))
+	metrics.EngineFlowBytes.WithLabelValues("raft", "keys_read").Add(float64(t.stats.KeysRead))
+	metrics.EngineFlowBytes.WithLabelValues("raft", "keys_written").Add(float64(t.stats.KeysWritten))
 
 	r.pdClient.StoreHeartbeat(context.TODO(), t.stats)
 }

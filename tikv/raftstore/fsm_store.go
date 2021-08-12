@@ -596,8 +596,15 @@ func (d *storeMsgHandler) storeHeartbeatPD() {
 	// TODO: cache used size
 	stats.UsedSize = uint64(d.ctx.engine.kv.Size())
 	stats.StoreId = d.ctx.store.Id
+	var leaderCount uint64
 	d.ctx.storeMetaLock.RLock()
 	stats.RegionCount = uint32(len(d.ctx.storeMeta.regions))
+	meta := d.ctx.storeMeta
+	for regionID := range meta.regions {
+		if shard := d.ctx.engine.kv.GetShard(regionID); shard != nil && !shard.IsPassive() {
+			leaderCount++
+		}
+	}
 	d.ctx.storeMetaLock.RUnlock()
 	// TODO: update snap stats
 	stats.SendingSnapCount = 0
@@ -609,10 +616,11 @@ func (d *storeMsgHandler) storeHeartbeatPD() {
 	stats.KeysWritten = atomic.SwapUint64(&globalStats.engineTotalKeysWritten, 0)
 	stats.IsBusy = atomic.SwapUint64(&globalStats.isBusy, 0) > 0
 	storeInfo := &pdStoreHeartbeatTask{
-		stats:    stats,
-		kv:       d.ctx.engine.kv,
-		capacity: d.ctx.cfg.Capacity,
-		path:     d.ctx.engine.kvPath,
+		stats:       stats,
+		kv:          d.ctx.engine.kv,
+		capacity:    d.ctx.cfg.Capacity,
+		path:        d.ctx.engine.kvPath,
+		leaderCount: leaderCount,
 	}
 	d.ctx.pdTaskSender <- task{tp: taskTypePDStoreHeartbeat, data: storeInfo}
 }

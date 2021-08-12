@@ -68,6 +68,8 @@ type Shard struct {
 
 	estimatedSize int64
 	sequence      uint64
+
+	sizeStats *unsafe.Pointer
 }
 
 const (
@@ -94,6 +96,8 @@ func newShard(props *enginepb.Properties, ver uint64, start, end []byte, opt *Op
 	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{}))
 	shard.l0s = new(unsafe.Pointer)
 	atomic.StorePointer(shard.l0s, unsafe.Pointer(&l0Tables{}))
+	shard.sizeStats = new(unsafe.Pointer)
+	atomic.StorePointer(shard.sizeStats, unsafe.Pointer(&shardSizeStats{}))
 	for i := 0; i < len(opt.CFs); i++ {
 		sCF := &shardCF{
 			levels: make([]unsafe.Pointer, opt.CFs[i].MaxLevels),
@@ -172,22 +176,50 @@ func (s *Shard) isSplitting() bool {
 	return atomic.LoadInt32(&s.splitStage) >= int32(enginepb.SplitStage_PRE_SPLIT)
 }
 
+type shardSizeStats struct {
+	l0      int64
+	writeCF int64
+	lockCF  int64
+	extraCF int64
+}
+
+const (
+	writeCF = 0
+	lockCF  = 1
+	extraCF = 2
+)
+
+func (s *Shard) getSizeStats() shardSizeStats {
+	return *(*shardSizeStats)(atomic.LoadPointer(s.sizeStats))
+}
+
 func (s *Shard) GetEstimatedSize() int64 {
 	return atomic.LoadInt64(&s.estimatedSize)
 }
 
 func (s *Shard) refreshEstimatedSize() {
+	var stat = &shardSizeStats{}
 	l0Tables := s.loadL0Tables()
 	L0TablesSize := int64(0)
 	for _, t := range l0Tables.tables {
 		L0TablesSize += t.Size()
 	}
+	stat.l0 = L0TablesSize
 	CFsSize := int64(0)
 	s.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
 		CFsSize += level.totalSize
+		switch cf {
+		case writeCF:
+			stat.writeCF += level.totalSize
+		case lockCF:
+			stat.lockCF += level.totalSize
+		case extraCF:
+			stat.extraCF += level.totalSize
+		}
 		return false
 	})
 	atomic.StoreInt64(&s.estimatedSize, L0TablesSize+CFsSize)
+	atomic.StorePointer(s.sizeStats, unsafe.Pointer(stat))
 }
 
 func (s *Shard) getMaxMemTableSize() int64 {
