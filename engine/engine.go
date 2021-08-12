@@ -23,6 +23,7 @@ import (
 	"github.com/ngaut/unistore/engine/table/memtable"
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
+	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/s3util"
 	"github.com/ngaut/unistore/scheduler"
 	"github.com/pingcap/badger/y"
@@ -798,12 +799,25 @@ func (en *Engine) GetSplitSuggestion(shardID uint64, splitSize int64) [][]byte {
 func (en *Engine) Size() int64 {
 	var size int64
 	var shardCnt int64
+	var l0Size int64
+	var writeCFSize int64
+	var lockCFSize int64
+	var extraCFSize int64
 	en.shardMap.Range(func(key, value interface{}) bool {
 		shard := value.(*Shard)
 		size += shard.GetEstimatedSize()
 		shardCnt++
+		sizeStats := shard.getSizeStats()
+		l0Size += sizeStats.l0
+		writeCFSize += sizeStats.writeCF
+		lockCFSize += sizeStats.lockCF
+		extraCFSize += sizeStats.extraCF
 		return true
 	})
+	metrics.EngineSizeBytes.WithLabelValues("kv", "level0").Set(float64(l0Size))
+	metrics.EngineSizeBytes.WithLabelValues("kv", "write").Set(float64(writeCFSize))
+	metrics.EngineSizeBytes.WithLabelValues("kv", "lock").Set(float64(lockCFSize))
+	metrics.EngineSizeBytes.WithLabelValues("kv", "extra").Set(float64(extraCFSize))
 	return size + shardCnt
 }
 

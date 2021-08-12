@@ -10,7 +10,7 @@ GO                  := GO111MODULE=on go
 GOBUILD             := $(GO) build $(BUILD_FLAG) -tags codes
 GOTEST              := $(GO) test -p 8
 
-LDFLAGS             += -X "main.gitHash=`git rev-parse HEAD`" 
+LDFLAGS             += -X 'main.gitHash=`git rev-parse HEAD`'
 TEST_LDFLAGS        := ""
 
 PACKAGE_LIST        := go list ./...| grep -vE "cmd"
@@ -30,23 +30,23 @@ go-test:
 	$(GOTEST) -cover $(PACKAGES)
 
 go-build:
-	$(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/unistore-server cmd/unistore-server/main.go
+	$(GOBUILD) -ldflags "$(LDFLAGS)" -o bin/unistore-server cmd/unistore-server/main.go
 
 go-build-linux:
-	GOOS=linux $(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/unistore-server-linux cmd/unistore-server/main.go
+	GOOS=linux $(GOBUILD) -ldflags "$(LDFLAGS)" -o bin/unistore-server-linux cmd/unistore-server/main.go
 
 build: go-build
 
 linux: go-build-linux
 
 compaction:
-	$(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/compaction-server cmd/compaction-server/main.go
+	$(GOBUILD) -ldflags "$(LDFLAGS)" -o bin/compaction-server cmd/compaction-server/main.go
 
 compaction-linux:
-	GOOS=linux $(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/compaction-server-linux cmd/compaction-server/main.go
+	GOOS=linux $(GOBUILD) -ldflags "$(LDFLAGS)" -o bin/compaction-server-linux cmd/compaction-server/main.go
 
 s3tool:
-	$(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/s3tool s3util/s3tool/main.go
+	$(GOBUILD) -ldflags "$(LDFLAGS)" -o bin/s3tool s3util/s3tool/main.go
 
 s3tool-linux:
-	GOOS=linux $(GOBUILD) -ldflags '$(LDFLAGS)' -o bin/s3tool-linux s3util/s3tool/main.go
+	GOOS=linux $(GOBUILD) -ldflags "$(LDFLAGS)" -o bin/s3tool-linux s3util/s3tool/main.go

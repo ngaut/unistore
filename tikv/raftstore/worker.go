@@ -115,10 +115,11 @@ type pdRegionHeartbeatTask struct {
 }
 
 type pdStoreHeartbeatTask struct {
-	stats    *pdpb.StoreStats
-	kv       *engine.Engine
-	path     string
-	capacity uint64
+	stats       *pdpb.StoreStats
+	kv          *engine.Engine
+	path        string
+	capacity    uint64
+	leaderCount uint64
 }
 
 type pdReportBatchSplitTask struct {

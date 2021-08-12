@@ -133,6 +133,8 @@ func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	raftConf.SplitCheck.RegionMaxSize = uint64(conf.Server.RegionSize)
 	raftConf.ApplyWorkerCnt = conf.RaftStore.ApplyWorkerCount
 	raftConf.GrpcRaftConnNum = uint64(conf.RaftStore.GRPCRaftConnNum)
+	raftConf.StatusAddr = conf.Server.StatusAddr
+	raftConf.GitHash = conf.RaftStore.GitHash
 	for key, value := range conf.Server.Labels {
 		raftConf.Labels = append(raftConf.Labels, raftstore.StoreLabel{key, value})
 	}

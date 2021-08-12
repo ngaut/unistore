@@ -26,9 +26,7 @@ server_configs:
     prepared-plan-cache.enabled: true
     prepared-plan-cache.capacity: 256
   tikv:
-    server.pd-addr: "10.0.1.11:2379,10.0.1.12:2379,10.0.1.13:2379"
     server.region-size: 1500000000
-    engine.path: "/data1/tidb-data/tikv-20160"
     engine.base-size: 64000000
     engine.max-mem-table-size-factor: 256
     engine.max-table-size: 16000000
@@ -67,29 +65,20 @@ tidb_servers:
 tikv_servers:
   # # The ip address of the TiKV Server.
   - host: 10.0.1.31
-    # # SSH port of the server.
-    # ssh_port: 22
-    # # TiKV Server communication port.
-    port: 20160
-    # # Communication port for reporting TiKV Server status.
-    status_port: 20180
     config:
       server.labels: { host: "10.0.1.31" }
-      server.store-addr: "10.0.1.31:20160"
-      server.status-addr: "10.0.1.31:20180"
   - host: 10.0.1.32
-    # ssh_port: 22
-    port: 20160
-    status_port: 20180
     config:
       server.labels: { host: "10.0.1.32" }
-      server.store-addr: "10.0.1.32:20160"
-      server.status-addr: "10.0.1.32:20180"
   - host: 10.0.1.33
-    # ssh_port: 22
-    port: 20160
-    status_port: 20180
     config:
       server.labels: { host: "10.0.1.33" }
-      server.store-addr: "10.0.1.33:20160"
-      server.status-addr: "10.0.1.33:20180"
+
+monitoring_servers:
+  - host: 10.0.1.41
+
+grafana_servers:
+  - host: 10.0.1.51
+
+alertmanager_servers:
+  - host: 10.0.1.61

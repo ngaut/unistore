@@ -48,6 +48,7 @@ type RaftStore struct {
 	RaftElectionTimeoutTicks int    `toml:"raft-election-timeout-ticks"` // raft-election-timeout-ticks times
 	ApplyWorkerCount         int    `toml:"apply-worker-count"`
 	GRPCRaftConnNum          int    `toml:"grpc-raft-conn-num"`
+	GitHash                  string
 }
 
 type Engine struct {

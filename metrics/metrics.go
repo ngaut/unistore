@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	namespace = "unistore"
+	namespace = "tikv"
 	raft      = "raft"
 )
 
@@ -97,6 +97,34 @@ var (
 			Name:      "batch_size",
 			Buckets:   prometheus.ExponentialBuckets(1, 1.5, 20),
 		})
+	StoreSizeBytes = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: "store",
+			Name:      "size_bytes",
+			Help:      "Size of storage.",
+		}, []string{"type"})
+	RaftstoreRegionCount = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: "raftstore",
+			Name:      "region_count",
+			Help:      "Number of regions collected in region_collector",
+		}, []string{"type"})
+	EngineSizeBytes = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: "engine",
+			Name:      "size_bytes",
+			Help:      "Sizes of each column families",
+		}, []string{"db", "type"})
+	EngineFlowBytes = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: "engine",
+			Name:      "flow_bytes",
+			Help:      "Bytes and keys of read/written",
+		}, []string{"db", "type"})
 )
 
 func init() {
@@ -110,5 +138,9 @@ func init() {
 	prometheus.MustRegister(LockUpdate)
 	prometheus.MustRegister(RaftBatchSize)
 	prometheus.MustRegister(LatchWait)
+	prometheus.MustRegister(StoreSizeBytes)
+	prometheus.MustRegister(RaftstoreRegionCount)
+	prometheus.MustRegister(EngineSizeBytes)
+	prometheus.MustRegister(EngineFlowBytes)
 	http.Handle("/metrics", promhttp.Handler())
 }
