@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ngaut/unistore/config"
+	"github.com/ngaut/unistore/metrics"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -171,7 +172,10 @@ func (w *worker) start(handler taskHandler) {
 			if task.tp == taskTypeStop {
 				return
 			}
+			metrics.WorkerPendingTaskTotal.WithLabelValues(w.name).Set(float64(len(w.receiver) + 1))
 			handler.handle(task)
+			metrics.WorkerHandledTaskTotal.WithLabelValues(w.name).Inc()
+			metrics.WorkerPendingTaskTotal.WithLabelValues(w.name).Set(float64(len(w.receiver)))
 		}
 	}()
 }

@@ -104,6 +104,13 @@ var (
 			Name:      "size_bytes",
 			Help:      "Size of storage.",
 		}, []string{"type"})
+	ThreadCPUSecondsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: "thread",
+			Name:      "cpu_seconds_total",
+			Help:      "Total user and system CPU time spent in seconds by threads.",
+		}, []string{"name", "pid"})
 	RaftstoreRegionCount = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: namespace,
@@ -125,6 +132,92 @@ var (
 			Name:      "flow_bytes",
 			Help:      "Bytes and keys of read/written",
 		}, []string{"db", "type"})
+	GrpcMsgDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "grpc",
+			Name:      "msg_duration_seconds",
+			Help:      "Bucketed histogram of grpc server messages",
+			Buckets:   prometheus.ExponentialBuckets(0.0005, 2, 20),
+		}, []string{"type"})
+	ServerGrpcReqBatchSize = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "server",
+			Name:      "grpc_req_batch_size",
+			Help:      "grpc batch size of gRPC requests",
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 10),
+		})
+	ServerGrpcRespBatchSize = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "server",
+			Name:      "grpc_resp_batch_size",
+			Help:      "grpc batch size of gRPC responses",
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 10),
+		})
+	ServerRaftMessageBatchSize = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "server",
+			Name:      "raft_message_batch_size",
+			Help:      "Raft messages batch size",
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 10),
+		})
+	RegionWrittenKeys = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "region",
+			Name:      "written_keys",
+			Help:      "Histogram of keys written for regions",
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 20),
+		})
+	RegionWrittenBytes = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "region",
+			Name:      "written_bytes",
+			Help:      "Histogram of bytes written for regions",
+			Buckets:   prometheus.ExponentialBuckets(256, 2, 20),
+		})
+	RegionReadKeys = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "region",
+			Name:      "read_keys",
+			Help:      "Histogram of keys read for regions",
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 20),
+		})
+	RegionReadBytes = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "region",
+			Name:      "read_bytes",
+			Help:      "Histogram of bytes read for regions",
+			Buckets:   prometheus.ExponentialBuckets(256, 2, 20),
+		})
+	WorkerHandledTaskTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: "worker",
+			Name:      "handled_task_total",
+			Help:      "Total number of worker handled tasks.",
+		}, []string{"name"})
+	WorkerPendingTaskTotal = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: "worker",
+			Name:      "pending_task_total",
+			Help:      "Current worker pending + running tasks.",
+		}, []string{"name"})
+	WorkerTaskDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "worker",
+			Name:      "task_duration_seconds",
+			Help:      "Bucketed histogram of worker tasks duration seconds",
+			Buckets:   prometheus.ExponentialBuckets(0.0005, 2, 20),
+		}, []string{"type"})
 )
 
 func init() {
@@ -139,8 +232,20 @@ func init() {
 	prometheus.MustRegister(RaftBatchSize)
 	prometheus.MustRegister(LatchWait)
 	prometheus.MustRegister(StoreSizeBytes)
+	prometheus.MustRegister(ThreadCPUSecondsTotal)
 	prometheus.MustRegister(RaftstoreRegionCount)
 	prometheus.MustRegister(EngineSizeBytes)
 	prometheus.MustRegister(EngineFlowBytes)
+	prometheus.MustRegister(GrpcMsgDurationSeconds)
+	prometheus.MustRegister(ServerGrpcReqBatchSize)
+	prometheus.MustRegister(ServerGrpcRespBatchSize)
+	prometheus.MustRegister(ServerRaftMessageBatchSize)
+	prometheus.MustRegister(RegionWrittenKeys)
+	prometheus.MustRegister(RegionWrittenBytes)
+	prometheus.MustRegister(RegionReadKeys)
+	prometheus.MustRegister(RegionReadBytes)
+	prometheus.MustRegister(WorkerHandledTaskTotal)
+	prometheus.MustRegister(WorkerPendingTaskTotal)
+	prometheus.MustRegister(WorkerTaskDurationSeconds)
 	http.Handle("/metrics", promhttp.Handler())
 }

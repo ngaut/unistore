@@ -15,6 +15,7 @@ package raftstore
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/ngaut/unistore/metrics"
@@ -25,7 +26,9 @@ import (
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
 	"github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
+	"github.com/prometheus/procfs"
 	"github.com/shirou/gopsutil/disk"
+	"os"
 )
 
 type pdTaskHandler struct {
@@ -195,14 +198,24 @@ func (r *pdTaskHandler) onStoreHeartbeat(t *pdStoreHeartbeatTask) {
 	r.storeStats.lastTotalReadKeys = r.storeStats.totalReadKeys
 	r.storeStats.lastReport = time.Now()
 
+	// CPU statistics are available only on Linux
+	pid := os.Getpid()
+	p, err := procfs.NewProc(pid)
+	if err == nil {
+		if stat, err := p.Stat(); err == nil {
+			CPUTime := stat.CPUTime()
+			metrics.ThreadCPUSecondsTotal.WithLabelValues("tikv", strconv.FormatInt(int64(pid), 10)).Add(CPUTime - r.storeStats.lastCPUTime)
+			r.storeStats.lastCPUTime = CPUTime
+		}
+	}
 	metrics.StoreSizeBytes.WithLabelValues("available").Set(float64(t.stats.Available))
 	metrics.StoreSizeBytes.WithLabelValues("capacity").Set(float64(t.stats.Capacity))
 	metrics.RaftstoreRegionCount.WithLabelValues("region").Set(float64(t.stats.RegionCount))
 	metrics.RaftstoreRegionCount.WithLabelValues("leader").Set(float64(t.leaderCount))
-	metrics.EngineFlowBytes.WithLabelValues("kv", "bytes_read").Add(float64(t.stats.BytesRead))
-	metrics.EngineFlowBytes.WithLabelValues("kv", "bytes_written").Add(float64(t.stats.BytesWritten))
-	metrics.EngineFlowBytes.WithLabelValues("raft", "keys_read").Add(float64(t.stats.KeysRead))
-	metrics.EngineFlowBytes.WithLabelValues("raft", "keys_written").Add(float64(t.stats.KeysWritten))
+	metrics.RegionWrittenBytes.Observe(float64(t.stats.BytesWritten))
+	metrics.RegionWrittenKeys.Observe(float64(t.stats.KeysWritten))
+	metrics.RegionReadBytes.Observe(float64(t.stats.BytesRead))
+	metrics.RegionReadKeys.Observe(float64(t.stats.KeysRead))
 
 	r.pdClient.StoreHeartbeat(context.TODO(), t.stats)
 }
@@ -301,6 +314,7 @@ type storeStatistics struct {
 	lastTotalReadBytes uint64
 	lastTotalReadKeys  uint64
 	lastReport         time.Time
+	lastCPUTime        float64
 }
 
 type peerStatistics struct {

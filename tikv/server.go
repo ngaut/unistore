@@ -18,6 +18,7 @@ import (
 	"context"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/engine"
+	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/raftengine"
 	"github.com/ngaut/unistore/tikv/cophandler"
@@ -42,6 +43,7 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"unicode"
 )
 
 var _ tikvpb.TikvServer = new(Server)
@@ -203,6 +205,7 @@ type requestCtx struct {
 	svr              *Server
 	regCtx           *regionCtx
 	regErr           *errorpb.Error
+	err              error
 	buf              []byte
 	reader           *enginereader.Reader
 	method           string
@@ -263,6 +266,11 @@ func (req *requestCtx) finish() {
 	if req.reader != nil {
 		req.reader.Close()
 	}
+	if req.regErr != nil || req.err != nil {
+		metrics.GrpcMsgDurationSeconds.WithLabelValues("invalid").Observe(float64(time.Now().Sub(req.startTime)) / float64(time.Second))
+	} else {
+		metrics.GrpcMsgDurationSeconds.WithLabelValues(metricsName(req.method)).Observe(float64(time.Now().Sub(req.startTime)) / float64(time.Second))
+	}
 }
 
 func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb.GetResponse, error) {
@@ -275,11 +283,13 @@ func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb
 		return &kvrpcpb.GetResponse{RegionError: reqCtx.regErr}, nil
 	}
 	err = svr.mvccStore.CheckKeysLock(reqCtx, req.GetVersion(), req.Context.ResolvedLocks, req.Key)
+	reqCtx.err = err
 	if err != nil {
 		return &kvrpcpb.GetResponse{Error: convertToKeyError(err)}, nil
 	}
 	reader := reqCtx.getKVReader()
 	val, err := reader.Get(req.Key, req.GetVersion())
+	reqCtx.err = err
 	if err != nil {
 		return &kvrpcpb.GetResponse{
 			Error: convertToKeyError(err),
@@ -317,6 +327,7 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 	}
 	resp := &kvrpcpb.PessimisticLockResponse{}
 	waiter, err := svr.mvccStore.PessimisticLock(reqCtx, req, resp)
+	reqCtx.err = err
 	resp.Errors, resp.RegionError = convertToPBErrors(err)
 	if waiter == nil {
 		return resp, nil
@@ -342,6 +353,7 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 		if req.Force {
 			req.WaitTimeout = lockwaiter.LockNoWait
 			_, err := svr.mvccStore.PessimisticLock(reqCtx, req, resp)
+			reqCtx.err = err
 			resp.Errors, resp.RegionError = convertToPBErrors(err)
 			if err == nil {
 				return resp, nil
@@ -375,6 +387,7 @@ func (svr *Server) KVPessimisticRollback(ctx context.Context, req *kvrpcpb.Pessi
 		return &kvrpcpb.PessimisticRollbackResponse{RegionError: reqCtx.regErr}, nil
 	}
 	err = svr.mvccStore.PessimisticRollback(reqCtx, req)
+	reqCtx.err = err
 	resp := &kvrpcpb.PessimisticRollbackResponse{}
 	resp.Errors, resp.RegionError = convertToPBErrors(err)
 	return resp, nil
@@ -390,6 +403,7 @@ func (svr *Server) KvTxnHeartBeat(ctx context.Context, req *kvrpcpb.TxnHeartBeat
 		return &kvrpcpb.TxnHeartBeatResponse{RegionError: reqCtx.regErr}, nil
 	}
 	lockTTL, err := svr.mvccStore.TxnHeartBeat(reqCtx, req)
+	reqCtx.err = err
 	resp := &kvrpcpb.TxnHeartBeatResponse{LockTtl: lockTTL}
 	resp.Error, resp.RegionError = convertToPBError(err)
 	return resp, nil
@@ -405,6 +419,7 @@ func (svr *Server) KvCheckTxnStatus(ctx context.Context, req *kvrpcpb.CheckTxnSt
 		return &kvrpcpb.CheckTxnStatusResponse{RegionError: reqCtx.regErr}, nil
 	}
 	txnStatus, err := svr.mvccStore.CheckTxnStatus(reqCtx, req)
+	reqCtx.err = err
 	log.S().Infof("check txn status lockTS:%d commitTS:%d action:%s hasLock:%v", req.LockTs, txnStatus.commitTS, txnStatus.action, txnStatus.lockInfo != nil)
 	ttl := uint64(0)
 	if txnStatus.lockInfo != nil {
@@ -430,6 +445,7 @@ func (svr *Server) KvCheckSecondaryLocks(ctx context.Context, req *kvrpcpb.Check
 		return &kvrpcpb.CheckSecondaryLocksResponse{RegionError: reqCtx.regErr}, nil
 	}
 	locksStatus, err := svr.mvccStore.CheckSecondaryLocks(reqCtx, req.Keys, req.StartVersion)
+	reqCtx.err = err
 	resp := &kvrpcpb.CheckSecondaryLocksResponse{}
 	if err == nil {
 		resp.Locks = locksStatus.locks
@@ -450,6 +466,7 @@ func (svr *Server) KvPrewrite(ctx context.Context, req *kvrpcpb.PrewriteRequest)
 		return &kvrpcpb.PrewriteResponse{RegionError: reqCtx.regErr}, nil
 	}
 	err = svr.mvccStore.Prewrite(reqCtx, req)
+	reqCtx.err = err
 	resp := &kvrpcpb.PrewriteResponse{}
 	if reqCtx.asyncMinCommitTS > 0 {
 		resp.MinCommitTs = reqCtx.asyncMinCommitTS
@@ -472,6 +489,7 @@ func (svr *Server) KvCommit(ctx context.Context, req *kvrpcpb.CommitRequest) (*k
 	}
 	resp := new(kvrpcpb.CommitResponse)
 	err = svr.mvccStore.Commit(reqCtx, req.Keys, req.GetStartVersion(), req.GetCommitVersion())
+	reqCtx.err = err
 	if err != nil {
 		resp.Error, resp.RegionError = convertToPBError(err)
 	}
@@ -499,6 +517,7 @@ func (svr *Server) KvCleanup(ctx context.Context, req *kvrpcpb.CleanupRequest) (
 		return &kvrpcpb.CleanupResponse{RegionError: reqCtx.regErr}, nil
 	}
 	err = svr.mvccStore.Cleanup(reqCtx, req.Key, req.StartVersion, req.CurrentTs)
+	reqCtx.err = err
 	resp := new(kvrpcpb.CleanupResponse)
 	if committed, ok := err.(ErrAlreadyCommitted); ok {
 		resp.CommitVersion = uint64(committed)
@@ -535,6 +554,7 @@ func (svr *Server) KvBatchRollback(ctx context.Context, req *kvrpcpb.BatchRollba
 	}
 	resp := new(kvrpcpb.BatchRollbackResponse)
 	err = svr.mvccStore.Rollback(reqCtx, req.Keys, req.StartVersion)
+	reqCtx.err = err
 	resp.Error, resp.RegionError = convertToPBError(err)
 	return resp, nil
 }
@@ -550,6 +570,7 @@ func (svr *Server) KvScanLock(ctx context.Context, req *kvrpcpb.ScanLockRequest)
 	}
 	log.Debug("kv scan lock")
 	locks, err := svr.mvccStore.ScanLock(reqCtx, req.MaxVersion, int(req.Limit))
+	reqCtx.err = err
 	return &kvrpcpb.ScanLockResponse{Error: convertToKeyError(err), Locks: locks}, nil
 }
 
@@ -567,6 +588,7 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 		for _, txnInfo := range req.TxnInfos {
 			log.S().Debugf("kv resolve lock region:%d txn:%v", reqCtx.regCtx.meta.Id, txnInfo.Txn)
 			err := svr.mvccStore.ResolveLock(reqCtx, nil, txnInfo.Txn, txnInfo.Status)
+			reqCtx.err = err
 			if err != nil {
 				resp.Error, resp.RegionError = convertToPBError(err)
 				break
@@ -600,6 +622,7 @@ func (svr *Server) KvDeleteRange(ctx context.Context, req *kvrpcpb.DeleteRangeRe
 		return &kvrpcpb.DeleteRangeResponse{RegionError: reqCtx.regErr}, nil
 	}
 	err = svr.mvccStore.writer.DeleteRange(req.StartKey, req.EndKey, reqCtx.regCtx)
+	reqCtx.err = err
 	if err != nil {
 		log.Error("delete range failed", zap.Error(err))
 	}
@@ -720,6 +743,7 @@ func (svr *Server) MvccGetByKey(ctx context.Context, req *kvrpcpb.MvccGetByKeyRe
 	}
 	resp := new(kvrpcpb.MvccGetByKeyResponse)
 	mvccInfo, err := svr.mvccStore.MvccGetByKey(reqCtx, req.GetKey())
+	reqCtx.err = err
 	if err != nil {
 		resp.Error = err.Error()
 	}
@@ -738,6 +762,7 @@ func (svr *Server) MvccGetByStartTs(ctx context.Context, req *kvrpcpb.MvccGetByS
 	}
 	resp := new(kvrpcpb.MvccGetByStartTsResponse)
 	mvccInfo, key, err := svr.mvccStore.MvccGetByStartTs(reqCtx, req.StartTs)
+	reqCtx.err = err
 	if err != nil {
 		resp.Error = err.Error()
 	}
@@ -791,8 +816,10 @@ func (svr *Server) CheckLockObserver(context.Context, *kvrpcpb.CheckLockObserver
 }
 
 func (svr *Server) PhysicalScanLock(ctx context.Context, req *kvrpcpb.PhysicalScanLockRequest) (*kvrpcpb.PhysicalScanLockResponse, error) {
+	startTime := time.Now()
 	resp := &kvrpcpb.PhysicalScanLockResponse{}
 	resp.Locks = svr.mvccStore.PhysicalScanLock(req.StartKey, req.MaxTs, int(req.Limit))
+	metrics.GrpcMsgDurationSeconds.WithLabelValues("physical_scan_lock").Observe(float64(time.Now().Sub(startTime)) / float64(time.Second))
 	return resp, nil
 }
 
@@ -924,4 +951,19 @@ func extractRegionError(err error) *errorpb.Error {
 		return raftError.RequestErr
 	}
 	return nil
+}
+
+func metricsName(name string) string {
+	buffer := new(bytes.Buffer)
+	for i, r := range name {
+		if unicode.IsUpper(r) {
+			if i != 0 {
+				buffer.WriteByte('_')
+			}
+			buffer.WriteRune(unicode.ToLower(r))
+		} else {
+			buffer.WriteRune(r)
+		}
+	}
+	return buffer.String()
 }
