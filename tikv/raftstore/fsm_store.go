@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/ngaut/unistore/config"
+	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/badger/y"
@@ -119,10 +120,12 @@ type Transport interface {
 func (pc *RaftContext) flushLocalStats() {
 	if pc.localStats.engineTotalBytesWritten > 0 {
 		atomic.AddUint64(&pc.globalStats.engineTotalBytesWritten, pc.localStats.engineTotalBytesWritten)
+		metrics.EngineFlowBytes.WithLabelValues("raft", "bytes_written").Add(float64(pc.localStats.engineTotalBytesWritten))
 		pc.localStats.engineTotalBytesWritten = 0
 	}
 	if pc.localStats.engineTotalKeysWritten > 0 {
 		atomic.AddUint64(&pc.globalStats.engineTotalKeysWritten, pc.localStats.engineTotalKeysWritten)
+		metrics.EngineFlowBytes.WithLabelValues("raft", "keys_written").Add(float64(pc.localStats.engineTotalKeysWritten))
 		pc.localStats.engineTotalKeysWritten = 0
 	}
 	if pc.localStats.isBusy > 0 {

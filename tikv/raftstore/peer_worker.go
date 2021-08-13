@@ -158,6 +158,9 @@ func (rw *raftWorker) receiveMsgs(closeCh <-chan struct{}) (quit bool) {
 			inbox.reset()
 		}
 	}
+	var reqCount int
+	var respCount int
+	var raftMsgCount int
 	select {
 	case <-closeCh:
 		for _, applyCh := range rw.applyChs {
@@ -165,27 +168,41 @@ func (rw *raftWorker) receiveMsgs(closeCh <-chan struct{}) (quit bool) {
 		}
 		return true
 	case msg := <-rw.raftCh:
+		reqCount++
+		if msg.Type == MsgTypeRaftMessage {
+			raftMsgCount++
+		}
 		rw.getPeerInbox(msg.RegionID).append(msg)
 	case msg := <-rw.applyResCh:
+		respCount++
 		rw.getPeerInbox(msg.RegionID).append(msg)
 	case <-rw.ticker.C:
 		rw.pr.peers.Range(func(key, value interface{}) bool {
+			reqCount++
 			regionID := key.(uint64)
 			rw.getPeerInbox(regionID).append(NewPeerMsg(MsgTypeTick, regionID, nil))
 			return true
 		})
 	}
 	pending := len(rw.raftCh)
+	reqCount += pending
 	for i := 0; i < pending; i++ {
 		msg := <-rw.raftCh
+		if msg.Type == MsgTypeRaftMessage {
+			raftMsgCount++
+		}
 		rw.getPeerInbox(msg.RegionID).append(msg)
 	}
 	resLen := len(rw.applyResCh)
+	respCount += resLen
 	for i := 0; i < resLen; i++ {
 		msg := <-rw.applyResCh
 		rw.getPeerInbox(msg.RegionID).append(msg)
 	}
 	metrics.RaftBatchSize.Observe(float64(len(rw.inboxes)))
+	metrics.ServerGrpcReqBatchSize.Observe(float64(reqCount))
+	metrics.ServerGrpcRespBatchSize.Observe(float64(respCount))
+	metrics.ServerRaftMessageBatchSize.Observe(float64(raftMsgCount))
 	return false
 }
 
@@ -253,6 +270,8 @@ func (rw *raftWorker) persistState() {
 		if err != nil {
 			panic(err)
 		}
+		rw.raftCtx.localStats.engineTotalKeysWritten += uint64(raftWB.NumEntries())
+		rw.raftCtx.localStats.engineTotalBytesWritten += uint64(raftWB.Size())
 		raftWB.Reset()
 		rw.writeDc.collect(time.Since(begin))
 	}
@@ -300,7 +319,7 @@ func newApplyWorker(r *router, idx int, ch chan []*peerApplyBatch, ctx *applyCon
 		r:   r,
 		ch:  ch,
 		ctx: ctx,
-		dc:  newDurationCollector(fmt.Sprintf("apply%d", idx)),
+		dc:  newDurationCollector(fmt.Sprintf("apply_handle_msg_%d", idx)),
 	}
 }
 
@@ -312,6 +331,7 @@ func (aw *applyWorker) run(wg *sync.WaitGroup) {
 		if batch == nil {
 			return
 		}
+		metrics.WorkerPendingTaskTotal.WithLabelValues("apply-worker").Set(float64(len(aw.ch)) + 1)
 		begin := time.Now()
 		for _, peerBatch := range batch {
 			for _, msg := range peerBatch.applyMsgs {
@@ -319,6 +339,8 @@ func (aw *applyWorker) run(wg *sync.WaitGroup) {
 			}
 		}
 		aw.dc.collect(time.Since(begin))
+		metrics.WorkerHandledTaskTotal.WithLabelValues("apply-worker").Inc()
+		metrics.WorkerPendingTaskTotal.WithLabelValues("apply-worker").Set(float64(len(aw.ch)))
 	}
 }
 
@@ -347,12 +369,15 @@ func (sw *storeWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 			storeTicker.tickClock()
 			for i := range storeTicker.schedules {
 				if storeTicker.isOnStoreTick(StoreTick(i)) {
-					sw.store.handleMsg(NewMsg(MsgTypeStoreTick, StoreTick(i)))
+					msg = NewMsg(MsgTypeStoreTick, StoreTick(i))
 				}
 			}
 		case msg = <-sw.store.receiver:
 		}
+		metrics.WorkerPendingTaskTotal.WithLabelValues("store-worker").Set(float64(len(sw.store.receiver) + 1))
 		sw.store.handleMsg(msg)
+		metrics.WorkerHandledTaskTotal.WithLabelValues("store-worker").Inc()
+		metrics.WorkerPendingTaskTotal.WithLabelValues("store-worker").Set(float64(len(sw.store.receiver)))
 	}
 }
 
@@ -373,6 +398,7 @@ func newDurationCollector(name string) *durationCollector {
 func (dc *durationCollector) collect(dur time.Duration) {
 	dc.total += dur
 	dc.cnt++
+	metrics.WorkerTaskDurationSeconds.WithLabelValues(dc.name).Observe(float64(dur) / float64(time.Second))
 	if dur > 5*time.Millisecond {
 		dc.top = append(dc.top, dur)
 	}

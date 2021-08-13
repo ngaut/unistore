@@ -57,6 +57,14 @@ func (b *WriteBatch) SetState(regionID uint64, key, val []byte) {
 	b.size += stateSize(key, val)
 }
 
+func (wb *WriteBatch) Size() int {
+	return wb.size
+}
+
+func (wb *WriteBatch) NumEntries() int {
+	return len(wb.truncates) + len(wb.raftLogOps) + len(wb.stateOps)
+}
+
 func (b *WriteBatch) Reset() {
 	b.raftLogOps = b.raftLogOps[:0]
 	b.truncates = b.truncates[:0]

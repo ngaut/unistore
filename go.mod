@@ -9,7 +9,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.9.0
 	github.com/cespare/xxhash v1.1.0
 	github.com/coocood/bbloom v0.0.0-20190830030839-58deb6228d64
-	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang/protobuf v1.3.4
@@ -25,6 +24,7 @@ require (
 	github.com/pingcap/tidb v1.1.0-beta.0.20210407104700-3d8084e972d1
 	github.com/pingcap/tipb v0.0.0-20210326161441-1164ca065d1b
 	github.com/prometheus/client_golang v1.5.1
+	github.com/prometheus/procfs v0.0.8
 	github.com/shirou/gopsutil v3.21.2+incompatible
 	github.com/soheilhy/cmux v0.1.5
 	github.com/stretchr/testify v1.6.1

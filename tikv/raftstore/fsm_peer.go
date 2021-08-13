@@ -18,10 +18,12 @@ import (
 	"fmt"
 	"github.com/ngaut/unistore/engine"
 	"github.com/ngaut/unistore/enginepb"
+	"sync/atomic"
 	"time"
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
+	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/raft"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -352,6 +354,14 @@ func (d *peerMsgHandler) onApplyResult(res *applyTaskRes) {
 		}
 		if d.peer.PostApply(d.ctx.engine.kv, res.applyState, res.merged, res.metrics) {
 			d.hasReady = true
+		}
+		if res.metrics.writtenBytes > 0 {
+			atomic.AddUint64(&d.ctx.globalStats.engineTotalBytesWritten, res.metrics.writtenBytes)
+			metrics.EngineFlowBytes.WithLabelValues("kv", "bytes_written").Add(float64(res.metrics.writtenBytes))
+		}
+		if res.metrics.writtenKeys > 0 {
+			atomic.AddUint64(&d.ctx.globalStats.engineTotalKeysWritten, res.metrics.writtenKeys)
+			metrics.EngineFlowBytes.WithLabelValues("kv", "keys_written").Add(float64(res.metrics.writtenKeys))
 		}
 	}
 }
