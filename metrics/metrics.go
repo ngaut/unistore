@@ -140,6 +140,13 @@ var (
 			Help:      "Bucketed histogram of grpc server messages",
 			Buckets:   prometheus.ExponentialBuckets(0.0005, 2, 20),
 		}, []string{"type"})
+	GrpcMsgFailTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: "grpc",
+			Name:      "msg_fail_total",
+			Help:      "Total number of handle grpc message failure",
+		}, []string{"type"})
 	ServerGrpcReqBatchSize = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
 			Namespace: namespace,
@@ -237,6 +244,7 @@ func init() {
 	prometheus.MustRegister(EngineSizeBytes)
 	prometheus.MustRegister(EngineFlowBytes)
 	prometheus.MustRegister(GrpcMsgDurationSeconds)
+	prometheus.MustRegister(GrpcMsgFailTotal)
 	prometheus.MustRegister(ServerGrpcReqBatchSize)
 	prometheus.MustRegister(ServerGrpcRespBatchSize)
 	prometheus.MustRegister(ServerRaftMessageBatchSize)

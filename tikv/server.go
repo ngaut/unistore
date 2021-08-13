@@ -267,7 +267,7 @@ func (req *requestCtx) finish() {
 		req.reader.Close()
 	}
 	if req.regErr != nil || req.err != nil {
-		metrics.GrpcMsgDurationSeconds.WithLabelValues("invalid").Observe(float64(time.Now().Sub(req.startTime)) / float64(time.Second))
+		metrics.GrpcMsgFailTotal.WithLabelValues(metricsName(req.method)).Inc()
 	} else {
 		metrics.GrpcMsgDurationSeconds.WithLabelValues(metricsName(req.method)).Observe(float64(time.Now().Sub(req.startTime)) / float64(time.Second))
 	}
