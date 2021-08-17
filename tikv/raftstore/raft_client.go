@@ -139,6 +139,7 @@ func (c *raftConn) sendRawMsg(msg *raft_serverpb.RaftMessage) {
 		}
 		log.Info("new raft raw conn")
 	}
+	_ = c.rawConn.SetWriteDeadline(time.Now().Add(time.Second * 3))
 	_, err = c.rawConn.Write(c.rawBuf)
 	if err != nil {
 		c.nextRetryTime = time.Now().Add(time.Second)
