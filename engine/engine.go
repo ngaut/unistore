@@ -829,7 +829,7 @@ func (en *Engine) GetOpt() Options {
 	return en.opt
 }
 
-func (en *Engine) TriggerFlush(shard *Shard, skipCnt int) {
+func (en *Engine) TriggerFlush(shard *Shard, skipCnt int, isPreSplitStage bool) {
 	mems := shard.loadMemTables()
 	for i := len(mems.tables) - skipCnt - 1; i > 0; i-- {
 		memTbl := mems.tables[i]
@@ -840,7 +840,7 @@ func (en *Engine) TriggerFlush(shard *Shard, skipCnt int) {
 		}
 	}
 	if len(mems.tables) == 1 && mems.tables[0].Empty() {
-		if !shard.IsInitialFlushed() {
+		if !shard.IsInitialFlushed() || isPreSplitStage {
 			commitTS := shard.allocCommitTS()
 			memTbl := memtable.NewCFTable(en.numCFs)
 			memTbl.SetVersion(commitTS)
