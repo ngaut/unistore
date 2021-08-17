@@ -317,6 +317,18 @@ func (t *Table) NumBlocks() int {
 	return t.idx.numBlocks()
 }
 
+func (t *Table) GetSuggestSplitKey() []byte {
+	numBlocks := t.NumBlocks()
+	if numBlocks > 0 {
+		diffKey := t.idx.blockDiffKey(numBlocks / 2)
+		splitKey := make([]byte, len(t.idx.commonPrefix)+len(diffKey))
+		copy(splitKey, t.idx.commonPrefix)
+		copy(splitKey[len(t.idx.commonPrefix):], diffKey)
+		return splitKey
+	}
+	return []byte{}
+}
+
 type nIndex struct {
 	commonPrefix []byte
 	blockKeyOffs []uint32

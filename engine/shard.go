@@ -292,7 +292,21 @@ func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
 		return nil
 	}
 	if splitKey, ok := s.getSequentialWriteSplitKey(targetSize); ok {
+		log.S().Infof("shard %d:%d get sequential write split key %x, start:%x, end:%x",
+			s.ID, s.Ver, splitKey, s.Start, s.End)
 		return [][]byte{splitKey}
+	}
+	l0s := s.loadL0Tables()
+	if l0s.totalSize() > int64(float64(estimatedSize)*0.3) && len(l0s.tables) > 0 {
+		tbl := l0s.tables[0].GetCF(0)
+		if tbl != nil {
+			splitKey := tbl.GetSuggestSplitKey()
+			if len(splitKey) > 0 {
+				log.S().Infof("shard %d:%d get table suggest split key %x, start:%x, end:%x",
+					s.ID, s.Ver, splitKey, s.Start, s.End)
+				return [][]byte{splitKey}
+			}
+		}
 	}
 	var maxLevel *levelHandler
 	s.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
