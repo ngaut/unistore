@@ -284,7 +284,7 @@ func (en *Engine) DebugHandler() http.HandlerFunc {
 					splittings = len(shard.splittingMemTbls)
 				}
 				if r.FormValue("detail") == "" {
-					fmt.Fprintf(w, "\tShard % 10d:%d,\tSize % 13s, Mem % 13s(%d),\tL0 % 13s(%d),\tCF0 % 13s, CF1 % 13s, MMTS % 13s, Stage % 7s, Passive %s, Ts % 10d, Seq % 10d\n\n",
+					fmt.Fprintf(w, "\tShard % 10d:%d,\tSize % 13s, Mem % 13s(%d),\tL0 % 13s(%d),\tCF0 % 13s, CF1 % 13s, MMTS % 13s, Stage % 7s, Passive %s, PIDX % 10d, Seq % 10d\n\n",
 						key,
 						shard.Ver,
 						formatInt(shardStat.ShardSize),
@@ -297,7 +297,7 @@ func (en *Engine) DebugHandler() http.HandlerFunc {
 						formatInt(int(shard.getMaxMemTableSize())),
 						splitStageName[shard.splitStage],
 						formatBool(shard.IsPassive()),
-						shard.commitTS,
+						shard.parentIndex,
 						shard.sequence,
 					)
 					continue
@@ -537,6 +537,7 @@ type WriteBatch struct {
 	properties    map[string][]byte
 	entryArena    []memtable.Entry
 	entryArenaIdx int
+	sequence      uint64
 }
 
 func (en *Engine) NewWriteBatch(shard *Shard) *WriteBatch {
@@ -592,6 +593,10 @@ func (wb *WriteBatch) Delete(cf byte, key []byte, version uint64) error {
 
 func (wb *WriteBatch) SetProperty(key string, val []byte) {
 	wb.properties[key] = val
+}
+
+func (wb *WriteBatch) SetSequence(seq uint64) {
+	wb.sequence = seq
 }
 
 func (wb *WriteBatch) EstimatedSize() int64 {
@@ -841,7 +846,7 @@ func (en *Engine) TriggerFlush(shard *Shard, skipCnt int, isPreSplitStage bool) 
 	}
 	if len(mems.tables) == 1 && mems.tables[0].Empty() {
 		if !shard.IsInitialFlushed() || isPreSplitStage {
-			commitTS := shard.allocCommitTS()
+			commitTS := shard.loadCommitTS()
 			memTbl := memtable.NewCFTable(en.numCFs)
 			memTbl.SetVersion(commitTS)
 			en.flushCh <- &flushTask{

@@ -49,7 +49,7 @@ func (en *Engine) runFlushMemTable(c *y.Closer) {
 			flushTask: task,
 			change:    change,
 		}
-		change.Flush = &enginepb.Flush{CommitTS: task.tbl.GetVersion(), Properties: task.tbl.GetProps()}
+		change.Flush = &enginepb.Flush{Properties: task.tbl.GetProps()}
 		change.Stage = task.tbl.GetSplitStage()
 		if !task.tbl.Empty() {
 			resultTask.wg.Add(1)

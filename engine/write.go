@@ -57,7 +57,7 @@ func (en *Engine) switchMemTable(shard *Shard, commitTS uint64) *memtable.Table 
 }
 
 func (en *Engine) Write(wb *WriteBatch) {
-	commitTS := wb.shard.allocCommitTS()
+	commitTS := wb.sequence
 	shard := wb.shard
 	if shard.isSplitting() {
 		en.writeSplitting(wb, commitTS)
@@ -65,12 +65,9 @@ func (en *Engine) Write(wb *WriteBatch) {
 	}
 	memTbl := shard.loadWritableMemTable()
 	if memTbl == nil || memTbl.Size()+wb.estimatedSize > shard.getMaxMemTableSize() {
-		oldMemTbl := en.switchMemTable(shard, commitTS)
+		oldMemTbl := en.switchMemTable(shard, shard.loadCommitTS())
 		en.scheduleFlushTask(shard, oldMemTbl)
 		memTbl = shard.loadWritableMemTable()
-		// Update the commitTS so that the new memTable has a new commitTS, then
-		// the old commitTS can be used as a snapshot at the memTable-switching time.
-		commitTS = shard.allocCommitTS()
 	}
 	for cf, entries := range wb.entries {
 		if !en.opt.CFs[cf].Managed {

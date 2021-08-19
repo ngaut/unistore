@@ -32,26 +32,26 @@ type ShardMeta struct {
 	files map[uint64]*fileMeta
 	// properties in ShardMeta is only updated on every mem-table flush, it's different than properties in the shard
 	// which is updated on every write operation.
-	properties *properties
-	preSplit   *enginepb.PreSplit
-	split      *enginepb.Split
-	SplitStage enginepb.SplitStage
-	commitTS   uint64
-	parent     *ShardMeta
+	properties  *properties
+	preSplit    *enginepb.PreSplit
+	split       *enginepb.Split
+	SplitStage  enginepb.SplitStage
+	parent      *ShardMeta
+	parentIndex uint64
 }
 
 func NewShardMeta(cs *enginepb.ChangeSet) *ShardMeta {
 	snap := cs.Snapshot
 	shardMeta := &ShardMeta{
-		ID:         cs.ShardID,
-		Ver:        cs.ShardVer,
-		Start:      snap.Start,
-		End:        snap.End,
-		Seq:        cs.Sequence,
-		files:      map[uint64]*fileMeta{},
-		properties: newProperties().applyPB(snap.Properties),
-		SplitStage: cs.Stage,
-		commitTS:   snap.CommitTS,
+		ID:          cs.ShardID,
+		Ver:         cs.ShardVer,
+		Start:       snap.Start,
+		End:         snap.End,
+		Seq:         cs.Sequence,
+		files:       map[uint64]*fileMeta{},
+		properties:  newProperties().applyPB(snap.Properties),
+		SplitStage:  cs.Stage,
+		parentIndex: snap.ParentIndex,
 	}
 	if len(cs.Snapshot.SplitKeys) > 0 {
 		shardMeta.preSplit = &enginepb.PreSplit{Keys: cs.Snapshot.SplitKeys}
@@ -104,7 +104,6 @@ func (si *ShardMeta) ApplyChangeSet(cs *enginepb.ChangeSet) {
 }
 
 func (si *ShardMeta) ApplyFlush(cs *enginepb.ChangeSet) {
-	si.commitTS = cs.Flush.CommitTS
 	si.parent = nil
 	props := cs.Flush.Properties
 	if props != nil {
@@ -165,13 +164,14 @@ func (si *ShardMeta) ApplySplit(cs *enginepb.ChangeSet) []*ShardMeta {
 		startKey, endKey := getSplittingStartEnd(old.Start, old.End, split.Keys, i)
 		id := split.NewShards[i].ShardID
 		shardInfo := &ShardMeta{
-			ID:         id,
-			Ver:        newVer,
-			Start:      startKey,
-			End:        endKey,
-			files:      map[uint64]*fileMeta{},
-			properties: newProperties().applyPB(split.NewShards[i]),
-			parent:     old,
+			ID:          id,
+			Ver:         newVer,
+			Start:       startKey,
+			End:         endKey,
+			files:       map[uint64]*fileMeta{},
+			properties:  newProperties().applyPB(split.NewShards[i]),
+			parent:      old,
+			parentIndex: old.parentIndex + old.Seq,
 		}
 		if id == old.ID {
 			old.split = split
@@ -220,10 +220,10 @@ func (si *ShardMeta) ToChangeSet() *enginepb.ChangeSet {
 		Sequence: si.Seq,
 	}
 	shardSnap := &enginepb.Snapshot{
-		Start:      si.Start,
-		End:        si.End,
-		Properties: si.properties.toPB(si.ID),
-		CommitTS:   si.commitTS,
+		Start:       si.Start,
+		End:         si.End,
+		Properties:  si.properties.toPB(si.ID),
+		ParentIndex: si.parentIndex,
 	}
 	if si.preSplit != nil {
 		shardSnap.SplitKeys = si.preSplit.Keys
@@ -266,17 +266,6 @@ func (si *ShardMeta) IsDuplicatedChangeSet(change *enginepb.ChangeSet) bool {
 	}
 	if preSplit := change.PreSplit; preSplit != nil {
 		return si.preSplit != nil
-	}
-	if flush := change.Flush; flush != nil {
-		if si.parent != nil {
-			return false
-		}
-		dup := si.commitTS >= flush.CommitTS
-		if dup {
-			log.S().Infof("%d:%d skip duplicated flush commitTS:%d, meta commitTS:%d",
-				si.ID, si.Ver, flush.CommitTS, si.commitTS)
-		}
-		return dup
 	}
 	if splitFiles := change.SplitFiles; splitFiles != nil {
 		return si.SplitStage == change.Stage

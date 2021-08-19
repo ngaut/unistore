@@ -64,7 +64,7 @@ type Shard struct {
 	skippedFlushes   []*flushTask
 	skippedFlushLock sync.Mutex
 
-	commitTS uint64
+	parentIndex uint64
 
 	estimatedSize int64
 	sequence      uint64
@@ -120,7 +120,7 @@ func newShardForLoading(shardInfo *ShardMeta, opt *Options) *Shard {
 	shard.setSplitStage(shardInfo.SplitStage)
 	shard.setInitialFlushed()
 	shard.SetPassive(true)
-	shard.commitTS = shardInfo.commitTS
+	shard.parentIndex = shardInfo.parentIndex
 	shard.sequence = shardInfo.Seq
 	return shard
 }
@@ -134,10 +134,10 @@ func newShardForIngest(changeSet *enginepb.ChangeSet, opt *Options) *Shard {
 	}
 	shard.setSplitStage(changeSet.Stage)
 	shard.setInitialFlushed()
-	shard.commitTS = shardSnap.CommitTS
+	shard.parentIndex = shardSnap.ParentIndex
 	shard.sequence = changeSet.Sequence
 	log.S().Infof("ingest shard %d:%d maxMemTblSize %d, commitTS %d",
-		changeSet.ShardID, changeSet.ShardVer, shard.getMaxMemTableSize(), shard.commitTS)
+		changeSet.ShardID, changeSet.ShardVer, shard.getMaxMemTableSize(), shard.loadCommitTS())
 	return shard
 }
 
@@ -449,17 +449,8 @@ func boundedMemSize(size int64) int64 {
 	return size
 }
 
-func (s *Shard) setCommitTS(commitTS uint64) {
-	oldCommitTS := atomic.LoadUint64(&s.commitTS)
-	if oldCommitTS >= commitTS {
-		return
-	}
-	atomic.CompareAndSwapUint64(&s.commitTS, oldCommitTS, commitTS)
-	log.S().Infof("shard %d:%d set commit ts %d", s.ID, s.Ver, commitTS)
-}
-
-func (s *Shard) allocCommitTS() uint64 {
-	return atomic.AddUint64(&s.commitTS, 1)
+func (s *Shard) loadCommitTS() uint64 {
+	return atomic.LoadUint64(&s.parentIndex) + atomic.LoadUint64(&s.sequence)
 }
 
 func (s *Shard) GetAllFiles() []uint64 {
