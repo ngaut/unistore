@@ -36,8 +36,8 @@ type ShardMeta struct {
 	preSplit   *enginepb.PreSplit
 	split      *enginepb.Split
 	SplitStage enginepb.SplitStage
-	commitTS   uint64
 	parent     *ShardMeta
+	baseTS     uint64
 }
 
 func NewShardMeta(cs *enginepb.ChangeSet) *ShardMeta {
@@ -51,7 +51,7 @@ func NewShardMeta(cs *enginepb.ChangeSet) *ShardMeta {
 		files:      map[uint64]*fileMeta{},
 		properties: newProperties().applyPB(snap.Properties),
 		SplitStage: cs.Stage,
-		commitTS:   snap.CommitTS,
+		baseTS:     snap.BaseTS,
 	}
 	if len(cs.Snapshot.SplitKeys) > 0 {
 		shardMeta.preSplit = &enginepb.PreSplit{Keys: cs.Snapshot.SplitKeys}
@@ -104,7 +104,6 @@ func (si *ShardMeta) ApplyChangeSet(cs *enginepb.ChangeSet) {
 }
 
 func (si *ShardMeta) ApplyFlush(cs *enginepb.ChangeSet) {
-	si.commitTS = cs.Flush.CommitTS
 	si.parent = nil
 	props := cs.Flush.Properties
 	if props != nil {
@@ -175,8 +174,10 @@ func (si *ShardMeta) ApplySplit(cs *enginepb.ChangeSet) []*ShardMeta {
 		}
 		if id == old.ID {
 			old.split = split
+			shardInfo.baseTS = old.baseTS
 			shardInfo.Seq = cs.Sequence
 		} else {
+			shardInfo.baseTS = old.baseTS + cs.Sequence
 			shardInfo.Seq = 1
 		}
 		newShards[i] = shardInfo
@@ -223,7 +224,7 @@ func (si *ShardMeta) ToChangeSet() *enginepb.ChangeSet {
 		Start:      si.Start,
 		End:        si.End,
 		Properties: si.properties.toPB(si.ID),
-		CommitTS:   si.commitTS,
+		BaseTS:     si.baseTS,
 	}
 	if si.preSplit != nil {
 		shardSnap.SplitKeys = si.preSplit.Keys
@@ -266,17 +267,6 @@ func (si *ShardMeta) IsDuplicatedChangeSet(change *enginepb.ChangeSet) bool {
 	}
 	if preSplit := change.PreSplit; preSplit != nil {
 		return si.preSplit != nil
-	}
-	if flush := change.Flush; flush != nil {
-		if si.parent != nil {
-			return false
-		}
-		dup := si.commitTS >= flush.CommitTS
-		if dup {
-			log.S().Infof("%d:%d skip duplicated flush commitTS:%d, meta commitTS:%d",
-				si.ID, si.Ver, flush.CommitTS, si.commitTS)
-		}
-		return dup
 	}
 	if splitFiles := change.SplitFiles; splitFiles != nil {
 		return si.SplitStage == change.Stage

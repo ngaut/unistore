@@ -99,6 +99,7 @@ func SetOpLock(wb *engine.WriteBatch, key, userMeta []byte, version uint64) {
 
 func SetApplyState(wb *engine.WriteBatch, state applyState) {
 	wb.SetProperty(applyStateKey, state.Marshal())
+	wb.SetSequence(state.appliedIndex)
 }
 
 func SetMaxMemTableSize(wb *engine.WriteBatch, val []byte) {

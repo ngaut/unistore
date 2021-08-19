@@ -64,10 +64,10 @@ type Shard struct {
 	skippedFlushes   []*flushTask
 	skippedFlushLock sync.Mutex
 
-	commitTS uint64
+	baseTS uint64
 
 	estimatedSize int64
-	sequence      uint64
+	metaSequence  uint64
 
 	sizeStats *unsafe.Pointer
 }
@@ -120,8 +120,8 @@ func newShardForLoading(shardInfo *ShardMeta, opt *Options) *Shard {
 	shard.setSplitStage(shardInfo.SplitStage)
 	shard.setInitialFlushed()
 	shard.SetPassive(true)
-	shard.commitTS = shardInfo.commitTS
-	shard.sequence = shardInfo.Seq
+	shard.baseTS = shardInfo.baseTS
+	shard.metaSequence = shardInfo.Seq
 	return shard
 }
 
@@ -134,10 +134,10 @@ func newShardForIngest(changeSet *enginepb.ChangeSet, opt *Options) *Shard {
 	}
 	shard.setSplitStage(changeSet.Stage)
 	shard.setInitialFlushed()
-	shard.commitTS = shardSnap.CommitTS
-	shard.sequence = changeSet.Sequence
-	log.S().Infof("ingest shard %d:%d maxMemTblSize %d, commitTS %d",
-		changeSet.ShardID, changeSet.ShardVer, shard.getMaxMemTableSize(), shard.commitTS)
+	shard.baseTS = shardSnap.BaseTS
+	shard.metaSequence = changeSet.Sequence
+	log.S().Infof("ingest shard %d:%d maxMemTblSize %d, memTableTS %d",
+		changeSet.ShardID, changeSet.ShardVer, shard.getMaxMemTableSize(), shard.loadMemTableTS())
 	return shard
 }
 
@@ -168,8 +168,8 @@ func (s *Shard) SetPassive(passive bool) {
 	atomic.StoreInt32(&s.passive, v)
 }
 
-func (s *Shard) GetSequence() uint64 {
-	return atomic.LoadUint64(&s.sequence)
+func (s *Shard) GetMetaSequence() uint64 {
+	return atomic.LoadUint64(&s.metaSequence)
 }
 
 func (s *Shard) isSplitting() bool {
@@ -449,17 +449,8 @@ func boundedMemSize(size int64) int64 {
 	return size
 }
 
-func (s *Shard) setCommitTS(commitTS uint64) {
-	oldCommitTS := atomic.LoadUint64(&s.commitTS)
-	if oldCommitTS >= commitTS {
-		return
-	}
-	atomic.CompareAndSwapUint64(&s.commitTS, oldCommitTS, commitTS)
-	log.S().Infof("shard %d:%d set commit ts %d", s.ID, s.Ver, commitTS)
-}
-
-func (s *Shard) allocCommitTS() uint64 {
-	return atomic.AddUint64(&s.commitTS, 1)
+func (s *Shard) loadMemTableTS() uint64 {
+	return s.baseTS + atomic.LoadUint64(&s.metaSequence)
 }
 
 func (s *Shard) GetAllFiles() []uint64 {
