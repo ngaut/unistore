@@ -288,7 +288,7 @@ func (en *Engine) DebugHandler() http.HandlerFunc {
 					splittings = len(shard.splittingMemTbls)
 				}
 				if r.FormValue("detail") == "" {
-					fmt.Fprintf(w, "\tShard % 10d:%d,\tSize % 13s, Mem % 13s(%d),\tL0 % 13s(%d),\tCF0 % 13s, CF1 % 13s, MMTS % 13s, Stage % 7s, Passive %s, PIDX % 10d, Seq % 10d\n\n",
+					fmt.Fprintf(w, "\tShard % 10d:%d,\tSize % 13s, Mem % 13s(%d),\tL0 % 13s(%d),\tCF0 % 13s, CF1 % 13s, MMTS % 13s, Stage % 7s, Passive %s, baseTS % 10d, Seq % 10d\n\n",
 						key,
 						shard.Ver,
 						formatInt(shardStat.ShardSize),
@@ -301,7 +301,7 @@ func (en *Engine) DebugHandler() http.HandlerFunc {
 						formatInt(int(shard.getMaxMemTableSize())),
 						splitStageName[shard.splitStage],
 						formatBool(shard.IsPassive()),
-						shard.parentIndex,
+						shard.baseTS,
 						shard.sequence,
 					)
 					continue

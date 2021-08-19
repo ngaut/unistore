@@ -32,26 +32,26 @@ type ShardMeta struct {
 	files map[uint64]*fileMeta
 	// properties in ShardMeta is only updated on every mem-table flush, it's different than properties in the shard
 	// which is updated on every write operation.
-	properties  *properties
-	preSplit    *enginepb.PreSplit
-	split       *enginepb.Split
-	SplitStage  enginepb.SplitStage
-	parent      *ShardMeta
-	parentIndex uint64
+	properties *properties
+	preSplit   *enginepb.PreSplit
+	split      *enginepb.Split
+	SplitStage enginepb.SplitStage
+	parent     *ShardMeta
+	baseTS     uint64
 }
 
 func NewShardMeta(cs *enginepb.ChangeSet) *ShardMeta {
 	snap := cs.Snapshot
 	shardMeta := &ShardMeta{
-		ID:          cs.ShardID,
-		Ver:         cs.ShardVer,
-		Start:       snap.Start,
-		End:         snap.End,
-		Seq:         cs.Sequence,
-		files:       map[uint64]*fileMeta{},
-		properties:  newProperties().applyPB(snap.Properties),
-		SplitStage:  cs.Stage,
-		parentIndex: snap.ParentIndex,
+		ID:         cs.ShardID,
+		Ver:        cs.ShardVer,
+		Start:      snap.Start,
+		End:        snap.End,
+		Seq:        cs.Sequence,
+		files:      map[uint64]*fileMeta{},
+		properties: newProperties().applyPB(snap.Properties),
+		SplitStage: cs.Stage,
+		baseTS:     snap.BaseTS,
 	}
 	if len(cs.Snapshot.SplitKeys) > 0 {
 		shardMeta.preSplit = &enginepb.PreSplit{Keys: cs.Snapshot.SplitKeys}
@@ -164,14 +164,14 @@ func (si *ShardMeta) ApplySplit(cs *enginepb.ChangeSet) []*ShardMeta {
 		startKey, endKey := getSplittingStartEnd(old.Start, old.End, split.Keys, i)
 		id := split.NewShards[i].ShardID
 		shardInfo := &ShardMeta{
-			ID:          id,
-			Ver:         newVer,
-			Start:       startKey,
-			End:         endKey,
-			files:       map[uint64]*fileMeta{},
-			properties:  newProperties().applyPB(split.NewShards[i]),
-			parent:      old,
-			parentIndex: old.parentIndex + old.Seq,
+			ID:         id,
+			Ver:        newVer,
+			Start:      startKey,
+			End:        endKey,
+			files:      map[uint64]*fileMeta{},
+			properties: newProperties().applyPB(split.NewShards[i]),
+			parent:     old,
+			baseTS:     old.baseTS + old.Seq,
 		}
 		if id == old.ID {
 			old.split = split
@@ -220,10 +220,10 @@ func (si *ShardMeta) ToChangeSet() *enginepb.ChangeSet {
 		Sequence: si.Seq,
 	}
 	shardSnap := &enginepb.Snapshot{
-		Start:       si.Start,
-		End:         si.End,
-		Properties:  si.properties.toPB(si.ID),
-		ParentIndex: si.parentIndex,
+		Start:      si.Start,
+		End:        si.End,
+		Properties: si.properties.toPB(si.ID),
+		BaseTS:     si.baseTS,
 	}
 	if si.preSplit != nil {
 		shardSnap.SplitKeys = si.preSplit.Keys

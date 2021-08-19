@@ -338,7 +338,7 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 		shard.l0s = new(unsafe.Pointer)
 		atomic.StorePointer(shard.l0s, unsafe.Pointer(new(l0Tables)))
 		newShards[i] = shard
-		shard.parentIndex = oldShard.parentIndex + oldShard.sequence
+		shard.baseTS = oldShard.baseTS + oldShard.sequence
 		if shard.ID == oldShard.ID {
 			shard.sequence = seq
 			// derived shard need larger mem-table size.

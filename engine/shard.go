@@ -64,7 +64,7 @@ type Shard struct {
 	skippedFlushes   []*flushTask
 	skippedFlushLock sync.Mutex
 
-	parentIndex uint64
+	baseTS uint64
 
 	estimatedSize int64
 	sequence      uint64
@@ -120,7 +120,7 @@ func newShardForLoading(shardInfo *ShardMeta, opt *Options) *Shard {
 	shard.setSplitStage(shardInfo.SplitStage)
 	shard.setInitialFlushed()
 	shard.SetPassive(true)
-	shard.parentIndex = shardInfo.parentIndex
+	shard.baseTS = shardInfo.baseTS
 	shard.sequence = shardInfo.Seq
 	return shard
 }
@@ -134,7 +134,7 @@ func newShardForIngest(changeSet *enginepb.ChangeSet, opt *Options) *Shard {
 	}
 	shard.setSplitStage(changeSet.Stage)
 	shard.setInitialFlushed()
-	shard.parentIndex = shardSnap.ParentIndex
+	shard.baseTS = shardSnap.BaseTS
 	shard.sequence = changeSet.Sequence
 	log.S().Infof("ingest shard %d:%d maxMemTblSize %d, commitTS %d",
 		changeSet.ShardID, changeSet.ShardVer, shard.getMaxMemTableSize(), shard.loadCommitTS())
@@ -450,7 +450,7 @@ func boundedMemSize(size int64) int64 {
 }
 
 func (s *Shard) loadCommitTS() uint64 {
-	return s.parentIndex + atomic.LoadUint64(&s.sequence)
+	return s.baseTS + atomic.LoadUint64(&s.sequence)
 }
 
 func (s *Shard) GetAllFiles() []uint64 {

@@ -60,7 +60,7 @@ func (en *Engine) switchMemTable(shard *Shard, commitTS uint64) *memtable.Table 
 
 func (en *Engine) Write(wb *WriteBatch) {
 	shard := wb.shard
-	commitTS := shard.parentIndex + wb.sequence
+	commitTS := shard.baseTS + wb.sequence
 	if shard.isSplitting() {
 		en.writeSplitting(wb, commitTS)
 		return
