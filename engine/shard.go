@@ -67,7 +67,7 @@ type Shard struct {
 	baseTS uint64
 
 	estimatedSize int64
-	sequence      uint64
+	metaSequence  uint64
 
 	sizeStats *unsafe.Pointer
 }
@@ -121,7 +121,7 @@ func newShardForLoading(shardInfo *ShardMeta, opt *Options) *Shard {
 	shard.setInitialFlushed()
 	shard.SetPassive(true)
 	shard.baseTS = shardInfo.baseTS
-	shard.sequence = shardInfo.Seq
+	shard.metaSequence = shardInfo.Seq
 	return shard
 }
 
@@ -135,9 +135,9 @@ func newShardForIngest(changeSet *enginepb.ChangeSet, opt *Options) *Shard {
 	shard.setSplitStage(changeSet.Stage)
 	shard.setInitialFlushed()
 	shard.baseTS = shardSnap.BaseTS
-	shard.sequence = changeSet.Sequence
-	log.S().Infof("ingest shard %d:%d maxMemTblSize %d, commitTS %d",
-		changeSet.ShardID, changeSet.ShardVer, shard.getMaxMemTableSize(), shard.loadCommitTS())
+	shard.metaSequence = changeSet.Sequence
+	log.S().Infof("ingest shard %d:%d maxMemTblSize %d, memTableTS %d",
+		changeSet.ShardID, changeSet.ShardVer, shard.getMaxMemTableSize(), shard.loadMemTableTS())
 	return shard
 }
 
@@ -168,8 +168,8 @@ func (s *Shard) SetPassive(passive bool) {
 	atomic.StoreInt32(&s.passive, v)
 }
 
-func (s *Shard) GetSequence() uint64 {
-	return atomic.LoadUint64(&s.sequence)
+func (s *Shard) GetMetaSequence() uint64 {
+	return atomic.LoadUint64(&s.metaSequence)
 }
 
 func (s *Shard) isSplitting() bool {
@@ -449,8 +449,8 @@ func boundedMemSize(size int64) int64 {
 	return size
 }
 
-func (s *Shard) loadCommitTS() uint64 {
-	return s.baseTS + atomic.LoadUint64(&s.sequence)
+func (s *Shard) loadMemTableTS() uint64 {
+	return s.baseTS + atomic.LoadUint64(&s.metaSequence)
 }
 
 func (s *Shard) GetAllFiles() []uint64 {

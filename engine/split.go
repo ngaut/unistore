@@ -45,8 +45,7 @@ func (en *Engine) PreSplit(cs *enginepb.ChangeSet) error {
 	if !shard.setSplitKeys(cs.PreSplit.Keys) {
 		return ErrPreSplitWrongStage
 	}
-	commitTS := shard.loadCommitTS()
-	memTbl := en.switchMemTable(shard, commitTS)
+	memTbl := en.switchMemTable(shard, shard.loadMemTableTS())
 	en.scheduleFlushTask(shard, memTbl)
 	return nil
 }
@@ -338,15 +337,16 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 		shard.l0s = new(unsafe.Pointer)
 		atomic.StorePointer(shard.l0s, unsafe.Pointer(new(l0Tables)))
 		newShards[i] = shard
-		shard.baseTS = oldShard.baseTS + oldShard.sequence
 		if shard.ID == oldShard.ID {
-			shard.sequence = seq
+			shard.baseTS = oldShard.baseTS
+			shard.metaSequence = seq
 			// derived shard need larger mem-table size.
 			memSize := boundedMemSize(en.opt.BaseSize / 2)
 			shard.properties.set(MemTableSizeKey, sstable.AppendU64(nil, uint64(memSize)))
 			shard.maxMemTableSize = memSize
 		} else {
-			shard.sequence = 1
+			shard.baseTS = oldShard.baseTS + oldShard.metaSequence
+			shard.metaSequence = 1
 		}
 	}
 	l0s := oldShard.loadL0Tables()
@@ -367,11 +367,11 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 	for _, nShard := range newShards {
 		nShard.refreshEstimatedSize()
 		en.shardMap.Store(nShard.ID, nShard)
-		commitTS := nShard.loadCommitTS()
-		mem := en.switchMemTable(nShard, commitTS)
+		memTableTS := nShard.loadMemTableTS()
+		mem := en.switchMemTable(nShard, memTableTS)
 		en.scheduleFlushTask(nShard, mem)
-		log.S().Infof("new shard %d:%d mem-size %d props:%s commitTS: %d",
-			nShard.ID, nShard.Ver, mem.Size(), nShard.properties, commitTS)
+		log.S().Infof("new shard %d:%d mem-size %d props:%s memTableTS: %d",
+			nShard.ID, nShard.Ver, mem.Size(), nShard.properties, memTableTS)
 	}
 	return
 }

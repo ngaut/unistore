@@ -171,12 +171,13 @@ func (si *ShardMeta) ApplySplit(cs *enginepb.ChangeSet) []*ShardMeta {
 			files:      map[uint64]*fileMeta{},
 			properties: newProperties().applyPB(split.NewShards[i]),
 			parent:     old,
-			baseTS:     old.baseTS + old.Seq,
 		}
 		if id == old.ID {
 			old.split = split
+			shardInfo.baseTS = old.baseTS
 			shardInfo.Seq = cs.Sequence
 		} else {
+			shardInfo.baseTS = old.baseTS + old.Seq
 			shardInfo.Seq = 1
 		}
 		newShards[i] = shardInfo

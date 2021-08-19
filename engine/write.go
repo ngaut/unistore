@@ -67,7 +67,7 @@ func (en *Engine) Write(wb *WriteBatch) {
 	}
 	memTbl := shard.loadWritableMemTable()
 	if memTbl == nil || memTbl.Size()+wb.estimatedSize > shard.getMaxMemTableSize() {
-		oldMemTbl := en.switchMemTable(shard, shard.loadCommitTS())
+		oldMemTbl := en.switchMemTable(shard, shard.loadMemTableTS())
 		en.scheduleFlushTask(shard, oldMemTbl)
 		memTbl = shard.loadWritableMemTable()
 	}
