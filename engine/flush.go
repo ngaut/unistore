@@ -165,15 +165,21 @@ func atomicAddMemTable(pointer *unsafe.Pointer, memTbl *memtable.Table) {
 func atomicRemoveMemTable(shard *Shard) {
 	pointer := shard.memTbls
 	for {
+		var removed *memtable.Table
 		oldMemTbls := (*memTables)(atomic.LoadPointer(pointer))
 		// When we recover flush, the mem-table is empty, newLen maybe negative.
 		newLen := len(oldMemTbls.tables) - 1
 		if newLen < 0 {
 			newLen = 0
+		} else {
+			removed = oldMemTbls.tables[len(oldMemTbls.tables)-1]
 		}
 		newMemTbls := &memTables{make([]*memtable.Table, newLen)}
 		copy(newMemTbls.tables, oldMemTbls.tables)
 		if atomic.CompareAndSwapPointer(pointer, unsafe.Pointer(oldMemTbls), unsafe.Pointer(newMemTbls)) {
+			if removed != nil {
+				log.S().Infof("shard %d:%d atomic removed mem-table version %d, size %d", shard.ID, shard.Ver, removed.GetVersion(), removed.Size())
+			}
 			break
 		}
 	}

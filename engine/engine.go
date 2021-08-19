@@ -213,11 +213,15 @@ func (en *Engine) DebugHandler() http.HandlerFunc {
 				MemTables += len(shard.splittingMemTbls)
 				for i := 0; i < len(shard.splittingMemTbls); i++ {
 					memTbl := shard.loadSplittingMemTable(i)
-					ShardMemTablesSize += int(memTbl.Size())
+					if !memTbl.Empty() {
+						ShardMemTablesSize += int(memTbl.Size())
+					}
 				}
 			}
 			for _, t := range memTables.tables {
-				ShardMemTablesSize += int(t.Size())
+				if !t.Empty() {
+					ShardMemTablesSize += int(t.Size())
+				}
 			}
 			MemTablesSize += ShardMemTablesSize
 			L0Tables += len(l0Tables.tables)
@@ -838,7 +842,8 @@ func (en *Engine) TriggerFlush(shard *Shard, skipCnt int, isPreSplitStage bool) 
 	mems := shard.loadMemTables()
 	for i := len(mems.tables) - skipCnt - 1; i > 0; i-- {
 		memTbl := mems.tables[i]
-		log.S().Infof("%d:%d trigger flush mem table ver:%d", shard.ID, shard.Ver, memTbl.GetVersion())
+		log.S().Infof("shard %d:%d trigger flush mem-table version %d, size %d",
+			shard.ID, shard.Ver, memTbl.GetVersion(), memTbl.Size())
 		en.flushCh <- &flushTask{
 			shard: shard,
 			tbl:   memTbl,
@@ -849,6 +854,8 @@ func (en *Engine) TriggerFlush(shard *Shard, skipCnt int, isPreSplitStage bool) 
 			commitTS := shard.loadCommitTS()
 			memTbl := memtable.NewCFTable(en.numCFs)
 			memTbl.SetVersion(commitTS)
+			log.S().Infof("shard %d:%d set empty mem-table version %d, size %d",
+				shard.ID, shard.Ver, commitTS, memTbl.Size())
 			en.flushCh <- &flushTask{
 				shard: shard,
 				tbl:   memTbl,

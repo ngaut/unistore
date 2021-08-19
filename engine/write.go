@@ -53,6 +53,8 @@ func (en *Engine) switchMemTable(shard *Shard, commitTS uint64) *memtable.Table 
 		atomicAddMemTable(shard.memTbls, newMemTable)
 	}
 	writableMemTbl.SetVersion(commitTS)
+	log.S().Infof("shard %d:%d set mem-table version %d, empty %t, size %d",
+		shard.ID, shard.Ver, commitTS, writableMemTbl.Empty(), writableMemTbl.Size())
 	return writableMemTbl
 }
 
