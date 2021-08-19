@@ -308,6 +308,9 @@ func (en *Engine) buildTableBeforeKey(itr table.Iterator, key []byte, opt sstabl
 // This is done after preSplit is done, so we don't need to acquire any lock, just atomic CAS will do.
 func (en *Engine) FinishSplit(changeSet *enginepb.ChangeSet) (err error) {
 	oldShard := en.GetShard(changeSet.ShardID)
+	if oldShard == nil {
+		return ErrShardNotFound
+	}
 	if oldShard.Ver != changeSet.ShardVer {
 		return ErrShardNotMatch
 	}
