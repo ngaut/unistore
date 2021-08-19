@@ -177,7 +177,7 @@ func (si *ShardMeta) ApplySplit(cs *enginepb.ChangeSet) []*ShardMeta {
 			shardInfo.baseTS = old.baseTS
 			shardInfo.Seq = cs.Sequence
 		} else {
-			shardInfo.baseTS = old.baseTS + old.Seq
+			shardInfo.baseTS = old.baseTS + cs.Sequence
 			shardInfo.Seq = 1
 		}
 		newShards[i] = shardInfo

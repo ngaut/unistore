@@ -345,7 +345,7 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 			shard.properties.set(MemTableSizeKey, sstable.AppendU64(nil, uint64(memSize)))
 			shard.maxMemTableSize = memSize
 		} else {
-			shard.baseTS = oldShard.baseTS + oldShard.metaSequence
+			shard.baseTS = oldShard.baseTS + seq
 			shard.metaSequence = 1
 		}
 	}
