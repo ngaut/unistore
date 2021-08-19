@@ -339,6 +339,10 @@ func (en *Engine) Compact(pri CompactionPriority) error {
 		return nil
 	}
 	latest := en.GetShard(shard.ID)
+	if latest == nil {
+		log.S().Infof("avoid compaction for shard not found")
+		return nil
+	}
 	if latest.Ver != shard.Ver {
 		log.S().Infof("avoid compaction for shard version change.")
 		return nil
@@ -642,6 +646,9 @@ func (en *Engine) ApplyChangeSet(changeSet *enginepb.ChangeSet) error {
 	guard := en.resourceMgr.Acquire()
 	defer guard.Done()
 	shard := en.GetShard(changeSet.ShardID)
+	if shard == nil {
+		return ErrShardNotFound
+	}
 	if shard.Ver != changeSet.ShardVer {
 		return ErrShardNotMatch
 	}

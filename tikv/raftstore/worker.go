@@ -257,6 +257,9 @@ func splitEngineAndRegion(router *router, eng *engine.Engine, peer *metapb.Peer,
 
 func preSplitRegion(router *router, eng *engine.Engine, peer *metapb.Peer, region *metapb.Region, rawKeys [][]byte) error {
 	shard := eng.GetShard(region.Id)
+	if shard == nil {
+		return errors.New("shard not found, may be removed")
+	}
 	for {
 		if shard.IsInitialFlushed() {
 			break
@@ -490,6 +493,10 @@ func (r *regionTaskHandler) prepareChangeSetResources(task *regionTask) (duplica
 	if rejected {
 		delete(r.rejects, key)
 		shard := kv.GetShard(changeSet.ShardID)
+		if shard == nil {
+			log.S().Warnf("shard %d:%d not found for prepare change set resource", task.region.Id, task.region.RegionEpoch.Version)
+			return true
+		}
 		log.S().Warnf("shard %d:%d reject change set %s stage %s seq %d, initial flushed %t",
 			changeSet.ShardID, changeSet.ShardVer, changeSetTp, changeSet.Stage, changeSet.Sequence, shard.IsInitialFlushed())
 		if metaChange.Compaction == nil || !metaChange.Compaction.Conflicted {

@@ -793,6 +793,9 @@ func (en *Engine) GetShard(shardID uint64) *Shard {
 
 func (en *Engine) GetSplitSuggestion(shardID uint64, splitSize int64) [][]byte {
 	shard := en.GetShard(shardID)
+	if shard == nil {
+		return nil
+	}
 	return shard.getSuggestSplitKeys(splitSize)
 }
 
