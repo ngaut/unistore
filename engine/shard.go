@@ -450,7 +450,7 @@ func boundedMemSize(size int64) int64 {
 }
 
 func (s *Shard) loadCommitTS() uint64 {
-	return atomic.LoadUint64(&s.parentIndex) + atomic.LoadUint64(&s.sequence)
+	return s.parentIndex + atomic.LoadUint64(&s.sequence)
 }
 
 func (s *Shard) GetAllFiles() []uint64 {
