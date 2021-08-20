@@ -69,6 +69,8 @@ type Shard struct {
 	estimatedSize int64
 	metaSequence  uint64
 
+	ingestedPreSplitSeq uint64
+
 	sizeStats *unsafe.Pointer
 }
 
@@ -131,6 +133,9 @@ func newShardForIngest(changeSet *enginepb.ChangeSet, opt *Options) *Shard {
 	if len(shardSnap.SplitKeys) > 0 {
 		log.S().Infof("shard %d:%d set pre-split keys by ingest", changeSet.ShardID, changeSet.ShardVer)
 		shard.setSplitKeys(shardSnap.SplitKeys)
+		if changeSet.Stage == enginepb.SplitStage_PRE_SPLIT {
+			shard.ingestedPreSplitSeq = changeSet.Sequence
+		}
 	}
 	shard.setSplitStage(changeSet.Stage)
 	shard.setInitialFlushed()

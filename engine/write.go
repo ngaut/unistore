@@ -62,8 +62,12 @@ func (en *Engine) Write(wb *WriteBatch) {
 	shard := wb.shard
 	commitTS := shard.baseTS + wb.sequence
 	if shard.isSplitting() {
-		en.writeSplitting(wb, commitTS)
-		return
+		if shard.ingestedPreSplitSeq == 0 || wb.sequence > shard.ingestedPreSplitSeq {
+			en.writeSplitting(wb, commitTS)
+			return
+		}
+		log.S().Infof("shard %d:%d recover data to the pre-split stage, seq %d, ingestedPreSplitSeq %d",
+			shard.ID, shard.Ver, wb.sequence, shard.ingestedPreSplitSeq)
 	}
 	memTbl := shard.loadWritableMemTable()
 	if memTbl == nil || memTbl.Size()+wb.estimatedSize > shard.getMaxMemTableSize() {
