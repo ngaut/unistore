@@ -135,6 +135,8 @@ func newShardForIngest(changeSet *enginepb.ChangeSet, opt *Options) *Shard {
 		shard.setSplitKeys(shardSnap.SplitKeys)
 		if changeSet.Stage == enginepb.SplitStage_PRE_SPLIT {
 			shard.ingestedPreSplitSeq = changeSet.Sequence
+			log.S().Infof("shard %d:%d set pre-split sequence %d by ingest",
+				shard.ID, shard.Ver, shard.ingestedPreSplitSeq)
 		}
 	}
 	shard.setSplitStage(changeSet.Stage)
