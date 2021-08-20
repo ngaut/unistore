@@ -62,8 +62,11 @@ func (en *Engine) Write(wb *WriteBatch) {
 	shard := wb.shard
 	commitTS := shard.baseTS + wb.sequence
 	if shard.isSplitting() {
-		en.writeSplitting(wb, commitTS)
-		return
+		if shard.ingestedPreSplitSeq == 0 || wb.sequence > shard.ingestedPreSplitSeq {
+			en.writeSplitting(wb, commitTS)
+			return
+		}
+		// Recover the shard to the pre-split stage when this shard is ingested.
 	}
 	memTbl := shard.loadWritableMemTable()
 	if memTbl == nil || memTbl.Size()+wb.estimatedSize > shard.getMaxMemTableSize() {
