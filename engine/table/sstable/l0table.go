@@ -15,6 +15,7 @@ package sstable
 
 import (
 	"bytes"
+	"github.com/ngaut/unistore/engine/dfs"
 	"github.com/ngaut/unistore/engine/table"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/log"
@@ -47,7 +48,7 @@ func (f *l0Footer) unmarshal(b []byte) {
 
 type L0Table struct {
 	l0Footer
-	file     TableFile
+	file     dfs.File
 	cfs      []*Table
 	cfOffs   []uint32
 	smallest []byte
@@ -59,8 +60,7 @@ func (st *L0Table) ID() uint64 {
 }
 
 func (st *L0Table) Delete() error {
-	st.file.Close()
-	return st.file.Delete()
+	return st.file.Close()
 }
 
 func (st *L0Table) GetCF(cf int) *Table {
@@ -83,21 +83,35 @@ func (st *L0Table) CommitTS() uint64 {
 	return st.commitTS
 }
 
-func OpenL0Table(file TableFile) (*L0Table, error) {
+func OpenL0Table(file dfs.File) (*L0Table, error) {
 	l0 := &L0Table{
 		file: file,
 	}
 	footerOff := file.Size() - int64(l0FooterSize)
-	l0.l0Footer.unmarshal(l0.file.MMapRead(footerOff, l0FooterSize))
+	buf := make([]byte, l0FooterSize)
+	_, err := l0.file.ReadAt(buf, footerOff)
+	if err != nil {
+		return nil, err
+	}
+	l0.l0Footer.unmarshal(buf)
 	cfOffsOff := footerOff - 4*int64(l0.numCFs)
-	l0.cfOffs = BytesToU32Slice(l0.file.MMapRead(cfOffsOff, 4*int(l0.numCFs)))
+	buf = make([]byte, 4*int(l0.numCFs))
+	_, err = l0.file.ReadAt(buf, cfOffsOff)
+	if err != nil {
+		return nil, err
+	}
+	l0.cfOffs = BytesToU32Slice(buf)
 	l0.cfs = make([]*Table, 0, l0.numCFs)
 	for i, off := range l0.cfOffs {
 		endOff := uint32(cfOffsOff)
 		if i+1 < len(l0.cfOffs) {
 			endOff = l0.cfOffs[i+1]
 		}
-		data := l0.file.MMapRead(int64(off), int(endOff-off))
+		data := make([]byte, endOff-off)
+		_, err = l0.file.ReadAt(data, int64(off))
+		if err != nil {
+			return nil, err
+		}
 		if len(data) == 0 {
 			l0.cfs = append(l0.cfs, nil)
 			continue
@@ -155,10 +169,6 @@ func (sl0 *L0Table) NewIterator(cf int, reverse bool) table.Iterator {
 		return nil
 	}
 	return tbl.NewIterator(reverse)
-}
-
-func (sl0 *L0Table) Close() error {
-	return sl0.file.Close()
 }
 
 type L0Builder struct {

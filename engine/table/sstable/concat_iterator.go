@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-package table
+package sstable
 
 import (
 	"bytes"
+	"github.com/ngaut/unistore/engine/table"
 	"sort"
 
 	"github.com/pingcap/badger/y"
@@ -27,17 +28,17 @@ import (
 // TableIterators, probably just because it's faster to not be so generic.)
 type ConcatIterator struct {
 	idx      int // Which iterator is active now.
-	cur      Iterator
-	iters    []Iterator // Corresponds to tables.
-	tables   []Table    // Disregarding reversed, this is in ascending order.
+	cur      table.Iterator
+	iters    []table.Iterator // Corresponds to tables.
+	tables   []*Table         // Disregarding reversed, this is in ascending order.
 	reversed bool
 }
 
 // NewConcatIterator creates a new concatenated iterator
-func NewConcatIterator(tbls []Table, reversed bool) *ConcatIterator {
+func NewConcatIterator(tbls []*Table, reversed bool) *ConcatIterator {
 	return &ConcatIterator{
 		reversed: reversed,
-		iters:    make([]Iterator, len(tbls)),
+		iters:    make([]table.Iterator, len(tbls)),
 		tables:   tbls,
 		idx:      -1, // Not really necessary because s.it.Valid()=false, but good to have.
 	}

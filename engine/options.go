@@ -32,7 +32,6 @@ package engine
 import (
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
-	"github.com/ngaut/unistore/s3util"
 )
 
 // NOTE: Keep the comments in the following to 75 chars width, so they
@@ -73,8 +72,6 @@ type Options struct {
 	RemoteCompactionAddr string
 
 	InstanceID uint32
-
-	S3Options s3util.Options
 
 	CFs []CFConfig
 

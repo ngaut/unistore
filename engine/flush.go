@@ -15,6 +15,7 @@ package engine
 
 import (
 	"bytes"
+	"github.com/ngaut/unistore/engine/dfs"
 	"github.com/ngaut/unistore/engine/fileutil"
 	"github.com/ngaut/unistore/engine/table"
 	"github.com/ngaut/unistore/engine/table/memtable"
@@ -55,7 +56,7 @@ func (en *Engine) runFlushMemTable(c *y.Closer) {
 			resultTask.wg.Add(1)
 			l0Table, err := en.flushMemTable(task.shard, task.tbl, resultTask)
 			if err != nil {
-				// TODO: handle S3 error by queue the failed operation and retry.
+				// TODO: handle DFS error by queue the failed operation and retry.
 				panic(err)
 			}
 			change.Flush.L0Create = l0Table
@@ -69,7 +70,7 @@ func (en *Engine) runFlushResult(c *y.Closer) {
 	for task := range en.flushResultCh {
 		task.wg.Wait()
 		if task.err != nil {
-			// TODO: handle S3 error by queue the failed operation and retry.
+			// TODO: handle DFS error by queue the failed operation and retry.
 			panic(task.err)
 		}
 		if en.metaChangeListener != nil {
@@ -139,14 +140,10 @@ func (en *Engine) flushMemTable(shard *Shard, m *memtable.Table, resultTask *flu
 		Smallest: smallest,
 		Biggest:  biggest,
 	}
-	if en.s3c != nil {
-		en.s3c.Schedule(func() {
-			resultTask.err = putSSTBuildResultToS3(en.s3c, result)
-			resultTask.wg.Done()
-		})
-	} else {
+	en.fs.GetScheduler().Schedule(func() {
+		resultTask.err = en.fs.Create(result.ID, result.FileData, dfs.NewOptions(shard.ID, shard.Ver))
 		resultTask.wg.Done()
-	}
+	})
 	return newL0CreateByResult(result), nil
 }
 

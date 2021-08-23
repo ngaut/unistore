@@ -15,11 +15,11 @@ package engine
 
 import (
 	"bytes"
+	"github.com/ngaut/unistore/engine/dfs"
 	"github.com/ngaut/unistore/engine/table/memtable"
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
 	"github.com/pingcap/badger/y"
-	"os"
 	"sort"
 	"sync/atomic"
 	"unsafe"
@@ -27,20 +27,12 @@ import (
 
 type IngestTree struct {
 	ChangeSet *enginepb.ChangeSet
-	LocalPath string
 	Passive   bool
 }
 
 func (en *Engine) Ingest(ingestTree *IngestTree) error {
 	guard := en.resourceMgr.Acquire()
 	defer guard.Done()
-
-	if ingestTree.LocalPath != "" {
-		err := en.loadFiles(ingestTree)
-		if err != nil {
-			return err
-		}
-	}
 	l0s, levelHandlers, err := en.createIngestTreeLevelHandlers(ingestTree)
 	if err != nil {
 		return err
@@ -89,13 +81,14 @@ func (en *Engine) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*l0Tabl
 			newHandlers[cf] = append(newHandlers[cf], newHandler)
 		}
 	}
+	fsOpts := dfs.NewOptions(ingestTree.ChangeSet.ShardID, ingestTree.ChangeSet.ShardVer)
 	snap := ingestTree.ChangeSet.Snapshot
 	for _, l0Create := range snap.L0Creates {
-		tFile, err := sstable.NewLocalFile(sstable.NewFilename(l0Create.ID, en.opt.Dir), true)
+		file, err := en.fs.Open(l0Create.ID, fsOpts)
 		if err != nil {
 			return nil, nil, err
 		}
-		l0Tbl, err := sstable.OpenL0Table(tFile)
+		l0Tbl, err := sstable.OpenL0Table(file)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -103,12 +96,11 @@ func (en *Engine) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*l0Tabl
 	}
 	for _, tblCreate := range snap.TableCreates {
 		handler := newHandlers[tblCreate.CF][tblCreate.Level-1]
-		filename := sstable.NewFilename(tblCreate.ID, en.opt.Dir)
-		reader, err := newTableFile(filename, en)
+		file, err := en.fs.Open(tblCreate.ID, fsOpts)
 		if err != nil {
 			return nil, nil, err
 		}
-		tbl, err := sstable.OpenTable(reader, en.blkCache)
+		tbl, err := sstable.OpenTable(file, en.blkCache)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -127,45 +119,4 @@ func (en *Engine) createIngestTreeLevelHandlers(ingestTree *IngestTree) (*l0Tabl
 		}
 	}
 	return l0s, newHandlers, nil
-}
-
-func (en *Engine) loadFiles(ingestTree *IngestTree) error {
-	if ingestTree.LocalPath == "" {
-		return nil
-	}
-	snap := ingestTree.ChangeSet.Snapshot
-	for i := range snap.L0Creates {
-		l0 := snap.L0Creates[i]
-		if err := en.loadFileFromLocalPath(ingestTree.LocalPath, l0.ID); err != nil {
-			return err
-		}
-	}
-	for i := range snap.TableCreates {
-		tbl := snap.TableCreates[i]
-		if err := en.loadFileFromLocalPath(ingestTree.LocalPath, tbl.ID); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (en *Engine) loadFileFromS3(id uint64) error {
-	localFileName := sstable.NewFilename(id, en.opt.Dir)
-	_, err := os.Stat(localFileName)
-	if err == nil {
-		return nil
-	}
-	blockKey := en.s3c.BlockKey(id)
-	tmpBlockFileName := localFileName + ".tmp"
-	err = en.s3c.GetToFile(blockKey, tmpBlockFileName)
-	if err != nil {
-		return err
-	}
-	return os.Rename(tmpBlockFileName, localFileName)
-}
-
-func (en *Engine) loadFileFromLocalPath(localPath string, id uint64) error {
-	localFileName := sstable.NewFilename(id, localPath)
-	dstFileName := sstable.NewFilename(id, en.opt.Dir)
-	return os.Link(localFileName, dstFileName)
 }

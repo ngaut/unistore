@@ -16,9 +16,9 @@ package compaction
 import (
 	"bytes"
 	"fmt"
+	"github.com/ngaut/unistore/engine/dfs"
 	"github.com/ngaut/unistore/engine/table"
 	"github.com/ngaut/unistore/engine/table/sstable"
-	"github.com/ngaut/unistore/s3util"
 	"github.com/ngaut/unistore/scheduler"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/pingcap/badger/y"
@@ -41,9 +41,9 @@ func (ds *DiscardStats) String() string {
 }
 
 // CompactTables compacts tables in CompactDef and returns the file names.
-func CompactTables(cr *Request, discardStats *DiscardStats, s3c *s3util.S3Client) ([]*sstable.BuildResult, error) {
+func CompactTables(cr *Request, discardStats *DiscardStats, fs dfs.DFS) ([]*sstable.BuildResult, error) {
 	var buildResults []*sstable.BuildResult
-	it, err := buildIterators(cr, s3c)
+	it, err := buildIterators(cr, fs)
 	if err != nil {
 		return nil, err
 	}
@@ -51,10 +51,8 @@ func CompactTables(cr *Request, discardStats *DiscardStats, s3c *s3util.S3Client
 
 	var lastKey, skipKey []byte
 	var builder *sstable.Builder
-	var bt *scheduler.BatchTasks
-	if s3c != nil {
-		bt = scheduler.NewBatchTasks()
-	}
+	bt := scheduler.NewBatchTasks()
+	fsOpts := dfs.NewOptions(cr.ShardID, cr.ShardVer)
 	allocID := cr.FirstID
 	for it.Valid() {
 		y.Assert(allocID <= cr.LastID)
@@ -125,33 +123,30 @@ func CompactTables(cr *Request, discardStats *DiscardStats, s3c *s3util.S3Client
 		if err != nil {
 			return nil, err
 		}
-		if s3c != nil {
-			bt.AppendTask(func() error {
-				return s3c.Put(s3c.BlockKey(id), result.FileData)
-			})
-		}
+		bt.AppendTask(func() error {
+			return fs.Create(id, result.FileData, fsOpts)
+		})
 		buildResults = append(buildResults, result)
 	}
-	if s3c != nil {
-		if err := s3c.BatchSchedule(bt); err != nil {
-			return nil, err
-		}
+	if err := fs.GetScheduler().BatchSchedule(bt); err != nil {
+		return nil, err
 	}
 	return buildResults, nil
 }
 
-func buildIterators(req *Request, s3c *s3util.S3Client) (table.Iterator, error) {
-	topFiles, err := loadTableFiles(req.Tops, s3c)
+func buildIterators(req *Request, fs dfs.DFS) (table.Iterator, error) {
+	opts := dfs.NewOptions(req.ShardID, req.ShardVer)
+	topFiles, err := loadTableFiles(req.Tops, fs, opts)
 	if err != nil {
 		return nil, err
 	}
-	botFiles, err := loadTableFiles(req.Bottoms, s3c)
+	botFiles, err := loadTableFiles(req.Bottoms, fs, opts)
 	if err != nil {
 		return nil, err
 	}
 	iters := []table.Iterator{
-		table.NewConcatIterator(inMemFilesToTables(topFiles), false),
-		table.NewConcatIterator(inMemFilesToTables(botFiles), false),
+		sstable.NewConcatIterator(inMemFilesToTables(topFiles), false),
+		sstable.NewConcatIterator(inMemFilesToTables(botFiles), false),
 	}
 	// Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
 	it := table.NewMergeIterator(iters, false)
@@ -210,7 +205,7 @@ type compactL0Helper struct {
 	cReq    *Request
 }
 
-func newCompactL0Helper(topTables []*sstable.L0Table, botTables []table.Table, cf int, cReq *Request) *compactL0Helper {
+func newCompactL0Helper(topTables []*sstable.L0Table, botTables []*sstable.Table, cf int, cReq *Request) *compactL0Helper {
 	helper := &compactL0Helper{cf: cf, cReq: cReq}
 	var iters []table.Iterator
 	if topTables != nil {
@@ -222,7 +217,7 @@ func newCompactL0Helper(topTables []*sstable.L0Table, botTables []table.Table, c
 		}
 	}
 	if len(botTables) > 0 {
-		iters = append(iters, table.NewConcatIterator(botTables, false))
+		iters = append(iters, sstable.NewConcatIterator(botTables, false))
 	}
 	helper.iter = table.NewMergeIterator(iters, false)
 	helper.iter.Rewind()
@@ -290,8 +285,9 @@ func (h *compactL0Helper) buildOne(id uint64) (*sstable.BuildResult, error) {
 	return result, nil
 }
 
-func compactL0(req *Request, s3c *s3util.S3Client) ([][]*sstable.BuildResult, error) {
-	l0Files, err := loadTableFiles(req.Tops, s3c)
+func compactL0(req *Request, fs dfs.DFS) ([][]*sstable.BuildResult, error) {
+	opts := dfs.NewOptions(req.ShardID, req.ShardVer)
+	l0Files, err := loadTableFiles(req.Tops, fs, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +297,7 @@ func compactL0(req *Request, s3c *s3util.S3Client) ([][]*sstable.BuildResult, er
 	allocID := req.FirstID
 	for cf := 0; cf < len(req.MultiCFBottoms); cf++ {
 		botIDs := req.MultiCFBottoms[cf]
-		botFiles, err1 := loadTableFiles(botIDs, s3c)
+		botFiles, err1 := loadTableFiles(botIDs, fs, opts)
 		if err1 != nil {
 			return nil, err1
 		}
@@ -320,27 +316,27 @@ func compactL0(req *Request, s3c *s3util.S3Client) ([][]*sstable.BuildResult, er
 				break
 			}
 			bt.AppendTask(func() error {
-				return s3c.Put(s3c.BlockKey(id), result.FileData)
+				return fs.Create(id, result.FileData, opts)
 			})
 			results = append(results, result)
 		}
 		allResults[cf] = results
 	}
-	err = s3c.BatchSchedule(bt)
+	err = fs.GetScheduler().BatchSchedule(bt)
 	if err != nil {
 		return nil, err
 	}
 	return allResults, nil
 }
 
-func loadTableFiles(tableIDs []uint64, s3c *s3util.S3Client) ([]*sstable.InMemFile, error) {
+func loadTableFiles(tableIDs []uint64, fs dfs.DFS, opts dfs.Options) ([]*sstable.InMemFile, error) {
 	m := sync.Map{}
 	tasks := scheduler.NewBatchTasks()
 	for i := range tableIDs {
 		tableID := tableIDs[i]
 		tasks.AppendTask(func() error {
-			log.S().Infof("get object %s", s3c.BlockKey(tableID))
-			fileData, err := s3c.Get(s3c.BlockKey(tableID), 0, 0)
+			log.S().Infof("dfs read file table %d", tableID)
+			fileData, err := fs.ReadFile(tableID, opts)
 			if err != nil {
 				return err
 			}
@@ -350,7 +346,7 @@ func loadTableFiles(tableIDs []uint64, s3c *s3util.S3Client) ([]*sstable.InMemFi
 			return nil
 		})
 	}
-	err := s3c.BatchSchedule(tasks)
+	err := fs.GetScheduler().BatchSchedule(tasks)
 	if err != nil {
 		return nil, err
 	}
@@ -363,8 +359,8 @@ func loadTableFiles(tableIDs []uint64, s3c *s3util.S3Client) ([]*sstable.InMemFi
 	return files, nil
 }
 
-func inMemFilesToTables(files []*sstable.InMemFile) []table.Table {
-	tables := make([]table.Table, len(files))
+func inMemFilesToTables(files []*sstable.InMemFile) []*sstable.Table {
+	tables := make([]*sstable.Table, len(files))
 	for i, file := range files {
 		tables[i], _ = sstable.OpenTable(file, nil)
 	}

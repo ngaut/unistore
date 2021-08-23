@@ -14,21 +14,8 @@
 package table
 
 import (
-	"github.com/ngaut/unistore/engine/epoch"
 	"github.com/pingcap/badger/y"
 )
-
-type Table interface {
-	epoch.Resource
-	ID() uint64
-	NewIterator(reversed bool) Iterator
-	Get(key []byte, version, keyHash uint64) (y.ValueStruct, error)
-	Size() int64
-	Smallest() []byte
-	Biggest() []byte
-	HasOverlap(start, end []byte, includeEnd bool) bool
-	Close() error
-}
 
 type Iterator interface {
 	// Next returns the next entry with different key on the latest version.

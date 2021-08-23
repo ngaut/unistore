@@ -19,8 +19,8 @@ import (
 	"fmt"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/engine/epoch"
-	"github.com/ngaut/unistore/engine/table"
 	"github.com/ngaut/unistore/engine/table/memtable"
+	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/log"
@@ -598,7 +598,7 @@ type levelHandler struct {
 	// For level >= 1, tables are sorted by key ranges, which do not overlap.
 	// For level 0, tables are sorted by time.
 	// For level 0, newest table are at the back. Compact the oldest one first, which is at the front.
-	tables    []table.Table
+	tables    []*sstable.Table
 	totalSize int64
 
 	// The following are initialized once and const.
@@ -620,7 +620,7 @@ func (s *levelHandler) overlappingTables(kr keyRange) (int, int) {
 	return getTablesInRange(s.tables, kr.left, kr.right)
 }
 
-func getTablesInRange(tbls []table.Table, start, end []byte) (int, int) {
+func getTablesInRange(tbls []*sstable.Table, start, end []byte) (int, int) {
 	left := sort.Search(len(tbls), func(i int) bool {
 		return bytes.Compare(start, tbls[i].Biggest()) <= 0
 	})
@@ -635,7 +635,7 @@ func (s *levelHandler) get(key []byte, version, keyHash uint64) y.ValueStruct {
 	return s.getInTable(key, version, keyHash, s.getTable(key))
 }
 
-func (s *levelHandler) getInTable(key []byte, version, keyHash uint64, table table.Table) y.ValueStruct {
+func (s *levelHandler) getInTable(key []byte, version, keyHash uint64, table *sstable.Table) y.ValueStruct {
 	if table == nil {
 		return y.ValueStruct{}
 	}
@@ -647,7 +647,7 @@ func (s *levelHandler) getInTable(key []byte, version, keyHash uint64, table tab
 	return result
 }
 
-func (s *levelHandler) getTable(key []byte) table.Table {
+func (s *levelHandler) getTable(key []byte) *sstable.Table {
 	// For level >= 1, we can do a binary search as key range does not overlap.
 	idx := sort.Search(len(s.tables), func(i int) bool {
 		return bytes.Compare(s.tables[i].Biggest(), key) >= 0

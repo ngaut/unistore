@@ -18,13 +18,13 @@ import (
 	"github.com/dgryski/go-farm"
 	"github.com/ngaut/unistore/engine/cache"
 	"github.com/ngaut/unistore/engine/compaction"
+	"github.com/ngaut/unistore/engine/dfs"
 	"github.com/ngaut/unistore/engine/epoch"
 	"github.com/ngaut/unistore/engine/table"
 	"github.com/ngaut/unistore/engine/table/memtable"
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
 	"github.com/ngaut/unistore/metrics"
-	"github.com/ngaut/unistore/s3util"
 	"github.com/ngaut/unistore/scheduler"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -54,7 +54,6 @@ type closers struct {
 	compactors      *y.Closer
 	resourceManager *y.Closer
 	memtable        *y.Closer
-	s3Client        *y.Closer
 }
 
 type Engine struct {
@@ -70,7 +69,7 @@ type Engine struct {
 	mangedSafeTS  uint64
 	idAlloc       IDAllocator
 	compClient    *compaction.Client
-	s3c           *s3util.S3Client
+	fs            dfs.DFS
 	closed        uint32
 
 	metaChangeListener MetaChangeListener
@@ -81,7 +80,7 @@ const (
 	lockFile = "LOCK"
 )
 
-func OpenEngine(opt Options) (en *Engine, err error) {
+func OpenEngine(fs dfs.DFS, opt Options) (en *Engine, err error) {
 	log.Info("Open Engine")
 	err = checkOptions(&opt)
 	if err != nil {
@@ -104,6 +103,7 @@ func OpenEngine(opt Options) (en *Engine, err error) {
 	}
 	en = &Engine{
 		opt:                opt,
+		fs:                 fs,
 		numCFs:             len(opt.CFs),
 		dirLock:            dirLockGuard,
 		blkCache:           blkCache,
@@ -115,11 +115,7 @@ func OpenEngine(opt Options) (en *Engine, err error) {
 	en.idAlloc = opt.IDAllocator
 	en.closers.resourceManager = y.NewCloser(0)
 	en.resourceMgr = epoch.NewResourceManager(en.closers.resourceManager)
-	en.closers.s3Client = y.NewCloser(0)
-	if opt.S3Options.KeyID != "" {
-		en.s3c = s3util.NewS3Client(en.closers.s3Client, opt.Dir, opt.InstanceID, opt.S3Options)
-	}
-	en.compClient = compaction.NewClient(opt.RemoteCompactionAddr, en.s3c)
+	en.compClient = compaction.NewClient(opt.RemoteCompactionAddr, en.fs)
 	shardMetas, err := readMetas(opt.MetaReader)
 	if err != nil {
 		return nil, err
@@ -428,31 +424,17 @@ func (en *Engine) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 		if shard.Ver == shardInfo.Ver {
 			return shard, nil
 		}
-		l0s := shard.loadL0Tables()
-		for _, l0 := range l0s.tables {
-			l0.Close()
-		}
-		shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
-			for _, tbl := range level.tables {
-				tbl.Close()
-			}
-			return false
-		})
 	}
 	shard := newShardForLoading(shardInfo, &en.opt)
 	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{memtable.NewCFTable(en.numCFs)}}))
+	dfsOpts := dfs.NewOptions(shard.ID, shard.Ver)
 	for fid, fm := range shardInfo.files {
-		err := en.loadFileFromS3(fid)
+		file, err := en.fs.Open(fid, dfsOpts)
 		if err != nil {
 			return nil, err
 		}
 		cf := fm.cf
 		if cf == -1 {
-			filename := sstable.NewFilename(fid, en.opt.Dir)
-			file, err := sstable.NewLocalFile(filename, true)
-			if err != nil {
-				return nil, err
-			}
 			sl0Tbl, err := sstable.OpenL0Table(file)
 			if err != nil {
 				return nil, err
@@ -464,12 +446,7 @@ func (en *Engine) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 		level := fm.level
 		scf := shard.cfs[cf]
 		handler := scf.getLevelHandler(int(level))
-		filename := sstable.NewFilename(fid, en.opt.Dir)
-		reader, err := newTableFile(filename, en)
-		if err != nil {
-			return nil, err
-		}
-		tbl, err := sstable.OpenTable(reader, en.blkCache)
+		tbl, err := sstable.OpenTable(file, en.blkCache)
 		if err != nil {
 			return nil, err
 		}
@@ -491,14 +468,6 @@ func (en *Engine) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 	en.shardMap.Store(shard.ID, shard)
 	log.S().Infof("load shard %d ver %d", shard.ID, shard.Ver)
 	return shard, nil
-}
-
-func newTableFile(filename string, en *Engine) (sstable.TableFile, error) {
-	reader, err := sstable.NewLocalFile(filename, en.blkCache == nil)
-	if err != nil {
-		return nil, err
-	}
-	return reader, nil
 }
 
 // RecoverHandler handles recover a shard's mem-table data from another data source.
@@ -527,9 +496,6 @@ func (en *Engine) Close() error {
 		en.closers.compactors.SignalAndWait()
 	}
 	en.closers.resourceManager.SignalAndWait()
-	if en.opt.S3Options.EndPoint != "" {
-		en.closers.s3Client.SignalAndWait()
-	}
 	return en.dirLock.release()
 }
 
@@ -766,25 +732,22 @@ func (en *Engine) removeShardFiles(shard *Shard, removeFile func(id uint64) bool
 	defer guard.Done()
 	guard.Delete([]epoch.Resource{&deletion{res: nil, delete: func() {
 		l0s := shard.loadL0Tables()
+		opts := dfs.NewOptions(shard.ID, shard.Ver)
 		for _, l0 := range l0s.tables {
+			_ = l0.Delete()
 			if removeFile(l0.ID()) {
-				if en.s3c != nil {
-					en.s3c.SetExpired(l0.ID())
+				if err := en.fs.Remove(l0.ID(), opts); err != nil {
+					log.S().Errorf("failed to remove l0 %d err %v", l0.ID(), err)
 				}
-				l0.Delete()
-			} else {
-				l0.Close()
 			}
 		}
 		shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
 			for _, tbl := range level.tables {
+				_ = tbl.Delete()
 				if removeFile(tbl.ID()) {
-					if en.s3c != nil {
-						en.s3c.SetExpired(tbl.ID())
+					if err := en.fs.Remove(tbl.ID(), opts); err != nil {
+						log.S().Errorf("failed to remove tbl %d err %v", tbl.ID(), err)
 					}
-					tbl.Delete()
-				} else {
-					tbl.Close()
 				}
 			}
 			return false
