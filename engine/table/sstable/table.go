@@ -40,7 +40,6 @@ import (
 	"github.com/ngaut/unistore/engine/table"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
-	"github.com/pingcap/log"
 	"hash/crc32"
 	"io"
 	"path"
@@ -210,18 +209,15 @@ func (t *Table) readBlock(addr blockAddress, length int) (*block, error) {
 			data := buffer.GetBuffer(length)
 			if _, err := t.file.ReadAt(data, int64(addr.currentOff)); err != nil {
 				buffer.PutBuffer(data)
-				log.S().Infof("read block err")
 				return nil, 0, err
 			}
 			if err := validateChecksum(data, t.footer.checksumType); err != nil {
-				log.S().Infof("read block err")
 				return nil, 0, err
 			}
 			blk := &block{
 				data:      data[4:],
 				reference: 1,
 			}
-			log.S().Infof("read block ok")
 			return blk, int64(length), nil
 		})
 		if err != nil {
