@@ -15,21 +15,45 @@ package main
 
 import (
 	"flag"
+	"github.com/BurntSushi/toml"
+	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/engine/compaction"
+	"github.com/ngaut/unistore/engine/dfs/s3dfs"
 	"github.com/pingcap/log"
 	"net/http"
 	"runtime"
 )
 
 var (
-	addr = flag.String("addr", ":9080", "serve address")
+	configPath = flag.String("config", "", "config file path")
 )
+
+type Config struct {
+	Addr       string           `toml:"addr"`
+	InstanceID uint32           `toml:"instance-id"`
+	S3         config.S3Options `toml:"s3"`
+}
 
 func main() {
 	flag.Parse()
 	runtime.SetMutexProfileFraction(10)
-	server := compaction.NewServer()
-	err := http.ListenAndServe(*addr, server)
+	conf := &Config{
+		Addr:       ":9080",
+		InstanceID: 1,
+	}
+	_, err := toml.DecodeFile(*configPath, conf)
+	if err != nil {
+		panic(err)
+	}
+	s3fs, err := s3dfs.NewS3DFS("", conf.InstanceID, conf.S3)
+	if err != nil {
+		panic(err)
+	}
+	server, err := compaction.NewServer(conf.InstanceID, s3fs)
+	if err != nil {
+		panic(err)
+	}
+	err = http.ListenAndServe(conf.Addr, server)
 	if err != nil {
 		log.S().Error(err)
 	}

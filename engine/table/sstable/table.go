@@ -36,10 +36,12 @@ import (
 	"github.com/coocood/bbloom"
 	"github.com/ngaut/unistore/engine/buffer"
 	"github.com/ngaut/unistore/engine/cache"
+	"github.com/ngaut/unistore/engine/dfs"
 	"github.com/ngaut/unistore/engine/table"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"hash/crc32"
+	"io"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -59,10 +61,10 @@ const (
 // entry.  Returns a table with one reference count on it (decrementing which may delete the file!
 // -- consider t.Close() instead).  The fd has to writeable because we call Truncate on it before
 // deleting.
-func OpenTable(file TableFile, cache *cache.Cache) (*Table, error) {
+func OpenTable(file dfs.File, cache *cache.Cache) (*Table, error) {
 	t := &Table{
-		TableFile: file,
-		cache:     cache,
+		file:  file,
+		cache: cache,
 	}
 	if file.Size() < int64(footerSize) {
 		return nil, errors.Errorf("invalid file size %d", file.Size())
@@ -76,27 +78,20 @@ func OpenTable(file TableFile, cache *cache.Cache) (*Table, error) {
 	if t.footer.magic != MagicNumber {
 		return nil, errors.Errorf("magic number not match expect %d got %d", MagicNumber, t.footer.magic)
 	}
-	var indexData, oldIndexData, propsData []byte
-	if file.IsMMap() {
-		indexData = file.MMapRead(int64(t.footer.indexOffset), t.footer.indexLen())
-		oldIndexData = file.MMapRead(int64(t.footer.oldIndexOffset), t.footer.oldIndexLen())
-		propsData = file.MMapRead(int64(t.footer.propertiesOffset), t.footer.propertiesLen(file.Size()))
-	} else {
-		indexData = make([]byte, t.footer.indexLen())
-		_, err = file.ReadAt(indexData, int64(t.footer.indexOffset))
-		if err != nil {
-			return nil, err
-		}
-		oldIndexData = make([]byte, t.footer.oldIndexLen())
-		_, err = file.ReadAt(oldIndexData, int64(t.footer.oldIndexOffset))
-		if err != nil {
-			return nil, err
-		}
-		propsData = make([]byte, t.footer.propertiesLen(file.Size()))
-		_, err = file.ReadAt(propsData, int64(t.footer.propertiesOffset))
-		if err != nil {
-			return nil, err
-		}
+	indexData := make([]byte, t.footer.indexLen())
+	_, err = file.ReadAt(indexData, int64(t.footer.indexOffset))
+	if err != nil {
+		return nil, err
+	}
+	oldIndexData := make([]byte, t.footer.oldIndexLen())
+	_, err = file.ReadAt(oldIndexData, int64(t.footer.oldIndexOffset))
+	if err != nil {
+		return nil, err
+	}
+	propsData := make([]byte, t.footer.propertiesLen(file.Size()))
+	_, err = file.ReadAt(propsData, int64(t.footer.propertiesOffset))
+	if err != nil {
+		return nil, err
 	}
 	t.idx, err = newIndex(indexData, t.footer.checksumType)
 	if err != nil {
@@ -173,17 +168,13 @@ func (b *block) size() int64 {
 }
 
 type Table struct {
-	TableFile
+	file     dfs.File
 	cache    *cache.Cache
 	footer   footer
 	smallest []byte
 	biggest  []byte
 	idx      *nIndex
 	oldIdx   *nIndex
-}
-
-func (t *Table) PrepareForCompaction() error {
-	return t.LoadToRam()
 }
 
 func (t *Table) loadBlock(pos int) (*block, error) {
@@ -194,7 +185,7 @@ func (t *Table) loadBlock(pos int) (*block, error) {
 	} else {
 		length = t.footer.dataLen() - int(addr.currentOff)
 	}
-	return t.loadBlockByAddrLen(addr, length)
+	return t.readBlock(addr, length)
 }
 
 func (t *Table) loadOldBlock(pos int) (*block, error) {
@@ -205,22 +196,18 @@ func (t *Table) loadOldBlock(pos int) (*block, error) {
 	} else {
 		length = int(t.footer.indexOffset - addr.currentOff)
 	}
-	return t.loadBlockByAddrLen(addr, length)
-}
-
-func (t *Table) loadBlockByAddrLen(addr blockAddress, length int) (*block, error) {
-	if t.IsMMap() {
-		data := t.MMapRead(int64(addr.currentOff), length)
-		return &block{data: data[4:]}, nil
-	}
 	return t.readBlock(addr, length)
 }
 
 func (t *Table) readBlock(addr blockAddress, length int) (*block, error) {
+	if t.file.InMem() {
+		data := t.file.MemSlice(int(addr.currentOff), length)
+		return &block{data: data[4:]}, nil
+	}
 	for {
 		blk, err := t.cache.GetOrCompute(blockCacheKey(addr.originFID, addr.originOff), func() (interface{}, int64, error) {
 			data := buffer.GetBuffer(length)
-			if _, err := t.ReadAt(data, int64(addr.currentOff)); err != nil {
+			if _, err := t.file.ReadAt(data, int64(addr.currentOff)); err != nil {
 				buffer.PutBuffer(data)
 				return nil, 0, err
 			}
@@ -327,6 +314,18 @@ func (t *Table) GetSuggestSplitKey() []byte {
 		return splitKey
 	}
 	return []byte{}
+}
+
+func (t *Table) Delete() error {
+	return t.file.Close()
+}
+
+func (t *Table) Size() int64 {
+	return t.file.Size()
+}
+
+func (t *Table) ID() uint64 {
+	return t.file.ID()
 }
 
 type nIndex struct {
@@ -448,4 +447,51 @@ func IDToFilename(id uint64) string {
 // filepath.
 func NewFilename(id uint64, dir string) string {
 	return filepath.Join(dir, IDToFilename(id))
+}
+
+func blockCacheKey(fid uint64, offset uint32) cache.Key {
+	return cache.Key{ID: fid, Offset: offset}
+}
+
+var _ dfs.File = &InMemFile{}
+
+// InMemFile keep data in memory.
+type InMemFile struct {
+	id   uint64
+	data []byte
+}
+
+func (f *InMemFile) ID() uint64 {
+	return f.id
+}
+
+func (f *InMemFile) Size() int64 {
+	return int64(len(f.data))
+}
+
+func (f *InMemFile) ReadAt(b []byte, off int64) (n int, err error) {
+	if off >= f.Size() {
+		return 0, io.EOF
+	}
+	n = copy(b, f.data[off:])
+	if n < len(b) {
+		err = io.EOF
+	}
+	return
+}
+
+func (f *InMemFile) InMem() bool {
+	return true
+}
+
+func (f *InMemFile) MemSlice(off, length int) []byte {
+	return f.data[off : off+length]
+}
+
+func (f *InMemFile) Close() error {
+	return nil
+}
+
+func NewInMemFile(id uint64, data []byte) *InMemFile {
+	return &InMemFile{id: id, data: data}
 }

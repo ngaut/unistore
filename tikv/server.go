@@ -18,6 +18,7 @@ import (
 	"context"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/engine"
+	"github.com/ngaut/unistore/engine/dfs/s3dfs"
 	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/raftengine"
@@ -158,14 +159,7 @@ func createKVEngine(subPath string, listener *raftstore.MetaChangeListener,
 	opts.InstanceID = conf.InstanceID
 	opts.RecoveryConcurrency = conf.RecoveryConcurrency
 	opts.PreparationConcurrency = conf.PreparationConcurrency
-	opts.S3Options.EndPoint = conf.S3.Endpoint
-	opts.S3Options.SecretKey = conf.S3.SecretKey
-	opts.S3Options.KeyID = conf.S3.KeyID
-	opts.S3Options.Bucket = conf.S3.Bucket
-	opts.S3Options.Region = conf.S3.Region
-	opts.S3Options.ExpirationDuration = conf.S3.ExpirationDuration
-	opts.S3Options.SimulateLatency = conf.S3.SimulateLatency
-	opts.S3Options.Concurrency = conf.S3.Concurrency
+
 	opts.Dir = filepath.Join(conf.Path, subPath)
 	if allocator != nil {
 		opts.IDAllocator = allocator
@@ -173,7 +167,11 @@ func createKVEngine(subPath string, listener *raftstore.MetaChangeListener,
 	opts.MetaChangeListener = listener
 	opts.RecoverHandler = recoverHandler
 	opts.MetaReader = recoverHandler
-	return engine.OpenEngine(opts)
+	fs, err := s3dfs.NewS3DFS(opts.Dir, opts.InstanceID, conf.S3)
+	if err != nil {
+		return nil, err
+	}
+	return engine.OpenEngine(fs, opts)
 }
 
 const requestMaxSize = 6 * 1024 * 1024

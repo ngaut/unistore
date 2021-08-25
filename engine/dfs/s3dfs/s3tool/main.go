@@ -19,7 +19,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/ngaut/unistore/s3util"
+	"github.com/ngaut/unistore/config"
+	"github.com/ngaut/unistore/engine/dfs/s3dfs"
 	"github.com/ngaut/unistore/scheduler"
 	"path/filepath"
 )
@@ -64,14 +65,17 @@ func main() {
 		}
 		dir = args[1]
 	}
-	opts := s3util.Options{
+	opts := config.S3Options{
 		KeyID:     KeyID,
 		SecretKey: SecretKey,
-		EndPoint:  EndPoint,
+		Endpoint:  EndPoint,
 		Bucket:    Bucket,
 		Region:    Region,
 	}
-	c := s3util.NewS3Client(nil, dir, uint32(InstanceID), opts)
+	c, err := s3dfs.NewS3Client(uint32(InstanceID), opts)
+	if err != nil {
+		panic(err)
+	}
 	if fileIDs, err := c.ListFiles(); err != nil {
 		panic(err)
 	} else {
@@ -88,14 +92,14 @@ func main() {
 	}
 }
 
-func list(c *s3util.S3Client, fileIDs map[uint64]struct{}) {
+func list(c *s3dfs.S3Client, fileIDs map[uint64]struct{}) {
 	for fid := range fileIDs {
 		key := c.BlockKey(fid)
 		fmt.Println(key)
 	}
 }
 
-func cleanup(c *s3util.S3Client, fileIDs map[uint64]struct{}) {
+func cleanup(c *s3dfs.S3Client, fileIDs map[uint64]struct{}) {
 	bt := scheduler.NewBatchTasks()
 	for fid := range fileIDs {
 		key := c.BlockKey(fid)
@@ -108,7 +112,7 @@ func cleanup(c *s3util.S3Client, fileIDs map[uint64]struct{}) {
 	}
 }
 
-func backup(c *s3util.S3Client, dir string, fileIDs map[uint64]struct{}) {
+func backup(c *s3dfs.S3Client, dir string, fileIDs map[uint64]struct{}) {
 	bt := scheduler.NewBatchTasks()
 	for fid := range fileIDs {
 		key := c.BlockKey(fid)
@@ -121,7 +125,7 @@ func backup(c *s3util.S3Client, dir string, fileIDs map[uint64]struct{}) {
 	}
 }
 
-func recover(c *s3util.S3Client, dir string) {
+func recover(c *s3dfs.S3Client, dir string) {
 	bt := scheduler.NewBatchTasks()
 	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		key := info.Name()

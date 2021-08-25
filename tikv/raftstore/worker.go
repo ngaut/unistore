@@ -541,7 +541,7 @@ func (r *regionApplyTaskHandler) handle(t task) {
 	case taskTypeRegionDestroy:
 		// We don't need to delay the range deletion because DeleteRange operation
 		// doesn't affect the existing badger.Snapshot
-		err := r.kv.RemoveShard(regionTask.region.Id, true)
+		err := r.kv.RemoveShard(regionTask.region.Id, false)
 		if err != nil {
 			log.S().Errorf("region %d:%d failed to destroy region err %s", regionTask.region.Id, regionTask.region.RegionEpoch.Version, err.Error())
 		}

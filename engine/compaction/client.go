@@ -16,14 +16,14 @@ package compaction
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/ngaut/unistore/engine/dfs"
 	"github.com/ngaut/unistore/enginepb"
-	"github.com/ngaut/unistore/s3util"
 	"io"
 	"net/http"
 )
 
 type Client struct {
-	s3c       *s3util.S3Client
+	dfs       dfs.DFS
 	remoteURL string
 }
 
@@ -32,7 +32,7 @@ func (c *Client) Compact(req *Request) *Response {
 		compResp := &enginepb.Compaction{TopDeletes: req.Tops, Level: uint32(req.Level), Cf: int32(req.CF)}
 		resp := &Response{Compaction: compResp}
 		if req.Level == 0 {
-			results, err := compactL0(req, c.s3c)
+			results, err := compactL0(req, c.dfs)
 			if err != nil {
 				return &Response{Error: err.Error()}
 			}
@@ -44,7 +44,7 @@ func (c *Client) Compact(req *Request) *Response {
 			}
 		} else {
 			discardStats := new(DiscardStats)
-			results, err := CompactTables(req, discardStats, c.s3c)
+			results, err := CompactTables(req, discardStats, c.dfs)
 			if err != nil {
 				return &Response{Error: err.Error()}
 			}
@@ -78,6 +78,6 @@ func (c *Client) Compact(req *Request) *Response {
 	return compResp
 }
 
-func NewClient(addr string, s3c *s3util.S3Client) *Client {
-	return &Client{remoteURL: addr, s3c: s3c}
+func NewClient(addr string, dfs dfs.DFS) *Client {
+	return &Client{remoteURL: addr, dfs: dfs}
 }

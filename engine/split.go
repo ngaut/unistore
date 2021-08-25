@@ -16,6 +16,7 @@ package engine
 import (
 	"bytes"
 	"fmt"
+	"github.com/ngaut/unistore/engine/dfs"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -126,21 +127,17 @@ func (en *Engine) splitShardL0Table(shard *Shard, l0 *sstable.L0Table) ([]*engin
 		}
 	}
 	var newL0s []*enginepb.L0Create
-	var bt *scheduler.BatchTasks
-	if en.s3c != nil {
-		bt = scheduler.NewBatchTasks()
-	}
+	bt := scheduler.NewBatchTasks()
+	dfsOpts := dfs.NewOptions(shard.ID, shard.Ver)
 	for _, key := range shard.splitKeys {
 		result, err := en.buildShardL0BeforeKey(iters, key, l0.CommitTS())
 		if err != nil {
 			return nil, err
 		}
 		if result != nil {
-			if en.s3c != nil {
-				bt.AppendTask(func() error {
-					return putSSTBuildResultToS3(en.s3c, result)
-				})
-			}
+			bt.AppendTask(func() error {
+				return en.fs.Create(result.ID, result.FileData, dfsOpts)
+			})
 			newL0 := newL0CreateByResult(result)
 			newL0s = append(newL0s, newL0)
 		}
@@ -150,18 +147,14 @@ func (en *Engine) splitShardL0Table(shard *Shard, l0 *sstable.L0Table) ([]*engin
 		return nil, err
 	}
 	if result != nil {
-		if en.s3c != nil {
-			bt.AppendTask(func() error {
-				return putSSTBuildResultToS3(en.s3c, result)
-			})
-		}
+		bt.AppendTask(func() error {
+			return en.fs.Create(result.ID, result.FileData, dfsOpts)
+		})
 		lastL0 := newL0CreateByResult(result)
 		newL0s = append(newL0s, lastL0)
 	}
-	if en.s3c != nil {
-		if err := en.s3c.BatchSchedule(bt); err != nil {
-			return nil, err
-		}
+	if err := en.fs.GetScheduler().BatchSchedule(bt); err != nil {
+		return nil, err
 	}
 	return newL0s, nil
 }
@@ -234,10 +227,8 @@ func (en *Engine) splitTables(shard *Shard, cf int, level int, keys [][]byte, sp
 	oldTables := oldHandler.tables
 	toDeleteIDs := make(map[uint64]struct{})
 	var relatedKeys [][]byte
-	var bt *scheduler.BatchTasks
-	if en.s3c != nil {
-		bt = scheduler.NewBatchTasks()
-	}
+	bt := scheduler.NewBatchTasks()
+	dfsOpts := dfs.NewOptions(shard.ID, shard.Ver)
 	for _, tbl := range oldTables {
 		relatedKeys = relatedKeys[:0]
 		for _, key := range keys {
@@ -261,20 +252,16 @@ func (en *Engine) splitTables(shard *Shard, cf int, level int, keys [][]byte, sp
 				return err
 			}
 			if result != nil {
-				if en.s3c != nil {
-					bt.AppendTask(func() error {
-						return putSSTBuildResultToS3(en.s3c, result)
-					})
-				}
+				bt.AppendTask(func() error {
+					return en.fs.Create(result.ID, result.FileData, dfsOpts)
+				})
 				splitFiles.TableCreates = append(splitFiles.TableCreates, newTableCreateByResult(result, cf, level))
 			}
 		}
 		splitFiles.TableDeletes = append(splitFiles.TableDeletes, tbl.ID())
 	}
-	if en.s3c != nil {
-		if err := en.s3c.BatchSchedule(bt); err != nil {
-			return err
-		}
+	if err := en.fs.GetScheduler().BatchSchedule(bt); err != nil {
+		return err
 	}
 	return nil
 }
@@ -379,7 +366,7 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 	return
 }
 
-func (en *Engine) insertTableToNewShard(t table.Table, cf, level int, shards []*Shard, splitKeys [][]byte) {
+func (en *Engine) insertTableToNewShard(t *sstable.Table, cf, level int, shards []*Shard, splitKeys [][]byte) {
 	idx := getSplitShardIndex(splitKeys, t.Smallest())
 	shard := shards[idx]
 	if !shard.OverlapKey(t.Smallest()) || !shard.OverlapKey(t.Biggest()) {

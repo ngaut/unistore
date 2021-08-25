@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/ngaut/unistore/engine/table"
+	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/pingcap/badger/y"
 	"math"
 )
@@ -278,7 +279,7 @@ func (s *SnapAccess) newIterator(cf int, reverse bool) table.Iterator {
 		if len(h.tables) == 0 {
 			continue
 		}
-		iters = append(iters, table.NewConcatIterator(h.tables, reverse))
+		iters = append(iters, sstable.NewConcatIterator(h.tables, reverse))
 	}
 	return table.NewMergeIterator(iters, reverse)
 }

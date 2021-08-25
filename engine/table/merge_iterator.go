@@ -38,14 +38,12 @@ type mergeIteratorChild struct {
 	iter  Iterator
 
 	// The two iterators are type asserted from `y.Iterator`, used to inline more function calls.
-	merge  *MergeIterator
-	concat *ConcatIterator
+	merge *MergeIterator
 }
 
 func (child *mergeIteratorChild) setIterator(iter Iterator) {
 	child.iter = iter
 	child.merge, _ = iter.(*MergeIterator)
-	child.concat, _ = iter.(*ConcatIterator)
 }
 
 func (child *mergeIteratorChild) reset() {
@@ -54,12 +52,6 @@ func (child *mergeIteratorChild) reset() {
 		if child.valid {
 			child.key = child.merge.smaller.key
 			child.ver = child.merge.smaller.ver
-		}
-	} else if child.concat != nil {
-		child.valid = child.concat.Valid()
-		if child.valid {
-			child.key = child.concat.Key()
-			child.ver = child.concat.Value().Version
 		}
 	} else {
 		child.valid = child.iter.Valid()
@@ -106,8 +98,6 @@ func (mt *MergeIterator) swap() {
 func (mt *MergeIterator) Next() {
 	if mt.smaller.merge != nil {
 		mt.smaller.merge.Next()
-	} else if mt.smaller.concat != nil {
-		mt.smaller.concat.Next()
 	} else {
 		mt.smaller.iter.Next()
 	}
@@ -115,8 +105,6 @@ func (mt *MergeIterator) Next() {
 	if mt.sameKey && mt.bigger.valid {
 		if mt.bigger.merge != nil {
 			mt.bigger.merge.Next()
-		} else if mt.bigger.concat != nil {
-			mt.bigger.concat.Next()
 		} else {
 			mt.bigger.iter.Next()
 		}
@@ -190,8 +178,6 @@ func (mt *MergeIterator) Value() y.ValueStruct {
 func (mt *MergeIterator) FillValue(vs *y.ValueStruct) {
 	if mt.smaller.merge != nil {
 		mt.smaller.merge.FillValue(vs)
-	} else if mt.smaller.concat != nil {
-		mt.smaller.concat.FillValue(vs)
 	} else {
 		mt.smaller.iter.FillValue(vs)
 	}

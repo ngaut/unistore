@@ -11,20 +11,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package s3util
+package s3dfs
 
 import (
 	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/ngaut/unistore/scheduler"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -36,7 +33,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/ngaut/unistore/config"
-	"github.com/ngaut/unistore/scheduler"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
@@ -47,34 +43,24 @@ const (
 	deletionSize     = int(unsafe.Sizeof(deletion{}))
 )
 
-type Options struct {
-	EndPoint           string `json:"end_point"`
-	KeyID              string `json:"key_id"`
-	SecretKey          string `json:"secret_key"`
-	Bucket             string `json:"bucket"`
-	Region             string `json:"region"`
-	ExpirationDuration string `json:"expiration_duration"`
-	SimulateLatency    string `json:"simulate_latency"`
-	Concurrency        int    `json:"concurrency"`
-}
-
 type S3Client struct {
-	Options
+	config.S3Options
 	*scheduler.Scheduler
 	instanceID        uint32
 	cli               *s3.Client
 	expirationSeconds uint64
 	lock              sync.RWMutex
-	deletions         deletions
+	deletions         []deletion
+	lastDeleteTime    uint64
 	simulateLatency   time.Duration
 }
 
-func NewS3Client(c *y.Closer, dirPath string, instanceID uint32, opts Options) *S3Client {
+func NewS3Client(instanceID uint32, opts config.S3Options) (*S3Client, error) {
 	if opts.Concurrency <= 0 {
 		opts.Concurrency = 256
 	}
 	s3c := &S3Client{
-		Options:    opts,
+		S3Options:  opts,
 		Scheduler:  scheduler.NewScheduler(opts.Concurrency),
 		instanceID: instanceID,
 	}
@@ -100,17 +86,17 @@ func NewS3Client(c *y.Closer, dirPath string, instanceID uint32, opts Options) *
 		s3config.WithHTTPClient(client),
 		s3config.WithRegion(opts.Region),
 	)
-	if len(opts.EndPoint) > 0 {
+	if err != nil {
+		log.S().Errorf("load config error: %s", err.Error())
+		return nil, err
+	}
+	if len(opts.Endpoint) > 0 {
 		resolver := aws.EndpointResolverFunc(func(service, region string) (aws.Endpoint, error) {
 			return aws.Endpoint{
-				URL: "http://" + opts.EndPoint,
+				URL: "http://" + opts.Endpoint,
 			}, nil
 		})
 		cfg.EndpointResolver = resolver
-	}
-	if err != nil {
-		log.S().Errorf("load config error: %s", err.Error())
-		return nil
 	}
 	s3c.cli = s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.UsePathStyle = true
@@ -118,19 +104,10 @@ func NewS3Client(c *y.Closer, dirPath string, instanceID uint32, opts Options) *
 	if len(opts.SimulateLatency) > 0 {
 		s3c.simulateLatency = config.ParseDuration(opts.SimulateLatency)
 	}
-	if len(opts.ExpirationDuration) > 0 && c != nil {
+	if len(opts.ExpirationDuration) > 0 {
 		s3c.expirationSeconds = uint64(config.ParseDuration(opts.ExpirationDuration) / time.Second)
-		if s3c.expirationSeconds > 0 {
-			filePath := filepath.Join(dirPath, DeletionFileName)
-			err := s3c.deletions.load(filePath)
-			if err != nil {
-				log.S().Errorf("cannot open deletion file: %s", err.Error())
-			}
-			c.AddRunning(1)
-			go s3c.deleteLoop(c, filePath)
-		}
 	}
-	return s3c
+	return s3c, nil
 }
 
 func (c *S3Client) Get(key string, offset, length int64) ([]byte, error) {
@@ -266,108 +243,36 @@ func (c *S3Client) ParseFileID(key string) (uint64, bool) {
 
 func (c *S3Client) SetExpired(fid uint64) {
 	if c.expirationSeconds > 0 {
+		var toDelete []deletion
+		var now = uint64(time.Now().Unix())
 		c.lock.Lock()
-		c.deletions = append(c.deletions, deletion{fid: fid, expiredTime: uint64(time.Now().Unix()) + c.expirationSeconds})
-		c.lock.Unlock()
-	}
-}
-
-func (c *S3Client) deleteLoop(closer *y.Closer, filePath string) {
-	defer closer.Done()
-	ticker := time.NewTicker(time.Second)
-	for {
-		select {
-		case <-ticker.C:
-			c.deleteExpiredFile()
-		case <-closer.HasBeenClosed():
-			// write deletions to disk
-			err := c.deletions.write(filePath)
-			if err != nil {
-				log.S().Errorf("cannot write deletion file: %s", err.Error())
+		if now-c.lastDeleteTime > 10 {
+			for i, d := range c.deletions {
+				if d.expiredTime > now {
+					toDelete = c.deletions[:i]
+					break
+				} else if i == len(c.deletions)-1 {
+					toDelete = c.deletions
+				}
 			}
-			return
+			c.deletions = c.deletions[len(toDelete):]
+			c.lastDeleteTime = now
 		}
-	}
-}
-func (c *S3Client) deleteExpiredFile() {
-	var toDelete deletions
-	now := uint64(time.Now().Unix())
-	c.lock.RLock()
-	for i, d := range c.deletions {
-		if d.expiredTime > now {
-			toDelete = c.deletions[:i]
-			break
-		} else if i == len(c.deletions)-1 {
-			toDelete = c.deletions
-		}
-	}
-	c.lock.RUnlock()
-	if len(toDelete) > 0 {
-		for _, d := range toDelete {
-			if err := c.Delete(c.BlockKey(d.fid)); err != nil {
-				log.S().Errorf("cannot delete expired file: %s", err.Error())
-			}
-		}
-		c.lock.Lock()
-		c.deletions = c.deletions[len(toDelete):]
+		c.deletions = append(c.deletions, deletion{fid: fid, expiredTime: now + c.expirationSeconds})
 		c.lock.Unlock()
+		if len(toDelete) > 0 {
+			go func() {
+				for _, d := range toDelete {
+					if err := c.Delete(c.BlockKey(d.fid)); err != nil {
+						log.S().Errorf("cannot delete expired file: %s", err.Error())
+					}
+				}
+			}()
+		}
 	}
 }
 
 type deletion struct {
 	fid         uint64
 	expiredTime uint64
-}
-
-type deletions []deletion
-
-func (d deletions) write(filePath string) error {
-	tmpFilePath := filePath + ".tmp"
-	f, err := os.Create(tmpFilePath)
-	if err != nil {
-		return err
-	}
-	f.Write(d.marshal())
-	f.Sync()
-	f.Close()
-	return os.Rename(tmpFilePath, filePath)
-}
-
-func (d *deletions) load(filePath string) error {
-	f, err := os.Open(filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	defer f.Close()
-	b, err := ioutil.ReadAll(f)
-	if err != nil {
-		return err
-	}
-	d.unmarshal(b)
-	return nil
-}
-
-func (d deletions) marshal() []byte {
-	if len(d) == 0 {
-		return nil
-	}
-	var b []byte
-	hdr := (*reflect.SliceHeader)(unsafe.Pointer(&b))
-	hdr.Len = len(d) * deletionSize
-	hdr.Cap = hdr.Len
-	hdr.Data = uintptr(unsafe.Pointer(&d[0]))
-	return b
-}
-
-func (d *deletions) unmarshal(b []byte) {
-	if len(b) == 0 {
-		return
-	}
-	hdr := (*reflect.SliceHeader)(unsafe.Pointer(d))
-	hdr.Len = len(b) / deletionSize
-	hdr.Cap = hdr.Len
-	hdr.Data = uintptr(unsafe.Pointer(&b[0]))
 }

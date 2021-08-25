@@ -15,10 +15,10 @@ package compaction
 
 import (
 	"encoding/json"
+	"fmt"
+	"github.com/ngaut/unistore/engine/dfs"
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
-	"github.com/ngaut/unistore/s3util"
-	"github.com/pingcap/badger/y"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
 	"io"
@@ -30,20 +30,22 @@ type Request struct {
 	Level int      `json:"level"`
 	Tops  []uint64 `json:"tops"`
 
+	ShardID  uint64 `json:"shard_id"`
+	ShardVer uint64 `json:"shard_ver"`
+
 	// used for L1+ compaction
 	Bottoms []uint64 `json:"bottoms"`
 
 	// used for L0 compaction.
-	MultiCFBottoms [][]uint64     `json:"multi_cf_bottoms"`
-	Overlap        bool           `json:"overlap"`
-	SafeTS         uint64         `json:"safe_ts"`
-	BlockSize      int            `json:"block_size"`
-	MaxTableSize   int64          `json:"max_table_size"`
-	BloomFPR       float64        `json:"bloom_fpr"`
-	InstanceID     uint32         `json:"instance_id"`
-	S3             s3util.Options `json:"s_3"`
-	FirstID        uint64         `json:"first_id"`
-	LastID         uint64         `json:"last_id"`
+	MultiCFBottoms [][]uint64 `json:"multi_cf_bottoms"`
+	Overlap        bool       `json:"overlap"`
+	SafeTS         uint64     `json:"safe_ts"`
+	BlockSize      int        `json:"block_size"`
+	MaxTableSize   int64      `json:"max_table_size"`
+	BloomFPR       float64    `json:"bloom_fpr"`
+	InstanceID     uint32     `json:"instance_id"`
+	FirstID        uint64     `json:"first_id"`
+	LastID         uint64     `json:"last_id"`
 }
 
 func (req *Request) getTableBuilderOptions() sstable.TableBuilderOptions {
@@ -62,10 +64,15 @@ type Response struct {
 var _ http.Handler = &Server{}
 
 type Server struct {
+	dfs        dfs.DFS
+	instanceID uint32
 }
 
-func NewServer() *Server {
-	return &Server{}
+func NewServer(instanceID uint32, dfs dfs.DFS) (*Server, error) {
+	return &Server{
+		dfs:        dfs,
+		instanceID: instanceID,
+	}, nil
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -81,14 +88,16 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, err.Error(), http.StatusBadRequest)
 		return
 	}
-	c := y.NewCloser(1)
-	defer c.Signal()
-	s3c := s3util.NewS3Client(c, "", req.InstanceID, req.S3)
+	if req.InstanceID != s.instanceID {
+		errMsg := fmt.Sprintf("instance id not match expect %d, got %d", s.instanceID, req.InstanceID)
+		http.Error(writer, errMsg, http.StatusBadRequest)
+		return
+	}
 	resp := &Response{
 		Compaction: &enginepb.Compaction{Cf: int32(req.CF), Level: uint32(req.Level), TopDeletes: req.Tops},
 	}
 	if req.Level == 0 {
-		allResults, err1 := compactL0(req, s3c)
+		allResults, err1 := compactL0(req, s.dfs)
 		if err1 != nil {
 			log.Error("failed to compact L0", zap.Error(err1))
 			resp.Error = err1.Error()
@@ -105,7 +114,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 	} else {
 		stats := new(DiscardStats)
-		results, err1 := CompactTables(req, stats, s3c)
+		results, err1 := CompactTables(req, stats, s.dfs)
 		if err1 != nil {
 			log.Error("failed to compact", zap.Int("L", req.Level), zap.Error(err1))
 			resp.Error = err1.Error()

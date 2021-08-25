@@ -17,11 +17,10 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/ngaut/unistore/engine/compaction"
+	"github.com/ngaut/unistore/engine/dfs"
 	"github.com/ngaut/unistore/engine/epoch"
-	"github.com/ngaut/unistore/engine/table"
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
-	"github.com/ngaut/unistore/s3util"
 	"github.com/ngaut/unistore/scheduler"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/errors"
@@ -29,7 +28,6 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 	"math"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -42,8 +40,8 @@ type CompactDef struct {
 	CF    int
 	Level int
 
-	Top []table.Table
-	Bot []table.Table
+	Top []*sstable.Table
+	Bot []*sstable.Table
 
 	SafeTS     uint64
 	HasOverlap bool
@@ -51,7 +49,6 @@ type CompactDef struct {
 	Dir        string
 	Limiter    *rate.Limiter
 	InMemory   bool
-	S3         s3util.Options
 
 	thisRange keyRange
 	nextRange keyRange
@@ -88,9 +85,9 @@ func (cd *CompactDef) fillTables(thisLevel, nextLevel *levelHandler) bool {
 	if len(thisLevel.tables) == 0 {
 		return false
 	}
-	this := make([]table.Table, len(thisLevel.tables))
+	this := make([]*sstable.Table, len(thisLevel.tables))
 	copy(this, thisLevel.tables)
-	next := make([]table.Table, len(nextLevel.tables))
+	next := make([]*sstable.Table, len(nextLevel.tables))
 	copy(next, nextLevel.tables)
 
 	// First pick one table has max topSize/bottomSize ratio.
@@ -125,7 +122,7 @@ func (cd *CompactDef) fillTables(thisLevel, nextLevel *levelHandler) bool {
 		}
 		newTopSize := t.Size() + cd.topSize
 		newBotSize := sumTableSize(next[left:cd.botLeftIdx]) + cd.botSize
-		cd.Top = append([]table.Table{t}, cd.Top...)
+		cd.Top = append([]*sstable.Table{t}, cd.Top...)
 		cd.topLeftIdx--
 		bots = append(next[left:cd.botLeftIdx:cd.botLeftIdx], bots...)
 		cd.botLeftIdx = left
@@ -160,7 +157,7 @@ func (cd *CompactDef) fillTables(thisLevel, nextLevel *levelHandler) bool {
 	return true
 }
 
-func sumTableSize(tables []table.Table) int64 {
+func sumTableSize(tables []*sstable.Table) int64 {
 	var size int64
 	for _, t := range tables {
 		size += t.Size()
@@ -188,7 +185,7 @@ func (r keyRange) String() string {
 	return fmt.Sprintf("[left=%x, right=%x]", r.left, r.right)
 }
 
-func getKeyRange(tables []table.Table) keyRange {
+func getKeyRange(tables []*sstable.Table) keyRange {
 	y.Assert(len(tables) > 0)
 	smallest := tables[0].Smallest()
 	biggest := tables[0].Biggest()
@@ -404,7 +401,6 @@ func (en *Engine) newCompactionRequest(cf, level int) *compaction.Request {
 		CF:           cf,
 		Level:        level,
 		InstanceID:   en.opt.InstanceID,
-		S3:           en.opt.S3Options,
 		SafeTS:       atomic.LoadUint64(&en.mangedSafeTS),
 		BlockSize:    en.opt.TableBuilderOptions.BlockSize,
 		MaxTableSize: en.opt.TableBuilderOptions.MaxTableSize,
@@ -485,7 +481,7 @@ func (en *Engine) handleCompactionResponse(shard *Shard, resp *compaction.Respon
 	return en.applyCompaction(shard, cs, guard)
 }
 
-func assertTablesOrder(level int, tables []table.Table, cd *CompactDef) {
+func assertTablesOrder(level int, tables []*sstable.Table, cd *CompactDef) {
 	if level == 0 {
 		return
 	}
@@ -512,48 +508,7 @@ func assertTablesOrder(level int, tables []table.Table, cd *CompactDef) {
 	}
 }
 
-func (en *Engine) replaceTables(old *levelHandler, newTables []table.Table, cd *CompactDef, guard *epoch.Guard) *levelHandler {
-	newHandler := newLevelHandler(en.opt.NumLevelZeroTablesStall, old.level)
-	newHandler.totalSize = old.totalSize
-	// Increase totalSize first.
-	for _, tbl := range newTables {
-		newHandler.totalSize += tbl.Size()
-	}
-	left, right := getTablesInRange(old.tables, cd.nextRange.left, cd.nextRange.right)
-	toDelete := make([]epoch.Resource, 0, right-left)
-	// Update totalSize and reference counts.
-	for i := left; i < right; i++ {
-		tbl := old.tables[i]
-		if containsTable(cd.Bot, tbl) {
-			newHandler.totalSize -= tbl.Size()
-			toDelete = append(toDelete, &deletion{res: tbl, delete: func() {
-				if en.s3c != nil {
-					en.s3c.SetExpired(tbl.ID())
-				}
-			}})
-		}
-	}
-	tables := make([]table.Table, 0, left+len(newTables)+(len(old.tables)-right))
-	tables = append(tables, old.tables[:left]...)
-	tables = append(tables, newTables...)
-	tables = append(tables, old.tables[right:]...)
-	sortTables(tables)
-	assertTablesOrder(old.level, tables, cd)
-	newHandler.tables = tables
-	guard.Delete(toDelete)
-	return newHandler
-}
-
-func containsTable(tables []table.Table, tbl table.Table) bool {
-	for _, t := range tables {
-		if tbl == t {
-			return true
-		}
-	}
-	return false
-}
-
-func (en *Engine) deleteTables(old *levelHandler, toDel []table.Table) *levelHandler {
+func (en *Engine) deleteTables(old *levelHandler, toDel []*sstable.Table) *levelHandler {
 	newHandler := newLevelHandler(en.opt.NumLevelZeroTablesStall, old.level)
 	newHandler.totalSize = old.totalSize
 	toDelMap := make(map[uint64]struct{})
@@ -562,7 +517,7 @@ func (en *Engine) deleteTables(old *levelHandler, toDel []table.Table) *levelHan
 	}
 
 	// Make a copy as iterators might be keeping a slice of tables.
-	var newTables []table.Table
+	var newTables []*sstable.Table
 	for _, t := range old.tables {
 		_, found := toDelMap[t.ID()]
 		if !found {
@@ -582,16 +537,14 @@ func (en *Engine) ScheduleResources(f func()) {
 }
 
 func (en *Engine) PrepareResources(changeSet *enginepb.ChangeSet) error {
-	if en.s3c == nil {
-		return nil
-	}
 	bt := scheduler.NewBatchTasks()
+	dfsOpts := dfs.NewOptions(changeSet.ShardID, changeSet.ShardVer)
 	if changeSet.Flush != nil {
 		flush := changeSet.Flush
 		newL0 := flush.L0Create
 		if newL0 != nil {
 			bt.AppendTask(func() error {
-				return en.loadFileFromS3(flush.L0Create.ID)
+				return en.fs.Prefetch(flush.L0Create.ID, dfsOpts)
 			})
 		}
 	}
@@ -600,7 +553,7 @@ func (en *Engine) PrepareResources(changeSet *enginepb.ChangeSet) error {
 		for i := range comp.TableCreates {
 			tbl := comp.TableCreates[i]
 			bt.AppendTask(func() error {
-				return en.loadFileFromS3(tbl.ID)
+				return en.fs.Prefetch(tbl.ID, dfsOpts)
 			})
 		}
 	}
@@ -609,13 +562,13 @@ func (en *Engine) PrepareResources(changeSet *enginepb.ChangeSet) error {
 		for i := range splitFiles.L0Creates {
 			l0 := splitFiles.L0Creates[i]
 			bt.AppendTask(func() error {
-				return en.loadFileFromS3(l0.ID)
+				return en.fs.Prefetch(l0.ID, dfsOpts)
 			})
 		}
 		for i := range splitFiles.TableCreates {
 			tbl := splitFiles.TableCreates[i]
 			bt.AppendTask(func() error {
-				return en.loadFileFromS3(tbl.ID)
+				return en.fs.Prefetch(tbl.ID, dfsOpts)
 			})
 		}
 	}
@@ -624,17 +577,17 @@ func (en *Engine) PrepareResources(changeSet *enginepb.ChangeSet) error {
 		for i := range snap.L0Creates {
 			l0 := snap.L0Creates[i]
 			bt.AppendTask(func() error {
-				return en.loadFileFromS3(l0.ID)
+				return en.fs.Prefetch(l0.ID, dfsOpts)
 			})
 		}
 		for i := range snap.TableCreates {
 			tbl := snap.TableCreates[i]
 			bt.AppendTask(func() error {
-				return en.loadFileFromS3(tbl.ID)
+				return en.fs.Prefetch(tbl.ID, dfsOpts)
 			})
 		}
 	}
-	return en.s3c.BatchSchedule(bt)
+	return en.fs.GetScheduler().BatchSchedule(bt)
 }
 
 // ApplyChangeSet applies long running shard file change.
@@ -678,12 +631,11 @@ func (en *Engine) applyFlush(shard *Shard, changeSet *enginepb.ChangeSet) error 
 	flush := changeSet.Flush
 	newL0 := flush.L0Create
 	if newL0 != nil {
-		filename := sstable.NewFilename(newL0.ID, en.opt.Dir)
-		localFile, err := sstable.NewLocalFile(filename, true)
+		file, err := en.fs.Open(newL0.ID, dfs.NewOptions(shard.ID, shard.Ver))
 		if err != nil {
 			return err
 		}
-		tbl, err := sstable.OpenL0Table(localFile)
+		tbl, err := sstable.OpenL0Table(file)
 		if err != nil {
 			return err
 		}
@@ -697,6 +649,7 @@ func (en *Engine) applyFlush(shard *Shard, changeSet *enginepb.ChangeSet) error 
 
 func (en *Engine) applyCompaction(shard *Shard, changeSet *enginepb.ChangeSet, guard *epoch.Guard) error {
 	defer shard.markCompacting(false)
+	dfsOpts := dfs.NewOptions(shard.ID, shard.Ver)
 	comp := changeSet.Compaction
 	if comp.Conflicted {
 		if isMoveDown(comp) {
@@ -707,10 +660,7 @@ func (en *Engine) applyCompaction(shard *Shard, changeSet *enginepb.ChangeSet, g
 			tbl := comp.TableCreates[i]
 			resources = append(resources, &deletion{
 				delete: func() {
-					os.Remove(sstable.NewFilename(tbl.ID, en.opt.Dir))
-					if en.s3c != nil {
-						en.s3c.SetExpired(tbl.ID)
-					}
+					en.fs.Remove(tbl.ID, dfsOpts)
 				},
 			})
 		}
@@ -725,9 +675,7 @@ func (en *Engine) applyCompaction(shard *Shard, changeSet *enginepb.ChangeSet, g
 				if containsUint64(comp.TopDeletes, tbl.ID()) {
 					res := tbl
 					del.add(res.ID(), &deletion{res: res, delete: func() {
-						if en.s3c != nil {
-							en.s3c.SetExpired(res.ID())
-						}
+						en.fs.Remove(tbl.ID(), dfsOpts)
 					}})
 				}
 			}
@@ -776,16 +724,16 @@ func (en *Engine) compactionUpdateLevelHandler(shard *Shard, cf, level int,
 	creates []*enginepb.TableCreate, delIDs []uint64, del *deletions) error {
 	oldLevel := shard.cfs[cf].getLevelHandler(level)
 	newLevel := newLevelHandler(en.opt.NumLevelZeroTablesStall, level)
+	fsOpts := dfs.NewOptions(shard.ID, shard.Ver)
 	for _, tbl := range creates {
 		if int(tbl.CF) != cf {
 			continue
 		}
-		filename := sstable.NewFilename(tbl.ID, en.opt.Dir)
-		reader, err := newTableFile(filename, en)
+		file, err := en.fs.Open(tbl.ID, fsOpts)
 		if err != nil {
 			return err
 		}
-		tbl, err := sstable.OpenTable(reader, en.blkCache)
+		tbl, err := sstable.OpenTable(file, en.blkCache)
 		if err != nil {
 			return err
 		}
@@ -796,9 +744,7 @@ func (en *Engine) compactionUpdateLevelHandler(shard *Shard, cf, level int,
 		if containsUint64(delIDs, oldTbl.ID()) {
 			res := oldTbl
 			del.add(res.ID(), &deletion{res: res, delete: func() {
-				if en.s3c != nil {
-					en.s3c.SetExpired(res.ID())
-				}
+				en.fs.Remove(res.ID(), fsOpts)
 			}})
 		} else {
 			newLevel.tables = append(newLevel.tables, oldTbl)
@@ -820,22 +766,24 @@ func (en *Engine) applySplitFiles(shard *Shard, changeSet *enginepb.ChangeSet, g
 	oldL0s := shard.loadL0Tables()
 	newL0Tbls := &l0Tables{make([]*sstable.L0Table, 0, len(oldL0s.tables)*2)}
 	del := &deletions{resources: map[uint64]epoch.Resource{}}
+	fsOpts := dfs.NewOptions(shard.ID, shard.Ver)
 	for _, l0 := range splitFiles.L0Creates {
-		filename := sstable.NewFilename(l0.ID, en.opt.Dir)
-		localFile, err := sstable.NewLocalFile(filename, true)
-		tbl, err := sstable.OpenL0Table(localFile)
+		file, err := en.fs.Open(l0.ID, fsOpts)
+		if err != nil {
+			return err
+		}
+		tbl, err := sstable.OpenL0Table(file)
 		if err != nil {
 			return err
 		}
 		newL0Tbls.tables = append(newL0Tbls.tables, tbl)
 	}
+	dfsOpts := dfs.NewOptions(shard.ID, shard.Ver)
 	for _, oldL0 := range oldL0s.tables {
 		if containsUint64(splitFiles.TableDeletes, oldL0.ID()) {
 			res := oldL0
 			del.add(res.ID(), &deletion{res: res, delete: func() {
-				if en.s3c != nil {
-					en.s3c.SetExpired(res.ID())
-				}
+				en.fs.Remove(res.ID(), dfsOpts)
 			}})
 		} else {
 			newL0Tbls.tables = append(newL0Tbls.tables, oldL0)
@@ -855,12 +803,11 @@ func (en *Engine) applySplitFiles(shard *Shard, changeSet *enginepb.ChangeSet, g
 			newHandler = newLevelHandler(en.opt.NumLevelZeroTablesStall, int(tbl.Level))
 			newHandlers[tbl.CF][tbl.Level-1] = newHandler
 		}
-		filename := sstable.NewFilename(tbl.ID, en.opt.Dir)
-		reader, err := newTableFile(filename, en)
+		file, err := en.fs.Open(tbl.ID, fsOpts)
 		if err != nil {
 			return err
 		}
-		tbl, err := sstable.OpenTable(reader, en.blkCache)
+		tbl, err := sstable.OpenTable(file, en.blkCache)
 		if err != nil {
 			return err
 		}
@@ -878,9 +825,7 @@ func (en *Engine) applySplitFiles(shard *Shard, changeSet *enginepb.ChangeSet, g
 				if containsUint64(splitFiles.TableDeletes, oldTbl.ID()) {
 					res := oldTbl
 					del.add(res.ID(), &deletion{res: res, delete: func() {
-						if en.s3c != nil {
-							en.s3c.SetExpired(res.ID())
-						}
+						en.fs.Remove(res.ID(), dfsOpts)
 					}})
 				} else {
 					newHandler.totalSize += oldTbl.Size()
@@ -921,11 +866,7 @@ func (ds *DiscardStats) String() string {
 	return fmt.Sprintf("numSkips:%d, skippedBytes:%d", ds.numSkips, ds.skippedBytes)
 }
 
-func putSSTBuildResultToS3(s3c *s3util.S3Client, result *sstable.BuildResult) (err error) {
-	return s3c.Put(s3c.BlockKey(result.ID), result.FileData)
-}
-
-func sortTables(tables []table.Table) {
+func sortTables(tables []*sstable.Table) {
 	sort.Slice(tables, func(i, j int) bool {
 		return bytes.Compare(tables[i].Smallest(), tables[j].Smallest()) < 0
 	})
