@@ -18,6 +18,8 @@ import (
 	"context"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/engine"
+	"github.com/ngaut/unistore/engine/dfs"
+	"github.com/ngaut/unistore/engine/dfs/builtindfs"
 	"github.com/ngaut/unistore/engine/dfs/s3dfs"
 	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/pd"
@@ -85,7 +87,7 @@ func NewServer(conf *config.Config, pdClient pd.Client) (*Server, error) {
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
-	eng, err := createKVEngine(subPathKV, listener, allocator, recoverHandler, &conf.Engine)
+	eng, err := createKVEngine(subPathKV, listener, allocator, recoverHandler, pdClient, &conf.Engine, conf.Server.StoreAddr)
 	if err != nil {
 		return nil, errors.AddStack(err)
 	}
@@ -147,8 +149,13 @@ func createRaftEngine(subPath string, conf *config.RaftEngine) (*raftengine.Engi
 	return raftengine.Open(filepath.Join(conf.Path, subPath), conf.WALSize)
 }
 
-func createKVEngine(subPath string, listener *raftstore.MetaChangeListener,
-	allocator engine.IDAllocator, recoverHandler *raftstore.RecoverHandler, conf *config.Engine) (*engine.Engine, error) {
+func createKVEngine(subPath string,
+	listener *raftstore.MetaChangeListener,
+	allocator engine.IDAllocator,
+	recoverHandler *raftstore.RecoverHandler,
+	pd pd.Client,
+	conf *config.Engine,
+	storeAddr string) (*engine.Engine, error) {
 	opts := engine.DefaultOpt
 	opts.BaseSize = conf.BaseSize
 	opts.TableBuilderOptions.MaxTableSize = conf.MaxTableSize
@@ -167,9 +174,15 @@ func createKVEngine(subPath string, listener *raftstore.MetaChangeListener,
 	opts.MetaChangeListener = listener
 	opts.RecoverHandler = recoverHandler
 	opts.MetaReader = recoverHandler
-	fs, err := s3dfs.NewS3DFS(opts.Dir, opts.InstanceID, conf.S3)
-	if err != nil {
-		return nil, err
+	var fs dfs.DFS
+	var err error
+	if conf.S3.KeyID != "" {
+		fs, err = s3dfs.NewS3DFS(opts.Dir, opts.InstanceID, conf.S3)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		fs = builtindfs.NewBuiltinDFS(pd, opts.Dir, storeAddr)
 	}
 	return engine.OpenEngine(fs, opts)
 }
