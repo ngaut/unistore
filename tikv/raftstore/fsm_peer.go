@@ -1034,22 +1034,30 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 
 func (d *peerMsgHandler) onSplitRegionCheckTick() {
 	d.ticker.schedule(PeerTickSplitRegionCheck)
-	// To avoid frequent scan, we only add new scan tasks if all previous tasks
-	// have finished.
-	if len(d.ctx.splitCheckTaskSender) > 0 {
-		return
-	}
 
 	if !d.peer.IsLeader() {
 		return
 	}
-	d.ctx.splitCheckTaskSender <- task{
+
+	shard := d.ctx.engine.kv.GetShard(d.regionID())
+	if shard == nil {
+		return
+	}
+	estimatedSize := shard.GetEstimatedSize()
+	if uint64(estimatedSize) < d.ctx.cfg.SplitCheck.RegionMaxSize {
+		return
+	}
+	select {
+	case d.ctx.splitCheckTaskSender <- task{
 		tp: taskTypeSplitCheck,
 		data: &splitCheckTask{
 			region: d.region(),
 			peer:   d.peer.Meta,
 		},
+	}:
+	default:
 	}
+
 }
 
 func isTableKey(key []byte) bool {

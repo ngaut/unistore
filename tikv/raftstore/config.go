@@ -175,7 +175,7 @@ func NewDefaultConfig() *Config {
 		RaftLogGCTickInterval:            10 * time.Second,
 		RaftEntryCacheLifeTime:           30 * time.Second,
 		RaftRejectTransferLeaderDuration: 3 * time.Second,
-		SplitRegionCheckTickInterval:     10 * time.Second,
+		SplitRegionCheckTickInterval:     1 * time.Second,
 		CleanStalePeerDelay:              10 * time.Minute,
 		RegionCompactCheckInterval:       5 * time.Minute,
 		RegionCompactCheckStep:           100,
