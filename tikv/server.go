@@ -211,6 +211,7 @@ type requestCtx struct {
 	rpcCtx           *kvrpcpb.Context
 	asyncMinCommitTS uint64
 	onePCCommitTS    uint64
+	shard            *engine.Shard
 }
 
 func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCtx, error) {
@@ -225,6 +226,7 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCt
 		return req, nil
 	}
 	shd := svr.mvccStore.eng.GetShard(req.rpcCtx.RegionId)
+	req.shard = shd
 	if shd.Ver != ctx.RegionEpoch.Version {
 		meta := req.regCtx.meta
 		var startKey, endKey []byte
@@ -253,7 +255,7 @@ func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCt
 // For read-only requests that doesn't acquire latches, this function must be called after all locks has been checked.
 func (req *requestCtx) getKVReader() *enginereader.Reader {
 	if req.reader == nil {
-		shd := req.svr.mvccStore.eng.GetShard(req.rpcCtx.RegionId)
+		shd := req.shard
 		snap := req.svr.mvccStore.eng.NewSnapAccess(shd)
 		req.reader = enginereader.NewReader(req.regCtx.startKey, req.regCtx.endKey, snap)
 	}
