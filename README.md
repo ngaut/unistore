@@ -9,7 +9,7 @@ make
 
 ## Deploy
 
-Put the binary of `pd-serever`, `node` and `tidb-server` into a single dir.
+Put the binary of `pd-server`, `node` and `tidb-server` into a single dir.
 
 ## Run
 
