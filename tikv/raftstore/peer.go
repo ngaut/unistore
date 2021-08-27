@@ -736,7 +736,7 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 			}
 			store := p.Store()
 			shardMeta := p.Store().GetEngineMeta()
-			p.Store().Engines.kv.TriggerFlush(shard, store.onGoingFlushCnt(), shardMeta.SplitStage == enginepb.SplitStage_PRE_SPLIT)
+			p.Store().Engines.kv.TriggerFlush(shard, store.onGoingFlushCnt())
 			if shardMeta.SplitStage != enginepb.SplitStage_INITIAL {
 				seq := shardMeta.Seq
 				regionSched := store.regionSched
