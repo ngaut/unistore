@@ -804,10 +804,13 @@ func (en *Engine) GetOpt() Options {
 	return en.opt
 }
 
-func (en *Engine) TriggerFlush(shard *Shard, skipCnt int, isPreSplitStage bool) {
+func (en *Engine) TriggerFlush(shard *Shard, skipCnt int) {
 	mems := shard.loadMemTables()
 	for i := len(mems.tables) - skipCnt - 1; i > 0; i-- {
 		memTbl := mems.tables[i]
+		if i == 1 && shard.GetSplitStage() == enginepb.SplitStage_PRE_SPLIT {
+			memTbl.SetSplitStage(enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE)
+		}
 		log.S().Infof("shard %d:%d trigger flush mem-table ts %d, size %d",
 			shard.ID, shard.Ver, memTbl.GetVersion(), memTbl.Size())
 		en.flushCh <- &flushTask{
@@ -816,7 +819,7 @@ func (en *Engine) TriggerFlush(shard *Shard, skipCnt int, isPreSplitStage bool) 
 		}
 	}
 	if len(mems.tables) == 1 && mems.tables[0].Empty() {
-		if !shard.IsInitialFlushed() || isPreSplitStage {
+		if !shard.IsInitialFlushed() {
 			memTableTS := shard.loadMemTableTS()
 			memTbl := memtable.NewCFTable(en.numCFs)
 			memTbl.SetVersion(memTableTS)
