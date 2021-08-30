@@ -465,6 +465,7 @@ func (en *Engine) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 			sortTables(handler.tables)
 		}
 	}
+	shard.refreshEstimatedSize()
 	en.shardMap.Store(shard.ID, shard)
 	log.S().Infof("load shard %d ver %d", shard.ID, shard.Ver)
 	return shard, nil
