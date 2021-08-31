@@ -862,12 +862,20 @@ func (a *applier) getLockForCommit(aCtx *applyContext, key []byte, commitTS uint
 	item, err := a.snap.Get(mvcc.LockCF, key, math.MaxUint64)
 	if err != nil {
 		// TODO: investigate why there is duplicated commit and avoid it.
-		log.S().Warnf("lock for key %v not found, check if it's duplicated commit", key)
+		log.S().Warnf("region %d:%d lock for key %x not found, check if it's duplicated commit, start:%x, end:%x, index:%d",
+			a.region.Id, a.region.RegionEpoch.Version, key, a.snap.Shard().Start, a.snap.Shard().End, aCtx.execCtx.index)
 		item, err = a.snap.Get(mvcc.WriteCF, key, math.MaxUint64)
-		y.AssertTruef(err == nil, "key %v commit should be duplicated at index %d", key, aCtx.execCtx.index)
+		if err != nil {
+			log.S().Errorf("region %d:%d key %x commit should be duplicated at index %d",
+				a.region.Id, a.region.RegionEpoch.Version, key, aCtx.execCtx.index)
+		}
+		y.Assert(err == nil)
 		um := mvcc.UserMeta(item.UserMeta())
-		y.AssertTruef(um.CommitTS() == commitTS, "key %v commitTS %d not equal old %d",
-			key, commitTS, um.CommitTS())
+		if um.CommitTS() != commitTS {
+			log.S().Errorf("region %d:%d key %x commitTS %d not equal old %d",
+				a.region.Id, a.region.RegionEpoch.Version, key, commitTS, um.CommitTS())
+		}
+		y.Assert(um.CommitTS() == commitTS)
 		return nil
 	}
 	val, _ = item.Value()

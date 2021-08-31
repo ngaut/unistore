@@ -696,6 +696,10 @@ func (s *SnapAccess) SetManagedReadTS(ts uint64) {
 	s.managedReadTS = ts
 }
 
+func (s *SnapAccess) Shard() *Shard {
+	return s.shard
+}
+
 func (en *Engine) NewSnapAccess(shard *Shard) *SnapAccess {
 	guard := en.resourceMgr.Acquire()
 	snap := &SnapAccess{
