@@ -796,6 +796,12 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		y.Assert(err == nil)
 		// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
 		change.Sequence = aCtx.execCtx.index
+		if change.Flush != nil {
+			shard := aCtx.engines.kv.GetShard(cl.RegionID())
+			if shard != nil {
+				shard.ApplyingFlush()
+			}
+		}
 		aCtx.regionScheduler <- task{
 			tp: taskTypeRegionApplyChangeSet,
 			data: &regionTask{
@@ -1249,7 +1255,7 @@ func (a *applier) handleRecoverLeader(aCtx *applyContext, ss *raft.SoftState) {
 	if ss != nil {
 		if ss.RaftState == raft.StateLeader {
 			shard := aCtx.engines.kv.GetShard(a.region.Id)
-			aCtx.engines.kv.TriggerFlush(shard, 0)
+			aCtx.engines.kv.TriggerFlush(shard)
 		}
 	}
 }

@@ -805,10 +805,13 @@ func (en *Engine) GetOpt() Options {
 	return en.opt
 }
 
-func (en *Engine) TriggerFlush(shard *Shard, skipCnt int) {
+func (en *Engine) TriggerFlush(shard *Shard) {
 	mems := shard.loadMemTables()
-	for i := len(mems.tables) - skipCnt - 1; i > 0; i-- {
+	for i := len(mems.tables) - 1; i > 0; i-- {
 		memTbl := mems.tables[i]
+		if memTbl.IsApplying() {
+			continue
+		}
 		if i == 1 && shard.GetSplitStage() == enginepb.SplitStage_PRE_SPLIT {
 			memTbl.SetSplitStage(enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE)
 		}
@@ -830,6 +833,17 @@ func (en *Engine) TriggerFlush(shard *Shard, skipCnt int) {
 				shard: shard,
 				tbl:   memTbl,
 			}
+		}
+	}
+}
+
+func (s *Shard) ApplyingFlush() {
+	mems := s.loadMemTables()
+	for i := len(mems.tables) - 1; i > 0; i-- {
+		memTbl := mems.tables[i]
+		if !memTbl.IsApplying() {
+			memTbl.SetApplying()
+			break
 		}
 	}
 }
