@@ -715,12 +715,6 @@ func (p *Peer) CheckStaleState(cfg *Config) StaleState {
 func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 	ss := ready.SoftState
 	if ss != nil {
-		shard := p.Store().Engines.kv.GetShard(p.regionId)
-		// Newly added peer have not apply snapshot yet.
-		if shard != nil {
-			log.S().Infof("shard %d:%d set passive %t on role changed", shard.ID, shard.Ver, ss.RaftState != raft.StateLeader)
-			shard.SetPassive(ss.RaftState != raft.StateLeader)
-		}
 		if ss.RaftState == raft.StateLeader {
 			// The local read can only be performed after a new leader has applied
 			// the first empty entry on its term. After that the lease expiring time
@@ -733,38 +727,6 @@ func (p *Peer) OnRoleChanged(observer PeerEventObserver, ready *raft.Ready) {
 			p.MaybeRenewLeaderLease(time.Now())
 			if !p.PendingRemove {
 				p.leaderChecker.term.Store(p.Term())
-			}
-			store := p.Store()
-			shardMeta := p.Store().GetEngineMeta()
-			p.Store().Engines.kv.TriggerFlush(shard, store.onGoingFlushCnt())
-			if shardMeta.SplitStage != enginepb.SplitStage_INITIAL {
-				seq := shardMeta.Seq
-				regionSched := store.regionSched
-				region := p.Region()
-				meta := p.Meta
-				go func() {
-					for {
-						if shard.IsPassive() {
-							break
-						}
-						if shard.GetSplitStage() >= enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE && shard.GetMetaSequence() >= seq {
-							log.S().Infof("shard %d:%d recover split", shard.ID, shard.Ver)
-							regionSched <- task{
-								tp: taskTypeRecoverSplit,
-								data: &regionTask{
-									region:    region,
-									peer:      meta,
-									stage:     shard.GetSplitStage(),
-									splitKeys: shard.GetPreSplitKeys(),
-								},
-							}
-							return
-						}
-						log.S().Infof("shard %d:%d wait to recover split, stage %s, request seq %d, current seq %d",
-							shard.ID, shard.Ver, shard.GetSplitStage(), seq, shard.GetMetaSequence())
-						time.Sleep(time.Millisecond * 100)
-					}
-				}()
 			}
 			observer.OnRoleChange(p.getEventContext().RegionId, ss.RaftState)
 		} else if ss.RaftState == raft.StateFollower {
@@ -1106,6 +1068,7 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *engine.Engine, applyMsgs *applyM
 		// Snapshot's metadata has been applied.
 		p.LastApplyingIdx = p.Store().truncatedIndex()
 	} else {
+		softState := ready.SoftState
 		committedEntries := ready.CommittedEntries
 		ready.CommittedEntries = nil
 		// leader needs to update lease and last commited split index.
@@ -1152,7 +1115,11 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *engine.Engine, applyMsgs *applyM
 				}
 			}
 		}
-
+		apply := &apply{
+			regionId:  p.regionId,
+			term:      p.Term(),
+			softState: softState,
+		}
 		l := len(committedEntries)
 		if l > 0 {
 			p.LastApplyingIdx = committedEntries[l-1].Index
@@ -1161,11 +1128,9 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *engine.Engine, applyMsgs *applyM
 				p.RaftGroup.SkipBcastCommit(true)
 				p.lastUrgentProposalIdx = math.MaxUint64
 			}
-			apply := &apply{
-				regionId: p.regionId,
-				term:     p.Term(),
-				entries:  committedEntries,
-			}
+			apply.entries = committedEntries
+		}
+		if l > 0 || softState != nil {
 			applyMsgs.appendMsg(p.regionId, newApplyMsg(apply))
 		}
 	}
