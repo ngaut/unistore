@@ -23,6 +23,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/ngaut/unistore/raft"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/badger/y"
@@ -89,9 +90,10 @@ type keyRange struct {
 }
 
 type apply struct {
-	regionId uint64
-	term     uint64
-	entries  []*eraftpb.Entry
+	regionId  uint64
+	term      uint64
+	entries   []*eraftpb.Entry
+	softState *raft.SoftState
 }
 
 type applyMetrics struct {
@@ -375,6 +377,8 @@ type applier struct {
 	snap      *engine.SnapAccess
 
 	pauseState *apply
+
+	recoverSplit bool
 }
 
 func newApplier(reg *registration) *applier {
@@ -792,6 +796,11 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		y.Assert(err == nil)
 		// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
 		change.Sequence = aCtx.execCtx.index
+		if change.Flush != nil {
+			if shard := aCtx.engines.kv.GetShard(cl.RegionID()); shard != nil {
+				shard.MarkMemTableApplyingFlush()
+			}
+		}
 		aCtx.regionScheduler <- task{
 			tp: taskTypeRegionApplyChangeSet,
 			data: &regionTask{
@@ -852,12 +861,20 @@ func (a *applier) getLockForCommit(aCtx *applyContext, key []byte, commitTS uint
 	item, err := a.snap.Get(mvcc.LockCF, key, math.MaxUint64)
 	if err != nil {
 		// TODO: investigate why there is duplicated commit and avoid it.
-		log.S().Warnf("lock for key %v not found, check if it's duplicated commit", key)
+		log.S().Warnf("region %d:%d lock for key %x not found, check if it's duplicated commit, start:%x, end:%x, index:%d",
+			a.region.Id, a.region.RegionEpoch.Version, key, a.snap.Shard().Start, a.snap.Shard().End, aCtx.execCtx.index)
 		item, err = a.snap.Get(mvcc.WriteCF, key, math.MaxUint64)
-		y.AssertTruef(err == nil, "key %v commit should be duplicated at index %d", key, aCtx.execCtx.index)
+		if err != nil {
+			log.S().Errorf("region %d:%d key %x commit should be duplicated at index %d",
+				a.region.Id, a.region.RegionEpoch.Version, key, aCtx.execCtx.index)
+		}
+		y.Assert(err == nil)
 		um := mvcc.UserMeta(item.UserMeta())
-		y.AssertTruef(um.CommitTS() == commitTS, "key %v commitTS %d not equal old %d",
-			key, commitTS, um.CommitTS())
+		if um.CommitTS() != commitTS {
+			log.S().Errorf("region %d:%d key %x commitTS %d not equal old %d",
+				a.region.Id, a.region.RegionEpoch.Version, key, commitTS, um.CommitTS())
+		}
+		y.Assert(um.CommitTS() == commitTS)
 		return nil
 	}
 	val, _ = item.Value()
@@ -1198,19 +1215,67 @@ func (a *applier) handleApply(aCtx *applyContext, apply *apply) {
 		now := time.Now()
 		aCtx.timer = &now
 	}
-	if len(apply.entries) == 0 || a.pendingRemove || a.stopped {
+	if len(apply.entries) == 0 && apply.softState == nil || a.pendingRemove || a.stopped {
 		return
 	}
 	a.metrics = applyMetrics{}
 	shard := aCtx.engines.kv.GetShard(a.region.GetId())
-	a.metrics.approximateSize = uint64(shard.GetEstimatedSize())
+	if shard != nil {
+		a.metrics.approximateSize = uint64(shard.GetEstimatedSize())
+	}
 	a.term = apply.term
-	a.handleRaftCommittedEntries(aCtx, apply.entries)
+	if len(apply.entries) > 0 {
+		a.handleRaftCommittedEntries(aCtx, apply.entries)
+	}
+	if apply.softState != nil {
+		a.onRoleChanged(aCtx, apply.softState)
+	}
+	if a.recoverSplit {
+		a.handleRecoverSplit(aCtx)
+	}
 	if a.waitMergeState != nil {
 		return
 	}
 	if a.pendingRemove {
 		a.destroy(aCtx)
+	}
+}
+
+func (a *applier) onRoleChanged(aCtx *applyContext, ss *raft.SoftState) {
+	if ss != nil {
+		shard := aCtx.engines.kv.GetShard(a.region.Id)
+		// Newly added peer have not apply snapshot yet.
+		if shard != nil {
+			log.S().Infof("shard %d:%d set passive %t on role changed", shard.ID, shard.Ver, ss.RaftState != raft.StateLeader)
+			shard.SetPassive(ss.RaftState != raft.StateLeader)
+		}
+		a.recoverSplit = false
+		if ss.RaftState == raft.StateLeader {
+			aCtx.engines.kv.TriggerFlush(shard)
+			if shard.GetSplitStage() != enginepb.SplitStage_INITIAL {
+				a.recoverSplit = true
+			}
+		}
+	}
+}
+
+func (a *applier) handleRecoverSplit(aCtx *applyContext) {
+	if a.recoverSplit {
+		shard := aCtx.engines.kv.GetShard(a.region.Id)
+		if shard.GetSplitStage() >= enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE {
+			a.recoverSplit = false
+			log.S().Infof("shard %d:%d recover split", shard.ID, shard.Ver)
+			aCtx.regionScheduler <- task{
+				tp: taskTypeRecoverSplit,
+				data: &regionTask{
+					region:    a.region,
+					peer:      a.peer,
+					stage:     shard.GetSplitStage(),
+					splitKeys: shard.GetPreSplitKeys(),
+				},
+			}
+			return
+		}
 	}
 }
 

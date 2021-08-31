@@ -16,12 +16,13 @@ func (e *Entry) EstimateSize() int64 {
 }
 
 type Table struct {
-	skls    []*skiplist
-	hints   []Hint
-	arena   *arena
-	version uint64
-	props   *enginepb.Properties
-	stage   int32
+	skls     []*skiplist
+	hints    []Hint
+	arena    *arena
+	version  uint64
+	props    *enginepb.Properties
+	stage    int32
+	applying int32
 }
 
 func NewCFTable(numCFs int) *Table {
@@ -107,4 +108,12 @@ func (cft *Table) SetSplitStage(stage enginepb.SplitStage) {
 
 func (cft *Table) GetSplitStage() enginepb.SplitStage {
 	return enginepb.SplitStage(atomic.LoadInt32(&cft.stage))
+}
+
+func (cft *Table) SetApplying() {
+	atomic.StoreInt32(&cft.applying, int32(1))
+}
+
+func (cft *Table) IsApplying() bool {
+	return atomic.LoadInt32(&cft.applying) == 1
 }

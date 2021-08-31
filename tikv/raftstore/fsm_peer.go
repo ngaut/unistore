@@ -1429,10 +1429,4 @@ func (d *peerMsgHandler) onApplyChangeSetResult(result *MsgApplyChangeSetResult)
 			change.ShardID, change.ShardVer, store.splitStage, change.Stage)
 		store.splitStage = change.Stage
 	}
-	for i, applying := range store.applyingChanges {
-		if applying.Sequence == change.Sequence {
-			store.applyingChanges = append(store.applyingChanges[:i], store.applyingChanges[i+1:]...)
-			break
-		}
-	}
 }
