@@ -797,9 +797,8 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
 		change.Sequence = aCtx.execCtx.index
 		if change.Flush != nil {
-			shard := aCtx.engines.kv.GetShard(cl.RegionID())
-			if shard != nil {
-				shard.ApplyingFlush()
+			if shard := aCtx.engines.kv.GetShard(cl.RegionID());shard != nil {
+				shard.MarkMemTableApplyingFlush()
 			}
 		}
 		aCtx.regionScheduler <- task{

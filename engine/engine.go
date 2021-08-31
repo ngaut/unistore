@@ -841,7 +841,7 @@ func (en *Engine) TriggerFlush(shard *Shard) {
 	}
 }
 
-func (s *Shard) ApplyingFlush() {
+func (s *Shard) MarkMemTableApplyingFlush() {
 	mems := s.loadMemTables()
 	for i := len(mems.tables) - 1; i > 0; i-- {
 		memTbl := mems.tables[i]
