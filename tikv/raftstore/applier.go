@@ -1253,8 +1253,10 @@ func (a *applier) onRoleChanged(aCtx *applyContext, ss *raft.SoftState) {
 			log.S().Infof("shard %d:%d set passive %t on role changed", shard.ID, shard.Ver, ss.RaftState != raft.StateLeader)
 			shard.SetPassive(ss.RaftState != raft.StateLeader)
 		}
-		if ss.RaftState == raft.StateLeader && shard.GetSplitStage() != enginepb.SplitStage_INITIAL {
+		if ss.RaftState == raft.StateLeader &&shard.GetSplitStage() != enginepb.SplitStage_INITIAL{
 			a.recoverSplit = true
+		}else {
+			a.recoverSplit = false
 		}
 	}
 }
