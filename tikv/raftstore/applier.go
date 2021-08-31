@@ -797,7 +797,7 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		// Assign the raft log's index as the sequence number of the ChangeSet to ensure monotonic increase.
 		change.Sequence = aCtx.execCtx.index
 		if change.Flush != nil {
-			if shard := aCtx.engines.kv.GetShard(cl.RegionID());shard != nil {
+			if shard := aCtx.engines.kv.GetShard(cl.RegionID()); shard != nil {
 				shard.MarkMemTableApplyingFlush()
 			}
 		}
@@ -1224,14 +1224,11 @@ func (a *applier) handleApply(aCtx *applyContext, apply *apply) {
 		a.metrics.approximateSize = uint64(shard.GetEstimatedSize())
 	}
 	a.term = apply.term
-	if apply.softState != nil {
-		a.onRoleChanged(aCtx, apply.softState)
-	}
 	if len(apply.entries) > 0 {
 		a.handleRaftCommittedEntries(aCtx, apply.entries)
 	}
 	if apply.softState != nil {
-		a.handleRecoverLeader(aCtx, apply.softState)
+		a.onRoleChanged(aCtx, apply.softState)
 	}
 	if a.recoverSplit {
 		a.handleRecoverSplit(aCtx)
@@ -1252,19 +1249,12 @@ func (a *applier) onRoleChanged(aCtx *applyContext, ss *raft.SoftState) {
 			log.S().Infof("shard %d:%d set passive %t on role changed", shard.ID, shard.Ver, ss.RaftState != raft.StateLeader)
 			shard.SetPassive(ss.RaftState != raft.StateLeader)
 		}
-		if ss.RaftState == raft.StateLeader &&shard.GetSplitStage() != enginepb.SplitStage_INITIAL{
-			a.recoverSplit = true
-		}else {
-			a.recoverSplit = false
-		}
-	}
-}
-
-func (a *applier) handleRecoverLeader(aCtx *applyContext, ss *raft.SoftState) {
-	if ss != nil {
+		a.recoverSplit = false
 		if ss.RaftState == raft.StateLeader {
-			shard := aCtx.engines.kv.GetShard(a.region.Id)
 			aCtx.engines.kv.TriggerFlush(shard)
+			if shard.GetSplitStage() != enginepb.SplitStage_INITIAL {
+				a.recoverSplit = true
+			}
 		}
 	}
 }
