@@ -879,8 +879,6 @@ func (p *Peer) handleChangeSet(ctx *RaftContext, e *eraftpb.Entry) {
 	}
 	if clog.Type() == raftlog.TypePreSplit {
 		shardMeta.SplitStage = enginepb.SplitStage_PRE_SPLIT
-	} else {
-		store.applyingChanges = append(store.applyingChanges, change)
 	}
 	shardMeta.ApplyChangeSet(change)
 	log.S().Infof("shard meta %d:%d handle change set engine meta, apply change %s", shardMeta.ID, shardMeta.Ver, change)

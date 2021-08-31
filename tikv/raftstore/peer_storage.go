@@ -120,9 +120,8 @@ type PeerStorage struct {
 	// stableApplyState is the applyState that is persisted to L0 file.
 	stableApplyState applyState
 
-	applyingChanges []*enginepb.ChangeSet
-	splitStage      enginepb.SplitStage
-	initialFlushed  bool
+	splitStage     enginepb.SplitStage
+	initialFlushed bool
 
 	Tag string
 
@@ -620,27 +619,6 @@ func (ps *PeerStorage) ClearData() error {
 func (p *PeerStorage) CancelApplyingSnap() bool {
 	// Todo: currently it is a place holder
 	return true
-}
-
-func (ps *PeerStorage) onGoingFlushCnt() int {
-	var count int
-	for _, change := range ps.applyingChanges {
-		if change.Flush != nil {
-			count++
-		}
-	}
-	return count
-}
-
-func (ps *PeerStorage) hasOnGoingPreSplitFlush() bool {
-	for _, change := range ps.applyingChanges {
-		if change.Flush != nil {
-			if change.Stage == enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 type snapData struct {
