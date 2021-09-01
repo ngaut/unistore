@@ -39,8 +39,6 @@ require (
 	google.golang.org/grpc v1.27.1
 )
 
-replace go.etcd.io/etcd => github.com/zhangjinpeng1987/etcd v0.5.0-alpha.5.0.20201117041249-9487a87e2cbd
-
 replace github.com/pingcap/kvproto => github.com/coocood/kvproto v0.0.0-20210712100210-4afaae04ba8e
 
 go 1.13
