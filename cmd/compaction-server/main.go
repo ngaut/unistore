@@ -21,6 +21,7 @@ import (
 	"github.com/ngaut/unistore/engine/dfs/s3dfs"
 	"github.com/pingcap/log"
 	"net/http"
+	_ "net/http/pprof"
 	"runtime"
 )
 
@@ -41,9 +42,11 @@ func main() {
 		Addr:       ":9080",
 		InstanceID: 1,
 	}
-	_, err := toml.DecodeFile(*configPath, conf)
-	if err != nil {
-		panic(err)
+	if *configPath != "" {
+		_, err := toml.DecodeFile(*configPath, conf)
+		if err != nil {
+			panic(err)
+		}
 	}
 	s3fs, err := s3dfs.NewS3DFS("", conf.InstanceID, conf.S3)
 	if err != nil {
@@ -53,7 +56,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	err = http.ListenAndServe(conf.Addr, server)
+	http.Handle("/", server)
+	err = http.ListenAndServe(conf.Addr, nil)
 	if err != nil {
 		log.S().Error(err)
 	}
