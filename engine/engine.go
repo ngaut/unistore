@@ -284,7 +284,7 @@ func (en *Engine) DebugHandler() http.HandlerFunc {
 					splittings = len(shard.splittingMemTbls)
 				}
 				if r.FormValue("detail") == "" {
-					fmt.Fprintf(w, "\tShard % 10d:%d,\tSize % 13s, Mem % 13s(%d),\tL0 % 13s(%d),\tCF0 % 13s, CF1 % 13s, MMTS % 13s, Stage % 7s, Passive %s, baseTS % 10d, Seq % 10d\n\n",
+					fmt.Fprintf(w, "\tShard % 10d:%d,\tSize % 13s, Mem % 13s(%d),\tL0 % 13s(%d),\tCF0 % 13s, CF1 % 13s, MMTS % 13s, Stage % 7s, Initial %s, Passive %s, baseTS % 10d, Seq % 10d\n\n",
 						key,
 						shard.Ver,
 						formatInt(shardStat.ShardSize),
@@ -296,6 +296,7 @@ func (en *Engine) DebugHandler() http.HandlerFunc {
 						formatInt(shardStat.CFSize[1]),
 						formatInt(int(shard.getMaxMemTableSize())),
 						splitStageName[shard.splitStage],
+						formatBool(shard.IsInitialFlushed()),
 						formatBool(shard.IsPassive()),
 						shard.baseTS,
 						shard.metaSequence,
@@ -824,19 +825,6 @@ func (en *Engine) TriggerFlush(shard *Shard) {
 		en.flushCh <- &flushTask{
 			shard: shard,
 			tbl:   memTbl,
-		}
-	}
-	if len(mems.tables) == 1 && mems.tables[0].Empty() {
-		if !shard.IsInitialFlushed() {
-			memTableTS := shard.loadMemTableTS()
-			memTbl := memtable.NewCFTable(en.numCFs)
-			memTbl.SetVersion(memTableTS)
-			log.S().Infof("shard %d:%d set empty mem-table ts %d, size %d",
-				shard.ID, shard.Ver, memTableTS, memTbl.Size())
-			en.flushCh <- &flushTask{
-				shard: shard,
-				tbl:   memTbl,
-			}
 		}
 	}
 }

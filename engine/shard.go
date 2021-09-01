@@ -143,8 +143,8 @@ func newShardForIngest(changeSet *enginepb.ChangeSet, opt *Options) *Shard {
 	shard.setInitialFlushed()
 	shard.baseTS = shardSnap.BaseTS
 	shard.metaSequence = changeSet.Sequence
-	log.S().Infof("ingest shard %d:%d maxMemTblSize %d, memTableTS %d",
-		changeSet.ShardID, changeSet.ShardVer, shard.getMaxMemTableSize(), shard.loadMemTableTS())
+	log.S().Infof("ingest shard %d:%d maxMemTblSize %d, stage %s, baseTS %d, metaSequence %d",
+		changeSet.ShardID, changeSet.ShardVer, shard.getMaxMemTableSize(), shard.GetSplitStage().String(), shard.baseTS, shard.metaSequence)
 	return shard
 }
 
@@ -454,10 +454,6 @@ func boundedMemSize(size int64) int64 {
 		size = maxMemSizeLowerLimit
 	}
 	return size
-}
-
-func (s *Shard) loadMemTableTS() uint64 {
-	return s.baseTS + atomic.LoadUint64(&s.metaSequence)
 }
 
 func (s *Shard) GetAllFiles() []uint64 {
