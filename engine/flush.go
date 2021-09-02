@@ -50,7 +50,7 @@ func (en *Engine) runFlushMemTable(c *y.Closer) {
 			flushTask: task,
 			change:    change,
 		}
-		change.Flush = &enginepb.Flush{Properties: task.tbl.GetProps()}
+		change.Flush = &enginepb.Flush{Properties: task.tbl.GetProps(), CommitTS: task.tbl.GetVersion()}
 		change.Stage = task.tbl.GetSplitStage()
 		if !task.tbl.Empty() {
 			resultTask.wg.Add(1)
@@ -159,23 +159,28 @@ func atomicAddMemTable(pointer *unsafe.Pointer, memTbl *memtable.Table) {
 	}
 }
 
-func atomicRemoveMemTable(shard *Shard) {
+func atomicRemoveMemTable(shard *Shard, commitTS uint64) {
 	pointer := shard.memTbls
 	for {
-		var removed *memtable.Table
+		var lastMemTbl *memtable.Table
 		oldMemTbls := (*memTables)(atomic.LoadPointer(pointer))
 		// When we recover flush, the mem-table is empty, newLen maybe negative.
 		newLen := len(oldMemTbls.tables) - 1
-		if newLen < 0 {
-			newLen = 0
+		if newLen < 1 {
+			return
 		} else {
-			removed = oldMemTbls.tables[len(oldMemTbls.tables)-1]
+			lastMemTbl = oldMemTbls.tables[len(oldMemTbls.tables)-1]
+			if lastMemTbl.GetVersion() < commitTS {
+				log.S().Panicf("shard %d:%d missing flush, last mem-table ts %d, remove commitTS %d", shard.ID, shard.Ver, lastMemTbl.GetVersion(), commitTS)
+			} else if lastMemTbl.GetVersion() > commitTS {
+				return
+			}
 		}
 		newMemTbls := &memTables{make([]*memtable.Table, newLen)}
 		copy(newMemTbls.tables, oldMemTbls.tables)
 		if atomic.CompareAndSwapPointer(pointer, unsafe.Pointer(oldMemTbls), unsafe.Pointer(newMemTbls)) {
-			if removed != nil {
-				log.S().Infof("shard %d:%d atomic removed mem-table version %d, size %d", shard.ID, shard.Ver, removed.GetVersion(), removed.Size())
+			if lastMemTbl != nil {
+				log.S().Infof("shard %d:%d atomic removed mem-table version %d, size %d", shard.ID, shard.Ver, lastMemTbl.GetVersion(), lastMemTbl.Size())
 			}
 			break
 		}

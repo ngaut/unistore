@@ -357,12 +357,12 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 		if nShard.ID == oldShard.ID {
 			memTableTS = nShard.baseTS + seq
 		} else {
-			memTableTS = nShard.baseTS + 1
+			memTableTS = nShard.baseTS
 		}
 		mem := en.switchMemTable(nShard, memTableTS)
 		en.scheduleFlushTask(nShard, mem)
-		log.S().Infof("new shard %d:%d mem-size %d props:%s memTableTS: %d",
-			nShard.ID, nShard.Ver, mem.Size(), nShard.properties, mem.GetVersion())
+		log.S().Infof("new shard %d:%d mem-size %d props:%s memTableTS: %d, baseTS %d",
+			nShard.ID, nShard.Ver, mem.Size(), nShard.properties, mem.GetVersion(), nShard.baseTS)
 	}
 	return
 }

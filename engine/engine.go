@@ -36,7 +36,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 )
 
 var (
@@ -427,7 +426,6 @@ func (en *Engine) loadShard(shardInfo *ShardMeta) (*Shard, error) {
 		}
 	}
 	shard := newShardForLoading(shardInfo, &en.opt)
-	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{memtable.NewCFTable(en.numCFs)}}))
 	dfsOpts := dfs.NewOptions(shard.ID, shard.Ver)
 	for fid, fm := range shardInfo.files {
 		file, err := en.fs.Open(fid, dfsOpts)
