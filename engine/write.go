@@ -40,22 +40,14 @@ func (sl0s *l0Tables) totalSize() int64 {
 	return size
 }
 
-func (en *Engine) switchMemTable(shard *Shard, commitTS uint64) *memtable.Table {
-	writableMemTbl := shard.loadWritableMemTable()
-	if writableMemTbl == nil {
-		writableMemTbl = memtable.NewCFTable(en.numCFs)
-		atomicAddMemTable(shard.memTbls, writableMemTbl)
-	}
-	if writableMemTbl.Empty() {
-		writableMemTbl = memtable.NewCFTable(en.numCFs)
-	} else {
-		newMemTable := memtable.NewCFTable(en.numCFs)
-		atomicAddMemTable(shard.memTbls, newMemTable)
-	}
-	writableMemTbl.SetVersion(commitTS)
+func (en *Engine) switchMemTable(shard *Shard, memTableTS uint64) *memtable.Table {
+	oldWritableMemTbl := shard.loadWritableMemTable()
+	newWritableMemTbl := memtable.NewCFTable(en.numCFs)
+	atomicAddMemTable(shard.memTbls, newWritableMemTbl)
+	oldWritableMemTbl.SetVersion(memTableTS)
 	log.S().Infof("shard %d:%d set mem-table version %d, empty %t, size %d",
-		shard.ID, shard.Ver, commitTS, writableMemTbl.Empty(), writableMemTbl.Size())
-	return writableMemTbl
+		shard.ID, shard.Ver, oldWritableMemTbl.GetVersion(), oldWritableMemTbl.Empty(), oldWritableMemTbl.Size())
+	return oldWritableMemTbl
 }
 
 func (en *Engine) Write(wb *WriteBatch) {
@@ -70,7 +62,8 @@ func (en *Engine) Write(wb *WriteBatch) {
 	}
 	memTbl := shard.loadWritableMemTable()
 	if memTbl == nil || memTbl.Size()+wb.estimatedSize > shard.getMaxMemTableSize() {
-		oldMemTbl := en.switchMemTable(shard, shard.loadMemTableTS())
+		memTableTS := commitTS
+		oldMemTbl := en.switchMemTable(shard, memTableTS)
 		en.scheduleFlushTask(shard, oldMemTbl)
 		memTbl = shard.loadWritableMemTable()
 	}

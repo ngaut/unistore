@@ -95,7 +95,7 @@ func newShard(props *enginepb.Properties, ver uint64, start, end []byte, opt *Op
 		shard.setMaxMemTableSize(int64(binary.LittleEndian.Uint64(val)))
 	}
 	shard.memTbls = new(unsafe.Pointer)
-	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{}))
+	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{memtable.NewCFTable(len(shard.cfs))}}))
 	shard.l0s = new(unsafe.Pointer)
 	atomic.StorePointer(shard.l0s, unsafe.Pointer(&l0Tables{}))
 	shard.sizeStats = new(unsafe.Pointer)
@@ -143,8 +143,8 @@ func newShardForIngest(changeSet *enginepb.ChangeSet, opt *Options) *Shard {
 	shard.setInitialFlushed()
 	shard.baseTS = shardSnap.BaseTS
 	shard.metaSequence = changeSet.Sequence
-	log.S().Infof("ingest shard %d:%d maxMemTblSize %d, memTableTS %d",
-		changeSet.ShardID, changeSet.ShardVer, shard.getMaxMemTableSize(), shard.loadMemTableTS())
+	log.S().Infof("ingest shard %d:%d maxMemTblSize %d, stage %s, baseTS %d, metaSequence %d",
+		changeSet.ShardID, changeSet.ShardVer, shard.getMaxMemTableSize(), shard.GetSplitStage().String(), shard.baseTS, shard.metaSequence)
 	return shard
 }
 
@@ -454,10 +454,6 @@ func boundedMemSize(size int64) int64 {
 		size = maxMemSizeLowerLimit
 	}
 	return size
-}
-
-func (s *Shard) loadMemTableTS() uint64 {
-	return s.baseTS + atomic.LoadUint64(&s.metaSequence)
 }
 
 func (s *Shard) GetAllFiles() []uint64 {

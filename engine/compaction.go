@@ -640,8 +640,8 @@ func (en *Engine) applyFlush(shard *Shard, changeSet *enginepb.ChangeSet) error 
 			return err
 		}
 		atomicAddL0(shard, tbl)
-		atomicRemoveMemTable(shard)
 	}
+	atomicRemoveMemTable(shard)
 	shard.setSplitStage(changeSet.Stage)
 	shard.setInitialFlushed()
 	return nil

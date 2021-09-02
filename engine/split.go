@@ -17,13 +17,10 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/ngaut/unistore/engine/dfs"
-	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/ngaut/unistore/engine/fileutil"
 	"github.com/ngaut/unistore/engine/table"
-	"github.com/ngaut/unistore/engine/table/memtable"
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
 	"github.com/ngaut/unistore/scheduler"
@@ -46,7 +43,8 @@ func (en *Engine) PreSplit(cs *enginepb.ChangeSet) error {
 	if !shard.setSplitKeys(cs.PreSplit.Keys) {
 		return ErrPreSplitWrongStage
 	}
-	memTbl := en.switchMemTable(shard, shard.loadMemTableTS())
+	memTableTS := shard.baseTS + cs.Sequence
+	memTbl := en.switchMemTable(shard, memTableTS)
 	en.scheduleFlushTask(shard, memTbl)
 	return nil
 }
@@ -322,10 +320,8 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 		} else {
 			shard.SetPassive(oldShard.IsPassive())
 		}
-		shard.memTbls = new(unsafe.Pointer)
-		atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{oldShard.loadSplittingMemTable(i)}}))
-		shard.l0s = new(unsafe.Pointer)
-		atomic.StorePointer(shard.l0s, unsafe.Pointer(new(l0Tables)))
+		memTbls := shard.loadMemTables()
+		memTbls.tables[0] = oldShard.loadSplittingMemTable(i)
 		newShards[i] = shard
 		if shard.ID == oldShard.ID {
 			shard.baseTS = oldShard.baseTS
@@ -357,11 +353,16 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 	for _, nShard := range newShards {
 		nShard.refreshEstimatedSize()
 		en.shardMap.Store(nShard.ID, nShard)
-		memTableTS := nShard.loadMemTableTS()
+		var memTableTS uint64
+		if nShard.ID == oldShard.ID {
+			memTableTS = nShard.baseTS + seq
+		} else {
+			memTableTS = nShard.baseTS + 1
+		}
 		mem := en.switchMemTable(nShard, memTableTS)
 		en.scheduleFlushTask(nShard, mem)
 		log.S().Infof("new shard %d:%d mem-size %d props:%s memTableTS: %d",
-			nShard.ID, nShard.Ver, mem.Size(), nShard.properties, memTableTS)
+			nShard.ID, nShard.Ver, mem.Size(), nShard.properties, mem.GetVersion())
 	}
 	return
 }
