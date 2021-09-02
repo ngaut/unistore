@@ -861,8 +861,9 @@ func (a *applier) getLockForCommit(aCtx *applyContext, key []byte, commitTS uint
 	item, err := a.snap.Get(mvcc.LockCF, key, math.MaxUint64)
 	if err != nil {
 		// TODO: investigate why there is duplicated commit and avoid it.
-		log.S().Warnf("region %d:%d lock for key %x not found, check if it's duplicated commit, start:%x, end:%x, index:%d",
-			a.region.Id, a.region.RegionEpoch.Version, key, a.snap.Shard().Start, a.snap.Shard().End, aCtx.execCtx.index)
+		log.S().Warnf("region %d:%d lock for key %x not found, check if it's duplicated commit, version:%d, start:%x, end:%x, stage:%s, index:%d",
+			a.region.Id, a.region.RegionEpoch.Version, key, a.snap.Shard().Ver, a.snap.Shard().Start, a.snap.Shard().End,
+			a.snap.Shard().GetSplitStage().String(), aCtx.execCtx.index)
 		item, err = a.snap.Get(mvcc.WriteCF, key, math.MaxUint64)
 		if err != nil {
 			log.S().Errorf("region %d:%d key %x commit should be duplicated at index %d",
@@ -1002,7 +1003,9 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	if err != nil {
 		return
 	}
-	cs := buildSplitChangeSet(a.region, regions, a.applyState)
+	state := a.applyState
+	state.appliedIndex = aCtx.execCtx.index
+	cs := buildSplitChangeSet(a.region, regions, state)
 	err = aCtx.engines.kv.FinishSplit(cs)
 	if err != nil {
 		if err == engine.ErrFinishSplitWrongStage {

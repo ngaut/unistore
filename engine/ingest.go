@@ -16,7 +16,6 @@ package engine
 import (
 	"bytes"
 	"github.com/ngaut/unistore/engine/dfs"
-	"github.com/ngaut/unistore/engine/table/memtable"
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
 	"github.com/pingcap/badger/y"
@@ -40,7 +39,6 @@ func (en *Engine) Ingest(ingestTree *IngestTree) error {
 
 	shard := newShardForIngest(ingestTree.ChangeSet, &en.opt)
 	shard.SetPassive(ingestTree.Passive)
-	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{memtable.NewCFTable(en.numCFs)}}))
 	atomic.StorePointer(shard.l0s, unsafe.Pointer(l0s))
 	shard.foreachLevel(func(cf int, level *levelHandler) (stop bool) {
 		scf := shard.cfs[cf]

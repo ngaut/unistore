@@ -889,7 +889,13 @@ func (store *MVCCStore) Commit(req *requestCtx, keys [][]byte, startTS, commitTS
 			if checkErr == nil {
 				continue
 			}
+			shd := req.svr.mvccStore.eng.GetShard(req.rpcCtx.RegionId)
+			if shd != nil && shd.Ver == req.shard.Ver {
+				log.S().Errorf("shard %d:%d may be replaced by ingest, replaced %t, new %p, old %p",
+					shd.ID, shd.Ver, shd != req.shard, shd, req.shard)
+			}
 			log.Error("commit failed, no correspond lock found",
+				zap.String("region", fmt.Sprintf("%d:%d", req.rpcCtx.RegionId, req.rpcCtx.RegionEpoch.Version)),
 				zap.Binary("key", key), zap.Uint64("start ts", startTS), zap.String("lock", fmt.Sprintf("%v", lock)), zap.Error(lockErr))
 			return lockErr
 		}
