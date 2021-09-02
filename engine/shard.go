@@ -95,7 +95,7 @@ func newShard(props *enginepb.Properties, ver uint64, start, end []byte, opt *Op
 		shard.setMaxMemTableSize(int64(binary.LittleEndian.Uint64(val)))
 	}
 	shard.memTbls = new(unsafe.Pointer)
-	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{}))
+	atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{memtable.NewCFTable(len(shard.cfs))}}))
 	shard.l0s = new(unsafe.Pointer)
 	atomic.StorePointer(shard.l0s, unsafe.Pointer(&l0Tables{}))
 	shard.sizeStats = new(unsafe.Pointer)

@@ -42,12 +42,6 @@ func (sl0s *l0Tables) totalSize() int64 {
 
 func (en *Engine) switchMemTable(shard *Shard, memTableTS uint64) *memtable.Table {
 	oldWritableMemTbl := shard.loadWritableMemTable()
-	if oldWritableMemTbl == nil {
-		oldWritableMemTbl = memtable.NewCFTable(en.numCFs)
-		atomicAddMemTable(shard.memTbls, oldWritableMemTbl)
-	} else if oldWritableMemTbl.Empty() {
-		oldWritableMemTbl = memtable.NewCFTable(en.numCFs)
-	}
 	newWritableMemTbl := memtable.NewCFTable(en.numCFs)
 	atomicAddMemTable(shard.memTbls, newWritableMemTbl)
 	oldWritableMemTbl.SetVersion(memTableTS)

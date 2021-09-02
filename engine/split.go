@@ -17,13 +17,10 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/ngaut/unistore/engine/dfs"
-	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/ngaut/unistore/engine/fileutil"
 	"github.com/ngaut/unistore/engine/table"
-	"github.com/ngaut/unistore/engine/table/memtable"
 	"github.com/ngaut/unistore/engine/table/sstable"
 	"github.com/ngaut/unistore/enginepb"
 	"github.com/ngaut/unistore/scheduler"
@@ -323,10 +320,8 @@ func (en *Engine) buildSplitShards(oldShard *Shard, newShardsProps []*enginepb.P
 		} else {
 			shard.SetPassive(oldShard.IsPassive())
 		}
-		shard.memTbls = new(unsafe.Pointer)
-		atomic.StorePointer(shard.memTbls, unsafe.Pointer(&memTables{tables: []*memtable.Table{oldShard.loadSplittingMemTable(i)}}))
-		shard.l0s = new(unsafe.Pointer)
-		atomic.StorePointer(shard.l0s, unsafe.Pointer(new(l0Tables)))
+		memTbls := shard.loadMemTables()
+		memTbls.tables[0] = oldShard.loadSplittingMemTable(i)
 		newShards[i] = shard
 		if shard.ID == oldShard.ID {
 			shard.baseTS = oldShard.baseTS
