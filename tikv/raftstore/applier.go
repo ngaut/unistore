@@ -798,7 +798,7 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		change.Sequence = aCtx.execCtx.index
 		if change.Flush != nil {
 			if shard := aCtx.engines.kv.GetShard(cl.RegionID()); shard != nil {
-				shard.MarkMemTableApplyingFlush()
+				shard.MarkMemTableApplyingFlush(change.Flush.CommitTS)
 			}
 		}
 		aCtx.regionScheduler <- task{
@@ -859,6 +859,14 @@ func (a *applier) getLockForCommit(aCtx *applyContext, key []byte, commitTS uint
 		a.snap = aCtx.engines.kv.NewSnapAccess(aCtx.engines.kv.GetShard(regionID))
 	}
 	item, err := a.snap.Get(mvcc.LockCF, key, math.MaxUint64)
+	if err != nil {
+		a.snap.Discard()
+		a.snap = aCtx.engines.kv.NewSnapAccess(aCtx.engines.kv.GetShard(regionID))
+		item, err = a.snap.Get(mvcc.LockCF, key, math.MaxUint64)
+		shard := a.snap.Shard()
+		log.S().Warnf("region %d:%d lock for key %x not found, check if the snap is stale, found:%t, version:%d, start:%x, end:%x, stage:%s, index:%d",
+			a.region.Id, a.region.RegionEpoch.Version, key, err == nil, shard.Ver, shard.Start, shard.End, shard.GetSplitStage().String(), aCtx.execCtx.index)
+	}
 	if err != nil {
 		// TODO: investigate why there is duplicated commit and avoid it.
 		log.S().Warnf("region %d:%d lock for key %x not found, check if it's duplicated commit, version:%d, start:%x, end:%x, stage:%s, index:%d",
@@ -1016,6 +1024,10 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 			result = applyResult{tp: applyResultTypePause}
 		}
 		return
+	}
+	if a.snap != nil {
+		a.snap.Discard()
+		a.snap = nil
 	}
 	// clear the cache here or the locks doesn't belong to the new range would never have chance to delete.
 	a.lockCache = map[string][]byte{}

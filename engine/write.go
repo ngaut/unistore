@@ -120,6 +120,7 @@ func (en *Engine) scheduleFlushTask(shard *Shard, memTbl *memtable.Table) {
 	stage := shard.GetSplitStage()
 	if stage == enginepb.SplitStage_PRE_SPLIT {
 		stage = enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE
+		log.S().Infof("shard %d:%d pre-split flush done version:%d", shard.ID, shard.Ver, memTbl.GetVersion())
 	}
 	memTbl.SetSplitStage(stage)
 	if !shard.IsPassive() {

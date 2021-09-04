@@ -827,11 +827,13 @@ func (en *Engine) TriggerFlush(shard *Shard) {
 	}
 }
 
-func (s *Shard) MarkMemTableApplyingFlush() {
+func (s *Shard) MarkMemTableApplyingFlush(commitTS uint64) {
 	mems := s.loadMemTables()
 	for i := len(mems.tables) - 1; i > 0; i-- {
 		memTbl := mems.tables[i]
-		if !memTbl.IsApplying() {
+		if memTbl.GetVersion() > commitTS {
+			return
+		} else if memTbl.GetVersion() == commitTS {
 			memTbl.SetApplying()
 			break
 		}
