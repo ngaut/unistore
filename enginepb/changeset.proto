@@ -64,6 +64,7 @@ message Snapshot {
   repeated L0Create l0Creates = 5;
   repeated TableCreate tableCreates = 6;
   uint64 baseTS = 7;
+  uint64 commitTS = 8;
 }
 
 message SplitFiles {

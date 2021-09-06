@@ -36,6 +36,7 @@ type ShardMeta struct {
 	preSplit   *enginepb.PreSplit
 	split      *enginepb.Split
 	SplitStage enginepb.SplitStage
+	commitTS   uint64
 	parent     *ShardMeta
 	baseTS     uint64
 }
@@ -51,6 +52,7 @@ func NewShardMeta(cs *enginepb.ChangeSet) *ShardMeta {
 		files:      map[uint64]*fileMeta{},
 		properties: newProperties().applyPB(snap.Properties),
 		SplitStage: cs.Stage,
+		commitTS:   snap.CommitTS,
 		baseTS:     snap.BaseTS,
 	}
 	if len(cs.Snapshot.SplitKeys) > 0 {
@@ -104,12 +106,16 @@ func (si *ShardMeta) ApplyChangeSet(cs *enginepb.ChangeSet) {
 }
 
 func (si *ShardMeta) ApplyFlush(cs *enginepb.ChangeSet) {
+	si.commitTS = cs.Flush.CommitTS
 	si.parent = nil
 	props := cs.Flush.Properties
 	if props != nil {
 		for i, key := range props.Keys {
 			si.properties.set(key, props.Values[i])
 		}
+	}
+	if si.SplitStage >= enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE {
+		log.S().Panicf("%d:%d this flush is not last mem-table after pre-split, commitTS %d ,seq %d", si.ID, si.Ver, cs.Flush.CommitTS, cs.Sequence)
 	}
 	if cs.Stage == enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE {
 		si.SplitStage = enginepb.SplitStage_PRE_SPLIT_FLUSH_DONE
@@ -224,6 +230,7 @@ func (si *ShardMeta) ToChangeSet() *enginepb.ChangeSet {
 		Start:      si.Start,
 		End:        si.End,
 		Properties: si.properties.toPB(si.ID),
+		CommitTS:   si.commitTS,
 		BaseTS:     si.baseTS,
 	}
 	if si.preSplit != nil {
@@ -267,6 +274,18 @@ func (si *ShardMeta) IsDuplicatedChangeSet(change *enginepb.ChangeSet) bool {
 	}
 	if preSplit := change.PreSplit; preSplit != nil {
 		return si.preSplit != nil
+	}
+	if flush := change.Flush; flush != nil {
+		if si.parent != nil {
+			return false
+		}
+		dup := si.commitTS >= flush.CommitTS
+		if dup {
+			// The new leader triggers flush, which may result in duplicated flush.
+			log.S().Infof("%d:%d skip duplicated flush commitTS:%d, meta commitTS:%d",
+				si.ID, si.Ver, flush.CommitTS, si.commitTS)
+		}
+		return dup
 	}
 	if splitFiles := change.SplitFiles; splitFiles != nil {
 		return si.SplitStage == change.Stage
