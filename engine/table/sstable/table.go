@@ -306,7 +306,12 @@ func (t *Table) NumBlocks() int {
 
 func (t *Table) GetSuggestSplitKey() []byte {
 	numBlocks := t.NumBlocks()
-	if numBlocks > 0 {
+	if numBlocks == 1 {
+		// When the number of table blocks is 1, use table biggest key as split key,
+		// because if use the block key as split key, the split key will be the same as the shard start key
+		// and result in invalid split request when execute batch split.
+		return y.Copy(t.Biggest())
+	} else if numBlocks > 1 {
 		diffKey := t.idx.blockDiffKey(numBlocks / 2)
 		splitKey := make([]byte, len(t.idx.commonPrefix)+len(diffKey))
 		copy(splitKey, t.idx.commonPrefix)
