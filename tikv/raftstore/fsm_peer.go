@@ -714,6 +714,7 @@ func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
 		if d.peer.IsLeader() {
 			delete(d.peer.PeersStartPendingTime, peerID)
 		}
+		delete(d.peer.followersSplitFilesDone, peerID)
 		d.peer.removePeerCache(peerID)
 		WritePeerState(d.ctx.raftWB, cp.region, rspb.PeerState_Tombstone, nil)
 	}
