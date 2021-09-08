@@ -161,8 +161,10 @@ func (c *raftConn) encodeRawMsg(msg *raft_serverpb.RaftMessage) {
 	_, err := msg.MarshalTo(data)
 	y.Assert(err == nil)
 	pbMsg := msg.Message
-	*pbMsg = eraftpb.Message{}
-	raft.MessagePool.Put(pbMsg)
+	if pbMsg != nil {
+		*pbMsg = eraftpb.Message{}
+		raft.MessagePool.Put(pbMsg)
+	}
 	*msg = raft_serverpb.RaftMessage{}
 	raftMsgPool.Put(msg)
 }
