@@ -72,6 +72,8 @@ type Shard struct {
 	ingestedPreSplitSeq uint64
 
 	sizeStats *unsafe.Pointer
+
+	ingested bool
 }
 
 const (

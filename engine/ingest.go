@@ -55,6 +55,7 @@ func (en *Engine) Ingest(ingestTree *IngestTree) error {
 		})
 	}
 	shard.refreshEstimatedSize()
+	shard.ingested = true
 	en.shardMap.Store(shard.ID, shard)
 	return nil
 }
