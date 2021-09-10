@@ -1360,8 +1360,10 @@ func (a *applier) handleMsg(aCtx *applyContext, msg Msg) {
 	case MsgTypeApplyProposal:
 		a.handleProposal(msg.Data.(*regionProposal))
 	case MsgTypeApplyRegistration:
+		delete(aCtx.wb.batches, msg.RegionID)
 		a.handleRegistration(msg.Data.(*registration))
 	case MsgTypeApplyDestroy:
+		delete(aCtx.wb.batches, msg.RegionID)
 		a.handleDestroy(aCtx, msg.RegionID)
 	case MsgTypeApplyCatchUpLogs:
 		a.catchUpLogsForMerge(aCtx, msg.Data.(*catchUpLogs))

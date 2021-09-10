@@ -52,10 +52,6 @@ func (en *Engine) switchMemTable(shard *Shard, memTableTS uint64) *memtable.Tabl
 
 func (en *Engine) Write(wb *WriteBatch) {
 	shard := wb.shard
-	current := en.GetShard(shard.ID)
-	if shard != current {
-		log.S().Errorf("shard %d:%d write data to the wrong shard %d:%d. ingested %t, seq %d", current.ID, current.Ver, shard.ID, shard.Ver, current.ingested, wb.sequence)
-	}
 	commitTS := shard.baseTS + wb.sequence
 	if shard.isSplitting() {
 		if shard.ingestedPreSplitSeq == 0 || wb.sequence > shard.ingestedPreSplitSeq {
