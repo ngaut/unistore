@@ -500,7 +500,7 @@ func (en *Engine) Close() error {
 }
 
 type WriteBatch struct {
-	shard         *Shard
+	shardID       uint64
 	cfConfs       []CFConfig
 	entries       [][]*memtable.Entry
 	estimatedSize int64
@@ -510,9 +510,9 @@ type WriteBatch struct {
 	sequence      uint64
 }
 
-func (en *Engine) NewWriteBatch(shard *Shard) *WriteBatch {
+func (en *Engine) NewWriteBatch(shardID uint64) *WriteBatch {
 	return &WriteBatch{
-		shard:      shard,
+		shardID:    shardID,
 		cfConfs:    en.opt.CFs,
 		entries:    make([][]*memtable.Entry, en.numCFs),
 		properties: map[string][]byte{},
