@@ -1004,7 +1004,6 @@ func (a *applier) execBatchSplit(aCtx *applyContext, req *raft_cmdpb.AdminReques
 	resp *raft_cmdpb.AdminResponse, result applyResult, err error) {
 
 	// Write the engine before run finish split, or we will get shard not match error.
-	delete(aCtx.wb.batches, a.region.Id)
 	var derived *metapb.Region
 	var regions []*metapb.Region
 	derived, regions, err = splitGenNewRegionMetas(a.region, req.Splits)
@@ -1362,6 +1361,7 @@ func (a *applier) handleMsg(aCtx *applyContext, msg Msg) {
 	case MsgTypeApplyRegistration:
 		a.handleRegistration(msg.Data.(*registration))
 	case MsgTypeApplyDestroy:
+		delete(aCtx.wb.batches, msg.RegionID)
 		a.handleDestroy(aCtx, msg.RegionID)
 	case MsgTypeApplyCatchUpLogs:
 		a.catchUpLogsForMerge(aCtx, msg.Data.(*catchUpLogs))

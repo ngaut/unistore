@@ -51,11 +51,11 @@ func (en *Engine) switchMemTable(shard *Shard, memTableTS uint64) *memtable.Tabl
 }
 
 func (en *Engine) Write(wb *WriteBatch) {
-	shard := wb.shard
+	shard := en.GetShard(wb.shardID)
 	commitTS := shard.baseTS + wb.sequence
 	if shard.isSplitting() {
 		if shard.ingestedPreSplitSeq == 0 || wb.sequence > shard.ingestedPreSplitSeq {
-			en.writeSplitting(wb, commitTS)
+			en.writeSplitting(shard, wb, commitTS)
 			return
 		}
 		// Recover the shard to the pre-split stage when this shard is ingested.
@@ -85,7 +85,7 @@ func (en *Engine) Write(wb *WriteBatch) {
 	}
 }
 
-func (en *Engine) writeSplitting(batch *WriteBatch, commitTS uint64) {
+func (en *Engine) writeSplitting(shard *Shard, batch *WriteBatch, commitTS uint64) {
 	for cf, entries := range batch.entries {
 		if !en.opt.CFs[cf].Managed {
 			for _, entry := range entries {
@@ -93,13 +93,13 @@ func (en *Engine) writeSplitting(batch *WriteBatch, commitTS uint64) {
 			}
 		}
 		for _, entry := range entries {
-			idx := getSplitShardIndex(batch.shard.splitKeys, entry.Key)
-			memTbl := batch.shard.loadSplittingMemTable(idx)
+			idx := getSplitShardIndex(shard.splitKeys, entry.Key)
+			memTbl := shard.loadSplittingMemTable(idx)
 			memTbl.Put(cf, entry.Key, entry.Value)
 		}
 	}
 	for key, val := range batch.properties {
-		batch.shard.properties.set(key, val)
+		shard.properties.set(key, val)
 	}
 }
 

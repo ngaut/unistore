@@ -511,6 +511,9 @@ func (ps *PeerStorage) ApplySnapshot(ctx *InvokeContext, snap *eraftpb.Snapshot,
 			snapApplyState.truncatedIndex = ctx.ApplyState.truncatedIndex
 			snapApplyState.truncatedTerm = ctx.ApplyState.truncatedTerm
 			properties.Values[i] = snapApplyState.Marshal()
+			changeSet := snapData.changeSet
+			log.S().Infof("region %d:%d apply snapshot with applyState %s, baseTS %d, commitTS %d, seq %d",
+				changeSet.ShardID, changeSet.ShardVer, snapApplyState.String(), changeSet.Snapshot.BaseTS, changeSet.Snapshot.CommitTS, changeSet.Sequence)
 			break
 		}
 	}

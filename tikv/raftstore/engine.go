@@ -61,7 +61,7 @@ func NewKVWriteBatch(kv *engine.Engine) *KVWriteBatch {
 func (kvWB *KVWriteBatch) getEngineWriteBatch(regionID uint64) *engine.WriteBatch {
 	wb, ok := kvWB.batches[regionID]
 	if !ok {
-		wb = kvWB.kv.NewWriteBatch(kvWB.kv.GetShard(regionID))
+		wb = kvWB.kv.NewWriteBatch(regionID)
 		kvWB.batches[regionID] = wb
 	}
 	return wb
