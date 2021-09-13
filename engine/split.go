@@ -73,16 +73,20 @@ func (en *Engine) SplitShardFiles(shardID, ver uint64) (*enginepb.ChangeSet, err
 	defer shard.lock.Unlock()
 	keys := shard.splitKeys
 	en.waitForPreSplitFlushState(shard)
-	err := en.splitShardL0Tables(shard, change.SplitFiles)
+	bt := scheduler.NewBatchTasks()
+	err := en.splitShardL0Tables(shard, change.SplitFiles, bt)
 	if err != nil {
 		return nil, err
 	}
 	for cf := 0; cf < en.numCFs; cf++ {
 		for lvl := 1; lvl <= en.getCFMaxLevel(cf); lvl++ {
-			if err = en.splitTables(shard, cf, lvl, keys, change.SplitFiles); err != nil {
+			if err = en.splitTables(shard, cf, lvl, keys, change.SplitFiles, bt); err != nil {
 				return nil, err
 			}
 		}
+	}
+	if err := en.fs.GetScheduler().BatchSchedule(bt); err != nil {
+		return nil, err
 	}
 	return change, nil
 }
@@ -97,14 +101,14 @@ func (en *Engine) waitForPreSplitFlushState(shard *Shard) {
 	}
 }
 
-func (en *Engine) splitShardL0Tables(shard *Shard, splitFiles *enginepb.SplitFiles) error {
+func (en *Engine) splitShardL0Tables(shard *Shard, splitFiles *enginepb.SplitFiles, bt *scheduler.BatchTasks) error {
 	l0s := shard.loadL0Tables()
 	for i := 0; i < len(l0s.tables); i++ {
 		l0Tbl := l0s.tables[i]
 		if !en.needSplitL0(shard, l0Tbl) {
 			continue
 		}
-		newL0s, err := en.splitShardL0Table(shard, l0Tbl)
+		newL0s, err := en.splitShardL0Table(shard, l0Tbl, bt)
 		if err != nil {
 			return err
 		}
@@ -114,7 +118,7 @@ func (en *Engine) splitShardL0Tables(shard *Shard, splitFiles *enginepb.SplitFil
 	return nil
 }
 
-func (en *Engine) splitShardL0Table(shard *Shard, l0 *sstable.L0Table) ([]*enginepb.L0Create, error) {
+func (en *Engine) splitShardL0Table(shard *Shard, l0 *sstable.L0Table, bt *scheduler.BatchTasks) ([]*enginepb.L0Create, error) {
 	iters := make([]table.Iterator, en.numCFs)
 	for cf := 0; cf < en.numCFs; cf++ {
 		iters[cf] = l0.NewIterator(cf, false)
@@ -125,7 +129,6 @@ func (en *Engine) splitShardL0Table(shard *Shard, l0 *sstable.L0Table) ([]*engin
 		}
 	}
 	var newL0s []*enginepb.L0Create
-	bt := scheduler.NewBatchTasks()
 	dfsOpts := dfs.NewOptions(shard.ID, shard.Ver)
 	for _, key := range shard.splitKeys {
 		result, err := en.buildShardL0BeforeKey(iters, key, l0.CommitTS())
@@ -150,9 +153,6 @@ func (en *Engine) splitShardL0Table(shard *Shard, l0 *sstable.L0Table) ([]*engin
 		})
 		lastL0 := newL0CreateByResult(result)
 		newL0s = append(newL0s, lastL0)
-	}
-	if err := en.fs.GetScheduler().BatchSchedule(bt); err != nil {
-		return nil, err
 	}
 	return newL0s, nil
 }
@@ -219,13 +219,12 @@ func (en *Engine) buildShardL0BeforeKey(iters []table.Iterator, endKey []byte, c
 	return result, nil
 }
 
-func (en *Engine) splitTables(shard *Shard, cf int, level int, keys [][]byte, splitFiles *enginepb.SplitFiles) error {
+func (en *Engine) splitTables(shard *Shard, cf int, level int, keys [][]byte, splitFiles *enginepb.SplitFiles, bt *scheduler.BatchTasks) error {
 	scf := shard.cfs[cf]
 	oldHandler := scf.getLevelHandler(level)
 	oldTables := oldHandler.tables
 	toDeleteIDs := make(map[uint64]struct{})
 	var relatedKeys [][]byte
-	bt := scheduler.NewBatchTasks()
 	dfsOpts := dfs.NewOptions(shard.ID, shard.Ver)
 	for _, tbl := range oldTables {
 		relatedKeys = relatedKeys[:0]
@@ -257,9 +256,6 @@ func (en *Engine) splitTables(shard *Shard, cf int, level int, keys [][]byte, sp
 			}
 		}
 		splitFiles.TableDeletes = append(splitFiles.TableDeletes, tbl.ID())
-	}
-	if err := en.fs.GetScheduler().BatchSchedule(bt); err != nil {
-		return err
 	}
 	return nil
 }
