@@ -294,8 +294,13 @@ func (s *Shard) loadL0Tables() *l0Tables {
 }
 
 func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
+	if s.GetSplitStage() != enginepb.SplitStage_INITIAL {
+		// The shard is splitting.
+		return nil
+	}
 	estimatedSize := s.GetEstimatedSize()
 	if estimatedSize < targetSize {
+		log.S().Warnf("shard %d:%d split condition is not satisfied. estimatedSize:%d, targetSize:%d", s.ID, s.Ver, estimatedSize, targetSize)
 		return nil
 	}
 	if splitKey, ok := s.getSequentialWriteSplitKey(targetSize); ok {
@@ -334,6 +339,9 @@ func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
 			keys = append(keys, tbl.Smallest())
 			currentSize = 0
 		}
+	}
+	if len(keys) == 0 {
+		log.S().Warnf("shard %d:%d split key is empty. max level tables %d", s.ID, s.Ver, len(maxLevel.tables))
 	}
 	return keys
 }
