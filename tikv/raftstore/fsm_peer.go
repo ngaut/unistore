@@ -1044,6 +1044,10 @@ func (d *peerMsgHandler) onSplitRegionCheckTick() {
 	if shard == nil {
 		return
 	}
+	if shard.GetSplitStage() != enginepb.SplitStage_INITIAL {
+		// Avoid repeated split checks.
+		return
+	}
 	estimatedSize := shard.GetEstimatedSize()
 	if uint64(estimatedSize) < d.ctx.cfg.SplitCheck.RegionMaxSize {
 		return

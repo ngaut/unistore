@@ -284,10 +284,11 @@ func (en *Engine) DebugHandler() http.HandlerFunc {
 					splittings = len(shard.splittingMemTbls)
 				}
 				if r.FormValue("detail") == "" {
-					fmt.Fprintf(w, "\tShard % 10d:%d,\tSize % 13s, Mem % 13s(%d),\tL0 % 13s(%d),\tCF0 % 13s, CF1 % 13s, MMTS % 13s, Stage % 7s, Initial %s, Passive %s, baseTS % 10d, Seq % 10d\n\n",
+					fmt.Fprintf(w, "\tShard % 10d:%d,\tSize % 13s(%s), Mem % 13s(%d),\tL0 % 13s(%d),\tCF0 % 13s, CF1 % 13s, MMTS % 13s, Stage % 7s(%s), Passive %s, baseTS % 10d, Seq % 10d\n\n",
 						key,
 						shard.Ver,
 						formatInt(shardStat.ShardSize),
+						formatBool(shardStat.L0TablesSize+shardStat.CFsSize == int(shard.GetEstimatedSize())),
 						formatInt(shardStat.MemTablesSize),
 						len(memTables.tables)+splittings,
 						formatInt(shardStat.L0TablesSize),
@@ -303,10 +304,13 @@ func (en *Engine) DebugHandler() http.HandlerFunc {
 					)
 					continue
 				}
-				fmt.Fprintf(w, "\tShard %d:%d, Size %s, Stage %s, Passive %v\n",
+				fmt.Fprintf(w, "\tShard %d:%d, Size %s, Mem %s, Disk %s, EstimatedSize %s, Stage %s, Passive %v\n",
 					key,
 					shard.Ver,
 					formatInt(shardStat.ShardSize),
+					formatInt(shardStat.MemTablesSize),
+					formatInt(shardStat.L0TablesSize+shardStat.CFsSize),
+					formatInt(int(shard.GetEstimatedSize())),
 					enginepb.SplitStage_name[shard.splitStage],
 					shard.IsPassive(),
 				)

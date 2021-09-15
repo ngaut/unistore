@@ -294,8 +294,13 @@ func (s *Shard) loadL0Tables() *l0Tables {
 }
 
 func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
+	if s.GetSplitStage() != enginepb.SplitStage_INITIAL {
+		// The shard is splitting.
+		return nil
+	}
 	estimatedSize := s.GetEstimatedSize()
 	if estimatedSize < targetSize {
+		log.S().Warnf("shard %d:%d failed to get split key. estimatedSize:%d, targetSize:%d", s.ID, s.Ver, estimatedSize, targetSize)
 		return nil
 	}
 	if splitKey, ok := s.getSequentialWriteSplitKey(targetSize); ok {
