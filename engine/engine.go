@@ -179,6 +179,7 @@ func (en *Engine) DebugHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Time %s\n", time.Now().Format(time.RFC3339Nano))
 		fmt.Fprintf(w, "FlushCh %s\n", formatInt(len(en.flushCh)))
+		fmt.Fprintf(w, "Current Epoch %s\n", formatInt(int(en.resourceMgr.CurrentEpoch())))
 		MemTables := 0
 		MemTablesSize := 0
 		L0Tables := 0

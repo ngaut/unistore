@@ -87,6 +87,10 @@ func (rm *ResourceManager) Acquire() *Guard {
 	return g
 }
 
+func (rm *ResourceManager) CurrentEpoch() uint64 {
+	return uint64(rm.currentEpoch.load())
+}
+
 func (rm *ResourceManager) collectLoop(c *y.Closer) {
 	defer c.Done()
 	ticker := time.NewTicker(100 * time.Millisecond)
