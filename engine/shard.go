@@ -300,7 +300,7 @@ func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
 	}
 	estimatedSize := s.GetEstimatedSize()
 	if estimatedSize < targetSize {
-		log.S().Warnf("shard %d:%d failed to get split key. estimatedSize:%d, targetSize:%d", s.ID, s.Ver, estimatedSize, targetSize)
+		log.S().Warnf("shard %d:%d split condition is not satisfied. estimatedSize:%d, targetSize:%d", s.ID, s.Ver, estimatedSize, targetSize)
 		return nil
 	}
 	if splitKey, ok := s.getSequentialWriteSplitKey(targetSize); ok {
@@ -339,6 +339,9 @@ func (s *Shard) getSuggestSplitKeys(targetSize int64) [][]byte {
 			keys = append(keys, tbl.Smallest())
 			currentSize = 0
 		}
+	}
+	if len(keys) == 0 {
+		log.S().Warnf("shard %d:%d split key is empty. max level tables %d", s.ID, s.Ver, len(maxLevel.tables))
 	}
 	return keys
 }
