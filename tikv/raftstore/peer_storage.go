@@ -381,8 +381,10 @@ func (ps *PeerStorage) Snapshot() (eraftpb.Snapshot, error) {
 func (ps *PeerStorage) GetEngineMeta() *engine.ShardMeta {
 	if ps.shardMeta == nil {
 		metaBin := ps.Engines.raft.GetState(ps.region.Id, KVEngineMetaKey())
+		y.AssertTruef(len(metaBin) > 0, "shard %d:%d meta bin is empty", ps.region.Id, ps.region.RegionEpoch.Version)
 		cs := new(enginepb.ChangeSet)
 		y.Assert(cs.Unmarshal(metaBin) == nil)
+		y.AssertTruef(cs.Snapshot != nil, "shard %d:%d snapshot is nil", ps.region.Id, ps.region.RegionEpoch.Version)
 		ps.shardMeta = engine.NewShardMeta(cs)
 	}
 	return ps.shardMeta
@@ -407,6 +409,7 @@ func (ps *PeerStorage) Append(invokeCtx *InvokeContext, entries []*eraftpb.Entry
 }
 
 func (ps *PeerStorage) clearMeta(raftWB *raftengine.WriteBatch) {
+	log.S().Infof("region %d:%d clear meta from peer storage", ps.region.Id, ps.region.RegionEpoch.Version)
 	ClearMeta(ps.Engines.raft, raftWB, ps.region)
 }
 

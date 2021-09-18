@@ -717,6 +717,8 @@ func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
 		delete(d.peer.followersSplitFilesDone, peerID)
 		d.peer.removePeerCache(peerID)
 		WritePeerState(d.ctx.raftWB, cp.region, rspb.PeerState_Tombstone, nil)
+		log.S().Infof("region %d:%d remove node [store %d peer %d] from node [store %d peer %d]",
+			d.regionID(), d.region().RegionEpoch.Version, cp.peer.StoreId, cp.peer.Id, d.storeID(), d.peerID())
 	}
 
 	// In pattern matching above, if the peer is the leader,
