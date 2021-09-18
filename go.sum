@@ -436,8 +436,8 @@ github.com/phayes/freeport v0.0.0-20180830031419-95f893ade6f2/go.mod h1:iIss55rK
 github.com/phf/go-queue v0.0.0-20170504031614-9abe38d0371d h1:U+PMnTlV2tu7RuMK5etusZG3Cf+rpow5hqQByeCzJ2g=
 github.com/phf/go-queue v0.0.0-20170504031614-9abe38d0371d/go.mod h1:lXfE4PvvTW5xOjO6Mba8zDPyw8M93B6AQ7frTGnMlA8=
 github.com/pingcap/badger v1.5.1-0.20200908111422-2e78ee155d19/go.mod h1:LyrqUOHZrUDf9oGi1yoz1+qw9ckSIhQb5eMa1acOLNQ=
-github.com/pingcap/badger v1.5.1-0.20210331054718-0885bbfa8520 h1:2Pu1m4YunqsZ07hLoVKt3CHFI2Fpy2NMYRU8sHSu86s=
-github.com/pingcap/badger v1.5.1-0.20210331054718-0885bbfa8520/go.mod h1:LyrqUOHZrUDf9oGi1yoz1+qw9ckSIhQb5eMa1acOLNQ=
+github.com/pingcap/badger v1.5.1-0.20210918122008-22b718b5a6ba h1:5l2fTAgzE7AMuoXgidXNbjFs4HcyYMcTb9ZgCvnw4X0=
+github.com/pingcap/badger v1.5.1-0.20210918122008-22b718b5a6ba/go.mod h1:LyrqUOHZrUDf9oGi1yoz1+qw9ckSIhQb5eMa1acOLNQ=
 github.com/pingcap/br v5.0.0-nightly.0.20210329063924-86407e1a7324+incompatible h1:jvboV3W5zD0N4zyVzqBvGOzb/6MxUW1SIT8hw51Fgko=
 github.com/pingcap/br v5.0.0-nightly.0.20210329063924-86407e1a7324+incompatible/go.mod h1:ymVmo50lQydxib0tmK5hHk4oteB7hZ0IMCArunwy3UQ=
 github.com/pingcap/check v0.0.0-20190102082844-67f458068fc8/go.mod h1:B1+S9LNcuMyLH/4HMTViQOJevkGiik3wW2AN9zb2fNQ=
