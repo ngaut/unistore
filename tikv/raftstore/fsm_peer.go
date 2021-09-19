@@ -336,7 +336,7 @@ func (d *peerMsgHandler) onRaftBaseTick() {
 
 func (d *peerMsgHandler) onApplyResult(res *applyTaskRes) {
 	if res.destroyPeerID != 0 {
-		y.Assert(res.destroyPeerID == d.peerID())
+		y.AssertTruef(res.destroyPeerID == d.peerID(), "region %d:%d peer %d, destroy wrong peer %d", d.regionID(), d.region().RegionEpoch.Version, d.peerID(), res.destroyPeerID)
 		d.destroyPeer(false)
 	} else {
 		var readyToMerge *uint32
@@ -693,6 +693,7 @@ func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
 		Version: cp.region.RegionEpoch.Version,
 	})
 	peerID := cp.peer.Id
+	state := rspb.PeerState_Normal
 	switch changeType {
 	case eraftpb.ConfChangeType_AddNode, eraftpb.ConfChangeType_AddLearnerNode:
 		if d.peerID() == peerID && d.peer.Meta.Role == metapb.PeerRole_Learner {
@@ -707,7 +708,6 @@ func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
 		}
 		d.peer.RecentAddedPeer.Update(peerID, now)
 		d.peer.insertPeerCache(cp.peer)
-		WritePeerState(d.ctx.raftWB, cp.region, rspb.PeerState_Normal, nil)
 	case eraftpb.ConfChangeType_RemoveNode:
 		// Remove this peer from cache.
 		delete(d.peer.PeerHeartbeats, peerID)
@@ -716,10 +716,13 @@ func (d *peerMsgHandler) onReadyChangePeer(cp changePeer) {
 		}
 		delete(d.peer.followersSplitFilesDone, peerID)
 		d.peer.removePeerCache(peerID)
-		WritePeerState(d.ctx.raftWB, cp.region, rspb.PeerState_Normal, nil)
+		if d.peerID() == peerID {
+			state = rspb.PeerState_Tombstone
+		}
 		log.S().Infof("region %d:%d remove node [store %d peer %d] from node [store %d peer %d]",
 			d.regionID(), d.region().RegionEpoch.Version, cp.peer.StoreId, cp.peer.Id, d.storeID(), d.peerID())
 	}
+	WritePeerState(d.ctx.raftWB, cp.region, state, nil)
 
 	// In pattern matching above, if the peer is the leader,
 	// it will push the change peer into `peers_start_pending_time`

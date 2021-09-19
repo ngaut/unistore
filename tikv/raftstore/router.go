@@ -57,7 +57,7 @@ func (pr *router) get(regionID uint64) *peerState {
 
 func (pr *router) register(peer *peerFsm) {
 	id := peer.peer.regionId
-	log.S().Infof("register region %d", id)
+	log.S().Infof("register region %d:%d, peer %d", id, peer.peer.Region().RegionEpoch.Version, peer.peerID())
 	apply := newApplierFromPeer(peer)
 	newPeer := &peerState{
 		peer:  peer,
