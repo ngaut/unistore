@@ -236,6 +236,7 @@ func (bs *raftBatchSystem) loadPeers() ([]*peerFsm, error) {
 		region := localState.Region
 		if localState.State == rspb.PeerState_Tombstone {
 			tombStoneCount++
+			log.S().Infof("region %d:%d clear meta when loading peers", regionID, region.RegionEpoch.Version)
 			ClearMeta(bs.ctx.engine.raft, raftWB, localState.Region)
 			return nil
 		}

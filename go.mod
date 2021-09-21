@@ -14,7 +14,7 @@ require (
 	github.com/golang/protobuf v1.3.4
 	github.com/google/btree v1.0.0
 	github.com/ncw/directio v1.0.4
-	github.com/pingcap/badger v1.5.1-0.20210331054718-0885bbfa8520
+	github.com/pingcap/badger v1.5.1-0.20210918122008-22b718b5a6ba
 	github.com/pingcap/check v0.0.0-20200212061837-5e12011dc712
 	github.com/pingcap/errors v0.11.5-0.20201126102027-b0a155152ca3
 	github.com/pingcap/failpoint v0.0.0-20210316064728-7acb0f0a3dfd
