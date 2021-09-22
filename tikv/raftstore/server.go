@@ -17,7 +17,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
-	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
 	"github.com/pingcap/badger/y"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -32,7 +31,6 @@ import (
 type InnerServer struct {
 	engines       *Engines
 	raftConfig    *Config
-	globalConfig  *config.Config
 	storeMeta     metapb.Store
 	eventObserver PeerEventObserver
 
@@ -101,11 +99,10 @@ func (ris *InnerServer) HandleRawRaft(conn net.Conn) {
 	}
 }
 
-func NewRaftInnerServer(globalConfig *config.Config, engines *Engines, raftConfig *Config) *InnerServer {
+func NewRaftInnerServer(engines *Engines, raftConfig *Config) *InnerServer {
 	return &InnerServer{
-		engines:      engines,
-		raftConfig:   raftConfig,
-		globalConfig: globalConfig,
+		engines:    engines,
+		raftConfig: raftConfig,
 	}
 }
 
@@ -118,8 +115,7 @@ func (ris *InnerServer) Setup(pdClient pd.Client) {
 	// TODO: create cop read pool
 	// TODO: create cop endpoint
 
-	cfg := ris.raftConfig
-	router, batchSystem := createRaftBatchSystem(ris.globalConfig, cfg)
+	router, batchSystem := createRaftBatchSystem(ris.raftConfig)
 	ris.engines.listener.initMsgCh(router.storeSender)
 
 	ris.router = router // TODO: init with local reader
