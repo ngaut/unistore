@@ -22,7 +22,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/metrics"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
@@ -418,15 +417,13 @@ type changeSetKey struct {
 
 type regionTaskHandler struct {
 	kv         *engine.Engine
-	conf       *config.Config
 	router     *router
 	applySched chan<- task
 	rejects    map[changeSetKey]*enginepb.ChangeSet
 }
 
-func newRegionTaskHandler(conf *config.Config, engines *Engines, router *router, applySched chan<- task) *regionTaskHandler {
+func newRegionTaskHandler(engines *Engines, router *router, applySched chan<- task) *regionTaskHandler {
 	return &regionTaskHandler{
-		conf:       conf,
 		kv:         engines.kv,
 		router:     router,
 		applySched: applySched,

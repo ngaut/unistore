@@ -91,7 +91,7 @@ func NewServer(conf *config.Config, pdClient pd.Client) (*Server, error) {
 	}
 	http.DefaultServeMux.HandleFunc("/debug/db", eng.DebugHandler())
 	engines := raftstore.NewEngines(eng, raftEngine, kvPath, raftPath, listener)
-	innerServer := raftstore.NewRaftInnerServer(conf, engines, raftConf)
+	innerServer := raftstore.NewRaftInnerServer(engines, raftConf)
 	innerServer.Setup(pdClient)
 	router := innerServer.GetRaftstoreRouter()
 	storeMeta := innerServer.GetStoreMeta()
