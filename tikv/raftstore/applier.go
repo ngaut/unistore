@@ -23,6 +23,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/raft"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
@@ -39,9 +40,10 @@ import (
 )
 
 type pendingCmd struct {
-	index uint64
-	term  uint64
-	cb    *Callback
+	index     uint64
+	term      uint64
+	cb        *Callback
+	startTime time.Time
 }
 
 type pendingCmdQueue struct {
@@ -183,6 +185,7 @@ type proposal struct {
 	index        uint64
 	term         uint64
 	cb           *Callback
+	startTime    time.Time
 }
 
 type regionProposal struct {
@@ -525,19 +528,19 @@ func (a *applier) handleRaftEntryConfChange(aCtx *applyContext, entry *eraftpb.E
 	}
 }
 
-func (a *applier) findCallback(index, term uint64, isConfChange bool) *Callback {
+func (a *applier) findCallback(index, term uint64, isConfChange bool) (*Callback, float64) {
 	regionID := a.region.Id
 	peerID := a.peer.Id
 	if isConfChange {
 		cmd := a.pendingCmds.takeConfChange()
 		if cmd == nil {
-			return nil
+			return nil, 0
 		}
 		if cmd.index == index && cmd.term == term {
-			return cmd.cb
+			return cmd.cb, time.Now().Sub(cmd.startTime).Seconds()
 		}
 		notifyStaleCommand(regionID, peerID, term, *cmd)
-		return nil
+		return nil, 0
 	}
 	for {
 		head := a.pendingCmds.popNormal(term)
@@ -545,13 +548,13 @@ func (a *applier) findCallback(index, term uint64, isConfChange bool) *Callback 
 			break
 		}
 		if head.index == index && head.term == term {
-			return head.cb
+			return head.cb, time.Now().Sub(head.startTime).Seconds()
 		}
 		// Because of the lack of original RaftCmdRequest, we skip calling
 		// coprocessor here.
 		notifyStaleCommand(regionID, peerID, term, *head)
 	}
-	return nil
+	return nil, 0
 }
 
 func (a *applier) processRaftCmd(aCtx *applyContext, index, term uint64, rlog raftlog.RaftLog) applyResult {
@@ -574,7 +577,8 @@ func (a *applier) processRaftCmd(aCtx *applyContext, index, term uint64, rlog ra
 	// TODO: if we have exec_result, maybe we should return this callback too. Outer
 	// store will call it after handing exec result.
 	BindRespTerm(resp, term)
-	cmdCB := a.findCallback(index, term, isConfChange)
+	cmdCB, seconds := a.findCallback(index, term, isConfChange)
+	metrics.PeerRaftProcessDuration.WithLabelValues("ready").Observe(seconds)
 	cmdCB.Done(resp)
 	return result
 }
@@ -804,9 +808,10 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		aCtx.regionScheduler <- task{
 			tp: taskTypeRegionApplyChangeSet,
 			data: &regionTask{
-				region: a.region,
-				peer:   a.peer,
-				change: change,
+				region:    a.region,
+				peer:      a.peer,
+				change:    change,
+				startTime: time.Now(),
 			},
 		}
 	case raftlog.TypeNextMemTableSize:
@@ -1286,6 +1291,7 @@ func (a *applier) handleRecoverSplit(aCtx *applyContext) {
 					peer:      a.peer,
 					stage:     shard.GetSplitStage(),
 					splitKeys: shard.GetPreSplitKeys(),
+					startTime: time.Now(),
 				},
 			}
 			return
@@ -1305,7 +1311,9 @@ func (a *applier) handleProposal(regionProposal *regionProposal) {
 		return
 	}
 	for _, p := range regionProposal.Props {
-		cmd := pendingCmd{index: p.index, term: p.term, cb: p.cb}
+		now := time.Now()
+		metrics.RequestWaitTimeDurationHistogram.Observe(now.Sub(p.startTime).Seconds())
+		cmd := pendingCmd{index: p.index, term: p.term, cb: p.cb, startTime: now}
 		if p.isConfChange {
 			if confCmd := a.pendingCmds.takeConfChange(); confCmd != nil {
 				// if it loses leadership before conf change is replicated, there may be

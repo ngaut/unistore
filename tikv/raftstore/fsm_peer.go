@@ -269,6 +269,7 @@ func (d *peerMsgHandler) HandleRaftReady(ready *raft.Ready, ic *InvokeContext) {
 	if p := d.peer.TakeApplyProposals(); p != nil {
 		msg := Msg{Type: MsgTypeApplyProposal, Data: p}
 		d.ctx.applyMsgs.appendMsg(p.RegionId, msg)
+		metrics.RaftstoreApplyProposal.Observe(float64(len(p.Props)))
 	}
 	d.peer.Store().updateStates(ic)
 	readyApplySnapshot := d.peer.Store().maybeScheduleApplySnapshot(ic)
@@ -297,8 +298,9 @@ func (d *peerMsgHandler) HandleRaftReady(ready *raft.Ready, ic *InvokeContext) {
 				d.ctx.regionTaskSender <- task{
 					tp: taskTypeFinishSplit,
 					data: &regionTask{
-						region:  d.region(),
-						waitMsg: d.peer.waitFollowerSplitFiles,
+						region:    d.region(),
+						waitMsg:   d.peer.waitFollowerSplitFiles,
+						startTime: time.Now(),
 					},
 				}
 				d.peer.waitFollowerSplitFiles = nil

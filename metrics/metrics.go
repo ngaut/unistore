@@ -118,6 +118,38 @@ var (
 			Name:      "region_count",
 			Help:      "Number of regions collected in region_collector",
 		}, []string{"type"})
+	PeerRaftProcessDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "raftstore",
+			Name:      "raft_process_duration_secs",
+			Help:      "Bucketed histogram of peer processing raft duration.",
+			Buckets:   prometheus.ExponentialBuckets(0.0005, 2.0, 20),
+		}, []string{"type"})
+	RaftstoreApplyProposal = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "raftstore",
+			Name:      "apply_proposal",
+			Help:      "The count of proposals sent by a region at once",
+			Buckets:   prometheus.ExponentialBuckets(1.0, 2.0, 20),
+		})
+	RequestWaitTimeDurationHistogram = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "raftstore",
+			Name:      "request_wait_time_duration_secs",
+			Help:      "Bucketed histogram of request wait time duration.",
+			Buckets:   prometheus.ExponentialBuckets(0.0005, 2.0, 20),
+		})
+	ApplyTaskWaitTimeHistogram = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "raftstore",
+			Name:      "apply_wait_time_duration_secs",
+			Help:      "Bucketed histogram of apply task wait time duration.",
+			Buckets:   prometheus.ExponentialBuckets(0.0005, 2.0, 20),
+		})
 	EngineSizeBytes = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: namespace,
@@ -241,6 +273,10 @@ func init() {
 	prometheus.MustRegister(StoreSizeBytes)
 	prometheus.MustRegister(ThreadCPUSecondsTotal)
 	prometheus.MustRegister(RaftstoreRegionCount)
+	prometheus.MustRegister(PeerRaftProcessDuration)
+	prometheus.MustRegister(RaftstoreApplyProposal)
+	prometheus.MustRegister(RequestWaitTimeDurationHistogram)
+	prometheus.MustRegister(ApplyTaskWaitTimeHistogram)
 	prometheus.MustRegister(EngineSizeBytes)
 	prometheus.MustRegister(EngineFlowBytes)
 	prometheus.MustRegister(GrpcMsgDurationSeconds)

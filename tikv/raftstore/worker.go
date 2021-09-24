@@ -81,6 +81,8 @@ type regionTask struct {
 	// For recover split.
 	stage     enginepb.SplitStage
 	splitKeys [][]byte
+
+	startTime time.Time
 }
 
 type splitCheckTask struct {
@@ -567,6 +569,7 @@ func (r *regionApplyTaskHandler) handle(t task) {
 			})
 		}
 	}
+	metrics.ApplyTaskWaitTimeHistogram.Observe(time.Now().Sub(regionTask.startTime).Seconds())
 }
 
 func (r *regionApplyTaskHandler) handleRecoverSplit(task *regionTask) error {

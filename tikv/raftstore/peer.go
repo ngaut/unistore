@@ -871,8 +871,9 @@ func (p *Peer) handleChangeSet(ctx *RaftContext, e *eraftpb.Entry) {
 		p.Store().regionSched <- task{
 			tp: taskTypeRejectChangeSet,
 			data: &regionTask{
-				region: p.Region(),
-				change: change,
+				region:    p.Region(),
+				change:    change,
+				startTime: time.Now(),
 			},
 		}
 		return
@@ -1301,6 +1302,7 @@ func (p *Peer) PostPropose(meta *ProposalMeta, isConfChange bool, cb *Callback) 
 		isConfChange: isConfChange,
 		index:        meta.Index,
 		term:         meta.Term,
+		startTime:    t,
 		cb:           cb,
 	}
 	p.applyProposals = append(p.applyProposals, proposal)
