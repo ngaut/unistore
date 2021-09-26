@@ -250,6 +250,7 @@ func (rw *raftWorker) handleRaftReady(readyRes []*ReadyICPair) {
 			h.HandleRaftReady(&pair.Ready, pair.IC)
 		}
 		rw.handleReadyDc.collect(time.Since(begin))
+		metrics.PeerRaftProcessDuration.WithLabelValues("ready").Observe(time.Now().Sub(begin).Seconds())
 	}
 }
 

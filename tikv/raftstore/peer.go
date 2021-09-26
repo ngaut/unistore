@@ -1302,7 +1302,6 @@ func (p *Peer) PostPropose(meta *ProposalMeta, isConfChange bool, cb *Callback) 
 		isConfChange: isConfChange,
 		index:        meta.Index,
 		term:         meta.Term,
-		startTime:    t,
 		cb:           cb,
 	}
 	p.applyProposals = append(p.applyProposals, proposal)
