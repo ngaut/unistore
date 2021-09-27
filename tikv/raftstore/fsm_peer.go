@@ -167,7 +167,7 @@ func (d *peerMsgHandler) HandleMsgs(msgs ...Msg) {
 			}
 		case MsgTypeRaftCmd:
 			raftCMD := msg.Data.(*MsgRaftCmd)
-			metrics.RequestWaitTimeDurationHistogram.Observe(time.Now().Sub(raftCMD.SendTime).Seconds())
+			metrics.RequestWaitTimeDurationHistogram.Observe(time.Since(raftCMD.SendTime).Seconds())
 			d.proposeRaftCommand(raftCMD.Request, raftCMD.Callback)
 		case MsgTypeTick:
 			d.onTick()

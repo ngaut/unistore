@@ -446,7 +446,7 @@ func (r *regionTaskHandler) handle(t task) {
 	regionTask := t.data.(*regionTask)
 	switch t.tp {
 	case taskTypeRegionApply:
-		metrics.ApplyTaskWaitTimeHistogram.Observe(time.Now().Sub(regionTask.startTime).Seconds())
+		metrics.ApplyTaskWaitTimeHistogram.Observe(time.Since(regionTask.startTime).Seconds())
 		// To make sure applying snapshots in order.
 		r.prepareSnapshotResources(regionTask)
 		r.applySched <- t
