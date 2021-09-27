@@ -804,9 +804,10 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		aCtx.regionScheduler <- task{
 			tp: taskTypeRegionApplyChangeSet,
 			data: &regionTask{
-				region: a.region,
-				peer:   a.peer,
-				change: change,
+				region:    a.region,
+				peer:      a.peer,
+				change:    change,
+				startTime: time.Now(),
 			},
 		}
 	case raftlog.TypeNextMemTableSize:
@@ -1286,6 +1287,7 @@ func (a *applier) handleRecoverSplit(aCtx *applyContext) {
 					peer:      a.peer,
 					stage:     shard.GetSplitStage(),
 					splitKeys: shard.GetPreSplitKeys(),
+					startTime: time.Now(),
 				},
 			}
 			return

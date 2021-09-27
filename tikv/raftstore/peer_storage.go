@@ -27,6 +27,7 @@ import (
 	rspb "github.com/pingcap/kvproto/pkg/raft_serverpb"
 	"github.com/pingcap/log"
 	"math"
+	"time"
 )
 
 type SnapStateType int
@@ -607,8 +608,9 @@ func (ps *PeerStorage) ScheduleApplyingSnapshot(snapData *snapData) {
 	ps.regionSched <- task{
 		tp: taskTypeRegionApply,
 		data: &regionTask{
-			region:   ps.region,
-			snapData: snapData,
+			region:    ps.region,
+			snapData:  snapData,
+			startTime: time.Now(),
 		},
 	}
 }

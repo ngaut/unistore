@@ -249,7 +249,9 @@ func (rw *raftWorker) handleRaftReady(readyRes []*ReadyICPair) {
 			h := newRaftMsgHandler(rw.inboxes[pair.IC.Region.Id].peer, rw.raftCtx)
 			h.HandleRaftReady(&pair.Ready, pair.IC)
 		}
-		rw.handleReadyDc.collect(time.Since(begin))
+		duration := time.Since(begin)
+		rw.handleReadyDc.collect(duration)
+		metrics.PeerRaftProcessDuration.WithLabelValues("ready").Observe(duration.Seconds())
 	}
 }
 

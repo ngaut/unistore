@@ -81,6 +81,8 @@ type regionTask struct {
 	// For recover split.
 	stage     enginepb.SplitStage
 	splitKeys [][]byte
+
+	startTime time.Time
 }
 
 type splitCheckTask struct {
@@ -444,6 +446,7 @@ func (r *regionTaskHandler) handle(t task) {
 	regionTask := t.data.(*regionTask)
 	switch t.tp {
 	case taskTypeRegionApply:
+		metrics.ApplyTaskWaitTimeHistogram.Observe(time.Since(regionTask.startTime).Seconds())
 		// To make sure applying snapshots in order.
 		r.prepareSnapshotResources(regionTask)
 		r.applySched <- t

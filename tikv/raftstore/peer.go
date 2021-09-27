@@ -871,8 +871,9 @@ func (p *Peer) handleChangeSet(ctx *RaftContext, e *eraftpb.Entry) {
 		p.Store().regionSched <- task{
 			tp: taskTypeRejectChangeSet,
 			data: &regionTask{
-				region: p.Region(),
-				change: change,
+				region:    p.Region(),
+				change:    change,
+				startTime: time.Now(),
 			},
 		}
 		return
