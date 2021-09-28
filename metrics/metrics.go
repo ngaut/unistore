@@ -118,7 +118,22 @@ var (
 			Name:      "region_count",
 			Help:      "Number of regions collected in region_collector",
 		}, []string{"type"})
-	PeerRaftProcessDuration = prometheus.NewHistogramVec(
+	RaftCommandDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "worker",
+			Name:      "command_duration_seconds",
+			Help:      "Bucketed histogram of raft command duration seconds",
+			Buckets:   prometheus.ExponentialBuckets(0.0001, 2, 20),
+		}, []string{"type"})
+	ProposeWaitTimeDurationHistogram       = RaftCommandDurationSeconds.WithLabelValues("propose_wait_time")
+	AppendEntryWaitTimeDurationHistogram   = RaftCommandDurationSeconds.WithLabelValues("append_entry_wait_time")
+	CommitWaitTimeDurationHistogram        = RaftCommandDurationSeconds.WithLabelValues("commit_wait_time")
+	ScheduleApplyWaitTimeDurationHistogram = RaftCommandDurationSeconds.WithLabelValues("schedule_apply_wait_time")
+	ReceiveApplyWaitTimeDurationHistogram  = RaftCommandDurationSeconds.WithLabelValues("receive_apply_wait_time")
+	ApplyCommandWaitTimeDurationHistogram  = RaftCommandDurationSeconds.WithLabelValues("apply_command_wait_time")
+	CallbackWaitTimeDurationHistogram      = RaftCommandDurationSeconds.WithLabelValues("callback_wait_time")
+	PeerRaftProcessDuration                = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: namespace,
 			Subsystem: "raftstore",
@@ -140,6 +155,22 @@ var (
 			Subsystem: "raftstore",
 			Name:      "request_wait_time_duration_secs",
 			Help:      "Bucketed histogram of request wait time duration.",
+			Buckets:   prometheus.ExponentialBuckets(0.0005, 2.0, 20),
+		})
+	StoreApplyLogHistogram = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "raftstore",
+			Name:      "apply_log_duration_seconds",
+			Help:      "Bucketed histogram of peer applying log duration.",
+			Buckets:   prometheus.ExponentialBuckets(0.0005, 2.0, 20),
+		})
+	PeerAppendLogHistogram = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "raftstore",
+			Name:      "append_log_duration_seconds",
+			Help:      "Bucketed histogram of peer appending log duration",
 			Buckets:   prometheus.ExponentialBuckets(0.0005, 2.0, 20),
 		})
 	ApplyTaskWaitTimeHistogram = prometheus.NewHistogram(
@@ -255,8 +286,33 @@ var (
 			Subsystem: "worker",
 			Name:      "task_duration_seconds",
 			Help:      "Bucketed histogram of worker tasks duration seconds",
-			Buckets:   prometheus.ExponentialBuckets(0.0005, 2, 20),
+			Buckets:   prometheus.ExponentialBuckets(0.0001, 2, 20),
 		}, []string{"type"})
+	WorkerLoopDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "worker",
+			Name:      "loop_duration_seconds",
+			Help:      "Bucketed histogram of worker loop duration seconds",
+			Buckets:   prometheus.ExponentialBuckets(0.0001, 2, 20),
+		}, []string{"type"})
+	RaftWorkerLoopDurationHistogram  = WorkerLoopDurationSeconds.WithLabelValues("raft_worker")
+	RaftWorkerMessageDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "worker",
+			Name:      "message_duration_seconds",
+			Help:      "Bucketed histogram of raft message duration seconds",
+			Buckets:   prometheus.ExponentialBuckets(0.0001, 2, 20),
+		}, []string{"type"})
+	WaitMessageDurationHistogram      = RaftWorkerMessageDurationSeconds.WithLabelValues("wait_message")
+	ReceiveMessageDurationHistogram   = RaftWorkerMessageDurationSeconds.WithLabelValues("receive_message")
+	HandleMessageDurationHistogram    = RaftWorkerMessageDurationSeconds.WithLabelValues("handle_message")
+	CollectRaftReadyDurationHistogram = RaftWorkerMessageDurationSeconds.WithLabelValues("collect_raft_ready")
+	HandleRaftReadyDurationHistogram  = RaftWorkerMessageDurationSeconds.WithLabelValues("handle_raft_ready")
+	ScheduleApplyDurationHistogram    = RaftWorkerMessageDurationSeconds.WithLabelValues("schedule_apply")
+	PersistStateDurationHistogram     = RaftWorkerMessageDurationSeconds.WithLabelValues("persist_state")
+	PostPersistStateDurationHistogram = RaftWorkerMessageDurationSeconds.WithLabelValues("post_persist_state")
 )
 
 func init() {
@@ -273,9 +329,12 @@ func init() {
 	prometheus.MustRegister(StoreSizeBytes)
 	prometheus.MustRegister(ThreadCPUSecondsTotal)
 	prometheus.MustRegister(RaftstoreRegionCount)
+	prometheus.MustRegister(RaftCommandDurationSeconds)
 	prometheus.MustRegister(PeerRaftProcessDuration)
 	prometheus.MustRegister(RaftstoreApplyProposal)
 	prometheus.MustRegister(RequestWaitTimeDurationHistogram)
+	prometheus.MustRegister(StoreApplyLogHistogram)
+	prometheus.MustRegister(PeerAppendLogHistogram)
 	prometheus.MustRegister(ApplyTaskWaitTimeHistogram)
 	prometheus.MustRegister(EngineSizeBytes)
 	prometheus.MustRegister(EngineFlowBytes)
@@ -291,5 +350,7 @@ func init() {
 	prometheus.MustRegister(WorkerHandledTaskTotal)
 	prometheus.MustRegister(WorkerPendingTaskTotal)
 	prometheus.MustRegister(WorkerTaskDurationSeconds)
+	prometheus.MustRegister(WorkerLoopDurationSeconds)
+	prometheus.MustRegister(RaftWorkerMessageDurationSeconds)
 	http.Handle("/metrics", promhttp.Handler())
 }

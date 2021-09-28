@@ -29,6 +29,7 @@ import (
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
+	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/raft"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -242,6 +243,15 @@ type DestroyPeerJob struct {
 	Peer        *metapb.Peer
 }
 
+type commandTrace struct {
+	proposingTime       time.Time
+	sendingTime         time.Time
+	committedTime       time.Time
+	schedulingApplyTime time.Time
+	receivingApplyTime  time.Time
+	appliedTime         time.Time
+}
+
 type Peer struct {
 	Meta           *metapb.Peer
 	regionId       uint64
@@ -250,6 +260,8 @@ type Peer struct {
 	proposals      *ProposalQueue
 	applyProposals []proposal
 	pendingReads   *ReadIndexQueue
+
+	commandTraces map[uint64]*commandTrace
 
 	peerCache map[uint64]*metapb.Peer
 
@@ -334,6 +346,7 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 		peerStorage:           ps,
 		proposals:             new(ProposalQueue),
 		pendingReads:          new(ReadIndexQueue),
+		commandTraces:         make(map[uint64]*commandTrace),
 		peerCache:             make(map[uint64]*metapb.Peer),
 		PeerHeartbeats:        make(map[uint64]time.Time),
 		PeersStartPendingTime: make(map[uint64]time.Time),
@@ -816,8 +829,18 @@ func (p *Peer) NewRaftReady(trans *RaftClient, ctx *RaftContext, observer PeerEv
 	if ready.Snapshot.GetMetadata() == nil {
 		ready.Snapshot.Metadata = &eraftpb.SnapshotMetadata{}
 	}
+	now := time.Now()
 	for i := 0; i < len(ready.CommittedEntries); i++ {
 		e := ready.CommittedEntries[i]
+		t, ok := p.commandTraces[e.Index]
+		if !ok {
+			t = &commandTrace{}
+			p.commandTraces[e.Index] = t
+		}
+		t.committedTime = now
+		if !t.sendingTime.IsZero() {
+			metrics.CommitWaitTimeDurationHistogram.Observe(now.Sub(t.sendingTime).Seconds())
+		}
 		if e.EntryType != eraftpb.EntryType_EntryNormal {
 			continue
 		}
@@ -1050,6 +1073,17 @@ func (p *Peer) sendRaftMessage(msg *eraftpb.Message, trans *RaftClient) error {
 		sendMsg.StartKey = append([]byte{}, p.Region().StartKey...)
 		sendMsg.EndKey = append([]byte{}, p.Region().EndKey...)
 	}
+	if p.IsLeader() {
+		now := time.Now()
+		for _, entry := range msg.Entries {
+			if t, ok := p.commandTraces[entry.Index]; ok && t.sendingTime.IsZero() {
+				t.sendingTime = now
+				if !t.proposingTime.IsZero() {
+					metrics.AppendEntryWaitTimeDurationHistogram.Observe(now.Sub(t.proposingTime).Seconds())
+				}
+			}
+		}
+	}
 	sendMsg.Message = msg
 	trans.Send(sendMsg)
 	return nil
@@ -1078,7 +1112,12 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *engine.Engine, applyMsgs *applyM
 			// have no effect.
 			p.proposals.Clear()
 		}
+		var traces []*commandTrace
 		for _, entry := range committedEntries {
+			if t, ok := p.commandTraces[entry.Index]; ok {
+				traces = append(traces, t)
+				delete(p.commandTraces, entry.Index)
+			}
 			// raft meta is very small, can be ignored.
 			if leaseToBeUpdated {
 				proposeTime := p.findProposeTime(entry.Index, entry.Term)
@@ -1113,6 +1152,7 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *engine.Engine, applyMsgs *applyM
 					mergeToBeUpdated = false
 				}
 			}
+
 		}
 		apply := &apply{
 			regionId:  p.regionId,
@@ -1128,6 +1168,7 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *engine.Engine, applyMsgs *applyM
 				p.lastUrgentProposalIdx = math.MaxUint64
 			}
 			apply.entries = committedEntries
+			apply.traces = traces
 		}
 		if l > 0 || softState != nil {
 			applyMsgs.appendMsg(p.regionId, newApplyMsg(apply))
@@ -1304,6 +1345,7 @@ func (p *Peer) PostPropose(meta *ProposalMeta, isConfChange bool, cb *Callback) 
 		term:         meta.Term,
 		cb:           cb,
 	}
+	p.commandTraces[meta.Index] = &commandTrace{proposingTime: t}
 	p.applyProposals = append(p.applyProposals, proposal)
 	p.proposals.Push(meta)
 }

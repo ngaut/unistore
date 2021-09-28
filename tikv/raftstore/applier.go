@@ -23,6 +23,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/raft"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
@@ -93,6 +94,7 @@ type apply struct {
 	regionId  uint64
 	term      uint64
 	entries   []*eraftpb.Entry
+	traces    []*commandTrace
 	softState *raft.SoftState
 }
 
@@ -300,6 +302,7 @@ type waitSourceMergeState struct {
 	/// All of the entries that need to continue to be applied after
 	/// the source peer has applied its logs.
 	pendingEntries []*eraftpb.Entry
+	pendingTraces  []*commandTrace
 	/// All of messages that need to continue to be handled after
 	/// the source peer has applied its logs and pending entries
 	/// are all handled.
@@ -376,6 +379,9 @@ type applier struct {
 	lockCache map[string][]byte
 	snap      *engine.SnapAccess
 
+	traces     []*commandTrace
+	traceIndex int
+
 	pauseState *apply
 
 	recoverSplit bool
@@ -401,14 +407,17 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 	if len(committedEntries) == 0 {
 		return
 	}
+	traces := a.traces
 	defer func() {
 		if a.snap != nil {
 			a.snap.Discard()
 			a.snap = nil
 		}
+		a.traces = nil
 	}()
 	if a.pauseState != nil {
 		a.pauseState.entries = append(a.pauseState.entries, committedEntries...)
+		a.pauseState.traces = append(a.pauseState.traces, traces...)
 		return
 	}
 
@@ -432,6 +441,11 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 			}
 			panic(fmt.Sprintf("%s expect index %d, but got %d", a.tag, expectedIndex, entry.Index))
 		}
+		now := time.Now()
+		t := traces[i]
+		a.traceIndex = i
+		t.receivingApplyTime = now
+		metrics.ReceiveApplyWaitTimeDurationHistogram.Observe(now.Sub(t.schedulingApplyTime).Seconds())
 		var res applyResult
 		switch entry.EntryType {
 		case eraftpb.EntryType_EntryNormal:
@@ -449,9 +463,12 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 			// Note that CommitMerge is skipped when `WaitMergeSource` is returned.
 			// So we need to enqueue it again and execute it again when resuming.
 			pendingEntries = append(pendingEntries, committedEntries[i:]...)
+			pendingTraces := make([]*commandTrace, 0, len(traces)-i)
+			pendingTraces = append(pendingTraces, traces[i:]...)
 			aCtx.finishFor(a, results)
 			a.waitMergeState = &waitSourceMergeState{
 				pendingEntries: pendingEntries,
+				pendingTraces:  pendingTraces,
 				readyToMerge:   readyToMerge,
 			}
 			return
@@ -460,8 +477,10 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 				regionId: a.region.Id,
 				term:     a.term,
 				entries:  make([]*eraftpb.Entry, 0, len(committedEntries)-i),
+				traces:   make([]*commandTrace, 0, len(traces)-i),
 			}
 			pause.entries = append(pause.entries, committedEntries[i:]...)
+			pause.traces = append(pause.traces, traces[i:]...)
 			aCtx.finishFor(a, results)
 			a.pauseState = pause
 			return
@@ -576,6 +595,10 @@ func (a *applier) processRaftCmd(aCtx *applyContext, index, term uint64, rlog ra
 	BindRespTerm(resp, term)
 	cmdCB := a.findCallback(index, term, isConfChange)
 	cmdCB.Done(resp)
+	if len(a.traces) > 0 {
+		t := a.traces[a.traceIndex]
+		metrics.CallbackWaitTimeDurationHistogram.Observe(time.Since(t.appliedTime).Seconds())
+	}
 	return result
 }
 
@@ -718,6 +741,11 @@ func (a *applier) execAdminCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdReques
 	if err != nil {
 		return
 	}
+	if len(a.traces) > 0 {
+		trace := a.traces[a.traceIndex]
+		trace.appliedTime = time.Now()
+		metrics.ApplyCommandWaitTimeDurationHistogram.Observe(trace.appliedTime.Sub(trace.receivingApplyTime).Seconds())
+	}
 	adminResp.CmdType = cmdType
 	resp = newCmdRespForReq(req)
 	resp.AdminResponse = adminResp
@@ -751,6 +779,11 @@ func (a *applier) execWriteCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) int {
 	wb := aCtx.wb.getEngineWriteBatch(cl.RegionID())
 	var cnt int
+	var isRegionTask bool
+	var trace *commandTrace
+	if len(a.traces) > 0 {
+		trace = a.traces[a.traceIndex]
+	}
 	switch cl.Type() {
 	case raftlog.TypePrewrite:
 		cl.IterateLock(func(key, val []byte) {
@@ -804,12 +837,13 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		aCtx.regionScheduler <- task{
 			tp: taskTypeRegionApplyChangeSet,
 			data: &regionTask{
-				region:    a.region,
-				peer:      a.peer,
-				change:    change,
-				startTime: time.Now(),
+				region: a.region,
+				peer:   a.peer,
+				change: change,
+				trace:  trace,
 			},
 		}
+		isRegionTask = true
 	case raftlog.TypeNextMemTableSize:
 		cs, err := cl.GetShardChangeSet()
 		y.Assert(err == nil)
@@ -817,6 +851,10 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		bin := make([]byte, 8)
 		binary.LittleEndian.PutUint64(bin, uint64(cs.NextMemTableSize))
 		SetMaxMemTableSize(wb, bin)
+	}
+	if !isRegionTask && trace != nil {
+		trace.appliedTime = time.Now()
+		metrics.ApplyCommandWaitTimeDurationHistogram.Observe(trace.appliedTime.Sub(trace.receivingApplyTime).Seconds())
 	}
 	applyState := aCtx.execCtx.applyState
 	applyState.appliedIndex = aCtx.execCtx.index
@@ -1240,6 +1278,7 @@ func (a *applier) handleApply(aCtx *applyContext, apply *apply) {
 	}
 	a.term = apply.term
 	if len(apply.entries) > 0 {
+		a.traces = apply.traces
 		a.handleRaftCommittedEntries(aCtx, apply.entries)
 	}
 	if apply.softState != nil {
