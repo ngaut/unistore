@@ -684,25 +684,8 @@ func (store *MVCCStore) amendPessimisticLock(reqCtx *requestCtx, m *kvrpcpb.Muta
 
 func (store *MVCCStore) prewriteMutations(reqCtx *requestCtx, mutations []*kvrpcpb.Mutation,
 	req *kvrpcpb.PrewriteRequest, items []*engine.Item) error {
-	var minCommitTS uint64
-	if req.UseAsyncCommit || req.TryOnePc {
-		// Get minCommitTS for async commit protocol. After all keys are locked in memory lock.
-		var tsErr error
-		minCommitTS, tsErr = store.pdClient.GetTS(context.Background(), 1)
-		if tsErr != nil {
-			return tsErr
-		}
-		if req.UseAsyncCommit {
-			reqCtx.asyncMinCommitTS = minCommitTS
-		}
-	}
-
-	if req.UseAsyncCommit && minCommitTS > req.MinCommitTs {
-		req.MinCommitTs = minCommitTS
-	}
-
 	if req.TryOnePc {
-		committed, err := store.tryOnePC(reqCtx, mutations, req, items, minCommitTS, req.MaxCommitTs)
+		committed, err := store.tryOnePC(reqCtx, mutations, req, items, req.MinCommitTs, req.MaxCommitTs)
 		if err != nil {
 			return err
 		}
