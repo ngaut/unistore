@@ -10,6 +10,7 @@ require (
 	github.com/cespare/xxhash v1.1.0
 	github.com/coocood/bbloom v0.0.0-20190830030839-58deb6228d64
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2
+	github.com/felixge/fgprof v0.9.1
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang/protobuf v1.3.4
 	github.com/google/btree v1.0.0

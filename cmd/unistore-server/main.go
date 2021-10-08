@@ -33,6 +33,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/arl/statsviz"
+	"github.com/felixge/fgprof"
 	"github.com/ngaut/unistore/config"
 	"github.com/ngaut/unistore/pd"
 	"github.com/ngaut/unistore/raft"
@@ -137,6 +138,7 @@ func main() {
 			writer.WriteHeader(http.StatusOK)
 		})
 		statsviz.Register(http.DefaultServeMux)
+		http.DefaultServeMux.Handle("/debug/fgprof", fgprof.Handler())
 		listenAddr := conf.Server.StatusAddr[strings.IndexByte(conf.Server.StatusAddr, ':'):]
 		err := http.ListenAndServe(listenAddr, nil)
 		if err != nil {
