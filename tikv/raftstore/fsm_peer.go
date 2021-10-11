@@ -840,7 +840,6 @@ func (d *peerMsgHandler) onReadySplitRegion(derived *metapb.Region, regions []*m
 			newPeer.peer.HeartbeatPd(d.ctx.pdTaskSender)
 		}
 
-		newPeer.peer.Activate(d.ctx.applyMsgs)
 		meta.regions[newRegionID] = newRegion
 		d.ctx.router.register(newPeer)
 		_ = d.ctx.router.send(newRegionID, NewPeerMsg(MsgTypeStart, newRegionID, nil))

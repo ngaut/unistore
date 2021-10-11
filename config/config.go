@@ -111,8 +111,8 @@ var DefaultConf = Config{
 		RaftBaseTickInterval:     "1s",
 		RaftHeartbeatTicks:       2,
 		RaftElectionTimeoutTicks: 10,
-		ApplyWorkerCount:         4,
-		GRPCRaftConnNum:          2,
+		ApplyWorkerCount:         3,
+		GRPCRaftConnNum:          1,
 	},
 	Engine: Engine{
 		Path:                   "/tmp/badger",

@@ -21,7 +21,6 @@ import (
 	"github.com/pingcap/log"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ngaut/unistore/metrics"
@@ -36,7 +35,7 @@ type peerState struct {
 }
 
 type peerInbox struct {
-	peer *peerFsm
+	peer *peerState
 	msgs []Msg
 }
 
@@ -88,7 +87,7 @@ type raftWorker struct {
 	raftCh  chan Msg
 	raftCtx *RaftContext
 
-	applyChs   []chan []*peerApplyBatch
+	applyChs   []chan *peerApplyBatch
 	applyCtxes []*applyContext
 	applyResCh chan Msg
 
@@ -109,10 +108,10 @@ func newRaftWorker(ctx *GlobalContext, ch chan Msg, pm *router, applyWorkerCnt i
 		localStats:    new(storeStats),
 	}
 	applyResCh := make(chan Msg, cap(ch))
-	applyChs := make([]chan []*peerApplyBatch, applyWorkerCnt)
+	applyChs := make([]chan *peerApplyBatch, applyWorkerCnt)
 	applyCtxes := make([]*applyContext, applyWorkerCnt)
 	for i := 0; i < applyWorkerCnt; i++ {
-		applyChs[i] = make(chan []*peerApplyBatch, 1)
+		applyChs[i] = make(chan *peerApplyBatch, 256)
 		applyCtxes[i] = newApplyContext("", ctx.regionTaskSender, ctx.engine, applyResCh, ctx.cfg)
 	}
 	return &raftWorker{
@@ -140,10 +139,13 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 		if quit := rw.receiveMsgs(closeCh); quit {
 			return
 		}
-		rw.handleMsgs()
-		readyRes := rw.collectRaftReady()
-		rw.handleRaftReady(readyRes)
-		rw.scheduleApply()
+		var readyRes []*ReadyICPair
+		for _, inbox := range rw.inboxes {
+			rd := rw.processInBox(inbox)
+			if rd != nil {
+				readyRes = append(readyRes, rd)
+			}
+		}
 		rw.persistState()
 		rw.postPersistState(readyRes)
 		rw.raftCtx.flushLocalStats()
@@ -210,54 +212,36 @@ func (rw *raftWorker) getPeerInbox(regionID uint64) *peerInbox {
 	inbox, ok := rw.inboxes[regionID]
 	if !ok {
 		peerState := rw.pr.get(regionID)
-		inbox = &peerInbox{peer: peerState.peer}
+		inbox = &peerInbox{peer: peerState}
 		rw.inboxes[regionID] = inbox
 	}
 	return inbox
 }
 
-func (rw *raftWorker) handleMsgs() {
-	begin := time.Now()
-	rw.raftCtx.pendingCount = 0
-	for _, inbox := range rw.inboxes {
-		h := newRaftMsgHandler(inbox.peer, rw.raftCtx)
-		h.HandleMsgs(inbox.msgs...)
-	}
-	rw.handleMsgDc.collect(time.Since(begin))
-}
-
-func (rw *raftWorker) collectRaftReady() (readyRes []*ReadyICPair) {
-	begin := time.Now()
-	var movePeer uint64
-	for id, inbox := range rw.inboxes {
-		movePeer = id
-		h := newRaftMsgHandler(inbox.peer, rw.raftCtx)
-		if rd := h.newRaftReady(); rd != nil {
-			readyRes = append(readyRes, rd)
+func (rw *raftWorker) processInBox(inbox *peerInbox) *ReadyICPair {
+	h := newRaftMsgHandler(inbox.peer.peer, rw.raftCtx)
+	h.HandleMsgs(inbox.msgs...)
+	rd := h.newRaftReady()
+	if rd != nil {
+		h.HandleRaftReady(&rd.Ready, rd.IC)
+		applyMsgs := rw.raftCtx.applyMsgs
+		peerBatch := &peerApplyBatch{
+			apply:     inbox.peer.apply,
+			applyMsgs: append([]Msg{}, applyMsgs.msgs...),
 		}
-	}
-	// Pick one peer as the candidate to be moved to other workers.
-	atomic.StoreUint64(&rw.movePeerCandidate, movePeer)
-	rw.readyAppendDc.collect(time.Since(begin))
-	return
-}
-
-func (rw *raftWorker) handleRaftReady(readyRes []*ReadyICPair) {
-	if len(readyRes) > 0 {
-		begin := time.Now()
-		for _, pair := range readyRes {
-			h := newRaftMsgHandler(rw.inboxes[pair.IC.Region.Id].peer, rw.raftCtx)
-			h.HandleRaftReady(&pair.Ready, pair.IC)
+		for i := 0; i < len(applyMsgs.msgs); i++ {
+			applyMsgs.msgs[i] = Msg{}
 		}
-		duration := time.Since(begin)
-		rw.handleReadyDc.collect(duration)
-		metrics.PeerRaftProcessDuration.WithLabelValues("ready").Observe(duration.Seconds())
+		applyMsgs.msgs = applyMsgs.msgs[:0]
+		idx := hashRegionID(inbox.peer.peer.regionID()) % uint64(len(rw.applyChs))
+		rw.applyChs[idx] <- peerBatch
 	}
+	return rd
 }
 
 func (rw *raftWorker) postPersistState(readyRes []*ReadyICPair) {
 	for _, pair := range readyRes {
-		peer := rw.inboxes[pair.IC.Region.Id].peer
+		peer := rw.inboxes[pair.IC.Region.Id].peer.peer
 		if !peer.peer.IsLeader() {
 			peer.peer.followerSendReadyMessages(rw.raftCtx.trans, &pair.Ready)
 		}
@@ -279,43 +263,15 @@ func (rw *raftWorker) persistState() {
 	}
 }
 
-func (rw *raftWorker) scheduleApply() {
-	applyMsgs := rw.raftCtx.applyMsgs
-	batch := newApplyBatch()
-	for i, msg := range applyMsgs.msgs {
-		peerBatch := batch.peers[msg.RegionID]
-		if peerBatch == nil {
-			peerState := rw.pr.get(msg.RegionID)
-			if peerState == nil {
-				log.S().Warnf("region %d peer state is nil", msg.RegionID)
-				continue
-			}
-			peerBatch = &peerApplyBatch{
-				apply: peerState.apply,
-			}
-			batch.peers[msg.RegionID] = peerBatch
-		}
-		peerBatch.applyMsgs = append(peerBatch.applyMsgs, msg)
-		applyMsgs.msgs[i] = Msg{}
-	}
-	applyMsgs.msgs = applyMsgs.msgs[:0]
-	groups := batch.group(len(rw.applyChs))
-	for i, group := range groups {
-		if len(group) > 0 {
-			rw.applyChs[i] <- group
-		}
-	}
-}
-
 type applyWorker struct {
 	idx int
 	r   *router
-	ch  chan []*peerApplyBatch
+	ch  chan *peerApplyBatch
 	ctx *applyContext
 	dc  *durationCollector
 }
 
-func newApplyWorker(r *router, idx int, ch chan []*peerApplyBatch, ctx *applyContext) *applyWorker {
+func newApplyWorker(r *router, idx int, ch chan *peerApplyBatch, ctx *applyContext) *applyWorker {
 	return &applyWorker{
 		idx: idx,
 		r:   r,
@@ -328,21 +284,16 @@ func newApplyWorker(r *router, idx int, ch chan []*peerApplyBatch, ctx *applyCon
 // run runs apply tasks, since it is already batched by raftCh, we don't need to batch it here.
 func (aw *applyWorker) run(wg *sync.WaitGroup) {
 	defer wg.Done()
+	applyMetrics := metrics.WorkerPendingTaskTotal.WithLabelValues("apply-worker")
 	for {
 		batch := <-aw.ch
 		if batch == nil {
 			return
 		}
-		metrics.WorkerPendingTaskTotal.WithLabelValues("apply-worker").Set(float64(len(aw.ch)) + 1)
-		begin := time.Now()
-		for _, peerBatch := range batch {
-			for _, msg := range peerBatch.applyMsgs {
-				peerBatch.apply.handleMsg(aw.ctx, msg)
-			}
+		for _, msg := range batch.applyMsgs {
+			batch.apply.handleMsg(aw.ctx, msg)
 		}
-		aw.dc.collect(time.Since(begin))
-		metrics.WorkerHandledTaskTotal.WithLabelValues("apply-worker").Inc()
-		metrics.WorkerPendingTaskTotal.WithLabelValues("apply-worker").Set(float64(len(aw.ch)))
+		applyMetrics.Set(float64(len(aw.ch)))
 	}
 }
 
