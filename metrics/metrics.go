@@ -216,7 +216,7 @@ var (
 			Subsystem: "server",
 			Name:      "grpc_req_batch_size",
 			Help:      "grpc batch size of gRPC requests",
-			Buckets:   prometheus.ExponentialBuckets(1, 2, 10),
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 15),
 		})
 	ServerGrpcRespBatchSize = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
@@ -224,7 +224,7 @@ var (
 			Subsystem: "server",
 			Name:      "grpc_resp_batch_size",
 			Help:      "grpc batch size of gRPC responses",
-			Buckets:   prometheus.ExponentialBuckets(1, 2, 10),
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 15),
 		})
 	ServerRaftMessageBatchSize = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
@@ -232,7 +232,7 @@ var (
 			Subsystem: "server",
 			Name:      "raft_message_batch_size",
 			Help:      "Raft messages batch size",
-			Buckets:   prometheus.ExponentialBuckets(1, 2, 10),
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 15),
 		})
 	RegionWrittenKeys = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
@@ -307,10 +307,7 @@ var (
 		}, []string{"type"})
 	WaitMessageDurationHistogram      = RaftWorkerMessageDurationSeconds.WithLabelValues("wait_message")
 	ReceiveMessageDurationHistogram   = RaftWorkerMessageDurationSeconds.WithLabelValues("receive_message")
-	HandleMessageDurationHistogram    = RaftWorkerMessageDurationSeconds.WithLabelValues("handle_message")
-	CollectRaftReadyDurationHistogram = RaftWorkerMessageDurationSeconds.WithLabelValues("collect_raft_ready")
-	HandleRaftReadyDurationHistogram  = RaftWorkerMessageDurationSeconds.WithLabelValues("handle_raft_ready")
-	ScheduleApplyDurationHistogram    = RaftWorkerMessageDurationSeconds.WithLabelValues("schedule_apply")
+	ProcessRegionDurationHistogram    = RaftWorkerMessageDurationSeconds.WithLabelValues("process_region")
 	PersistStateDurationHistogram     = RaftWorkerMessageDurationSeconds.WithLabelValues("persist_state")
 	PostPersistStateDurationHistogram = RaftWorkerMessageDurationSeconds.WithLabelValues("post_persist_state")
 )
