@@ -138,7 +138,6 @@ func setupRaftStoreConf(raftConf *raftstore.Config, conf *config.Config) {
 	raftConf.GrpcRaftConnNum = uint64(conf.RaftStore.GRPCRaftConnNum)
 	raftConf.StatusAddr = conf.Server.StatusAddr
 	raftConf.GitHash = conf.RaftStore.GitHash
-	raftConf.RaftMaxBatchCount = conf.RaftStore.RaftMaxBatchCount
 	for key, value := range conf.Server.Labels {
 		raftConf.Labels = append(raftConf.Labels, raftstore.StoreLabel{key, value})
 	}
