@@ -20,13 +20,17 @@ import (
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 type Engine struct {
 	dir        string
 	writer     *walWriter
-	entriesMap map[uint64]*regionRaftLogs
+	writeMu    sync.Mutex
+	entriesMap map[uint64]*RegionRaftLogs
+	mapMu      sync.RWMutex
 	states     *btree.BTree
+	stateMu    sync.RWMutex
 	worker     *worker
 }
 
@@ -106,26 +110,37 @@ type stateOp struct {
 }
 
 func (e *Engine) Write(wb *WriteBatch) error {
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
 	if int64(wb.size)+e.writer.offset() > e.writer.walSize {
 		epochID := e.writer.epochID
 		err := e.writer.rotate()
 		if err != nil {
 			return err
 		}
+		e.stateMu.Lock()
 		states := e.states
 		e.states = btree.New(8)
 		states.Ascend(func(i btree.Item) bool {
 			e.states.ReplaceOrInsert(i)
 			return true
 		})
+		e.stateMu.Unlock()
 		e.worker.taskCh <- rotateTask{epochID: epochID, states: states}
 	}
 	for _, op := range wb.raftLogOps {
 		e.writer.appendRaftLog(op)
+	}
+	e.mapMu.RLock()
+	for _, op := range wb.raftLogOps {
 		getRegionRaftLogs(e.entriesMap, op.regionID).append(op)
 	}
+	e.mapMu.RUnlock()
 	for _, op := range wb.stateOps {
 		e.writer.appendState(op.regionID, op.key, op.val)
+	}
+	e.stateMu.Lock()
+	for _, op := range wb.stateOps {
 		item := &stateItem{regionID: op.regionID, key: op.key, val: op.val}
 		if len(op.val) > 0 {
 			e.states.ReplaceOrInsert(item)
@@ -133,24 +148,33 @@ func (e *Engine) Write(wb *WriteBatch) error {
 			e.states.Delete(item)
 		}
 	}
+	e.stateMu.Unlock()
 	for _, op := range wb.truncates {
 		e.writer.appendTruncate(op.regionID, op.index)
+		e.mapMu.Lock()
 		if empty := getRegionRaftLogs(e.entriesMap, op.regionID).truncate(op.index); empty {
 			delete(e.entriesMap, op.regionID)
 		}
+		e.mapMu.Unlock()
 		e.worker.taskCh <- truncateOp{regionID: op.regionID, index: op.index}
 	}
 	return e.writer.flush()
 }
 
 func (e *Engine) IsEmpty() bool {
-	return len(e.entriesMap) == 0 && e.states.Len() == 0
+	e.mapMu.RLock()
+	mapEmpty := len(e.entriesMap) == 0
+	e.mapMu.RUnlock()
+	e.stateMu.RLock()
+	statesEmpty := e.states.Len() == 0
+	e.stateMu.RUnlock()
+	return mapEmpty && statesEmpty
 }
 
-func getRegionRaftLogs(entriesMap map[uint64]*regionRaftLogs, regionID uint64) *regionRaftLogs {
+func getRegionRaftLogs(entriesMap map[uint64]*RegionRaftLogs, regionID uint64) *RegionRaftLogs {
 	re, ok := entriesMap[regionID]
 	if !ok {
-		re = &regionRaftLogs{}
+		re = &RegionRaftLogs{}
 		entriesMap[regionID] = re
 	}
 	return re
@@ -171,19 +195,21 @@ func (b *stateItem) Less(than btree.Item) bool {
 }
 
 func (e *Engine) GetState(regionID uint64, key []byte) []byte {
+	e.stateMu.RLock()
 	val := e.states.Get(&stateItem{regionID: regionID, key: key})
+	e.stateMu.RUnlock()
 	if val != nil {
 		return val.(*stateItem).val
 	}
 	return nil
 }
 
-type regionRaftLogs struct {
+type RegionRaftLogs struct {
 	raftLogRange
 	raftLogs []raftLogOp
 }
 
-func (re *regionRaftLogs) prepareAppend(index uint64) {
+func (re *RegionRaftLogs) prepareAppend(index uint64) {
 	if re.startIndex == 0 {
 		// initialize index
 		re.startIndex = index
@@ -202,13 +228,13 @@ func (re *regionRaftLogs) prepareAppend(index uint64) {
 	re.endIndex = index
 }
 
-func (re *regionRaftLogs) append(op raftLogOp) {
+func (re *RegionRaftLogs) append(op raftLogOp) {
 	re.prepareAppend(op.index)
 	re.raftLogs = append(re.raftLogs, op)
 	re.endIndex++
 }
 
-func (re *regionRaftLogs) truncate(index uint64) (empty bool) {
+func (re *RegionRaftLogs) truncate(index uint64) (empty bool) {
 	if index <= re.startIndex {
 		return
 	}
@@ -224,7 +250,7 @@ func (re *regionRaftLogs) truncate(index uint64) (empty bool) {
 	return len(re.raftLogs) == 0
 }
 
-func (re *regionRaftLogs) get(index uint64) *eraftpb.Entry {
+func (re *RegionRaftLogs) Get(index uint64) *eraftpb.Entry {
 	if index < re.startIndex || index >= re.endIndex {
 		return nil
 	}
@@ -238,17 +264,20 @@ func (re *regionRaftLogs) get(index uint64) *eraftpb.Entry {
 	}
 }
 
-func (e *Engine) GetRaftLog(regionID, index uint64) *eraftpb.Entry {
-	entries := getRegionRaftLogs(e.entriesMap, regionID)
-	return entries.get(index)
+func (re *RegionRaftLogs) GetRange() (startIndex, endIndex uint64) {
+	return re.startIndex, re.endIndex
 }
 
-func (e *Engine) GetRaftLogRange(regionID uint64) (startIndex, endIndex uint64) {
-	entries := getRegionRaftLogs(e.entriesMap, regionID)
-	return entries.startIndex, entries.endIndex
+func (e *Engine) GetRegionRaftLogs(regionID uint64) *RegionRaftLogs {
+	e.mapMu.RLock()
+	rl := getRegionRaftLogs(e.entriesMap, regionID)
+	e.mapMu.RUnlock()
+	return rl
 }
 
 func (e *Engine) IterateRegionStates(regionID uint64, desc bool, fn func(key, val []byte) error) error {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	var err error
 	startItem := &stateItem{regionID: regionID}
 	endItem := &stateItem{regionID: regionID + 1}
@@ -266,6 +295,8 @@ func (e *Engine) IterateRegionStates(regionID uint64, desc bool, fn func(key, va
 }
 
 func (e *Engine) IterateAllStates(desc bool, fn func(regionID uint64, key, val []byte) error) error {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	var err error
 	iterator := func(i btree.Item) bool {
 		item := i.(*stateItem)
@@ -287,7 +318,7 @@ func Open(dir string, walSize int64) (*Engine, error) {
 	}
 	e := &Engine{
 		dir:        dir,
-		entriesMap: map[uint64]*regionRaftLogs{},
+		entriesMap: map[uint64]*RegionRaftLogs{},
 		states:     btree.New(8),
 	}
 	epochSlice, err := e.readEpochs()
