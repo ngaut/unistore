@@ -187,6 +187,9 @@ func (rw *raftWorker) receiveMsgs(closeCh <-chan struct{}) (quit bool) {
 		})
 	}
 	pending := len(rw.raftCh)
+	if pending > rw.raftCtx.cfg.RaftMaxBatchCount {
+		pending = rw.raftCtx.cfg.RaftMaxBatchCount
+	}
 	reqCount += pending
 	for i := 0; i < pending; i++ {
 		msg := <-rw.raftCh
