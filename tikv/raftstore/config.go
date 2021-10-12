@@ -40,7 +40,6 @@ type Config struct {
 	RaftMaxElectionTimeoutTicks int
 	RaftMaxSizePerMsg           uint64
 	RaftMaxInflightMsgs         int
-	RaftMaxBatchCount           int
 
 	// When the entry exceed the max size, reject to propose it.
 	RaftEntryMaxSize uint64
@@ -172,7 +171,6 @@ func NewDefaultConfig() *Config {
 		RaftMaxElectionTimeoutTicks:      0,
 		RaftMaxSizePerMsg:                1 * MB,
 		RaftMaxInflightMsgs:              256,
-		RaftMaxBatchCount:                256,
 		RaftEntryMaxSize:                 8 * MB,
 		RaftLogGCTickInterval:            10 * time.Second,
 		RaftEntryCacheLifeTime:           30 * time.Second,
