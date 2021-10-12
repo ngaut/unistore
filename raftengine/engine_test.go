@@ -71,7 +71,7 @@ func TestEngine(t *testing.T) {
 			require.Equal(t, int(old.startIndex), int(entries.startIndex))
 			require.Equal(t, old.endIndex, entries.endIndex)
 			for i := old.startIndex; i < old.endIndex; i++ {
-				require.Equal(t, old.get(i), entries.get(i))
+				require.Equal(t, old.Get(i), entries.Get(i))
 			}
 		}
 		e2.Close()

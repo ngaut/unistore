@@ -122,7 +122,7 @@ func (c *worker) writeStates(epochID uint32, states *btree.BTree) error {
 }
 
 func (c *worker) compact(e *epoch) error {
-	entriesMap := map[uint64]*regionRaftLogs{}
+	entriesMap := map[uint64]*RegionRaftLogs{}
 	it := newIterator(c.dir, e.id)
 	err := it.iterate(func(tp uint32, entry []byte) (stop bool) {
 		if tp != typeRaftLog {
@@ -150,7 +150,7 @@ func (c *worker) compact(e *epoch) error {
 	return os.Rename(walFileName(c.dir, e.id), recycleFileName(c.dir, e.id))
 }
 
-func (c *worker) writeRaftLogFile(e *epoch, regionID uint64, entries *regionRaftLogs) error {
+func (c *worker) writeRaftLogFile(e *epoch, regionID uint64, entries *RegionRaftLogs) error {
 	filename := raftLogFileName(c.dir, e.id, regionID, entries.raftLogRange)
 	fd, err := y.OpenTruncFile(filename, false)
 	if err != nil {

@@ -220,7 +220,7 @@ func initLastTerm(raftEngine *raftengine.Engine, region *metapb.Region,
 	} else {
 		y.Assert(lastIdx > RaftInitLogIndex)
 	}
-	entry := raftEngine.GetRaftLog(region.Id, lastIdx)
+	entry := raftEngine.GetRegionRaftLogs(region.Id).Get(lastIdx)
 	if entry == nil {
 		return 0, errors.Errorf("[region %s] entry at %d doesn't exist, may lost data.", region, lastIdx)
 	}
@@ -423,10 +423,11 @@ func fetchEntriesTo(engine *raftengine.Engine, regionID, low, high, maxSize uint
 	var totalSize uint64
 	nextIndex := low
 	exceededMaxSize := false
+	regionRaftLogs := engine.GetRegionRaftLogs(regionID)
 	for i := low; i < high; i++ {
-		entry := engine.GetRaftLog(regionID, i)
+		entry := regionRaftLogs.Get(i)
 		if entry == nil {
-			start, end := engine.GetRaftLogRange(regionID)
+			start, end := regionRaftLogs.GetRange()
 			log.S().Infof("raft log unavailable %d %d request %d", start, end, i)
 			return nil, 0, raft.ErrUnavailable
 		}
@@ -449,7 +450,7 @@ func fetchEntriesTo(engine *raftengine.Engine, regionID, low, high, maxSize uint
 	if len(buf) == int(high-low) || exceededMaxSize {
 		return buf, totalSize, nil
 	}
-	start, end := engine.GetRaftLogRange(regionID)
+	start, end := regionRaftLogs.GetRange()
 	log.S().Infof("raft log unavailable start %d end %d request low %d high %d", start, end, low, high)
 	// Here means we don't fetch enough entries.
 	return nil, 0, raft.ErrUnavailable
@@ -462,7 +463,7 @@ func ClearMeta(raft *raftengine.Engine, raftWB *raftengine.WriteBatch, region *m
 		return nil
 	})
 	y.Assert(err == nil)
-	_, endIdx := raft.GetRaftLogRange(regionID)
+	_, endIdx := raft.GetRegionRaftLogs(regionID).GetRange()
 	raftWB.TruncateRaftLog(regionID, endIdx)
 }
 
