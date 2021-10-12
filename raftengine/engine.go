@@ -131,11 +131,15 @@ func (e *Engine) Write(wb *WriteBatch) error {
 	for _, op := range wb.raftLogOps {
 		e.writer.appendRaftLog(op)
 	}
-	e.mapMu.RLock()
+	var regionRaftLogs *RegionRaftLogs
+	var lastRegionID uint64
 	for _, op := range wb.raftLogOps {
-		getRegionRaftLogs(e.entriesMap, op.regionID).append(op)
+		if regionRaftLogs == nil || op.regionID != lastRegionID {
+			regionRaftLogs = e.GetRegionRaftLogs(op.regionID)
+			lastRegionID = op.regionID
+		}
+		regionRaftLogs.append(op)
 	}
-	e.mapMu.RUnlock()
 	for _, op := range wb.stateOps {
 		e.writer.appendState(op.regionID, op.key, op.val)
 	}
@@ -270,9 +274,19 @@ func (re *RegionRaftLogs) GetRange() (startIndex, endIndex uint64) {
 
 func (e *Engine) GetRegionRaftLogs(regionID uint64) *RegionRaftLogs {
 	e.mapMu.RLock()
-	rl := getRegionRaftLogs(e.entriesMap, regionID)
+	re, ok := e.entriesMap[regionID]
 	e.mapMu.RUnlock()
-	return rl
+	if ok {
+		return re
+	}
+	e.mapMu.Lock()
+	defer e.mapMu.Unlock()
+	re, ok = e.entriesMap[regionID]
+	if !ok {
+		re = &RegionRaftLogs{}
+		e.entriesMap[regionID] = re
+	}
+	return re
 }
 
 func (e *Engine) IterateRegionStates(regionID uint64, desc bool, fn func(key, val []byte) error) error {
