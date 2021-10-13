@@ -29,6 +29,7 @@ import (
 
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 
+	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/raft"
 	"github.com/pingcap/kvproto/pkg/eraftpb"
 	"github.com/pingcap/kvproto/pkg/metapb"
@@ -251,6 +252,8 @@ type Peer struct {
 	applyProposals []proposal
 	pendingReads   *ReadIndexQueue
 
+	callbacks map[uint64]*Callback
+
 	peerCache map[uint64]*metapb.Peer
 
 	// Record the last instant of each peer's heartbeat response.
@@ -334,6 +337,7 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 		peerStorage:           ps,
 		proposals:             new(ProposalQueue),
 		pendingReads:          new(ReadIndexQueue),
+		callbacks:             make(map[uint64]*Callback),
 		peerCache:             make(map[uint64]*metapb.Peer),
 		PeerHeartbeats:        make(map[uint64]time.Time),
 		PeersStartPendingTime: make(map[uint64]time.Time),
@@ -816,8 +820,16 @@ func (p *Peer) NewRaftReady(trans *RaftClient, ctx *RaftContext, observer PeerEv
 	if ready.Snapshot.GetMetadata() == nil {
 		ready.Snapshot.Metadata = &eraftpb.SnapshotMetadata{}
 	}
+	now := time.Now()
 	for i := 0; i < len(ready.CommittedEntries); i++ {
 		e := ready.CommittedEntries[i]
+		if p.IsLeader() {
+			if t, ok := p.callbacks[e.Index]; ok {
+				t.committedTime = now
+				metrics.ProposeToCommitWaitTimeDurationHistogram.Observe(now.Sub(t.proposingTime).Seconds())
+				delete(p.callbacks, e.Index)
+			}
+		}
 		if e.EntryType != eraftpb.EntryType_EntryNormal {
 			continue
 		}
@@ -836,6 +848,9 @@ func (p *Peer) NewRaftReady(trans *RaftClient, ctx *RaftContext, observer PeerEv
 			log.S().Warnf("%v leader send message err: %v", p.Tag, err)
 		}
 		ready.Messages = ready.Messages[:0]
+	} else if len(p.callbacks) > 0 {
+		// The Callback is used by leader only, clear callbacks when the peer role is follower.
+		p.callbacks = make(map[uint64]*Callback)
 	}
 
 	invokeCtx, err := p.Store().SaveReadyState(ctx.raftWB, &ready)
@@ -1113,6 +1128,7 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *engine.Engine, applyMsgs *applyM
 					mergeToBeUpdated = false
 				}
 			}
+
 		}
 		apply := &apply{
 			regionId:  p.regionId,
@@ -1298,6 +1314,10 @@ func (p *Peer) PostPropose(meta *ProposalMeta, isConfChange bool, cb *Callback) 
 	// Try to renew leader lease on every consistent read/write request.
 	t := time.Now()
 	meta.RenewLeaseTime = &t
+	if cb != nil {
+		cb.proposingTime = t
+		p.callbacks[meta.Index] = cb
+	}
 	proposal := proposal{
 		isConfChange: isConfChange,
 		index:        meta.Index,

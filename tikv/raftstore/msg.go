@@ -14,9 +14,10 @@
 package raftstore
 
 import (
-	"github.com/ngaut/unistore/enginepb"
 	"time"
 
+	"github.com/ngaut/unistore/enginepb"
+	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
 	"github.com/pingcap/kvproto/pkg/metapb"
 	"github.com/pingcap/kvproto/pkg/raft_cmdpb"
@@ -78,6 +79,9 @@ type Callback struct {
 
 	// If respOnProposed is true, we response early after propose instead of after apply.
 	respOnProposed bool
+
+	proposingTime time.Time
+	committedTime time.Time
 }
 
 func (cb *Callback) MaybeResponseOnProposed(resp *raft_cmdpb.RaftCmdResponse) {
@@ -91,6 +95,9 @@ func (cb *Callback) Done(resp *raft_cmdpb.RaftCmdResponse) {
 		cb.respCh <- resp
 		if cb.doneFn != nil {
 			cb.doneFn()
+		}
+		if !cb.committedTime.IsZero() {
+			metrics.CommitToCallbackWaitTimeDurationHistogram.Observe(time.Since(cb.committedTime).Seconds())
 		}
 	}
 }

@@ -118,7 +118,18 @@ var (
 			Name:      "region_count",
 			Help:      "Number of regions collected in region_collector",
 		}, []string{"type"})
-	PeerRaftProcessDuration = prometheus.NewHistogramVec(
+	RaftCommandDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "worker",
+			Name:      "command_duration_seconds",
+			Help:      "Bucketed histogram of raft command duration seconds",
+			Buckets:   prometheus.ExponentialBuckets(0.0001, 2, 20),
+		}, []string{"type"})
+	SendToProposeWaitTimeDurationHistogram    = RaftCommandDurationSeconds.WithLabelValues("send_to_propose")
+	ProposeToCommitWaitTimeDurationHistogram  = RaftCommandDurationSeconds.WithLabelValues("propose_to_commit")
+	CommitToCallbackWaitTimeDurationHistogram = RaftCommandDurationSeconds.WithLabelValues("commit_to_callback")
+	PeerRaftProcessDuration                   = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: namespace,
 			Subsystem: "raftstore",
@@ -140,6 +151,22 @@ var (
 			Subsystem: "raftstore",
 			Name:      "request_wait_time_duration_secs",
 			Help:      "Bucketed histogram of request wait time duration.",
+			Buckets:   prometheus.ExponentialBuckets(0.0005, 2.0, 20),
+		})
+	StoreApplyLogHistogram = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "raftstore",
+			Name:      "apply_log_duration_seconds",
+			Help:      "Bucketed histogram of peer applying log duration.",
+			Buckets:   prometheus.ExponentialBuckets(0.0005, 2.0, 20),
+		})
+	PeerAppendLogHistogram = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "raftstore",
+			Name:      "append_log_duration_seconds",
+			Help:      "Bucketed histogram of peer appending log duration",
 			Buckets:   prometheus.ExponentialBuckets(0.0005, 2.0, 20),
 		})
 	ApplyTaskWaitTimeHistogram = prometheus.NewHistogram(
@@ -185,7 +212,7 @@ var (
 			Subsystem: "server",
 			Name:      "grpc_req_batch_size",
 			Help:      "grpc batch size of gRPC requests",
-			Buckets:   prometheus.ExponentialBuckets(1, 2, 10),
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 15),
 		})
 	ServerGrpcRespBatchSize = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
@@ -193,7 +220,7 @@ var (
 			Subsystem: "server",
 			Name:      "grpc_resp_batch_size",
 			Help:      "grpc batch size of gRPC responses",
-			Buckets:   prometheus.ExponentialBuckets(1, 2, 10),
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 15),
 		})
 	ServerRaftMessageBatchSize = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
@@ -201,7 +228,7 @@ var (
 			Subsystem: "server",
 			Name:      "raft_message_batch_size",
 			Help:      "Raft messages batch size",
-			Buckets:   prometheus.ExponentialBuckets(1, 2, 10),
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 15),
 		})
 	RegionWrittenKeys = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
@@ -255,8 +282,30 @@ var (
 			Subsystem: "worker",
 			Name:      "task_duration_seconds",
 			Help:      "Bucketed histogram of worker tasks duration seconds",
-			Buckets:   prometheus.ExponentialBuckets(0.0005, 2, 20),
+			Buckets:   prometheus.ExponentialBuckets(0.0001, 2, 20),
 		}, []string{"type"})
+	WorkerLoopDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "worker",
+			Name:      "loop_duration_seconds",
+			Help:      "Bucketed histogram of worker loop duration seconds",
+			Buckets:   prometheus.ExponentialBuckets(0.0001, 2, 20),
+		}, []string{"type"})
+	RaftWorkerLoopDurationHistogram  = WorkerLoopDurationSeconds.WithLabelValues("raft_worker")
+	RaftWorkerMessageDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "worker",
+			Name:      "message_duration_seconds",
+			Help:      "Bucketed histogram of raft message duration seconds",
+			Buckets:   prometheus.ExponentialBuckets(0.0001, 2, 20),
+		}, []string{"type"})
+	WaitMessageDurationHistogram      = RaftWorkerMessageDurationSeconds.WithLabelValues("wait_message")
+	ReceiveMessageDurationHistogram   = RaftWorkerMessageDurationSeconds.WithLabelValues("receive_message")
+	ProcessRegionDurationHistogram    = RaftWorkerMessageDurationSeconds.WithLabelValues("process_region")
+	PersistStateDurationHistogram     = RaftWorkerMessageDurationSeconds.WithLabelValues("persist_state")
+	PostPersistStateDurationHistogram = RaftWorkerMessageDurationSeconds.WithLabelValues("post_persist_state")
 )
 
 func init() {
@@ -273,9 +322,12 @@ func init() {
 	prometheus.MustRegister(StoreSizeBytes)
 	prometheus.MustRegister(ThreadCPUSecondsTotal)
 	prometheus.MustRegister(RaftstoreRegionCount)
+	prometheus.MustRegister(RaftCommandDurationSeconds)
 	prometheus.MustRegister(PeerRaftProcessDuration)
 	prometheus.MustRegister(RaftstoreApplyProposal)
 	prometheus.MustRegister(RequestWaitTimeDurationHistogram)
+	prometheus.MustRegister(StoreApplyLogHistogram)
+	prometheus.MustRegister(PeerAppendLogHistogram)
 	prometheus.MustRegister(ApplyTaskWaitTimeHistogram)
 	prometheus.MustRegister(EngineSizeBytes)
 	prometheus.MustRegister(EngineFlowBytes)
@@ -291,5 +343,7 @@ func init() {
 	prometheus.MustRegister(WorkerHandledTaskTotal)
 	prometheus.MustRegister(WorkerPendingTaskTotal)
 	prometheus.MustRegister(WorkerTaskDurationSeconds)
+	prometheus.MustRegister(WorkerLoopDurationSeconds)
+	prometheus.MustRegister(RaftWorkerMessageDurationSeconds)
 	http.Handle("/metrics", promhttp.Handler())
 }

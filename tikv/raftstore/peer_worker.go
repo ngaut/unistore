@@ -136,9 +136,11 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 	rw.ticker = time.NewTicker(rw.raftCtx.cfg.RaftBaseTickInterval)
 	for {
+		loopStartTime := time.Now()
 		if quit := rw.receiveMsgs(closeCh); quit {
 			return
 		}
+		processStartTime := time.Now()
 		var readyRes []*ReadyICPair
 		for _, inbox := range rw.inboxes {
 			rd := rw.processInBox(inbox)
@@ -146,13 +148,16 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 				readyRes = append(readyRes, rd)
 			}
 		}
+		metrics.ProcessRegionDurationHistogram.Observe(time.Since(processStartTime).Seconds())
 		rw.persistState()
 		rw.postPersistState(readyRes)
 		rw.raftCtx.flushLocalStats()
+		metrics.RaftWorkerLoopDurationHistogram.Observe(time.Since(loopStartTime).Seconds())
 	}
 }
 
 func (rw *raftWorker) receiveMsgs(closeCh <-chan struct{}) (quit bool) {
+	begin := time.Now()
 	for regionID, inbox := range rw.inboxes {
 		if len(inbox.msgs) == 0 {
 			delete(rw.inboxes, regionID)
@@ -180,12 +185,13 @@ func (rw *raftWorker) receiveMsgs(closeCh <-chan struct{}) (quit bool) {
 		rw.getPeerInbox(msg.RegionID).append(msg)
 	case <-rw.ticker.C:
 		rw.pr.peers.Range(func(key, value interface{}) bool {
-			reqCount++
 			regionID := key.(uint64)
 			rw.getPeerInbox(regionID).append(NewPeerMsg(MsgTypeTick, regionID, nil))
 			return true
 		})
 	}
+	receivingTime := time.Now()
+	metrics.WaitMessageDurationHistogram.Observe(receivingTime.Sub(begin).Seconds())
 	pending := len(rw.raftCh)
 	reqCount += pending
 	for i := 0; i < pending; i++ {
@@ -205,6 +211,7 @@ func (rw *raftWorker) receiveMsgs(closeCh <-chan struct{}) (quit bool) {
 	metrics.ServerGrpcReqBatchSize.Observe(float64(reqCount))
 	metrics.ServerGrpcRespBatchSize.Observe(float64(respCount))
 	metrics.ServerRaftMessageBatchSize.Observe(float64(raftMsgCount))
+	metrics.ReceiveMessageDurationHistogram.Observe(time.Since(receivingTime).Seconds())
 	return false
 }
 
@@ -240,12 +247,14 @@ func (rw *raftWorker) processInBox(inbox *peerInbox) *ReadyICPair {
 }
 
 func (rw *raftWorker) postPersistState(readyRes []*ReadyICPair) {
+	begin := time.Now()
 	for _, pair := range readyRes {
 		peer := rw.inboxes[pair.IC.Region.Id].peer.peer
 		if !peer.peer.IsLeader() {
 			peer.peer.followerSendReadyMessages(rw.raftCtx.trans, &pair.Ready)
 		}
 	}
+	metrics.PostPersistStateDurationHistogram.Observe(time.Since(begin).Seconds())
 }
 
 func (rw *raftWorker) persistState() {
@@ -259,7 +268,10 @@ func (rw *raftWorker) persistState() {
 		rw.raftCtx.localStats.engineTotalKeysWritten += uint64(raftWB.NumEntries())
 		rw.raftCtx.localStats.engineTotalBytesWritten += uint64(raftWB.Size())
 		raftWB.Reset()
-		rw.writeDc.collect(time.Since(begin))
+		duration := time.Since(begin)
+		rw.writeDc.collect(duration)
+		metrics.PeerAppendLogHistogram.Observe(duration.Seconds())
+		metrics.PersistStateDurationHistogram.Observe(duration.Seconds())
 	}
 }
 
