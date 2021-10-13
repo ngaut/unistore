@@ -168,7 +168,6 @@ func (rw *raftWorker) receiveMsgs(closeCh <-chan struct{}) (quit bool) {
 	var reqCount int
 	var respCount int
 	var raftMsgCount int
-	var receivingTime time.Time
 	select {
 	case <-closeCh:
 		for _, applyCh := range rw.applyChs {
@@ -176,24 +175,22 @@ func (rw *raftWorker) receiveMsgs(closeCh <-chan struct{}) (quit bool) {
 		}
 		return true
 	case msg := <-rw.raftCh:
-		receivingTime = time.Now()
 		reqCount++
 		if msg.Type == MsgTypeRaftMessage {
 			raftMsgCount++
 		}
 		rw.getPeerInbox(msg.RegionID).append(msg)
 	case msg := <-rw.applyResCh:
-		receivingTime = time.Now()
 		respCount++
 		rw.getPeerInbox(msg.RegionID).append(msg)
 	case <-rw.ticker.C:
-		receivingTime = time.Now()
 		rw.pr.peers.Range(func(key, value interface{}) bool {
 			regionID := key.(uint64)
 			rw.getPeerInbox(regionID).append(NewPeerMsg(MsgTypeTick, regionID, nil))
 			return true
 		})
 	}
+	receivingTime := time.Now()
 	metrics.WaitMessageDurationHistogram.Observe(receivingTime.Sub(begin).Seconds())
 	pending := len(rw.raftCh)
 	reqCount += pending
