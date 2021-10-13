@@ -832,14 +832,13 @@ func (p *Peer) NewRaftReady(trans *RaftClient, ctx *RaftContext, observer PeerEv
 	now := time.Now()
 	for i := 0; i < len(ready.CommittedEntries); i++ {
 		e := ready.CommittedEntries[i]
-		t, ok := p.commandTraces[e.Index]
-		if !ok {
-			t = &commandTrace{}
-			p.commandTraces[e.Index] = t
-		}
-		t.committedTime = now
-		if !t.sendingTime.IsZero() {
-			metrics.CommitWaitTimeDurationHistogram.Observe(now.Sub(t.sendingTime).Seconds())
+		if p.IsLeader() {
+			if t, ok := p.commandTraces[e.Index]; ok {
+				t.committedTime = now
+				if !t.sendingTime.IsZero() {
+					metrics.CommitWaitTimeDurationHistogram.Observe(now.Sub(t.sendingTime).Seconds())
+				}
+			}
 		}
 		if e.EntryType != eraftpb.EntryType_EntryNormal {
 			continue
@@ -859,6 +858,8 @@ func (p *Peer) NewRaftReady(trans *RaftClient, ctx *RaftContext, observer PeerEv
 			log.S().Warnf("%v leader send message err: %v", p.Tag, err)
 		}
 		ready.Messages = ready.Messages[:0]
+	} else if len(p.commandTraces) > 0 {
+		p.commandTraces = make(map[uint64]*commandTrace)
 	}
 
 	invokeCtx, err := p.Store().SaveReadyState(ctx.raftWB, &ready)
@@ -1114,9 +1115,11 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *engine.Engine, applyMsgs *applyM
 		}
 		var traces []*commandTrace
 		for _, entry := range committedEntries {
-			if t, ok := p.commandTraces[entry.Index]; ok {
-				traces = append(traces, t)
-				delete(p.commandTraces, entry.Index)
+			if p.IsLeader() {
+				if t, ok := p.commandTraces[entry.Index]; ok {
+					traces = append(traces, t)
+					delete(p.commandTraces, entry.Index)
+				}
 			}
 			// raft meta is very small, can be ignored.
 			if leaseToBeUpdated {
@@ -1168,7 +1171,9 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *engine.Engine, applyMsgs *applyM
 				p.lastUrgentProposalIdx = math.MaxUint64
 			}
 			apply.entries = committedEntries
-			apply.traces = traces
+			if len(traces) == l {
+				apply.traces = traces
+			}
 		}
 		if l > 0 || softState != nil {
 			applyMsgs.appendMsg(p.regionId, newApplyMsg(apply))

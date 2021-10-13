@@ -302,7 +302,6 @@ type waitSourceMergeState struct {
 	/// All of the entries that need to continue to be applied after
 	/// the source peer has applied its logs.
 	pendingEntries []*eraftpb.Entry
-	pendingTraces  []*commandTrace
 	/// All of messages that need to continue to be handled after
 	/// the source peer has applied its logs and pending entries
 	/// are all handled.
@@ -407,6 +406,9 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 	if len(committedEntries) == 0 {
 		return
 	}
+	if len(a.traces) != len(committedEntries) {
+		a.traces = nil
+	}
 	traces := a.traces
 	defer func() {
 		if a.snap != nil {
@@ -417,7 +419,6 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 	}()
 	if a.pauseState != nil {
 		a.pauseState.entries = append(a.pauseState.entries, committedEntries...)
-		a.pauseState.traces = append(a.pauseState.traces, traces...)
 		return
 	}
 
@@ -441,11 +442,13 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 			}
 			panic(fmt.Sprintf("%s expect index %d, but got %d", a.tag, expectedIndex, entry.Index))
 		}
-		now := time.Now()
-		t := traces[i]
-		a.traceIndex = i
-		t.receivingApplyTime = now
-		metrics.ReceiveApplyWaitTimeDurationHistogram.Observe(now.Sub(t.schedulingApplyTime).Seconds())
+		if len(traces) > 0 {
+			now := time.Now()
+			t := traces[i]
+			a.traceIndex = i
+			t.receivingApplyTime = now
+			metrics.ReceiveApplyWaitTimeDurationHistogram.Observe(now.Sub(t.schedulingApplyTime).Seconds())
+		}
 		var res applyResult
 		switch entry.EntryType {
 		case eraftpb.EntryType_EntryNormal:
@@ -463,12 +466,9 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 			// Note that CommitMerge is skipped when `WaitMergeSource` is returned.
 			// So we need to enqueue it again and execute it again when resuming.
 			pendingEntries = append(pendingEntries, committedEntries[i:]...)
-			pendingTraces := make([]*commandTrace, 0, len(traces)-i)
-			pendingTraces = append(pendingTraces, traces[i:]...)
 			aCtx.finishFor(a, results)
 			a.waitMergeState = &waitSourceMergeState{
 				pendingEntries: pendingEntries,
-				pendingTraces:  pendingTraces,
 				readyToMerge:   readyToMerge,
 			}
 			return
@@ -477,10 +477,8 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 				regionId: a.region.Id,
 				term:     a.term,
 				entries:  make([]*eraftpb.Entry, 0, len(committedEntries)-i),
-				traces:   make([]*commandTrace, 0, len(traces)-i),
 			}
 			pause.entries = append(pause.entries, committedEntries[i:]...)
-			pause.traces = append(pause.traces, traces[i:]...)
 			aCtx.finishFor(a, results)
 			a.pauseState = pause
 			return

@@ -557,9 +557,6 @@ func (r *regionApplyTaskHandler) handle(t task) {
 			change: regionTask.change,
 			err:    err,
 		}))
-		if trace != nil {
-			metrics.ApplyCommandWaitTimeDurationHistogram.Observe(time.Since(regionTask.trace.appliedTime).Seconds())
-		}
 	case taskTypeRecoverSplit:
 		err := r.handleRecoverSplit(regionTask)
 		if err != nil {

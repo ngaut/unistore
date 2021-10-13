@@ -243,10 +243,12 @@ func (rw *raftWorker) processInBox(inbox *peerInbox) *ReadyICPair {
 			msg := applyMsgs.msgs[i]
 			if msg.Type == MsgTypeApply {
 				a := msg.Data.(*apply)
-				now := time.Now()
-				for _, t := range a.traces {
-					t.schedulingApplyTime = now
-					metrics.ScheduleApplyWaitTimeDurationHistogram.Observe(now.Sub(t.committedTime).Seconds())
+				if len(a.traces) > 0 {
+					now := time.Now()
+					for _, t := range a.traces {
+						t.schedulingApplyTime = now
+						metrics.ScheduleApplyWaitTimeDurationHistogram.Observe(now.Sub(t.committedTime).Seconds())
+					}
 				}
 			}
 			applyMsgs.msgs[i] = Msg{}
