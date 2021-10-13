@@ -849,6 +849,7 @@ func (p *Peer) NewRaftReady(trans *RaftClient, ctx *RaftContext, observer PeerEv
 		}
 		ready.Messages = ready.Messages[:0]
 	} else if len(p.callbacks) > 0 {
+		// The Callback is used by leader only, clear callbacks when the peer role is follower.
 		p.callbacks = make(map[uint64]*Callback)
 	}
 
