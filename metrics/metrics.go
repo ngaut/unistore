@@ -126,14 +126,10 @@ var (
 			Help:      "Bucketed histogram of raft command duration seconds",
 			Buckets:   prometheus.ExponentialBuckets(0.0001, 2, 20),
 		}, []string{"type"})
-	ProposeWaitTimeDurationHistogram       = RaftCommandDurationSeconds.WithLabelValues("propose_wait_time")
-	AppendEntryWaitTimeDurationHistogram   = RaftCommandDurationSeconds.WithLabelValues("append_entry_wait_time")
-	CommitWaitTimeDurationHistogram        = RaftCommandDurationSeconds.WithLabelValues("commit_wait_time")
-	ScheduleApplyWaitTimeDurationHistogram = RaftCommandDurationSeconds.WithLabelValues("schedule_apply_wait_time")
-	ReceiveApplyWaitTimeDurationHistogram  = RaftCommandDurationSeconds.WithLabelValues("receive_apply_wait_time")
-	ApplyCommandWaitTimeDurationHistogram  = RaftCommandDurationSeconds.WithLabelValues("apply_command_wait_time")
-	CallbackWaitTimeDurationHistogram      = RaftCommandDurationSeconds.WithLabelValues("callback_wait_time")
-	PeerRaftProcessDuration                = prometheus.NewHistogramVec(
+	SendToProposeWaitTimeDurationHistogram    = RaftCommandDurationSeconds.WithLabelValues("send_to_propose")
+	ProposeToCommitWaitTimeDurationHistogram  = RaftCommandDurationSeconds.WithLabelValues("propose_to_commit")
+	CommitToCallbackWaitTimeDurationHistogram = RaftCommandDurationSeconds.WithLabelValues("commit_to_callback")
+	PeerRaftProcessDuration                   = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: namespace,
 			Subsystem: "raftstore",

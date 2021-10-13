@@ -243,15 +243,6 @@ type DestroyPeerJob struct {
 	Peer        *metapb.Peer
 }
 
-type commandTrace struct {
-	proposingTime       time.Time
-	sendingTime         time.Time
-	committedTime       time.Time
-	schedulingApplyTime time.Time
-	receivingApplyTime  time.Time
-	appliedTime         time.Time
-}
-
 type Peer struct {
 	Meta           *metapb.Peer
 	regionId       uint64
@@ -261,7 +252,7 @@ type Peer struct {
 	applyProposals []proposal
 	pendingReads   *ReadIndexQueue
 
-	commandTraces map[uint64]*commandTrace
+	callbacks map[uint64]*Callback
 
 	peerCache map[uint64]*metapb.Peer
 
@@ -346,7 +337,7 @@ func NewPeer(storeId uint64, cfg *Config, engines *Engines, region *metapb.Regio
 		peerStorage:           ps,
 		proposals:             new(ProposalQueue),
 		pendingReads:          new(ReadIndexQueue),
-		commandTraces:         make(map[uint64]*commandTrace),
+		callbacks:             make(map[uint64]*Callback),
 		peerCache:             make(map[uint64]*metapb.Peer),
 		PeerHeartbeats:        make(map[uint64]time.Time),
 		PeersStartPendingTime: make(map[uint64]time.Time),
@@ -833,11 +824,10 @@ func (p *Peer) NewRaftReady(trans *RaftClient, ctx *RaftContext, observer PeerEv
 	for i := 0; i < len(ready.CommittedEntries); i++ {
 		e := ready.CommittedEntries[i]
 		if p.IsLeader() {
-			if t, ok := p.commandTraces[e.Index]; ok {
+			if t, ok := p.callbacks[e.Index]; ok {
 				t.committedTime = now
-				if !t.sendingTime.IsZero() {
-					metrics.CommitWaitTimeDurationHistogram.Observe(now.Sub(t.sendingTime).Seconds())
-				}
+				metrics.ProposeToCommitWaitTimeDurationHistogram.Observe(now.Sub(t.proposingTime).Seconds())
+				delete(p.callbacks, e.Index)
 			}
 		}
 		if e.EntryType != eraftpb.EntryType_EntryNormal {
@@ -858,8 +848,8 @@ func (p *Peer) NewRaftReady(trans *RaftClient, ctx *RaftContext, observer PeerEv
 			log.S().Warnf("%v leader send message err: %v", p.Tag, err)
 		}
 		ready.Messages = ready.Messages[:0]
-	} else if len(p.commandTraces) > 0 {
-		p.commandTraces = make(map[uint64]*commandTrace)
+	} else if len(p.callbacks) > 0 {
+		p.callbacks = make(map[uint64]*Callback)
 	}
 
 	invokeCtx, err := p.Store().SaveReadyState(ctx.raftWB, &ready)
@@ -1074,17 +1064,6 @@ func (p *Peer) sendRaftMessage(msg *eraftpb.Message, trans *RaftClient) error {
 		sendMsg.StartKey = append([]byte{}, p.Region().StartKey...)
 		sendMsg.EndKey = append([]byte{}, p.Region().EndKey...)
 	}
-	if p.IsLeader() {
-		now := time.Now()
-		for _, entry := range msg.Entries {
-			if t, ok := p.commandTraces[entry.Index]; ok && t.sendingTime.IsZero() {
-				t.sendingTime = now
-				if !t.proposingTime.IsZero() {
-					metrics.AppendEntryWaitTimeDurationHistogram.Observe(now.Sub(t.proposingTime).Seconds())
-				}
-			}
-		}
-	}
 	sendMsg.Message = msg
 	trans.Send(sendMsg)
 	return nil
@@ -1113,14 +1092,7 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *engine.Engine, applyMsgs *applyM
 			// have no effect.
 			p.proposals.Clear()
 		}
-		var traces []*commandTrace
 		for _, entry := range committedEntries {
-			if p.IsLeader() {
-				if t, ok := p.commandTraces[entry.Index]; ok {
-					traces = append(traces, t)
-					delete(p.commandTraces, entry.Index)
-				}
-			}
 			// raft meta is very small, can be ignored.
 			if leaseToBeUpdated {
 				proposeTime := p.findProposeTime(entry.Index, entry.Term)
@@ -1171,9 +1143,6 @@ func (p *Peer) HandleRaftReadyApplyMessages(kv *engine.Engine, applyMsgs *applyM
 				p.lastUrgentProposalIdx = math.MaxUint64
 			}
 			apply.entries = committedEntries
-			if len(traces) == l {
-				apply.traces = traces
-			}
 		}
 		if l > 0 || softState != nil {
 			applyMsgs.appendMsg(p.regionId, newApplyMsg(apply))
@@ -1344,13 +1313,16 @@ func (p *Peer) PostPropose(meta *ProposalMeta, isConfChange bool, cb *Callback) 
 	// Try to renew leader lease on every consistent read/write request.
 	t := time.Now()
 	meta.RenewLeaseTime = &t
+	if cb != nil {
+		cb.proposingTime = t
+		p.callbacks[meta.Index] = cb
+	}
 	proposal := proposal{
 		isConfChange: isConfChange,
 		index:        meta.Index,
 		term:         meta.Term,
 		cb:           cb,
 	}
-	p.commandTraces[meta.Index] = &commandTrace{proposingTime: t}
 	p.applyProposals = append(p.applyProposals, proposal)
 	p.proposals.Push(meta)
 }

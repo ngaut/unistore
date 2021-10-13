@@ -83,7 +83,6 @@ type regionTask struct {
 	splitKeys [][]byte
 
 	startTime time.Time
-	trace     *commandTrace
 }
 
 type splitCheckTask struct {
@@ -548,11 +547,6 @@ func (r *regionApplyTaskHandler) handle(t task) {
 		}
 	case taskTypeRegionApplyChangeSet:
 		err := r.handleApplyChangeSet(regionTask)
-		trace := regionTask.trace
-		if trace != nil {
-			trace.appliedTime = time.Now()
-			metrics.ApplyCommandWaitTimeDurationHistogram.Observe(regionTask.trace.appliedTime.Sub(regionTask.trace.receivingApplyTime).Seconds())
-		}
 		_ = r.router.send(regionTask.region.Id, NewPeerMsg(MsgTypeApplyChangeSetResult, regionTask.region.Id, &MsgApplyChangeSetResult{
 			change: regionTask.change,
 			err:    err,

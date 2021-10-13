@@ -23,7 +23,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/ngaut/unistore/metrics"
 	"github.com/ngaut/unistore/raft"
 	"github.com/ngaut/unistore/tikv/mvcc"
 	"github.com/ngaut/unistore/tikv/raftstore/raftlog"
@@ -94,7 +93,6 @@ type apply struct {
 	regionId  uint64
 	term      uint64
 	entries   []*eraftpb.Entry
-	traces    []*commandTrace
 	softState *raft.SoftState
 }
 
@@ -378,9 +376,6 @@ type applier struct {
 	lockCache map[string][]byte
 	snap      *engine.SnapAccess
 
-	traces     []*commandTrace
-	traceIndex int
-
 	pauseState *apply
 
 	recoverSplit bool
@@ -406,16 +401,11 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 	if len(committedEntries) == 0 {
 		return
 	}
-	if len(a.traces) != len(committedEntries) {
-		a.traces = nil
-	}
-	traces := a.traces
 	defer func() {
 		if a.snap != nil {
 			a.snap.Discard()
 			a.snap = nil
 		}
-		a.traces = nil
 	}()
 	if a.pauseState != nil {
 		a.pauseState.entries = append(a.pauseState.entries, committedEntries...)
@@ -441,13 +431,6 @@ func (a *applier) handleRaftCommittedEntries(aCtx *applyContext, committedEntrie
 				continue
 			}
 			panic(fmt.Sprintf("%s expect index %d, but got %d", a.tag, expectedIndex, entry.Index))
-		}
-		if len(traces) > 0 {
-			now := time.Now()
-			t := traces[i]
-			a.traceIndex = i
-			t.receivingApplyTime = now
-			metrics.ReceiveApplyWaitTimeDurationHistogram.Observe(now.Sub(t.schedulingApplyTime).Seconds())
 		}
 		var res applyResult
 		switch entry.EntryType {
@@ -593,10 +576,6 @@ func (a *applier) processRaftCmd(aCtx *applyContext, index, term uint64, rlog ra
 	BindRespTerm(resp, term)
 	cmdCB := a.findCallback(index, term, isConfChange)
 	cmdCB.Done(resp)
-	if len(a.traces) > 0 {
-		t := a.traces[a.traceIndex]
-		metrics.CallbackWaitTimeDurationHistogram.Observe(time.Since(t.appliedTime).Seconds())
-	}
 	return result
 }
 
@@ -739,11 +718,6 @@ func (a *applier) execAdminCmd(aCtx *applyContext, req *raft_cmdpb.RaftCmdReques
 	if err != nil {
 		return
 	}
-	if len(a.traces) > 0 {
-		trace := a.traces[a.traceIndex]
-		trace.appliedTime = time.Now()
-		metrics.ApplyCommandWaitTimeDurationHistogram.Observe(trace.appliedTime.Sub(trace.receivingApplyTime).Seconds())
-	}
 	adminResp.CmdType = cmdType
 	resp = newCmdRespForReq(req)
 	resp.AdminResponse = adminResp
@@ -777,11 +751,6 @@ func (a *applier) execWriteCmd(aCtx *applyContext, rlog raftlog.RaftLog) (
 func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) int {
 	wb := aCtx.wb.getEngineWriteBatch(cl.RegionID())
 	var cnt int
-	var isRegionTask bool
-	var trace *commandTrace
-	if len(a.traces) > 0 {
-		trace = a.traces[a.traceIndex]
-	}
 	switch cl.Type() {
 	case raftlog.TypePrewrite:
 		cl.IterateLock(func(key, val []byte) {
@@ -835,13 +804,12 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		aCtx.regionScheduler <- task{
 			tp: taskTypeRegionApplyChangeSet,
 			data: &regionTask{
-				region: a.region,
-				peer:   a.peer,
-				change: change,
-				trace:  trace,
+				region:    a.region,
+				peer:      a.peer,
+				change:    change,
+				startTime: time.Now(),
 			},
 		}
-		isRegionTask = true
 	case raftlog.TypeNextMemTableSize:
 		cs, err := cl.GetShardChangeSet()
 		y.Assert(err == nil)
@@ -849,10 +817,6 @@ func (a *applier) execCustomLog(aCtx *applyContext, cl *raftlog.CustomRaftLog) i
 		bin := make([]byte, 8)
 		binary.LittleEndian.PutUint64(bin, uint64(cs.NextMemTableSize))
 		SetMaxMemTableSize(wb, bin)
-	}
-	if !isRegionTask && trace != nil {
-		trace.appliedTime = time.Now()
-		metrics.ApplyCommandWaitTimeDurationHistogram.Observe(trace.appliedTime.Sub(trace.receivingApplyTime).Seconds())
 	}
 	applyState := aCtx.execCtx.applyState
 	applyState.appliedIndex = aCtx.execCtx.index
@@ -1276,7 +1240,6 @@ func (a *applier) handleApply(aCtx *applyContext, apply *apply) {
 	}
 	a.term = apply.term
 	if len(apply.entries) > 0 {
-		a.traces = apply.traces
 		a.handleRaftCommittedEntries(aCtx, apply.entries)
 	}
 	if apply.softState != nil {
