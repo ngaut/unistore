@@ -13,6 +13,8 @@
 
 package scheduler
 
+import "time"
+
 type task struct {
 	taskFunc func() error
 	done     chan error
@@ -37,9 +39,9 @@ type Scheduler struct {
 	workers chan struct{}
 }
 
-func NewScheduler(numWorkers int) *Scheduler {
+func NewScheduler(numWorkers, capacity int) *Scheduler {
 	return &Scheduler{
-		tasks:   make(chan *task),
+		tasks:   make(chan *task, capacity),
 		workers: make(chan struct{}, numWorkers),
 	}
 }
@@ -66,17 +68,38 @@ func (s *Scheduler) BatchSchedule(b *BatchTasks) error {
 
 func (s *Scheduler) scheduleBatchTask(t *task, count *int) error {
 	for {
-		select {
-		case err := <-t.done:
-			*count++
-			if err != nil {
-				return err
+		if cap(s.tasks) > 0 {
+			select {
+			case s.workers <- struct{}{}:
+				go s.worker(t)
+				return nil
+			default:
+				select {
+				case err := <-t.done:
+					*count++
+					if err != nil {
+						return err
+					}
+				case s.tasks <- t:
+					if len(s.workers) == 0 {
+						s.Schedule(func() {})
+					}
+					return nil
+				}
 			}
-		case s.tasks <- t:
-			return nil
-		case s.workers <- struct{}{}:
-			go s.worker(t)
-			return nil
+		} else {
+			select {
+			case err := <-t.done:
+				*count++
+				if err != nil {
+					return err
+				}
+			case s.tasks <- t:
+				return nil
+			case s.workers <- struct{}{}:
+				go s.worker(t)
+				return nil
+			}
 		}
 	}
 }
@@ -88,24 +111,63 @@ func (s *Scheduler) Schedule(f func()) {
 			return nil
 		},
 	}
-	select {
-	case s.tasks <- t:
-	case s.workers <- struct{}{}:
-		go s.worker(t)
+	if cap(s.tasks) > 0 {
+		select {
+		case s.workers <- struct{}{}:
+			go s.worker(t)
+		default:
+			select {
+			case s.tasks <- t:
+				if len(s.workers) == 0 {
+					s.Schedule(func() {})
+				}
+			}
+		}
+	} else {
+		select {
+		case s.tasks <- t:
+		case s.workers <- struct{}{}:
+			go s.worker(t)
+		}
 	}
 }
 
 func (s *Scheduler) worker(t *task) {
-	for {
-		err := t.taskFunc()
-		if t.done != nil {
-			t.done <- err
+	if cap(s.tasks) > 0 {
+		var timer *time.Timer
+		for {
+			if timer != nil {
+				timer.Stop()
+				timer = nil
+			}
+			err := t.taskFunc()
+			if t.done != nil {
+				t.done <- err
+			}
+			select {
+			case t = <-s.tasks:
+			default:
+				timer = time.NewTimer(time.Second)
+				select {
+				case t = <-s.tasks:
+				case <-timer.C:
+					<-s.workers
+					return
+				}
+			}
 		}
-		select {
-		case t = <-s.tasks:
-		default:
-			<-s.workers
-			return
+	} else {
+		for {
+			err := t.taskFunc()
+			if t.done != nil {
+				t.done <- err
+			}
+			select {
+			case t = <-s.tasks:
+			default:
+				<-s.workers
+				return
+			}
 		}
 	}
 }

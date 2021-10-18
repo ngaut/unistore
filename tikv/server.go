@@ -44,7 +44,6 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-	"unicode"
 )
 
 var _ tikvpb.TikvServer = new(Server)
@@ -206,20 +205,16 @@ type requestCtx struct {
 	err              error
 	buf              []byte
 	reader           *enginereader.Reader
-	method           string
-	startTime        time.Time
 	rpcCtx           *kvrpcpb.Context
 	asyncMinCommitTS uint64
 	onePCCommitTS    uint64
 	shard            *engine.Shard
 }
 
-func newRequestCtx(svr *Server, ctx *kvrpcpb.Context, method string) (*requestCtx, error) {
+func newRequestCtx(svr *Server, ctx *kvrpcpb.Context) (*requestCtx, error) {
 	req := &requestCtx{
-		svr:       svr,
-		method:    method,
-		startTime: time.Now(),
-		rpcCtx:    ctx,
+		svr:    svr,
+		rpcCtx: ctx,
 	}
 	req.regCtx, req.regErr = svr.regionManager.GetRegionFromCtx(ctx)
 	if req.regErr != nil {
@@ -266,15 +261,10 @@ func (req *requestCtx) finish() {
 	if req.reader != nil {
 		req.reader.Close()
 	}
-	if req.regErr != nil || req.err != nil {
-		metrics.GrpcMsgFailTotal.WithLabelValues(metricsName(req.method)).Inc()
-	} else {
-		metrics.GrpcMsgDurationSeconds.WithLabelValues(metricsName(req.method)).Observe(float64(time.Now().Sub(req.startTime)) / float64(time.Second))
-	}
 }
 
 func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb.GetResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvGet")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.GetResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -302,7 +292,7 @@ func (svr *Server) KvGet(ctx context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb
 }
 
 func (svr *Server) KvScan(ctx context.Context, req *kvrpcpb.ScanRequest) (*kvrpcpb.ScanResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvScan")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.ScanResponse{Pairs: []*kvrpcpb.KvPair{{Error: convertToKeyError(err)}}}, nil
 	}
@@ -317,7 +307,7 @@ func (svr *Server) KvScan(ctx context.Context, req *kvrpcpb.ScanRequest) (*kvrpc
 }
 
 func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.PessimisticLockRequest) (*kvrpcpb.PessimisticLockResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "PessimisticLock")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.PessimisticLockResponse{Errors: []*kvrpcpb.KeyError{convertToKeyError(err)}}, nil
 	}
@@ -378,7 +368,7 @@ func (svr *Server) KvPessimisticLock(ctx context.Context, req *kvrpcpb.Pessimist
 }
 
 func (svr *Server) KVPessimisticRollback(ctx context.Context, req *kvrpcpb.PessimisticRollbackRequest) (*kvrpcpb.PessimisticRollbackResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "PessimisticRollback")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.PessimisticRollbackResponse{Errors: []*kvrpcpb.KeyError{convertToKeyError(err)}}, nil
 	}
@@ -394,7 +384,7 @@ func (svr *Server) KVPessimisticRollback(ctx context.Context, req *kvrpcpb.Pessi
 }
 
 func (svr *Server) KvTxnHeartBeat(ctx context.Context, req *kvrpcpb.TxnHeartBeatRequest) (*kvrpcpb.TxnHeartBeatResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "TxnHeartBeat")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.TxnHeartBeatResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -410,7 +400,7 @@ func (svr *Server) KvTxnHeartBeat(ctx context.Context, req *kvrpcpb.TxnHeartBeat
 }
 
 func (svr *Server) KvCheckTxnStatus(ctx context.Context, req *kvrpcpb.CheckTxnStatusRequest) (*kvrpcpb.CheckTxnStatusResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvCheckTxnStatus")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.CheckTxnStatusResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -436,7 +426,7 @@ func (svr *Server) KvCheckTxnStatus(ctx context.Context, req *kvrpcpb.CheckTxnSt
 }
 
 func (svr *Server) KvCheckSecondaryLocks(ctx context.Context, req *kvrpcpb.CheckSecondaryLocksRequest) (*kvrpcpb.CheckSecondaryLocksResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvCheckSecondaryLocks")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.CheckSecondaryLocksResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -457,7 +447,7 @@ func (svr *Server) KvCheckSecondaryLocks(ctx context.Context, req *kvrpcpb.Check
 }
 
 func (svr *Server) KvPrewrite(ctx context.Context, req *kvrpcpb.PrewriteRequest) (*kvrpcpb.PrewriteResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvPrewrite")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.PrewriteResponse{Errors: []*kvrpcpb.KeyError{convertToKeyError(err)}}, nil
 	}
@@ -479,7 +469,7 @@ func (svr *Server) KvPrewrite(ctx context.Context, req *kvrpcpb.PrewriteRequest)
 }
 
 func (svr *Server) KvCommit(ctx context.Context, req *kvrpcpb.CommitRequest) (*kvrpcpb.CommitResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvCommit")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.CommitResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -508,7 +498,7 @@ func (svr *Server) KvImport(context.Context, *kvrpcpb.ImportRequest) (*kvrpcpb.I
 }
 
 func (svr *Server) KvCleanup(ctx context.Context, req *kvrpcpb.CleanupRequest) (*kvrpcpb.CleanupResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvCleanup")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.CleanupResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -529,7 +519,7 @@ func (svr *Server) KvCleanup(ctx context.Context, req *kvrpcpb.CleanupRequest) (
 }
 
 func (svr *Server) KvBatchGet(ctx context.Context, req *kvrpcpb.BatchGetRequest) (*kvrpcpb.BatchGetResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvBatchGet")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.BatchGetResponse{Pairs: []*kvrpcpb.KvPair{{Error: convertToKeyError(err)}}}, nil
 	}
@@ -544,7 +534,7 @@ func (svr *Server) KvBatchGet(ctx context.Context, req *kvrpcpb.BatchGetRequest)
 }
 
 func (svr *Server) KvBatchRollback(ctx context.Context, req *kvrpcpb.BatchRollbackRequest) (*kvrpcpb.BatchRollbackResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvBatchRollback")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.BatchRollbackResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -560,7 +550,7 @@ func (svr *Server) KvBatchRollback(ctx context.Context, req *kvrpcpb.BatchRollba
 }
 
 func (svr *Server) KvScanLock(ctx context.Context, req *kvrpcpb.ScanLockRequest) (*kvrpcpb.ScanLockResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvScanLock")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.ScanLockResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -575,7 +565,7 @@ func (svr *Server) KvScanLock(ctx context.Context, req *kvrpcpb.ScanLockRequest)
 }
 
 func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRequest) (*kvrpcpb.ResolveLockResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvResolveLock")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.ResolveLockResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -603,7 +593,7 @@ func (svr *Server) KvResolveLock(ctx context.Context, req *kvrpcpb.ResolveLockRe
 }
 
 func (svr *Server) KvGC(ctx context.Context, req *kvrpcpb.GCRequest) (*kvrpcpb.GCResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvGC")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.GCResponse{Error: convertToKeyError(err)}, nil
 	}
@@ -613,7 +603,7 @@ func (svr *Server) KvGC(ctx context.Context, req *kvrpcpb.GCRequest) (*kvrpcpb.G
 }
 
 func (svr *Server) KvDeleteRange(ctx context.Context, req *kvrpcpb.DeleteRangeRequest) (*kvrpcpb.DeleteRangeResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "KvDeleteRange")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.DeleteRangeResponse{Error: convertToKeyError(err).String()}, nil
 	}
@@ -668,7 +658,7 @@ func (svr *Server) RawDeleteRange(context.Context, *kvrpcpb.RawDeleteRangeReques
 
 // SQL push down commands.
 func (svr *Server) Coprocessor(ctx context.Context, req *coprocessor.Request) (*coprocessor.Response, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "Coprocessor")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &coprocessor.Response{OtherError: convertToKeyError(err).String()}, nil
 	}
@@ -715,7 +705,7 @@ func (svr *Server) BatchRaft(stream tikvpb.Tikv_BatchRaftServer) error {
 
 // Region commands.
 func (svr *Server) SplitRegion(ctx context.Context, req *kvrpcpb.SplitRegionRequest) (*kvrpcpb.SplitRegionResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "SplitRegion")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.SplitRegionResponse{RegionError: &errorpb.Error{Message: err.Error()}}, nil
 	}
@@ -733,7 +723,7 @@ func (svr *Server) ReadIndex(context.Context, *kvrpcpb.ReadIndexRequest) (*kvrpc
 
 // transaction debugger commands.
 func (svr *Server) MvccGetByKey(ctx context.Context, req *kvrpcpb.MvccGetByKeyRequest) (*kvrpcpb.MvccGetByKeyResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "MvccGetByKey")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.MvccGetByKeyResponse{Error: err.Error()}, nil
 	}
@@ -752,7 +742,7 @@ func (svr *Server) MvccGetByKey(ctx context.Context, req *kvrpcpb.MvccGetByKeyRe
 }
 
 func (svr *Server) MvccGetByStartTs(ctx context.Context, req *kvrpcpb.MvccGetByStartTsRequest) (*kvrpcpb.MvccGetByStartTsResponse, error) {
-	reqCtx, err := newRequestCtx(svr, req.Context, "MvccGetByStartTs")
+	reqCtx, err := newRequestCtx(svr, req.Context)
 	if err != nil {
 		return &kvrpcpb.MvccGetByStartTsResponse{Error: err.Error()}, nil
 	}
@@ -951,19 +941,4 @@ func extractRegionError(err error) *errorpb.Error {
 		return raftError.RequestErr
 	}
 	return nil
-}
-
-func metricsName(name string) string {
-	buffer := new(bytes.Buffer)
-	for i, r := range name {
-		if unicode.IsUpper(r) {
-			if i != 0 {
-				buffer.WriteByte('_')
-			}
-			buffer.WriteRune(unicode.ToLower(r))
-		} else {
-			buffer.WriteRune(r)
-		}
-	}
-	return buffer.String()
 }

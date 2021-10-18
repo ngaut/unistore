@@ -199,19 +199,83 @@ var (
 			Help:      "Bucketed histogram of grpc server messages",
 			Buckets:   prometheus.ExponentialBuckets(0.0005, 2, 20),
 		}, []string{"type"})
-	GrpcMsgFailTotal = prometheus.NewCounterVec(
+	CoprocessorDurationSeconds           = GrpcMsgDurationSeconds.WithLabelValues("coprocessor")
+	KvBatchGetDurationSeconds            = GrpcMsgDurationSeconds.WithLabelValues("kv_batch_get")
+	KvBatchRollbackDurationSeconds       = GrpcMsgDurationSeconds.WithLabelValues("kv_batch_rollback")
+	KvCheckSecondaryLocksDurationSeconds = GrpcMsgDurationSeconds.WithLabelValues("kv_check_secondary_locks")
+	KvCheckTxnStatusDurationSeconds      = GrpcMsgDurationSeconds.WithLabelValues("kv_check_txn_status")
+	KvCleanupDurationSeconds             = GrpcMsgDurationSeconds.WithLabelValues("kv_cleanup")
+	KvCommitDurationSeconds              = GrpcMsgDurationSeconds.WithLabelValues("kv_commit")
+	KvDeleteRangeDurationSeconds         = GrpcMsgDurationSeconds.WithLabelValues("kv_delete_range")
+	KvGCDurationSeconds                  = GrpcMsgDurationSeconds.WithLabelValues("kv_gc")
+	KvGetDurationSeconds                 = GrpcMsgDurationSeconds.WithLabelValues("kv_get")
+	PessimisticLockDurationSeconds       = GrpcMsgDurationSeconds.WithLabelValues("pessimistic_lock")
+	PessimisticRollbackDurationSeconds   = GrpcMsgDurationSeconds.WithLabelValues("pessimistic_rollback")
+	KvPrewriteDurationSeconds            = GrpcMsgDurationSeconds.WithLabelValues("kv_prewrite")
+	KvResolveLockDurationSeconds         = GrpcMsgDurationSeconds.WithLabelValues("kv_resolve_lock")
+	KvScanDurationSeconds                = GrpcMsgDurationSeconds.WithLabelValues("kv_scan")
+	KvScanLockDurationSeconds            = GrpcMsgDurationSeconds.WithLabelValues("kv_scan_lock")
+	TxnHeartBeatDurationSeconds          = GrpcMsgDurationSeconds.WithLabelValues("txn_heartbeat")
+	MvccGetByKeyDurationSeconds          = GrpcMsgDurationSeconds.WithLabelValues("mvcc_get_by_key")
+	MvccGetByStartTsDurationSeconds      = GrpcMsgDurationSeconds.WithLabelValues("mvcc_get_by_start_ts")
+	SplitRegionDurationSeconds           = GrpcMsgDurationSeconds.WithLabelValues("split_region")
+	RawGetDurationSeconds                = GrpcMsgDurationSeconds.WithLabelValues("raw_get")
+	RawBatchGetDurationSeconds           = GrpcMsgDurationSeconds.WithLabelValues("raw_batch_get")
+	RawPutDurationSeconds                = GrpcMsgDurationSeconds.WithLabelValues("raw_put")
+	RawBatchPutDurationSeconds           = GrpcMsgDurationSeconds.WithLabelValues("raw_batch_put")
+	RawDeleteDurationSeconds             = GrpcMsgDurationSeconds.WithLabelValues("raw_delete")
+	RawBatchDeleteDurationSeconds        = GrpcMsgDurationSeconds.WithLabelValues("raw_batch_delete")
+	RawScanDurationSeconds               = GrpcMsgDurationSeconds.WithLabelValues("raw_scan")
+	RawDeleteRangeDurationSeconds        = GrpcMsgDurationSeconds.WithLabelValues("raw_delete_range")
+	GrpcMsgFailTotal                     = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
 			Subsystem: "grpc",
 			Name:      "msg_fail_total",
 			Help:      "Total number of handle grpc message failure",
 		}, []string{"type"})
-	ServerGrpcReqBatchSize = prometheus.NewHistogram(
+	CoprocessorFailTotal           = GrpcMsgFailTotal.WithLabelValues("coprocessor")
+	KvBatchGetFailTotal            = GrpcMsgFailTotal.WithLabelValues("kv_batch_get")
+	KvBatchRollbackFailTotal       = GrpcMsgFailTotal.WithLabelValues("kv_batch_rollback")
+	KvCheckSecondaryLocksFailTotal = GrpcMsgFailTotal.WithLabelValues("kv_check_secondary_locks")
+	KvCheckTxnStatusFailTotal      = GrpcMsgFailTotal.WithLabelValues("kv_check_txn_status")
+	KvCleanupFailTotal             = GrpcMsgFailTotal.WithLabelValues("kv_cleanup")
+	KvCommitFailTotal              = GrpcMsgFailTotal.WithLabelValues("kv_commit")
+	KvDeleteRangeFailTotal         = GrpcMsgFailTotal.WithLabelValues("kv_delete_range")
+	KvGCFailTotal                  = GrpcMsgFailTotal.WithLabelValues("kv_gc")
+	KvGetFailTotal                 = GrpcMsgFailTotal.WithLabelValues("kv_get")
+	PessimisticLockFailTotal       = GrpcMsgFailTotal.WithLabelValues("pessimistic_lock")
+	PessimisticRollbackFailTotal   = GrpcMsgFailTotal.WithLabelValues("pessimistic_rollback")
+	KvPrewriteFailTotal            = GrpcMsgFailTotal.WithLabelValues("kv_prewrite")
+	KvResolveLockFailTotal         = GrpcMsgFailTotal.WithLabelValues("kv_resolve_lock")
+	KvScanFailTotal                = GrpcMsgFailTotal.WithLabelValues("kv_scan")
+	KvScanLockFailTotal            = GrpcMsgFailTotal.WithLabelValues("kv_scan_lock")
+	TxnHeartBeatFailTotal          = GrpcMsgFailTotal.WithLabelValues("txn_heartbeat")
+	MvccGetByKeyFailTotal          = GrpcMsgFailTotal.WithLabelValues("mvcc_get_by_key")
+	MvccGetByStartTsFailTotal      = GrpcMsgFailTotal.WithLabelValues("mvcc_get_by_start_ts")
+	SplitRegionFailTotal           = GrpcMsgFailTotal.WithLabelValues("split_region")
+	RawGetFailTotal                = GrpcMsgFailTotal.WithLabelValues("raw_get")
+	RawBatchGetFailTotal           = GrpcMsgFailTotal.WithLabelValues("raw_batch_get")
+	RawPutFailTotal                = GrpcMsgFailTotal.WithLabelValues("raw_put")
+	RawBatchPutFailTotal           = GrpcMsgFailTotal.WithLabelValues("raw_batch_put")
+	RawDeleteFailTotal             = GrpcMsgFailTotal.WithLabelValues("raw_delete")
+	RawBatchDeleteFailTotal        = GrpcMsgFailTotal.WithLabelValues("raw_batch_delete")
+	RawScanFailTotal               = GrpcMsgFailTotal.WithLabelValues("raw_scan")
+	RawDeleteRangeFailTotal        = GrpcMsgFailTotal.WithLabelValues("raw_delete_range")
+	ServerGrpcReqBatchSize         = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
 			Namespace: namespace,
 			Subsystem: "server",
 			Name:      "grpc_req_batch_size",
 			Help:      "grpc batch size of gRPC requests",
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 15),
+		})
+	ServerGrpcLightweightReqBatchSize = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: "server",
+			Name:      "grpc_lightweight_req_batch_size",
+			Help:      "grpc batch size of gRPC lightweight requests",
 			Buckets:   prometheus.ExponentialBuckets(1, 2, 15),
 		})
 	ServerGrpcRespBatchSize = prometheus.NewHistogram(
@@ -335,6 +399,7 @@ func init() {
 	prometheus.MustRegister(GrpcMsgFailTotal)
 	prometheus.MustRegister(ServerGrpcReqBatchSize)
 	prometheus.MustRegister(ServerGrpcRespBatchSize)
+	prometheus.MustRegister(ServerGrpcLightweightReqBatchSize)
 	prometheus.MustRegister(ServerRaftMessageBatchSize)
 	prometheus.MustRegister(RegionWrittenKeys)
 	prometheus.MustRegister(RegionWrittenBytes)

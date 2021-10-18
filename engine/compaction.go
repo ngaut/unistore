@@ -248,7 +248,7 @@ func (en *Engine) getCFMaxLevel(cf int) int {
 func (en *Engine) runCompactionLoop(c *y.Closer) {
 	defer c.Done()
 	var priorities []CompactionPriority
-	s := scheduler.NewScheduler(en.opt.NumCompactors)
+	s := scheduler.NewScheduler(en.opt.NumCompactors, 0)
 	wg := new(sync.WaitGroup)
 	for {
 		priorities = en.GetCompactionPriorities(priorities)

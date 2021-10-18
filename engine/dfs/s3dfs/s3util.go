@@ -61,7 +61,7 @@ func NewS3Client(instanceID uint32, opts config.S3Options) (*S3Client, error) {
 	}
 	s3c := &S3Client{
 		S3Options:  opts,
-		Scheduler:  scheduler.NewScheduler(opts.Concurrency),
+		Scheduler:  scheduler.NewScheduler(opts.Concurrency, 0),
 		instanceID: instanceID,
 	}
 	tr := &http.Transport{

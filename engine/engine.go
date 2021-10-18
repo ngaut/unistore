@@ -108,7 +108,7 @@ func OpenEngine(fs dfs.DFS, opt Options) (en *Engine, err error) {
 		blkCache:           blkCache,
 		flushCh:            make(chan *flushTask, opt.NumMemtables),
 		flushResultCh:      make(chan *flushResultTask, opt.NumMemtables),
-		resourceScheduler:  scheduler.NewScheduler(opt.PreparationConcurrency),
+		resourceScheduler:  scheduler.NewScheduler(opt.PreparationConcurrency, 0),
 		metaChangeListener: opt.MetaChangeListener,
 	}
 	en.idAlloc = opt.IDAllocator
@@ -378,7 +378,7 @@ func formatBool(b bool) string {
 }
 
 func (en *Engine) loadShards(shardMetas map[uint64]*ShardMeta) error {
-	sche := scheduler.NewScheduler(en.opt.RecoveryConcurrency)
+	sche := scheduler.NewScheduler(en.opt.RecoveryConcurrency, 0)
 	var parents = make(map[uint64]struct{})
 	parentsBT := scheduler.NewBatchTasks()
 	bt := scheduler.NewBatchTasks()

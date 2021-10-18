@@ -208,8 +208,6 @@ func (rw *raftWorker) receiveMsgs(closeCh <-chan struct{}) (quit bool) {
 		rw.getPeerInbox(msg.RegionID).append(msg)
 	}
 	metrics.RaftBatchSize.Observe(float64(len(rw.inboxes)))
-	metrics.ServerGrpcReqBatchSize.Observe(float64(reqCount))
-	metrics.ServerGrpcRespBatchSize.Observe(float64(respCount))
 	metrics.ServerRaftMessageBatchSize.Observe(float64(raftMsgCount))
 	metrics.ReceiveMessageDurationHistogram.Observe(time.Since(receivingTime).Seconds())
 	return false
