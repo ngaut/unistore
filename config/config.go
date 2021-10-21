@@ -29,15 +29,16 @@ type Config struct {
 }
 
 type Server struct {
-	PDAddr      string            `toml:"pd-addr"`
-	StoreAddr   string            `toml:"store-addr"`
-	StatusAddr  string            `toml:"status-addr"`
-	LogLevel    string            `toml:"log-level"`
-	RegionSize  int64             `toml:"region-size"` // Average region size.
-	MaxProcs    int               `toml:"max-procs"`   // Max CPU cores to use, set 0 to use all CPU cores in the machine.
-	GCPercent   int               `toml:"gc-percent"`  // GC percent
-	LogfilePath string            `toml:"log-file"`    // Log file path for unistore server
-	Labels      map[string]string `toml:"labels"`
+	PDAddr                  string            `toml:"pd-addr"`
+	StoreAddr               string            `toml:"store-addr"`
+	StatusAddr              string            `toml:"status-addr"`
+	LogLevel                string            `toml:"log-level"`
+	RegionSize              int64             `toml:"region-size"` // Average region size.
+	MaxProcs                int               `toml:"max-procs"`   // Max CPU cores to use, set 0 to use all CPU cores in the machine.
+	GCPercent               int               `toml:"gc-percent"`  // GC percent
+	LogfilePath             string            `toml:"log-file"`    // Log file path for unistore server
+	Labels                  map[string]string `toml:"labels"`
+	BatchWorkerCountPerConn int               `toml:"batch-worker-count-per-conn"`
 }
 
 type RaftStore struct {
@@ -96,14 +97,15 @@ const MB = 1024 * 1024
 
 var DefaultConf = Config{
 	Server: Server{
-		PDAddr:      "127.0.0.1:2379",
-		StoreAddr:   "127.0.0.1:9191",
-		StatusAddr:  "127.0.0.1:9291",
-		RegionSize:  64 * MB,
-		LogLevel:    "info",
-		MaxProcs:    0,
-		GCPercent:   20,
-		LogfilePath: "",
+		PDAddr:                  "127.0.0.1:2379",
+		StoreAddr:               "127.0.0.1:9191",
+		StatusAddr:              "127.0.0.1:9291",
+		RegionSize:              64 * MB,
+		LogLevel:                "info",
+		MaxProcs:                0,
+		GCPercent:               20,
+		LogfilePath:             "",
+		BatchWorkerCountPerConn: 2,
 	},
 	RaftStore: RaftStore{
 		PdHeartbeatTickInterval:  "20s",

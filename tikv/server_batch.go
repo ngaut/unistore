@@ -16,7 +16,10 @@ package tikv
 import (
 	"context"
 	"io"
+	"time"
 
+	"github.com/ngaut/unistore/metrics"
+	"github.com/ngaut/unistore/scheduler"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
@@ -68,8 +71,8 @@ func (h *batchRequestHandler) start() error {
 	return err
 }
 
-func (h *batchRequestHandler) handleRequest(id uint64, req *tikvpb.BatchCommandsRequest_Request) {
-	resp, err := h.svr.handleBatchRequest(h.stream.Context(), req)
+func (h *batchRequestHandler) handleRequest(id uint64, req *tikvpb.BatchCommandsRequest_Request, startTime time.Time) {
+	resp, err := h.svr.handleBatchRequest(h.stream.Context(), req, startTime)
 	if err != nil {
 		log.Warn("handle batch request failed", zap.Error(err))
 		return
@@ -78,6 +81,8 @@ func (h *batchRequestHandler) handleRequest(id uint64, req *tikvpb.BatchCommands
 }
 
 func (h *batchRequestHandler) dispatchBatchRequest(ctx context.Context) error {
+	sched := scheduler.NewPermanentScheduler(h.svr.mvccStore.conf.Server.BatchWorkerCountPerConn, cap(h.respCh))
+	defer sched.Close()
 	for {
 		select {
 		case <-ctx.Done():
@@ -93,10 +98,57 @@ func (h *batchRequestHandler) dispatchBatchRequest(ctx context.Context) error {
 			return err
 		}
 
+		startTime := time.Now()
+		var ids []uint64
+		var reqs []*tikvpb.BatchCommandsRequest_Request
+		var keyCount int
+		var lightweightReqCount int
 		for i, req := range batchReq.GetRequests() {
 			id := batchReq.GetRequestIds()[i]
-			go h.handleRequest(id, req)
+			var lightweight bool
+			switch r := req.GetCmd().(type) {
+			// handle lightweight requests in batches.
+			case *tikvpb.BatchCommandsRequest_Request_BatchGet:
+				lightweight = true
+				keyCount += len(r.BatchGet.Keys)
+			case *tikvpb.BatchCommandsRequest_Request_RawBatchGet:
+				lightweight = true
+				keyCount += len(r.RawBatchGet.Keys)
+			case *tikvpb.BatchCommandsRequest_Request_Get:
+				lightweight = true
+				keyCount++
+			default:
+				go h.handleRequest(id, req, startTime)
+			}
+			if lightweight {
+				ids = append(ids, id)
+				reqs = append(reqs, req)
+				lightweightReqCount++
+			}
+			if keyCount > 10 {
+				idsCopy := make([]uint64, len(ids))
+				copy(idsCopy, ids)
+				reqsCopy := make([]*tikvpb.BatchCommandsRequest_Request, len(reqs))
+				copy(reqsCopy, reqs)
+				sched.Schedule(func() {
+					for i, id := range idsCopy {
+						h.handleRequest(id, reqsCopy[i], startTime)
+					}
+				})
+				ids = ids[:0]
+				reqs = reqs[:0]
+				keyCount = 0
+			}
 		}
+		if keyCount > 0 {
+			sched.Schedule(func() {
+				for i, id := range ids {
+					h.handleRequest(id, reqs[i], startTime)
+				}
+			})
+		}
+		metrics.ServerGrpcLightweightReqBatchSize.Observe(float64(lightweightReqCount))
+		metrics.ServerGrpcReqBatchSize.Observe(float64(len(batchReq.GetRequests())))
 	}
 }
 
@@ -125,154 +177,203 @@ func (h *batchRequestHandler) collectAndSendResponse() error {
 		if err := h.stream.Send(batchResp); err != nil {
 			return err
 		}
+		metrics.ServerGrpcRespBatchSize.Observe(float64(len(batchResp.Responses)))
 	}
 }
 
-func (svr *Server) handleBatchRequest(ctx context.Context, req *tikvpb.BatchCommandsRequest_Request) (*tikvpb.BatchCommandsResponse_Response, error) {
+func (svr *Server) handleBatchRequest(ctx context.Context, req *tikvpb.BatchCommandsRequest_Request, startTime time.Time) (*tikvpb.BatchCommandsResponse_Response, error) {
 	switch req := req.GetCmd().(type) {
 	case *tikvpb.BatchCommandsRequest_Request_Get:
 		res, err := svr.KvGet(ctx, req.Get)
 		if err != nil {
+			metrics.KvGetFailTotal.Inc()
 			return nil, err
 		}
+		metrics.KvGetDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_Get{Get: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_Scan:
 		res, err := svr.KvScan(ctx, req.Scan)
 		if err != nil {
+			metrics.KvScanFailTotal.Inc()
 			return nil, err
 		}
+		metrics.KvScanDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_Scan{Scan: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_PessimisticLock:
 		res, err := svr.KvPessimisticLock(ctx, req.PessimisticLock)
 		if err != nil {
+			metrics.PessimisticLockFailTotal.Inc()
 			return nil, err
 		}
+		metrics.PessimisticLockDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_PessimisticLock{PessimisticLock: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_PessimisticRollback:
 		res, err := svr.KVPessimisticRollback(ctx, req.PessimisticRollback)
 		if err != nil {
+			metrics.PessimisticRollbackFailTotal.Inc()
 			return nil, err
 		}
+		metrics.PessimisticRollbackDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_PessimisticRollback{PessimisticRollback: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_TxnHeartBeat:
 		res, err := svr.KvTxnHeartBeat(ctx, req.TxnHeartBeat)
 		if err != nil {
+			metrics.TxnHeartBeatFailTotal.Inc()
 			return nil, err
 		}
+		metrics.TxnHeartBeatDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_TxnHeartBeat{TxnHeartBeat: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_CheckTxnStatus:
 		res, err := svr.KvCheckTxnStatus(ctx, req.CheckTxnStatus)
 		if err != nil {
+			metrics.KvCheckTxnStatusFailTotal.Inc()
 			return nil, err
 		}
+		metrics.KvCheckTxnStatusDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_CheckTxnStatus{CheckTxnStatus: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_Prewrite:
 		res, err := svr.KvPrewrite(ctx, req.Prewrite)
 		if err != nil {
+			metrics.KvPrewriteFailTotal.Inc()
 			return nil, err
 		}
+		metrics.KvPrewriteDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_Prewrite{Prewrite: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_Commit:
 		res, err := svr.KvCommit(ctx, req.Commit)
 		if err != nil {
+			metrics.KvCommitFailTotal.Inc()
 			return nil, err
 		}
+		metrics.KvCommitDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_Commit{Commit: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_Cleanup:
 		res, err := svr.KvCleanup(ctx, req.Cleanup)
 		if err != nil {
+			metrics.KvCleanupFailTotal.Inc()
 			return nil, err
 		}
+		metrics.KvCleanupDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_Cleanup{Cleanup: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_BatchGet:
 		res, err := svr.KvBatchGet(ctx, req.BatchGet)
 		if err != nil {
+			metrics.KvBatchGetFailTotal.Inc()
 			return nil, err
 		}
+		metrics.KvBatchGetDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_BatchGet{BatchGet: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_BatchRollback:
 		res, err := svr.KvBatchRollback(ctx, req.BatchRollback)
 		if err != nil {
+			metrics.KvBatchRollbackFailTotal.Inc()
 			return nil, err
 		}
+		metrics.KvBatchRollbackDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_BatchRollback{BatchRollback: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_ScanLock:
 		res, err := svr.KvScanLock(ctx, req.ScanLock)
 		if err != nil {
+			metrics.KvScanLockFailTotal.Inc()
 			return nil, err
 		}
+		metrics.KvScanLockDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_ScanLock{ScanLock: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_ResolveLock:
 		res, err := svr.KvResolveLock(ctx, req.ResolveLock)
 		if err != nil {
+			metrics.KvResolveLockFailTotal.Inc()
 			return nil, err
 		}
+		metrics.KvResolveLockDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_ResolveLock{ResolveLock: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_GC:
 		res, err := svr.KvGC(ctx, req.GC)
 		if err != nil {
+			metrics.KvGCFailTotal.Inc()
 			return nil, err
 		}
+		metrics.KvGCDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_GC{GC: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_DeleteRange:
 		res, err := svr.KvDeleteRange(ctx, req.DeleteRange)
 		if err != nil {
+			metrics.KvDeleteRangeFailTotal.Inc()
 			return nil, err
 		}
+		metrics.KvDeleteRangeDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_DeleteRange{DeleteRange: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_RawGet:
 		res, err := svr.RawGet(ctx, req.RawGet)
 		if err != nil {
+			metrics.RawGetFailTotal.Inc()
 			return nil, err
 		}
+		metrics.RawGetDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_RawGet{RawGet: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_RawBatchGet:
 		res, err := svr.RawBatchGet(ctx, req.RawBatchGet)
 		if err != nil {
+			metrics.RawBatchGetFailTotal.Inc()
 			return nil, err
 		}
+		metrics.RawBatchGetDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_RawBatchGet{RawBatchGet: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_RawPut:
 		res, err := svr.RawPut(ctx, req.RawPut)
 		if err != nil {
+			metrics.RawPutFailTotal.Inc()
 			return nil, err
 		}
+		metrics.RawPutDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_RawPut{RawPut: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_RawBatchPut:
 		res, err := svr.RawBatchPut(ctx, req.RawBatchPut)
 		if err != nil {
+			metrics.RawBatchPutFailTotal.Inc()
 			return nil, err
 		}
+		metrics.RawBatchPutDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_RawBatchPut{RawBatchPut: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_RawDelete:
 		res, err := svr.RawDelete(ctx, req.RawDelete)
 		if err != nil {
+			metrics.RawDeleteFailTotal.Inc()
 			return nil, err
 		}
+		metrics.RawDeleteDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_RawDelete{RawDelete: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_RawBatchDelete:
 		res, err := svr.RawBatchDelete(ctx, req.RawBatchDelete)
 		if err != nil {
+			metrics.RawBatchDeleteFailTotal.Inc()
 			return nil, err
 		}
+		metrics.RawBatchDeleteDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_RawBatchDelete{RawBatchDelete: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_RawScan:
 		res, err := svr.RawScan(ctx, req.RawScan)
 		if err != nil {
+			metrics.RawScanFailTotal.Inc()
 			return nil, err
 		}
+		metrics.RawScanDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_RawScan{RawScan: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_RawDeleteRange:
 		res, err := svr.RawDeleteRange(ctx, req.RawDeleteRange)
 		if err != nil {
+			metrics.RawDeleteRangeFailTotal.Inc()
 			return nil, err
 		}
+		metrics.RawDeleteRangeDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_RawDeleteRange{RawDeleteRange: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_Coprocessor:
 		res, err := svr.Coprocessor(ctx, req.Coprocessor)
 		if err != nil {
+			metrics.CoprocessorFailTotal.Inc()
 			return nil, err
 		}
+		metrics.CoprocessorDurationSeconds.Observe(time.Since(startTime).Seconds())
 		return &tikvpb.BatchCommandsResponse_Response{Cmd: &tikvpb.BatchCommandsResponse_Response_Coprocessor{Coprocessor: res}}, nil
 	case *tikvpb.BatchCommandsRequest_Request_Empty:
 		res := &tikvpb.BatchCommandsEmptyResponse{TestId: req.Empty.TestId}

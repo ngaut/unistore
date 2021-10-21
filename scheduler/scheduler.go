@@ -109,3 +109,43 @@ func (s *Scheduler) worker(t *task) {
 		}
 	}
 }
+
+type PermanentScheduler struct {
+	tasks   chan func()
+	closeCh chan struct{}
+}
+
+func NewPermanentScheduler(numWorkers, capacity int) *PermanentScheduler {
+	s := &PermanentScheduler{
+		tasks:   make(chan func(), capacity),
+		closeCh: make(chan struct{}),
+	}
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+	for i := 0; i < numWorkers; i++ {
+		go s.worker()
+	}
+	return s
+}
+
+func (s *PermanentScheduler) Close() {
+	close(s.closeCh)
+}
+
+func (s *PermanentScheduler) Schedule(f func()) {
+	s.tasks <- f
+}
+
+func (s *PermanentScheduler) worker() {
+	for {
+		select {
+		case f := <-s.tasks:
+			if f != nil {
+				f()
+			}
+		case <-s.closeCh:
+			return
+		}
+	}
+}
