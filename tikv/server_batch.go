@@ -81,7 +81,8 @@ func (h *batchRequestHandler) handleRequest(id uint64, req *tikvpb.BatchCommands
 }
 
 func (h *batchRequestHandler) dispatchBatchRequest(ctx context.Context) error {
-	sched := scheduler.NewScheduler(1, cap(h.respCh))
+	sched := scheduler.NewPermanentScheduler(h.svr.mvccStore.conf.Server.BatchWorkerCountPerConn, cap(h.respCh))
+	defer sched.Close()
 	for {
 		select {
 		case <-ctx.Done():
@@ -125,15 +126,17 @@ func (h *batchRequestHandler) dispatchBatchRequest(ctx context.Context) error {
 				lightweightReqCount++
 			}
 			if keyCount > 10 {
-				idsCopy := ids[:]
-				reqsCopy := reqs[:]
+				idsCopy := make([]uint64, len(ids))
+				copy(idsCopy, ids)
+				reqsCopy := make([]*tikvpb.BatchCommandsRequest_Request, len(reqs))
+				copy(reqsCopy, reqs)
 				sched.Schedule(func() {
 					for i, id := range idsCopy {
 						h.handleRequest(id, reqsCopy[i], startTime)
 					}
 				})
-				ids = nil
-				reqs = nil
+				ids = ids[:0]
+				reqs = reqs[:0]
 				keyCount = 0
 			}
 		}
